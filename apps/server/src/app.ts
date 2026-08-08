@@ -1,4 +1,6 @@
+import multipart from '@fastify/multipart';
 import { createOpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
+import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loadConfig, loadProviderSecrets, type ProviderSecretMap, type ServerConfig } from './config.js';
 import { createDatabase, type TavernDatabase } from './db/client.js';
@@ -8,15 +10,20 @@ import { registerCharacterRoutes } from './routes/characters.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
 import { registerMessageRoutes } from './routes/messages.js';
+import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
+import { createImportService, type ImportHandler } from './services/import-service.js';
 
 export interface CreateAppOptions {
   config?: ServerConfig;
   database?: TavernDatabase;
   providerClientFactory?: ProviderClientFactory;
   providerSecrets?: ProviderSecretMap;
+  importHandlers?: readonly ImportHandler[];
+  importClock?: () => number;
+  importMoveAssets?: (source: string, destination: string) => void;
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -30,9 +37,18 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     },
   });
 
-  const database = options.database ?? createDatabase((options.config ?? loadConfig()).databasePath);
+  const config = options.config ?? loadConfig();
+  const database = options.database ?? createDatabase(config.databasePath);
   migrateDatabase(database);
   const repositories = createRepositories(database);
+  const imports = createImportService({
+    dataDir: config.dataDir,
+    database,
+    repositories,
+    ...(options.importHandlers === undefined ? {} : { handlers: options.importHandlers }),
+    ...(options.importClock === undefined ? {} : { clock: options.importClock }),
+    ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
+  });
   const providerSecrets: Record<string, { providerId: string; baseUrl: string; value: string }> = {
     ...(options.providerSecrets ?? loadProviderSecrets()),
   };
@@ -57,7 +73,17 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   });
   const generations = createGenerationService({ database, repositories, providerClientFactory });
 
+  app.register(multipart, {
+    limits: {
+      fileSize: DEFAULT_INSPECTION_LIMITS.maxUploadBytes,
+      files: 1,
+      fields: 0,
+      parts: 1,
+    },
+    throwFileSizeLimit: true,
+  });
   app.get('/api/health', async () => ({ status: 'ok', app: 'TavernNext' }));
+  registerImportRoutes(app, imports);
   registerCharacterRoutes(app, repositories);
   registerPersonaRoutes(app, repositories);
   registerProviderRoutes(app, repositories, {
@@ -79,7 +105,11 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerGenerationRoutes(app, generations);
 
   app.addHook('onClose', async () => {
-    database.close();
+    try {
+      imports.close();
+    } finally {
+      database.close();
+    }
   });
 
   return app;

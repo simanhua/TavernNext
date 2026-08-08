@@ -1,0 +1,17 @@
+{
+  "name": "@tavernnext/st-compat",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "png-chunk-text": "1.0.0",
+    "png-chunks-encode": "1.0.0",
+    "png-chunks-extract": "1.0.0",
+    "yaml": "2.9.0"
+  }
+}
