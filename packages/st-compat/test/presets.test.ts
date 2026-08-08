@@ -1,10 +1,16 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { exportPreset, inspectPreset, persistPresetSourceAssociations } from '../src/index.js';
+import {
+  exportPreset,
+  inspectPreset,
+  persistPresetSourceAssociations,
+  presetSettingsForExecution,
+} from '../src/index.js';
 
 const fixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'presets');
 const encoder = new TextEncoder();
+const sourceAssociationKey = '__tavernnextPresetSource';
 
 function bytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(join(fixtureRoot, path)));
@@ -12,8 +18,24 @@ function bytes(path: string): Uint8Array {
 
 type PresetPreview = Awaited<ReturnType<typeof inspectPreset>>;
 
+function storedCompatibility(preview: PresetPreview, associationEnvelope: unknown) {
+  return {
+    rawPayload: {
+      rawDocument: structuredClone(preview.rawPayload),
+      ...(preview.wrapperKey === undefined ? {} : { wrapperKey: preview.wrapperKey }),
+      associationEnvelope: structuredClone(associationEnvelope),
+    },
+  };
+}
+
 async function duplicateOrderFixture(): Promise<{
-  preview: PresetPreview;
+  source: {
+    name: string;
+    kind: 'chat';
+    settings: Record<string, unknown>;
+    compatibility: ReturnType<typeof storedCompatibility>;
+  };
+  associationEnvelope: unknown;
   group: Record<string, unknown>;
   first: Record<string, unknown>;
   second: Record<string, unknown>;
@@ -28,20 +50,28 @@ async function duplicateOrderFixture(): Promise<{
       ],
     }],
   })), 'duplicate-order.settings');
-  preview.settings = persistPresetSourceAssociations(preview);
-  const group = (preview.settings.prompt_order as Array<Record<string, unknown>>)[0]!;
+  const persisted = persistPresetSourceAssociations(preview);
+  const source = {
+    name: preview.name,
+    kind: 'chat' as const,
+    settings: persisted.settings,
+    compatibility: storedCompatibility(preview, persisted.associationEnvelope),
+  };
+  const group = (source.settings.prompt_order as Array<Record<string, unknown>>)[0]!;
   const order = group.order as Array<Record<string, unknown>>;
-  return { preview, group, first: order[0]!, second: order[1]! };
+  return { source, associationEnvelope: persisted.associationEnvelope, group, first: order[0]!, second: order[1]! };
 }
 
 async function exportDuplicateOrder(
-  preview: PresetPreview,
+  source: Awaited<ReturnType<typeof duplicateOrderFixture>>['source'],
   group: Record<string, unknown>,
   order: Array<Record<string, unknown>>,
+  compatibility = source.compatibility,
 ): Promise<Record<string, unknown>> {
   const artifact = await exportPreset({
-    ...preview,
-    settings: { ...preview.settings, prompt_order: [{ ...group, order }] },
+    ...source,
+    compatibility,
+    settings: { ...source.settings, prompt_order: [{ ...group, order }] },
   });
   return JSON.parse(Buffer.from(artifact.bytes).toString('utf8')) as Record<string, unknown>;
 }
@@ -553,6 +583,31 @@ describe('lossless deterministic preset export', () => {
     ]);
   });
 
+  it('keeps Chat prompt metadata through the versioned persistence sidecar', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      prompts: [
+        { identifier: 'alpha', content: 'A', opaque: { source: 'alpha' } },
+        { identifier: 'beta', content: 'B', opaque: { source: 'beta' } },
+      ],
+      prompt_order: [],
+    })), 'persisted-chat.settings');
+    const persisted = persistPresetSourceAssociations(preview);
+    const prompts = persisted.settings.prompts as Array<Record<string, unknown>>;
+    const source = {
+      name: preview.name,
+      kind: 'chat' as const,
+      settings: { ...persisted.settings, prompts: [{ ...prompts[1]!, content: 'B edited' }, prompts[0]!] },
+      compatibility: storedCompatibility(preview, persisted.associationEnvelope),
+    };
+
+    const document = JSON.parse(Buffer.from((await exportPreset(source)).bytes).toString('utf8')) as Record<string, unknown>;
+
+    expect(document.prompts).toEqual([
+      { identifier: 'beta', content: 'B edited', opaque: { source: 'beta' } },
+      { identifier: 'alpha', content: 'A', opaque: { source: 'alpha' } },
+    ]);
+  });
+
   it('matches prompt-order groups and duplicate order entries occurrence-aware', async () => {
     const preview = await inspectPreset(encoder.encode(JSON.stringify({
       prompts: [],
@@ -594,9 +649,9 @@ describe('lossless deterministic preset export', () => {
   });
 
   it('keeps duplicate-id metadata attached through swaps and known-field edits', async () => {
-    const { preview, group, first, second } = await duplicateOrderFixture();
+    const { source, group, first, second } = await duplicateOrderFixture();
 
-    const document = await exportDuplicateOrder(preview, group, [
+    const document = await exportDuplicateOrder(source, group, [
       { ...second, enabled: true },
       { ...first, enabled: false },
     ]);
@@ -608,23 +663,23 @@ describe('lossless deterministic preset export', () => {
   });
 
   it('does not migrate duplicate-id metadata when either original occurrence is deleted', async () => {
-    const { preview, group, first, second } = await duplicateOrderFixture();
+    const { source, group, first, second } = await duplicateOrderFixture();
 
-    const withoutFirst = await exportDuplicateOrder(preview, group, [{ ...second, enabled: true }]);
+    const withoutFirst = await exportDuplicateOrder(source, group, [{ ...second, enabled: true }]);
     expect(exportedChatOrder(withoutFirst)).toEqual([
       { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
     ]);
 
-    const withoutSecond = await exportDuplicateOrder(preview, group, [{ ...first, enabled: false }]);
+    const withoutSecond = await exportDuplicateOrder(source, group, [{ ...first, enabled: false }]);
     expect(exportedChatOrder(withoutSecond)).toEqual([
       { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
     ]);
   });
 
   it('leaves new duplicate ids clean before, between, and after associated originals', async () => {
-    const { preview, group, first, second } = await duplicateOrderFixture();
+    const { source, group, first, second } = await duplicateOrderFixture();
 
-    const document = await exportDuplicateOrder(preview, group, [
+    const document = await exportDuplicateOrder(source, group, [
       { identifier: 'duplicate', enabled: true },
       { ...first, enabled: false },
       { identifier: 'duplicate', enabled: false },
@@ -638,6 +693,173 @@ describe('lossless deterministic preset export', () => {
       { identifier: 'duplicate', enabled: false },
       { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
       { identifier: 'duplicate', enabled: true },
+    ]);
+  });
+
+  it('rejects a copied source token for both the copy and original regardless of ordering', async () => {
+    const { source, group, first } = await duplicateOrderFixture();
+    const copiedToken = structuredClone(first[sourceAssociationKey]);
+    const copy = {
+      identifier: 'duplicate',
+      enabled: false,
+      [sourceAssociationKey]: copiedToken,
+    };
+
+    for (const order of [[copy, first], [first, copy]]) {
+      const document = await exportDuplicateOrder(source, group, order);
+      const exportedOrder = exportedChatOrder(document);
+      expect(exportedOrder).toEqual([
+        expect.not.objectContaining({ opaque: expect.anything() }),
+        expect.not.objectContaining({ opaque: expect.anything() }),
+      ]);
+      expect(exportedOrder[0]?.[sourceAssociationKey]).toEqual(copiedToken);
+      expect(exportedOrder[1]?.[sourceAssociationKey]).toEqual(copiedToken);
+    }
+  });
+
+  it('allows one deliberate same-identity token move and strips the validated marker', async () => {
+    const { source, group, first } = await duplicateOrderFixture();
+    const moved = {
+      identifier: 'duplicate',
+      enabled: false,
+      [sourceAssociationKey]: structuredClone(first[sourceAssociationKey]),
+    };
+
+    const document = await exportDuplicateOrder(source, group, [moved]);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
+    ]);
+  });
+
+  it('does not consume forged legacy paths or sidecar-unknown tokens', async () => {
+    const { source, group, first } = await duplicateOrderFixture();
+    const marker = first[sourceAssociationKey] as Record<string, unknown>;
+    const forgedToken = { ...marker, token: '018f0000-0000-7000-8000-000000000999' };
+    const forgedPath = ['prompt_order', 0, 'order', 0];
+
+    const document = await exportDuplicateOrder(source, group, [
+      { identifier: 'duplicate', enabled: true, [sourceAssociationKey]: forgedPath },
+      { identifier: 'duplicate', enabled: false, [sourceAssociationKey]: forgedToken },
+    ]);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: true, [sourceAssociationKey]: forgedPath },
+      { identifier: 'duplicate', enabled: false, [sourceAssociationKey]: forgedToken },
+    ]);
+  });
+
+  it('fails closed when a valid token sidecar path is stale or out of range', async () => {
+    const { source, group, first } = await duplicateOrderFixture();
+    const compatibility = structuredClone(source.compatibility);
+    const envelope = compatibility.rawPayload.associationEnvelope as {
+      entries: Array<{ token: string; path: Array<string | number> }>;
+    };
+    const token = (first[sourceAssociationKey] as { token: string }).token;
+    envelope.entries.find((entry) => entry.token === token)!.path = ['prompt_order', 0, 'order', 99];
+
+    const document = await exportDuplicateOrder(source, group, [first], compatibility);
+    const [exported] = exportedChatOrder(document);
+
+    expect(exported).not.toHaveProperty('opaque');
+    expect(exported?.[sourceAssociationKey]).toEqual(first[sourceAssociationKey]);
+  });
+
+  it('rejects a sidecar path redirected to a different same-identity source entry', async () => {
+    const { source, group, first } = await duplicateOrderFixture();
+    const compatibility = structuredClone(source.compatibility);
+    const firstToken = (first[sourceAssociationKey] as { token: string }).token;
+    const envelope = compatibility.rawPayload.associationEnvelope as {
+      entries: Array<{ token: string; location: string; path: Array<string | number> }>;
+    };
+    const redirected = envelope.entries.find((entry) => entry.token === firstToken)!;
+    const other = envelope.entries.find((entry) => entry.location === redirected.location && entry.token !== firstToken)!;
+    envelope.entries = envelope.entries.filter((entry) => entry !== other);
+    redirected.path = structuredClone(other.path);
+
+    const document = await exportDuplicateOrder(source, group, [first], compatibility);
+    const [exported] = exportedChatOrder(document);
+
+    expect(exported).not.toHaveProperty('opaque');
+    expect(exported?.[sourceAssociationKey]).toEqual(first[sourceAssociationKey]);
+  });
+
+  it('does not legacy-match replacements after every tokenized original is deleted', async () => {
+    const { source, group } = await duplicateOrderFixture();
+
+    const document = await exportDuplicateOrder(source, group, [
+      { identifier: 'duplicate', enabled: true },
+      { identifier: 'duplicate', enabled: false },
+    ]);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: true },
+      { identifier: 'duplicate', enabled: false },
+    ]);
+  });
+
+  it.each([
+    ['unsupported version', (envelope: Record<string, unknown>) => { envelope.version = 999; }],
+    ['wrong preset kind', (envelope: Record<string, unknown>) => { envelope.kind = 'text'; }],
+  ])('disables legacy fallback when the association envelope has %s', async (_label, tamper) => {
+    const { source, group } = await duplicateOrderFixture();
+    const compatibility = structuredClone(source.compatibility);
+    tamper(compatibility.rawPayload.associationEnvelope as Record<string, unknown>);
+
+    const document = await exportDuplicateOrder(source, group, [
+      { identifier: 'duplicate', enabled: true },
+      { identifier: 'duplicate', enabled: false },
+    ], compatibility);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: true },
+      { identifier: 'duplicate', enabled: false },
+    ]);
+  });
+
+  it('rejects duplicate sidecar tokens on distinct paths before either association can be consumed', async () => {
+    const { source, group, first } = await duplicateOrderFixture();
+    const compatibility = structuredClone(source.compatibility);
+    const envelope = compatibility.rawPayload.associationEnvelope as {
+      entries: Array<{ token: string; location: string; path: Array<string | number> }>;
+    };
+    const token = (first[sourceAssociationKey] as { token: string }).token;
+    const matching = envelope.entries.find((entry) => entry.token === token)!;
+    const other = envelope.entries.find((entry) => entry.location === matching.location && entry.token !== token)!;
+    expect(other.path).not.toEqual(matching.path);
+    other.token = token;
+
+    const document = await exportDuplicateOrder(source, group, [first], compatibility);
+    const [exported] = exportedChatOrder(document);
+
+    expect(exported).not.toHaveProperty('opaque');
+    expect(exported?.[sourceAssociationKey]).toEqual(first[sourceAssociationKey]);
+  });
+
+  it('honors a compatibility envelope even when a caller also supplies a direct raw payload', async () => {
+    const { source, group } = await duplicateOrderFixture();
+    const compatibility = structuredClone(source.compatibility);
+    (compatibility.rawPayload.associationEnvelope as Record<string, unknown>).version = 999;
+    const artifact = await exportPreset({
+      ...source,
+      rawPayload: structuredClone(compatibility.rawPayload.rawDocument),
+      compatibility,
+      settings: {
+        ...source.settings,
+        prompt_order: [{
+          ...group,
+          order: [
+            { identifier: 'duplicate', enabled: true },
+            { identifier: 'duplicate', enabled: false },
+          ],
+        }],
+      },
+    });
+    const document = JSON.parse(Buffer.from(artifact.bytes).toString('utf8')) as Record<string, unknown>;
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: true },
+      { identifier: 'duplicate', enabled: false },
     ]);
   });
 
@@ -655,11 +877,17 @@ describe('lossless deterministic preset export', () => {
         ],
       }],
     })), 'persisted-duplicates.settings');
-    reimported.settings = JSON.parse(JSON.stringify(persistPresetSourceAssociations(reimported))) as Record<string, unknown>;
-    const group = (reimported.settings.prompt_order as Array<Record<string, unknown>>)[0]!;
+    const persisted = persistPresetSourceAssociations(reimported);
+    const source = {
+      name: reimported.name,
+      kind: 'chat' as const,
+      settings: JSON.parse(JSON.stringify(persisted.settings)) as Record<string, unknown>,
+      compatibility: JSON.parse(JSON.stringify(storedCompatibility(reimported, persisted.associationEnvelope))) as ReturnType<typeof storedCompatibility>,
+    };
+    const group = (source.settings.prompt_order as Array<Record<string, unknown>>)[0]!;
     const order = group.order as Array<Record<string, unknown>>;
 
-    const document = await exportDuplicateOrder(reimported, group, [
+    const document = await exportDuplicateOrder(source, group, [
       { ...order[3]!, enabled: false },
       { ...order[1]!, enabled: true },
     ]);
@@ -727,6 +955,41 @@ describe('lossless deterministic preset export', () => {
         ],
       },
     });
+  });
+
+  it('keeps NovelAI order metadata through the versioned persistence sidecar', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      presetVersion: 3,
+      parameters: {
+        temperature: 0.7,
+        order: [
+          { id: 'temperature', enabled: true, opaque: 'temperature' },
+          { id: 'top_p', enabled: false, opaque: 'top-p' },
+        ],
+      },
+    })), 'persisted-novel.preset');
+    const persisted = persistPresetSourceAssociations(preview);
+    const order = persisted.settings.order as Array<Record<string, unknown>>;
+    const source = {
+      name: preview.name,
+      kind: 'text' as const,
+      settings: { ...persisted.settings, order: [{ ...order[1]!, enabled: true }, order[0]!] },
+      compatibility: storedCompatibility(preview, persisted.associationEnvelope),
+    };
+
+    const document = JSON.parse(Buffer.from((await exportPreset(source)).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(document).toMatchObject({
+      parameters: {
+        order: [
+          { id: 'top_p', enabled: true, opaque: 'top-p' },
+          { id: 'temperature', enabled: true, opaque: 'temperature' },
+        ],
+      },
+    });
+    expect(presetSettingsForExecution(source.settings, source.compatibility, 'text').order).toEqual([
+      { id: 'top_p', enabled: true },
+      { id: 'temperature', enabled: true },
+    ]);
   });
 
   it('uses positional overlay for arrays without a defined stable identity', async () => {
@@ -845,5 +1108,124 @@ describe('lossless deterministic preset export', () => {
       root_vendor: { keep: true },
     });
     expect(document).not.toHaveProperty('temperature');
+  });
+
+  it('strips validated markers only at structured entries while preserving non-marker user fields', async () => {
+    const { source } = await duplicateOrderFixture();
+    const userValue = { user: true, purpose: 'not an internal marker' };
+    const settings = {
+      ...source.settings,
+      prompts: [{
+        identifier: 'user-owned',
+        content: 'plain prompt',
+        [sourceAssociationKey]: userValue,
+      }],
+    };
+
+    const exported = JSON.parse(Buffer.from((await exportPreset({ ...source, settings })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(exported.prompts).toEqual([{
+      identifier: 'user-owned',
+      content: 'plain prompt',
+      [sourceAssociationKey]: userValue,
+    }]);
+
+    const executable = presetSettingsForExecution(settings, source.compatibility, 'chat');
+    expect(executable.prompts).toEqual([{
+      identifier: 'user-owned',
+      content: 'plain prompt',
+      [sourceAssociationKey]: userValue,
+    }]);
+    const executableGroup = (executable.prompt_order as Array<Record<string, unknown>>)[0]!;
+    expect(executableGroup).not.toHaveProperty(sourceAssociationKey);
+    for (const entry of executableGroup.order as Array<Record<string, unknown>>) {
+      expect(entry).not.toHaveProperty(sourceAssociationKey);
+    }
+  });
+
+  it('does not overwrite a same-named non-marker field already present on an imported structured entry', async () => {
+    const userValue = { user: true, purpose: 'source-owned data' };
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      prompts: [{
+        identifier: 'source-owned',
+        content: 'plain prompt',
+        [sourceAssociationKey]: userValue,
+      }],
+      prompt_order: [],
+    })), 'source-owned-marker.settings');
+    const normalizedPrompt = (preview.settings.prompts as Array<Record<string, unknown>>)[0]!;
+    const persisted = persistPresetSourceAssociations({
+      ...preview,
+      settings: {
+        ...preview.settings,
+        prompts: [{ ...normalizedPrompt, [sourceAssociationKey]: userValue }],
+      },
+    });
+    const compatibility = storedCompatibility(preview, persisted.associationEnvelope);
+    const persistedPrompt = (persisted.settings.prompts as Array<Record<string, unknown>>)[0]!;
+
+    expect(persistedPrompt[sourceAssociationKey]).toEqual(userValue);
+    expect(presetSettingsForExecution(persisted.settings, compatibility, 'chat'))
+      .toMatchObject({ prompts: [{ [sourceAssociationKey]: userValue }] });
+    const exported = JSON.parse(Buffer.from((await exportPreset({
+      name: preview.name,
+      kind: 'chat',
+      settings: persisted.settings,
+      compatibility,
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(exported).toMatchObject({ prompts: [{ [sourceAssociationKey]: userValue }] });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['mismatched', 'text' as const],
+  ])('does not validate execution markers against a %s preset kind', async (_label, kind) => {
+    const { source } = await duplicateOrderFixture();
+    const sanitize = presetSettingsForExecution as (
+      settings: Record<string, unknown>,
+      compatibility: typeof source.compatibility,
+      kind?: 'text',
+    ) => Record<string, unknown>;
+
+    const executable = sanitize(source.settings, source.compatibility, kind);
+    const group = (executable.prompt_order as Array<Record<string, unknown>>)[0]!;
+
+    expect(group).toHaveProperty(sourceAssociationKey);
+    for (const entry of group.order as Array<Record<string, unknown>>) {
+      expect(entry).toHaveProperty(sourceAssociationKey);
+    }
+  });
+
+  it('preserves same-named user data in opaque descendants during export and execution', async () => {
+    const userValue = { type: 'string', description: 'ordinary user schema data' };
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      prefix: '<think>',
+      separator: '</think>',
+      suffix: '<answer>',
+      reasoning_config: {
+        response_schema: {
+          type: 'object',
+          properties: { [sourceAssociationKey]: userValue },
+          required: [sourceAssociationKey],
+        },
+      },
+    })), 'reasoning-user-marker.settings');
+
+    const exported = JSON.parse(Buffer.from((await exportPreset(preview)).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(exported).toMatchObject({
+      reasoning_config: {
+        response_schema: {
+          properties: { [sourceAssociationKey]: userValue },
+          required: [sourceAssociationKey],
+        },
+      },
+    });
+    expect(presetSettingsForExecution(preview.settings)).toMatchObject({
+      reasoning_config: {
+        response_schema: {
+          properties: { [sourceAssociationKey]: userValue },
+          required: [sourceAssociationKey],
+        },
+      },
+    });
   });
 });

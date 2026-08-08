@@ -11,6 +11,7 @@ import { createRepositories } from '../src/db/repositories.js';
 import type { ImportHandler } from '../src/services/import-service.js';
 
 const encoder = new TextEncoder();
+const sourceAssociationKey = '__tavernnextPresetSource';
 const fixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'presets');
 const directories: string[] = [];
 const apps: Array<ReturnType<typeof createApp>> = [];
@@ -229,10 +230,22 @@ describe('typed SillyTavern Preset import and export API', () => {
     expect(committed.statusCode).toBe(201);
     const id = committed.json().entityId as string;
 
-    const persistedSettings = JSON.parse(JSON.stringify(repositories.presets.get(id)!.settings)) as Record<string, unknown>;
+    const persistedPreset = repositories.presets.get(id)!;
+    const persistedSettings = JSON.parse(JSON.stringify(persistedPreset.settings)) as Record<string, unknown>;
+    const persistedCompatibility = JSON.parse(JSON.stringify(persistedPreset.compatibility)) as NonNullable<typeof persistedPreset.compatibility>;
+    expect(persistedCompatibility.rawPayload).toMatchObject({
+      associationEnvelope: {
+        type: 'tavernnext:preset-source-associations',
+        version: 1,
+        kind: 'chat',
+        entries: expect.arrayContaining([
+          expect.objectContaining({ location: 'chat.prompt_order.order' }),
+        ]),
+      },
+    });
     const group = (persistedSettings.prompt_order as Array<Record<string, unknown>>)[0]!;
     const order = group.order as Array<Record<string, unknown>>;
-    expect(presetSettingsForExecution(persistedSettings)).toEqual({
+    expect(presetSettingsForExecution(persistedSettings, persistedCompatibility, 'chat')).toEqual({
       prompts: [],
       prompt_order: [{
         character_id: 7,
@@ -242,6 +255,26 @@ describe('typed SillyTavern Preset import and export API', () => {
         ],
       }],
     });
+    const opaqueUserValue = { type: 'string', description: 'Task10 user schema data' };
+    const executableWithOpaqueData = presetSettingsForExecution({
+      ...persistedSettings,
+      reasoning_config: {
+        response_schema: {
+          properties: { [sourceAssociationKey]: opaqueUserValue },
+          required: [sourceAssociationKey],
+        },
+      },
+    }, persistedCompatibility, 'chat');
+    expect(executableWithOpaqueData).toMatchObject({
+      reasoning_config: {
+        response_schema: {
+          properties: { [sourceAssociationKey]: opaqueUserValue },
+          required: [sourceAssociationKey],
+        },
+      },
+    });
+    expect((executableWithOpaqueData.prompt_order as Array<Record<string, unknown>>)[0])
+      .not.toHaveProperty(sourceAssociationKey);
     expect(repositories.presets.update(id, 0, {
       settings: {
         ...persistedSettings,

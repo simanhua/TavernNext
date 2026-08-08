@@ -1,7 +1,8 @@
 import type { ExportArtifact } from '../characters/export.js';
 import {
   isPresetSourceAssociationKey,
-  presetSourceAssociation,
+  validatePresetSourceAssociations,
+  type ValidatedPresetSourceAssociations,
 } from './associations.js';
 import {
   isDirectNovelPreset,
@@ -44,14 +45,37 @@ function safeFileStem(value: string): string {
 
 type PresetExportInput = PresetExportSource | PresetImportPreview;
 
-function sourceDocument(source: PresetExportInput): { root: Record<string, unknown>; wrapperKey?: 'preset' | 'settings' } {
-  if (source.rawPayload !== undefined) return { root: structuredClone(source.rawPayload), ...(source.wrapperKey === undefined ? {} : { wrapperKey: source.wrapperKey }) };
+interface SourceDocument {
+  root: Record<string, unknown>;
+  wrapperKey?: 'preset' | 'settings';
+  associationEnvelopePresent: boolean;
+  associationEnvelope: unknown;
+}
+
+function sourceDocument(source: PresetExportInput): SourceDocument {
   const raw = 'compatibility' in source ? source.compatibility?.rawPayload : undefined;
   const stored = record(raw);
   const storedRoot = record(stored?.rawDocument);
   const wrapperKey = stored?.wrapperKey === 'preset' || stored?.wrapperKey === 'settings' ? stored.wrapperKey : undefined;
-  if (storedRoot !== undefined) return { root: structuredClone(storedRoot), ...(wrapperKey === undefined ? {} : { wrapperKey }) };
-  return { root: {}, wrapperKey: undefined };
+  const associationEnvelopePresent = stored !== undefined && Object.hasOwn(stored, 'associationEnvelope');
+  const associationEnvelope = stored?.associationEnvelope;
+  if (storedRoot !== undefined) {
+    return {
+      root: structuredClone(storedRoot),
+      ...(wrapperKey === undefined ? {} : { wrapperKey }),
+      associationEnvelopePresent,
+      associationEnvelope,
+    };
+  }
+  if (source.rawPayload !== undefined) {
+    return {
+      root: structuredClone(source.rawPayload),
+      ...(source.wrapperKey === undefined ? {} : { wrapperKey: source.wrapperKey }),
+      associationEnvelopePresent,
+      associationEnvelope,
+    };
+  }
+  return { root: {}, wrapperKey: undefined, associationEnvelopePresent, associationEnvelope };
 }
 
 type StableIdentityKey = 'identifier' | 'character_id' | 'id';
@@ -85,28 +109,14 @@ function identityToken(value: string | number): string {
 
 interface OverlayContext {
   kind: PresetKind;
-  rawRoot: Record<string, unknown>;
+  associations: ValidatedPresetSourceAssociations;
+  allowLegacyFallback: boolean;
   consumedAssociations: Set<string>;
 }
 
 interface AssociatedRaw {
   raw: unknown;
   token: string;
-}
-
-function sourceAtPath(root: Record<string, unknown>, path: readonly (string | number)[]): unknown {
-  let value: unknown = root;
-  for (const part of path) {
-    if (typeof part === 'number') {
-      if (!Array.isArray(value) || part < 0 || part >= value.length) return undefined;
-      value = value[part];
-      continue;
-    }
-    const object = record(value);
-    if (object === undefined || !Object.hasOwn(object, part)) return undefined;
-    value = object[part];
-  }
-  return value;
 }
 
 function equalJsonValue(left: unknown, right: unknown): boolean {
@@ -120,8 +130,8 @@ function equalJsonValue(left: unknown, right: unknown): boolean {
   const leftObject = record(left);
   const rightObject = record(right);
   if (leftObject === undefined || rightObject === undefined) return false;
-  const leftEntries = Object.entries(leftObject).filter(([key]) => !isPresetSourceAssociationKey(key));
-  const rightEntries = Object.entries(rightObject).filter(([key]) => !isPresetSourceAssociationKey(key));
+  const leftEntries = Object.entries(leftObject);
+  const rightEntries = Object.entries(rightObject);
   return leftEntries.length === rightEntries.length
     && leftEntries.every(([key, value]) => Object.hasOwn(rightObject, key) && equalJsonValue(value, rightObject[key]));
 }
@@ -153,16 +163,13 @@ function overlayArray(raw: unknown, edited: unknown[], context: OverlayContext, 
   }
 
   const associatedByEdited = new Map<unknown, AssociatedRaw>();
-  const identityHasAssociation = new Set<string>();
   for (const value of edited) {
-    const association = presetSourceAssociation(value);
+    const object = record(value);
+    const association = object === undefined ? undefined : context.associations.byEntry.get(object);
     const valueIdentity = identity(value, identityKey);
     if (association === undefined || valueIdentity === undefined) continue;
-    const associatedRaw = sourceAtPath(context.rawRoot, association);
-    if (!rawArray.includes(associatedRaw) || identity(associatedRaw, identityKey) !== valueIdentity) continue;
-    const token = JSON.stringify(association);
-    associatedByEdited.set(value, { raw: associatedRaw, token });
-    identityHasAssociation.add(identityToken(valueIdentity));
+    if (!rawArray.includes(association.raw) || identity(association.raw, identityKey) !== valueIdentity) continue;
+    associatedByEdited.set(value, { raw: association.raw, token: association.token });
   }
 
   const editedByIdentity = new Map<string, unknown[]>();
@@ -176,22 +183,23 @@ function overlayArray(raw: unknown, edited: unknown[], context: OverlayContext, 
   }
 
   const fallbackByEdited = new Map<unknown, unknown>();
-  for (const [token, editedMatches] of editedByIdentity) {
-    if (identityHasAssociation.has(token)) continue;
-    const rawMatches = rawByIdentity.get(token) ?? [];
-    if (rawMatches.length === 1 && editedMatches.length === 1) {
-      fallbackByEdited.set(editedMatches[0], rawMatches[0]);
-      continue;
+  if (context.allowLegacyFallback) {
+    for (const [token, editedMatches] of editedByIdentity) {
+      const rawMatches = rawByIdentity.get(token) ?? [];
+      if (rawMatches.length === 1 && editedMatches.length === 1) {
+        fallbackByEdited.set(editedMatches[0], rawMatches[0]);
+        continue;
+      }
+      if (rawMatches.length < 2 || rawMatches.length !== editedMatches.length) continue;
+      const exactMatches = editedMatches.map((value) => ({
+        value,
+        candidates: rawMatches.filter((candidate) => matchesKnownFields(candidate, value)),
+      }));
+      if (exactMatches.some(({ candidates }) => candidates.length !== 1)) continue;
+      const selected = exactMatches.map(({ candidates }) => candidates[0]!);
+      if (new Set(selected).size !== selected.length) continue;
+      exactMatches.forEach(({ value, candidates }) => fallbackByEdited.set(value, candidates[0]));
     }
-    if (rawMatches.length < 2 || rawMatches.length !== editedMatches.length) continue;
-    const exactMatches = editedMatches.map((value) => ({
-      value,
-      candidates: rawMatches.filter((candidate) => matchesKnownFields(candidate, value)),
-    }));
-    if (exactMatches.some(({ candidates }) => candidates.length !== 1)) continue;
-    const selected = exactMatches.map(({ candidates }) => candidates[0]!);
-    if (new Set(selected).size !== selected.length) continue;
-    exactMatches.forEach(({ value, candidates }) => fallbackByEdited.set(value, candidates[0]));
   }
 
   return edited.map((value) => {
@@ -215,8 +223,9 @@ function deepOverlay(raw: unknown, edited: unknown, context: OverlayContext, pat
   if (editedObject !== undefined) {
     const rawObject = record(raw);
     const result = rawObject === undefined ? {} : structuredClone(rawObject);
+    const validatedAssociation = context.associations.byEntry.has(editedObject);
     for (const [key, value] of Object.entries(editedObject)) {
-      if (isPresetSourceAssociationKey(key)) continue;
+      if (isPresetSourceAssociationKey(key) && validatedAssociation) continue;
       result[key] = deepOverlay(rawObject?.[key], value, context, [...path, key]);
     }
     return result;
@@ -240,7 +249,6 @@ function overlayTextSettings(
   const rawTarget = directNovel ? record(rawBody.parameters)! : rawBody;
   let target = directNovel ? record(body.parameters)! : body;
   for (const [canonicalKey, value] of Object.entries(settings)) {
-    if (isPresetSourceAssociationKey(canonicalKey)) continue;
     if (directNovel && canonicalKey === 'presetVersion') {
       body.presetVersion = structuredClone(value);
       continue;
@@ -264,7 +272,19 @@ export async function exportPreset(source: PresetExportInput): Promise<ExportArt
   let body = document.wrapperKey === undefined
     ? document.root
     : record(document.root[document.wrapperKey]) ?? {};
-  const context: OverlayContext = { kind: source.kind, rawRoot: body, consumedAssociations: new Set() };
+  const associations = validatePresetSourceAssociations({
+    kind: source.kind,
+    settings: source.settings,
+    rawRoot: body,
+    associationEnvelopePresent: document.associationEnvelopePresent,
+    associationEnvelope: document.associationEnvelope,
+  });
+  const context: OverlayContext = {
+    kind: source.kind,
+    associations,
+    allowLegacyFallback: !associations.envelopePresent,
+    consumedAssociations: new Set(),
+  };
   if (source.kind === 'text') body = overlayTextSettings(body, source.settings, context);
   else body = deepOverlay(body, source.settings, context) as Record<string, unknown>;
   body.name = source.name;
