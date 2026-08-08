@@ -1,0 +1,10 @@
+.worktrees/
+.superpowers/
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.env
+*.log
+
