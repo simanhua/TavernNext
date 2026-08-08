@@ -1,3 +1,16 @@
+import {
+  closeSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  writeSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { Unzip, UnzipInflate } from 'fflate';
 import { parse as parseYaml } from 'yaml';
 import extractPngChunks from 'png-chunks-extract';
@@ -33,17 +46,34 @@ interface ArchiveState {
   decompressedBytes: number;
 }
 
+interface ArchiveSource {
+  size: number;
+  read(offset: number, length: number): Uint8Array;
+}
+
+interface ExtractedArchive {
+  entries: string[];
+  files: Map<string, { path: string; size: number }>;
+}
+
 function startsWith(bytes: Uint8Array, signature: Uint8Array): boolean {
   return signature.every((byte, index) => bytes[index] === byte);
 }
 
+const crc32Table = Uint32Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+  return value >>> 0;
+});
+
+function updateCrc32(state: number, bytes: Uint8Array): number {
+  let next = state;
+  for (const byte of bytes) next = (next >>> 8) ^ crc32Table[(next ^ byte) & 0xff]!;
+  return next >>> 0;
+}
+
 function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+  return (updateCrc32(0xffffffff, bytes) ^ 0xffffffff) >>> 0;
 }
 
 function strictText(bytes: Uint8Array): string {
@@ -76,20 +106,56 @@ function safeArchivePath(name: string): void {
   }
 }
 
-function findEndOfCentralDirectory(bytes: Uint8Array): number {
-  const lowerBound = Math.max(0, bytes.length - 65_557);
-  for (let offset = bytes.length - 22; offset >= lowerBound; offset -= 1) {
-    if (bytes[offset] !== 0x50 || bytes[offset + 1] !== 0x4b || bytes[offset + 2] !== 0x05 || bytes[offset + 3] !== 0x06) continue;
-    const commentLength = new DataView(bytes.buffer, bytes.byteOffset + offset + 20, 2).getUint16(0, true);
-    if (offset + 22 + commentLength === bytes.length) return offset;
+function bytesSource(bytes: Uint8Array): ArchiveSource {
+  return {
+    size: bytes.byteLength,
+    read(offset, length) {
+      if (offset < 0 || length < 0 || offset + length > bytes.byteLength) throw new Error('Archive read is out of bounds');
+      return bytes.subarray(offset, offset + length);
+    },
+  };
+}
+
+function fileSource(path: string): { source: ArchiveSource; close(): void } {
+  const descriptor = openSync(path, 'r');
+  const size = fstatSync(descriptor).size;
+  return {
+    source: {
+      size,
+      read(offset, length) {
+        if (offset < 0 || length < 0 || offset + length > size) throw new Error('Archive read is out of bounds');
+        const bytes = new Uint8Array(length);
+        let read = 0;
+        while (read < length) {
+          const count = readSync(descriptor, bytes, read, length - read, offset + read);
+          if (count === 0) throw new Error('Archive file ended unexpectedly');
+          read += count;
+        }
+        return bytes;
+      },
+    },
+    close() {
+      closeSync(descriptor);
+    },
+  };
+}
+
+function findEndOfCentralDirectory(source: ArchiveSource): number {
+  const tailOffset = Math.max(0, source.size - 65_557);
+  const tail = source.read(tailOffset, source.size - tailOffset);
+  for (let offset = tail.length - 22; offset >= 0; offset -= 1) {
+    if (tail[offset] !== 0x50 || tail[offset + 1] !== 0x4b || tail[offset + 2] !== 0x05 || tail[offset + 3] !== 0x06) continue;
+    const commentLength = new DataView(tail.buffer, tail.byteOffset + offset + 20, 2).getUint16(0, true);
+    if (tailOffset + offset + 22 + commentLength === source.size) return tailOffset + offset;
   }
   return -1;
 }
 
-function parseCentralDirectory(bytes: Uint8Array, limits: InspectionLimits, state: ArchiveState): CentralEntry[] {
-  const eocdOffset = findEndOfCentralDirectory(bytes);
+function parseCentralDirectory(source: ArchiveSource, limits: InspectionLimits, state: ArchiveState): CentralEntry[] {
+  const eocdOffset = findEndOfCentralDirectory(source);
   if (eocdOffset < 0) throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP end-of-central-directory record is missing.'));
-  const eocd = new DataView(bytes.buffer, bytes.byteOffset + eocdOffset, bytes.byteLength - eocdOffset);
+  const eocdBytes = source.read(eocdOffset, source.size - eocdOffset);
+  const eocd = new DataView(eocdBytes.buffer, eocdBytes.byteOffset, eocdBytes.byteLength);
   const disk = eocd.getUint16(4, true);
   const centralDisk = eocd.getUint16(6, true);
   const diskEntries = eocd.getUint16(8, true);
@@ -100,7 +166,7 @@ function parseCentralDirectory(bytes: Uint8Array, limits: InspectionLimits, stat
   if (disk !== 0 || centralDisk !== 0 || diskEntries !== totalEntries || totalEntries === 0xffff || centralOffset === 0xffffffff || centralSize === 0xffffffff) {
     throw new InspectionFailure(diagnostic('archive_unsupported', 'Multi-disk and ZIP64 archives are not supported.'));
   }
-  if (eocdOffset + 22 + commentLength !== bytes.length || centralOffset + centralSize > eocdOffset) {
+  if (eocdOffset + 22 + commentLength !== source.size || centralOffset + centralSize > eocdOffset) {
     throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP central-directory bounds are invalid.'));
   }
   state.entries += totalEntries;
@@ -114,7 +180,8 @@ function parseCentralDirectory(bytes: Uint8Array, limits: InspectionLimits, stat
   const end = centralOffset + centralSize;
   for (let index = 0; index < totalEntries; index += 1) {
     if (offset + 46 > end) throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP central directory is truncated.'));
-    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, end - offset);
+    const header = source.read(offset, 46);
+    const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
     if (view.getUint32(0, true) !== 0x02014b50) throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP central-directory entry is invalid.'));
     const flags = view.getUint16(8, true);
     const checksum = view.getUint32(16, true);
@@ -126,7 +193,7 @@ function parseCentralDirectory(bytes: Uint8Array, limits: InspectionLimits, stat
     const entryEnd = offset + 46 + nameLength + extraLength + entryCommentLength;
     if (entryEnd > end) throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP entry metadata is truncated.'));
     if ((flags & 0x1) !== 0) throw new InspectionFailure(diagnostic('archive_encrypted', 'Encrypted archive entries are not supported.'));
-    const nameBytes = bytes.subarray(offset + 46, offset + 46 + nameLength);
+    const nameBytes = source.read(offset + 46, nameLength);
     let name: string;
     try {
       name = decoder.decode(nameBytes);
@@ -149,17 +216,33 @@ function parseCentralDirectory(bytes: Uint8Array, limits: InspectionLimits, stat
   return entries;
 }
 
-function extractArchive(bytes: Uint8Array, limits: InspectionLimits, state: ArchiveState, depth: number): Map<string, Uint8Array> {
+function extractArchive(
+  source: ArchiveSource,
+  limits: InspectionLimits,
+  state: ArchiveState,
+  depth: number,
+  workspace: string,
+): ExtractedArchive {
   if (depth > limits.maxArchiveNesting) {
     throw new InspectionFailure(diagnostic('archive_nesting_limit', `Archive nesting exceeds ${limits.maxArchiveNesting} levels.`));
   }
-  const centralEntries = parseCentralDirectory(bytes, limits, state);
+  const centralEntries = parseCentralDirectory(source, limits, state);
   const expected = new Map(centralEntries.map((entry) => [entry.name, entry]));
-  const files = new Map<string, Uint8Array>();
+  if (expected.size !== centralEntries.length) throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP entries are duplicated.'));
+  const files = new Map<string, { path: string; size: number }>();
+  const startedFiles = new Set<string>();
+  const openDescriptors = new Set<number>();
   try {
     const unzip = new Unzip((file) => {
-      const chunks: Uint8Array[] = [];
+      if (startedFiles.has(file.name)) throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP entries are duplicated.', file.name));
+      startedFiles.add(file.name);
+      const outputPath = join(workspace, `${randomUUID()}.entry`);
+      const descriptor = openSync(outputPath, 'wx', 0o600);
+      openDescriptors.add(descriptor);
       let length = 0;
+      let checksum = 0xffffffff;
+      let lineBytes = 0;
+      const isText = /\.(?:jsonl?|ya?ml|txt)$/i.test(file.name);
       file.ondata = (error, chunk, final) => {
         if (error !== null) throw error;
         if (chunk !== null && chunk.length > 0) {
@@ -169,48 +252,67 @@ function extractArchive(bytes: Uint8Array, limits: InspectionLimits, state: Arch
             file.terminate();
             throw new InspectionFailure(diagnostic('archive_decompressed_limit', `Archive expands beyond ${limits.maxDecompressedBytes} bytes.`));
           }
-          chunks.push(chunk.slice());
+          checksum = updateCrc32(checksum, chunk);
+          if (isText) {
+            for (const byte of chunk) {
+              if (byte === 0x0a) lineBytes = 0;
+              else {
+                lineBytes += 1;
+                if (lineBytes > limits.maxTextLineBytes) {
+                  throw new InspectionFailure(diagnostic('text_line_limit', `A text line exceeds the ${limits.maxTextLineBytes}-byte limit.`, file.name));
+                }
+              }
+            }
+          }
+          let written = 0;
+          while (written < chunk.length) written += writeSync(descriptor, chunk, written, chunk.length - written);
         }
         if (final) {
           const expectedEntry = expected.get(file.name);
           if (expectedEntry === undefined || expectedEntry.originalSize !== length) {
             throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP entry size does not match the central directory.', file.name));
           }
-          const data = new Uint8Array(length);
-          let offset = 0;
-          for (const part of chunks) {
-            data.set(part, offset);
-            offset += part.length;
-          }
-          if (crc32(data) !== expectedEntry.crc32) {
+          if (((checksum ^ 0xffffffff) >>> 0) !== expectedEntry.crc32) {
             throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP entry checksum does not match the central directory.', file.name));
           }
-          files.set(file.name, data);
+          closeSync(descriptor);
+          openDescriptors.delete(descriptor);
+          files.set(file.name, { path: outputPath, size: length });
         }
       };
       file.start();
     });
     unzip.register(UnzipInflate);
     const streamChunkSize = 8 * 1024;
-    for (let offset = 0; offset < bytes.length; offset += streamChunkSize) {
-      const end = Math.min(bytes.length, offset + streamChunkSize);
-      unzip.push(bytes.subarray(offset, end), end === bytes.length);
+    for (let offset = 0; offset < source.size; offset += streamChunkSize) {
+      const end = Math.min(source.size, offset + streamChunkSize);
+      unzip.push(source.read(offset, end - offset), end === source.size);
     }
   } catch (error) {
     if (error instanceof InspectionFailure) throw error;
     throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP data could not be decompressed.'));
+  } finally {
+    for (const descriptor of openDescriptors) closeSync(descriptor);
   }
   if (files.size !== centralEntries.length) {
     throw new InspectionFailure(diagnostic('corrupt_archive', 'ZIP entries are missing or duplicated.'));
   }
-  for (const [name, data] of files) {
+  for (const [name, file] of files) {
     const lowerName = name.toLowerCase();
-    if (/\.(?:jsonl?|ya?ml|txt)$/.test(lowerName)) checkTextLines(data, limits.maxTextLineBytes, name);
-    if (startsWith(data, zipSignature) || lowerName.endsWith('.zip') || lowerName.endsWith('.charx') || lowerName.endsWith('.byaf')) {
-      extractArchive(data, limits, state, depth + 1);
+    const nestedByName = lowerName.endsWith('.zip') || lowerName.endsWith('.charx') || lowerName.endsWith('.byaf');
+    if (nestedByName || file.size >= zipSignature.length) {
+      const nested = fileSource(file.path);
+      try {
+        const nestedBySignature = file.size >= zipSignature.length
+          && startsWith(nested.source.read(0, zipSignature.length), zipSignature);
+        if (!nestedByName && !nestedBySignature) continue;
+        extractArchive(nested.source, limits, state, depth + 1, workspace);
+      } finally {
+        nested.close();
+      }
     }
   }
-  return files;
+  return { entries: centralEntries.map((entry) => entry.name), files };
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -307,6 +409,9 @@ function validatePngBounds(bytes: Uint8Array): void {
     const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
     if (length > bytes.length - offset - 12) throw new Error('Invalid PNG chunk bounds');
     const name = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+    const expectedCrc = new DataView(bytes.buffer, bytes.byteOffset + offset + 8 + length, 4).getUint32(0);
+    const actualCrc = crc32(bytes.subarray(offset + 4, offset + 8 + length));
+    if (actualCrc !== expectedCrc) throw new Error('PNG chunk checksum mismatch');
     if (first && name !== 'IHDR') throw new Error('PNG must begin with IHDR');
     if (name === 'IEND') {
       if (length !== 0 || offset + 12 !== bytes.length) throw new Error('Invalid PNG end');
@@ -345,42 +450,56 @@ function inspectPng(preview: ImportPreview, input: SourceArtifact): void {
   }
 }
 
-function parseArchiveJson(files: Map<string, Uint8Array>, name: string): unknown {
-  const bytes = files.get(name);
-  if (bytes === undefined) return undefined;
+function parseArchiveJson(archive: ExtractedArchive, name: string, limits: InspectionLimits): unknown {
+  const file = archive.files.get(name);
+  if (file === undefined) return undefined;
+  if (file.size > limits.maxInMemoryEntryBytes) {
+    throw new InspectionFailure(diagnostic(
+      'archive_entry_memory_limit',
+      `${name} exceeds the ${limits.maxInMemoryEntryBytes}-byte manifest memory limit.`,
+      name,
+    ));
+  }
   try {
-    return parseJson(bytes);
+    return parseJson(readFileSync(file.path));
   } catch {
     throw new InspectionFailure(diagnostic('corrupt_archive_manifest', `${name} is not valid JSON.`, name));
   }
 }
 
 function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits): void {
-  const files = extractArchive(input.bytes, limits, { entries: 0, decompressedBytes: 0 }, 1);
-  const hasCharx = files.has('card.json');
-  const hasByaf = files.has('manifest.json') && [...files.keys()].some((name) => /^characters\/[^/]+\/character\.json$/i.test(name));
-  if (hasCharx && hasByaf) {
-    preview.detected = { container: 'zip', kind: 'unknown', candidates: ['character'] };
-    preview.normalizedPreview = { entries: [...files.keys()] };
-    preview.warnings.push(diagnostic('ambiguous_archive', 'Archive contains both CharX and BYAF roots.'));
-    return;
+  const workspace = mkdtempSync(join(tmpdir(), 'tavernnext-import-inspect-'));
+  try {
+    const archive = extractArchive(bytesSource(input.bytes), limits, { entries: 0, decompressedBytes: 0 }, 1, workspace);
+    const previewEntries = archive.entries.slice(0, 256);
+    const entryPreview = { entries: previewEntries, entryCount: archive.entries.length };
+    const hasCharx = archive.files.has('card.json');
+    const hasByaf = archive.files.has('manifest.json') && archive.entries.some((name) => /^characters\/[^/]+\/character\.json$/i.test(name));
+    if (hasCharx && hasByaf) {
+      preview.detected = { container: 'zip', kind: 'unknown', candidates: ['character'] };
+      preview.normalizedPreview = entryPreview;
+      preview.warnings.push(diagnostic('ambiguous_archive', 'Archive contains both CharX and BYAF roots.'));
+      return;
+    }
+    if (hasCharx) {
+      const card = parseArchiveJson(archive, 'card.json', limits);
+      preview.detected = { container: 'charx', kind: 'character', version: characterVersion(card), candidates: ['character'] };
+      preview.normalizedPreview = { ...entryPreview, card: { candidates: jsonCandidates(card) } };
+      return;
+    }
+    if (hasByaf) {
+      const manifest = objectRecord(parseArchiveJson(archive, 'manifest.json', limits));
+      const version = typeof manifest?.version === 'string' || typeof manifest?.version === 'number' ? String(manifest.version) : '1';
+      preview.detected = { container: 'byaf', kind: 'character', version, candidates: ['character'] };
+      preview.normalizedPreview = entryPreview;
+      return;
+    }
+    preview.detected = { container: 'zip', kind: 'unknown', candidates: [] };
+    preview.normalizedPreview = entryPreview;
+    preview.warnings.push(diagnostic('unrecognized_archive', 'ZIP is safe and valid but is not a recognized CharX or BYAF archive.'));
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
   }
-  if (hasCharx) {
-    const card = parseArchiveJson(files, 'card.json');
-    preview.detected = { container: 'charx', kind: 'character', version: characterVersion(card), candidates: ['character'] };
-    preview.normalizedPreview = { entries: [...files.keys()], card: { candidates: jsonCandidates(card) } };
-    return;
-  }
-  if (hasByaf) {
-    const manifest = objectRecord(parseArchiveJson(files, 'manifest.json'));
-    const version = typeof manifest?.version === 'string' || typeof manifest?.version === 'number' ? String(manifest.version) : '1';
-    preview.detected = { container: 'byaf', kind: 'character', version, candidates: ['character'] };
-    preview.normalizedPreview = { entries: [...files.keys()] };
-    return;
-  }
-  preview.detected = { container: 'zip', kind: 'unknown', candidates: [] };
-  preview.normalizedPreview = { entries: [...files.keys()] };
-  preview.warnings.push(diagnostic('unrecognized_archive', 'ZIP is safe and valid but is not a recognized CharX or BYAF archive.'));
 }
 
 function inspectYaml(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits): void {

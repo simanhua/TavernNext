@@ -172,6 +172,22 @@ describe('artifact format detection', () => {
     expect(ambiguous.blockingErrors).toEqual([]);
   });
 
+  it('validates CRC-32 for IEND and data-bearing PNG chunks', async () => {
+    const forgedIend = metadataPng();
+    forgedIend[forgedIend.length - 1] ^= 0xff;
+    const iendPreview = await inspectArtifact({ fileName: 'forged-iend.png', bytes: forgedIend });
+    expect(iendPreview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_png' }));
+
+    const forgedText = metadataPng();
+    const textTypeOffset = forgedText.findIndex((byte, index) => (
+      byte === 0x74 && forgedText[index + 1] === 0x45 && forgedText[index + 2] === 0x58 && forgedText[index + 3] === 0x74
+    ));
+    const textLength = new DataView(forgedText.buffer, forgedText.byteOffset + textTypeOffset - 4, 4).getUint32(0);
+    forgedText[textTypeOffset + 4 + textLength + 3] ^= 0xff;
+    const textPreview = await inspectArtifact({ fileName: 'forged-text.png', bytes: forgedText });
+    expect(textPreview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_png' }));
+  });
+
   it.each([
     ['path traversal', '../escape.json', undefined, 'archive_path_traversal'],
     ['absolute path', '/etc/passwd', undefined, 'archive_absolute_path'],
@@ -223,5 +239,30 @@ describe('artifact format detection', () => {
       limited({ maxTextLineBytes: 8, maxDecompressedBytes: 1024 }),
     );
     expect(archiveLongLine.blockingErrors).toContainEqual(expect.objectContaining({ code: 'text_line_limit', path: 'card.json' }));
+  });
+
+  it('streams large non-manifest entries while applying a separate bounded manifest-memory cap', async () => {
+    const largeIrrelevantEntry = new Uint8Array(128 * 1024).fill(0x61);
+    const streamed = await inspectArtifact(
+      {
+        fileName: 'streamed.charx',
+        bytes: zip([
+          { name: 'card.json', data: encoder.encode('{"spec":"chara_card_v3","data":{"name":"Streamed"}}') },
+          { name: 'assets/large.bin', data: largeIrrelevantEntry },
+        ]),
+      },
+      limited({ maxDecompressedBytes: 256 * 1024, maxInMemoryEntryBytes: 1024 }),
+    );
+    expect(streamed.blockingErrors).toEqual([]);
+    expect(streamed.detected).toMatchObject({ container: 'charx', kind: 'character' });
+
+    const oversizedManifest = await inspectArtifact(
+      {
+        fileName: 'oversized-manifest.charx',
+        bytes: zip([{ name: 'card.json', data: encoder.encode(`{"spec":"chara_card_v3","padding":"${'x'.repeat(2048)}"}`) }]),
+      },
+      limited({ maxDecompressedBytes: 16 * 1024, maxInMemoryEntryBytes: 1024 }),
+    );
+    expect(oversizedManifest.blockingErrors).toContainEqual(expect.objectContaining({ code: 'archive_entry_memory_limit', path: 'card.json' }));
   });
 });

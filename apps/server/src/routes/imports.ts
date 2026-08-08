@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ImportService } from '../services/import-service.js';
-import { ImportCommitError, ImportTokenError } from '../services/import-service.js';
+import { ImportCommitError, ImportQuotaError, ImportTokenError } from '../services/import-service.js';
 
 export function registerImportRoutes(app: FastifyInstance, imports: ImportService): void {
   app.post('/api/imports/inspect', async (request, reply) => {
@@ -22,7 +22,8 @@ export function registerImportRoutes(app: FastifyInstance, imports: ImportServic
     try {
       const preview = await imports.inspect(artifact);
       return reply.code(preview.blockingErrors.length > 0 ? 422 : 200).send(preview);
-    } catch {
+    } catch (error) {
+      if (error instanceof ImportQuotaError) return reply.code(error.statusCode).send({ error: error.code });
       return reply.code(500).send({ error: 'import_inspection_failed' });
     }
   });

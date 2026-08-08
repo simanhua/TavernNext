@@ -9,6 +9,8 @@ export interface InspectionLimits {
   maxArchiveEntries: number;
   maxArchiveNesting: number;
   maxTextLineBytes: number;
+  /** Maximum bytes read into memory for a manifest; other archive data streams through task-owned disk. */
+  maxInMemoryEntryBytes: number;
 }
 
 export const DEFAULT_INSPECTION_LIMITS: Readonly<InspectionLimits> = Object.freeze({
@@ -17,6 +19,7 @@ export const DEFAULT_INSPECTION_LIMITS: Readonly<InspectionLimits> = Object.free
   maxArchiveEntries: 2_048,
   maxArchiveNesting: 4,
   maxTextLineBytes: 16 * MEBIBYTE,
+  maxInMemoryEntryBytes: 64 * MEBIBYTE,
 });
 
 export interface SourceArtifact {

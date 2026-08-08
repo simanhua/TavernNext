@@ -1,12 +1,18 @@
-import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase, type TavernDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
-import type { ImportHandler } from '../src/services/import-service.js';
+import {
+  createImportService,
+  INSPECTION_TOKEN_TTL_MS,
+  type ImportHandler,
+  type StagedImportPreview,
+} from '../src/services/import-service.js';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 
 const encoder = new TextEncoder();
@@ -17,6 +23,10 @@ const characterId = '018f0000-0000-7000-8000-000000000701';
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+const serverConfig = (directory: string) => ({
+  host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'test.sqlite'),
 });
 
 async function fixture() {
@@ -278,5 +288,236 @@ describe('two-stage import API', () => {
     expect(oversized.statusCode).toBe(413);
     expect(oversized.json()).toMatchObject({ error: 'upload_too_large' });
     expect(await readdir(join(directory, 'tmp', 'imports'))).toEqual([]);
+  });
+
+  it('keeps durable rows and final assets when post-commit stage cleanup needs a bounded retry', async () => {
+    const { directory, database, repositories } = await fixture();
+    let removalAttempts = 0;
+    const app = createApp({
+      database,
+      config: serverConfig(directory),
+      importHandlers: [characterHandler],
+      importCleanupIntervalMs: 5,
+      importRemoveStage(path) {
+        removalAttempts += 1;
+        if (removalAttempts === 1) throw new Error('injected post-commit cleanup failure');
+        rmSync(path, { recursive: true, force: true });
+      },
+    });
+    apps.push(app);
+    await app.ready();
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('cleanup.json', encoder.encode('{"spec":"chara_card_v3","data":{"name":"Cleanup"}}')),
+    });
+    const [stageName] = await readdir(join(directory, 'tmp', 'imports'));
+
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+
+    expect(committed.statusCode).toBe(201);
+    expect(repositories.characters.list()).toHaveLength(1);
+    const artifact = repositories.importArtifacts.list()[0];
+    await expect(readFile(join(directory, 'assets', 'imports', artifact.id, 'avatar', 'source.bin'))).resolves.toEqual(Buffer.from([1, 2, 3]));
+    await expect(stat(join(directory, 'tmp', 'imports', stageName))).resolves.toBeDefined();
+    await vi.waitFor(async () => {
+      await expect(access(join(directory, 'tmp', 'imports', stageName))).rejects.toThrow();
+    }, { timeout: 500, interval: 10 });
+    expect(repositories.characters.list()).toHaveLength(1);
+    expect(repositories.importArtifacts.list()).toHaveLength(1);
+    await expect(readFile(join(directory, 'assets', 'imports', artifact.id, 'avatar', 'source.bin'))).resolves.toEqual(Buffer.from([1, 2, 3]));
+  });
+
+  it('rejects staged-original tampering before invoking a codec or opening a transaction', async () => {
+    const { directory, database, repositories } = await fixture();
+    const transactionClock = countDurableTransactions(database);
+    let commitInvoked = false;
+    const handler: ImportHandler = {
+      ...characterHandler,
+      id: 'task-7-tamper-proof',
+      commit(context) {
+        commitInvoked = true;
+        return characterHandler.commit(context);
+      },
+    };
+    const app = createApp({ database, config: serverConfig(directory), importHandlers: [handler] });
+    apps.push(app);
+    await app.ready();
+    const source = encoder.encode('{"spec":"chara_card_v3","data":{"name":"Untampered"}}');
+    const inspected = await app.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('tamper.json', source) });
+    const [stageName] = await readdir(join(directory, 'tmp', 'imports'));
+    const tampered = source.slice();
+    tampered[tampered.length - 3] ^= 1;
+    await writeFile(join(directory, 'tmp', 'imports', stageName, 'original.bin'), tampered);
+    const beforeTransactions = transactionClock.count();
+
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+
+    expect(committed.statusCode).toBe(500);
+    expect(commitInvoked).toBe(false);
+    expect(transactionClock.count()).toBe(beforeTransactions);
+    expect(repositories.characters.list()).toEqual([]);
+    expect(repositories.importArtifacts.list()).toEqual([]);
+    expect(await readdir(join(directory, 'assets', 'imports'))).toEqual([]);
+    expect(await readdir(join(directory, 'tmp', 'imports'))).toEqual([]);
+  });
+
+  it('deep-clones and freezes nested preview state at inspection and codec boundaries', async () => {
+    const { directory, database, repositories } = await fixture();
+    const handlerPreview = { nested: { name: 'Original' } };
+    let handlerMutationBlocked = false;
+    const handler: ImportHandler = {
+      id: 'task-7-deep-preview-proof',
+      matches: () => true,
+      async inspect() {
+        return { normalizedPreview: handlerPreview, warnings: [], blockingErrors: [] };
+      },
+      commit(context) {
+        try {
+          (context.preview.normalizedPreview as { nested: { name: string } }).nested.name = 'Handler mutation';
+        } catch {
+          handlerMutationBlocked = true;
+        }
+        return {};
+      },
+    };
+    const imports = createImportService({ dataDir: directory, database, repositories, handlers: [handler] });
+    try {
+      const inspected = await imports.inspect({
+        fileName: 'preview.json', bytes: encoder.encode('{"spec":"chara_card_v3","data":{"name":"Original"}}'),
+      }) as StagedImportPreview;
+      handlerPreview.nested.name = 'Inspection alias mutation';
+      try {
+        (inspected.normalizedPreview as { nested: { name: string } }).nested.name = 'Caller mutation';
+      } catch {
+        // A deeply frozen return value intentionally rejects the attempted mutation.
+      }
+
+      imports.commit(inspected.inspectionToken);
+
+      expect(handlerMutationBlocked).toBe(true);
+      expect(repositories.importArtifacts.list()[0]?.compatibility?.rawPayload).toMatchObject({
+        normalizedPreview: { nested: { name: 'Original' } },
+      });
+    } finally {
+      imports.close();
+      database.close();
+    }
+  });
+
+  it('returns 429 when live-stage, staged-byte, or concurrent-inspection quotas are exhausted', async () => {
+    const source = encoder.encode('{"spec":"chara_card_v3","data":{"name":"Quota"}}');
+    const stageFixture = await fixture();
+    const stageApp = createApp({
+      database: stageFixture.database,
+      config: serverConfig(stageFixture.directory),
+      importHandlers: [characterHandler],
+      importLimits: { maxLiveStages: 1, maxStagedBytes: source.byteLength * 8, maxConcurrentInspections: 2 },
+    });
+    apps.push(stageApp);
+    await stageApp.ready();
+    const first = await stageApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('one.json', source) });
+    expect(first.statusCode).toBe(200);
+    const stageLimited = await stageApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('two.json', source) });
+    expect(stageLimited.statusCode).toBe(429);
+    expect(stageLimited.json()).toMatchObject({ error: 'import_live_stage_limit' });
+
+    const byteFixture = await fixture();
+    const byteApp = createApp({
+      database: byteFixture.database,
+      config: serverConfig(byteFixture.directory),
+      importHandlers: [characterHandler],
+      importLimits: { maxLiveStages: 8, maxStagedBytes: source.byteLength, maxConcurrentInspections: 2 },
+    });
+    apps.push(byteApp);
+    await byteApp.ready();
+    expect((await byteApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('one.json', source) })).statusCode).toBe(200);
+    const byteLimited = await byteApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('two.json', source) });
+    expect(byteLimited.statusCode).toBe(429);
+    expect(byteLimited.json()).toMatchObject({ error: 'import_staged_bytes_limit' });
+
+    let releaseInspection!: () => void;
+    const inspectionGate = new Promise<void>((resolve) => { releaseInspection = resolve; });
+    let entered = 0;
+    const concurrentHandler: ImportHandler = {
+      ...characterHandler,
+      id: 'task-7-concurrency-proof',
+      async inspect() {
+        entered += 1;
+        if (entered <= 2) await inspectionGate;
+        return { normalizedPreview: {}, warnings: [], blockingErrors: [] };
+      },
+    };
+    const concurrentFixture = await fixture();
+    const concurrentApp = createApp({
+      database: concurrentFixture.database,
+      config: serverConfig(concurrentFixture.directory),
+      importHandlers: [concurrentHandler],
+      importLimits: { maxLiveStages: 8, maxStagedBytes: source.byteLength * 8, maxConcurrentInspections: 2 },
+    });
+    apps.push(concurrentApp);
+    await concurrentApp.ready();
+    const pendingOne = concurrentApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('one.json', source) });
+    const pendingTwo = concurrentApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('two.json', source) });
+    await vi.waitFor(() => expect(entered).toBe(2));
+    const concurrentLimited = await concurrentApp.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('three.json', source) });
+    expect(concurrentLimited.statusCode).toBe(429);
+    expect(concurrentLimited.json()).toMatchObject({ error: 'import_inspection_concurrency_limit' });
+    releaseInspection();
+    await expect(Promise.all([pendingOne, pendingTwo])).resolves.toEqual([
+      expect.objectContaining({ statusCode: 200 }), expect.objectContaining({ statusCode: 200 }),
+    ]);
+  });
+
+  it('expires stages on the scheduled timer without requiring another request', async () => {
+    const { directory, database } = await fixture();
+    let now = Date.parse('2026-08-08T00:00:00.000Z');
+    const app = createApp({
+      database,
+      config: serverConfig(directory),
+      importHandlers: [characterHandler],
+      importClock: () => now,
+      importCleanupIntervalMs: 5,
+    });
+    apps.push(app);
+    await app.ready();
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('expires.json', encoder.encode('{"spec":"chara_card_v3","data":{"name":"Expires"}}')),
+    });
+    expect((await readdir(join(directory, 'tmp', 'imports'))).length).toBe(1);
+
+    now += INSPECTION_TOKEN_TTL_MS;
+    await vi.waitFor(async () => {
+      await expect(readdir(join(directory, 'tmp', 'imports'))).resolves.toEqual([]);
+    }, { timeout: 500, interval: 10 });
+    const expired = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+    expect(expired.statusCode).toBe(410);
+  });
+
+  it('recovers only stale UUID-owned stage directories on startup', async () => {
+    const { directory, database } = await fixture();
+    const stagingRoot = join(directory, 'tmp', 'imports');
+    await mkdir(stagingRoot, { recursive: true });
+    const staleUuid = '018f0000-0000-7000-8000-000000000711';
+    const freshUuid = '018f0000-0000-7000-8000-000000000712';
+    const unrelated = 'unrelated-owner-directory';
+    await Promise.all([staleUuid, freshUuid, unrelated].map((name) => mkdir(join(stagingRoot, name))));
+    const now = Date.parse('2026-08-08T12:00:00.000Z');
+    const staleTime = new Date(now - INSPECTION_TOKEN_TTL_MS - 1);
+    await utimes(join(stagingRoot, staleUuid), staleTime, staleTime);
+
+    const app = createApp({ database, config: serverConfig(directory), importClock: () => now });
+    apps.push(app);
+    await app.ready();
+
+    await expect(access(join(stagingRoot, staleUuid))).rejects.toThrow();
+    await expect(access(join(stagingRoot, freshUuid))).resolves.toBeUndefined();
+    await expect(access(join(stagingRoot, unrelated))).resolves.toBeUndefined();
   });
 });

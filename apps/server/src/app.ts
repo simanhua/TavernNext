@@ -14,7 +14,7 @@ import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
-import { createImportService, type ImportHandler } from './services/import-service.js';
+import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 
 export interface CreateAppOptions {
   config?: ServerConfig;
@@ -24,6 +24,9 @@ export interface CreateAppOptions {
   importHandlers?: readonly ImportHandler[];
   importClock?: () => number;
   importMoveAssets?: (source: string, destination: string) => void;
+  importRemoveStage?: (path: string) => void;
+  importCleanupIntervalMs?: number;
+  importLimits?: ImportStagingLimits;
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -48,6 +51,9 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     ...(options.importHandlers === undefined ? {} : { handlers: options.importHandlers }),
     ...(options.importClock === undefined ? {} : { clock: options.importClock }),
     ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
+    ...(options.importRemoveStage === undefined ? {} : { removeStage: options.importRemoveStage }),
+    ...(options.importCleanupIntervalMs === undefined ? {} : { cleanupIntervalMs: options.importCleanupIntervalMs }),
+    ...(options.importLimits === undefined ? {} : { limits: options.importLimits }),
   });
   const providerSecrets: Record<string, { providerId: string; baseUrl: string; value: string }> = {
     ...(options.providerSecrets ?? loadProviderSecrets()),
