@@ -16,7 +16,9 @@ const ChatPromptSchema = z.object({
   marker: z.boolean().optional(),
   injection_position: z.number().optional(),
   injection_depth: z.number().optional(),
+  injection_order: z.number().optional(),
   forbid_overrides: z.boolean().optional(),
+  injection_trigger: z.array(z.string()).optional(),
   generation_trigger: z.array(z.string()).optional(),
 }).passthrough();
 
