@@ -49,7 +49,15 @@ type MutableEntity = {
 };
 type DefaultedField =
   | 'enabled' | 'position' | 'order' | 'settings' | 'worldbookIds' | 'apiMode' | 'headerSecretRefs'
-  | 'examples' | 'systemPrompt' | 'postHistoryInstructions' | 'creatorNotes' | 'creator' | 'characterVersion';
+  | 'examples' | 'systemPrompt' | 'postHistoryInstructions' | 'creatorNotes' | 'creator' | 'characterVersion'
+  | 'description' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning' | 'extensions'
+  | 'secondaryKeys' | 'useRegex' | 'selective' | 'selectiveLogic' | 'constant' | 'vectorized'
+  | 'probability' | 'useProbability' | 'group' | 'groupWeight' | 'groupOverride' | 'priority'
+  | 'depth' | 'role' | 'ignoreBudget' | 'caseSensitive' | 'matchWholeWords' | 'useGroupScoring'
+  | 'excludeRecursion' | 'preventRecursion' | 'delayUntilRecursion' | 'sticky' | 'cooldown' | 'delay'
+  | 'characterFilter' | 'personaFilter' | 'matchPersonaDescription' | 'matchCharacterDescription'
+  | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
+  | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;

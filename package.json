@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "dev": "concurrently -k \"npm:dev -w @tavernnext/server\" \"npm:dev -w @tavernnext/web\"",
-    "build": "npm run build --workspaces --if-present",
+    "build": "tsc -b && npm run build -w @tavernnext/web",
     "test": "vitest run",
     "typecheck": "tsc -b",
     "test:e2e": "playwright test"

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import {
   exportCharacter,
+  exportCharacterBook,
   type CharacterAuxiliaryAsset,
   type CharacterExportFormat,
   type CharacterUnknownFields,
@@ -10,6 +11,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import type { Repositories } from '../db/repositories.js';
 import type { StoredCharacterSource } from '../services/character-import-handler.js';
+import { normalizedWorldbookFromRows } from '../services/worldbook-import-handler.js';
 
 const defaultCardPaths = [
   fileURLToPath(new URL('../../assets/default-card.png', import.meta.url)),
@@ -105,6 +107,12 @@ export function registerCharacterExportRoutes(
         topLevel: {}, data: {},
       }) as CharacterUnknownFields;
       try {
+        const linkedWorldbook = character.worldbookId === undefined
+          ? undefined
+          : repositories.worldbooks.get(character.worldbookId);
+        const characterBook = linkedWorldbook === undefined
+          ? character.characterBook
+          : exportCharacterBook(normalizedWorldbookFromRows(linkedWorldbook, repositories.worldbookEntries.list()));
         const artifact = await exportCharacter({
           character: {
             name: character.name,
@@ -121,7 +129,7 @@ export function registerCharacterExportRoutes(
             creator: character.creator,
             characterVersion: character.characterVersion,
             extensions: structuredClone(source?.extensions ?? {}),
-            ...(character.characterBook === undefined ? {} : { characterBook: character.characterBook }),
+            ...(characterBook === undefined ? {} : { characterBook }),
           },
           unknownFields,
           rawPayloads: source?.rawPayloads,

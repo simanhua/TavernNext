@@ -1,0 +1,23 @@
+{
+  "type": "risu",
+  "name": "Synthetic Risu Lorebook",
+  "risu_book_unknown": {
+    "preserve": true
+  },
+  "data": [
+    {
+      "id": "risu-entry-id",
+      "key": "risu, realm",
+      "secondkey": "secondary, trigger",
+      "comment": "Risu display",
+      "content": "Synthetic Risu lore content.",
+      "alwaysActive": true,
+      "selective": true,
+      "insertorder": 41,
+      "activationPercent": 67,
+      "risu_entry_unknown": {
+        "preserve": true
+      }
+    }
+  ]
+}

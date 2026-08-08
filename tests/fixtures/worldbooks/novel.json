@@ -1,0 +1,26 @@
+{
+  "lorebookVersion": 1,
+  "name": "Synthetic Novel Lorebook",
+  "novel_book_unknown": {
+    "preserve": true
+  },
+  "entries": [
+    {
+      "id": "novel-entry-id",
+      "displayName": "Novel display",
+      "keys": [
+        "novel",
+        "lore"
+      ],
+      "text": "Synthetic NovelAI lore content.",
+      "enabled": true,
+      "contextConfig": {
+        "budgetPriority": 27,
+        "searchRange": 444,
+        "reservedTokens": 12,
+        "trimDirection": "do-not-guess"
+      },
+      "novel_entry_unknown": "preserved"
+    }
+  ]
+}

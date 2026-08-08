@@ -15,9 +15,11 @@ import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerProviderRoutes } from './routes/providers.js';
+import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
+import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 
 export interface CreateAppOptions {
@@ -52,7 +54,11 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     dataDir: config.dataDir,
     database,
     repositories,
-    handlers: options.importHandlers ?? [createCharacterImportHandler(), createPresetImportHandler()],
+    handlers: options.importHandlers ?? [
+      createCharacterImportHandler(),
+      createPresetImportHandler(),
+      createWorldbookImportHandler(),
+    ],
     ...(options.importClock === undefined ? {} : { clock: options.importClock }),
     ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
     ...(options.importRemoveStage === undefined ? {} : { removeStage: options.importRemoveStage }),
@@ -97,6 +103,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerCharacterRoutes(app, repositories);
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
+  registerWorldbookExportRoutes(app, repositories);
   registerPersonaRoutes(app, repositories);
   registerProviderRoutes(app, repositories, {
     has(profile) {

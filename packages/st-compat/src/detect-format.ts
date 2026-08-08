@@ -645,13 +645,18 @@ function jsonCandidates(value: unknown): ArtifactKind[] {
   if (object === undefined) return Array.isArray(value) ? ['chat'] : [];
   const data = objectRecord(object.data);
   const candidates: ArtifactKind[] = [];
+  const isWorldbook = 'entries' in object
+    || 'loreItems' in object
+    || object.kind === 'memory'
+    || object.type === 'risu'
+    || 'lorebookVersion' in object;
   if (
     (typeof object.spec === 'string' && object.spec.toLowerCase().includes('chara_card'))
     || (data !== undefined && typeof data.name === 'string')
-    || (typeof object.name === 'string' && ['description', 'personality', 'first_mes', 'firstMessage'].some((key) => key in object))
+    || (!isWorldbook && typeof object.name === 'string' && ['description', 'personality', 'first_mes', 'firstMessage'].some((key) => key in object))
   ) candidates.push('character');
   if (isPresetDocument(object)) candidates.push('preset');
-  if ('entries' in object || 'loreItems' in object) candidates.push('worldbook');
+  if (isWorldbook) candidates.push('worldbook');
   return candidates;
 }
 
@@ -720,10 +725,14 @@ function inspectJsonLines(preview: ImportPreview, input: SourceArtifact, limits:
   preview.normalizedPreview = { lineCount: lines.length };
 }
 
-function strictBase64(value: string): Uint8Array {
+function strictBase64(
+  value: string,
+  code = 'corrupt_png_metadata',
+  message = 'PNG character metadata is not valid base64.',
+): Uint8Array {
   const trimmed = value.trim();
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(trimmed)) {
-    throw new InspectionFailure(diagnostic('corrupt_png_metadata', 'PNG character metadata is not valid base64.'));
+    throw new InspectionFailure(diagnostic(code, message));
   }
   return Buffer.from(trimmed, 'base64');
 }
@@ -761,27 +770,67 @@ function inspectPng(preview: ImportPreview, input: SourceArtifact): void {
       if (chunk.name !== 'tEXt') continue;
       const text = decodePngText(chunk);
       const keyword = text.keyword.toLowerCase();
-      if (keyword !== 'chara' && keyword !== 'ccv3') continue;
+      if (keyword !== 'chara' && keyword !== 'ccv3' && keyword !== 'naidata') continue;
       if (metadata.has(keyword)) {
+        if (keyword === 'naidata') {
+          throw new InspectionFailure(diagnostic(
+            'worldbook_png_metadata_duplicate',
+            'PNG contains more than one case-folded naidata Worldbook metadata chunk.',
+          ));
+        }
         throw new InspectionFailure(diagnostic(
           'corrupt_png_metadata',
           `PNG contains more than one ${keyword} Character metadata chunk.`,
         ));
       }
-      metadata.set(keyword, parseJson(strictBase64(text.text)));
+      let payload: unknown;
+      try {
+        payload = parseJson(strictBase64(
+          text.text,
+          keyword === 'naidata' ? 'worldbook_png_metadata_invalid' : 'corrupt_png_metadata',
+          keyword === 'naidata'
+            ? 'PNG naidata Worldbook metadata is not valid base64.'
+            : 'PNG character metadata is not valid base64.',
+        ));
+      } catch (error) {
+        if (keyword === 'naidata' && error instanceof InspectionFailure && error.issue.code === 'invalid_json') {
+          throw new InspectionFailure(diagnostic(
+            'worldbook_png_metadata_invalid',
+            'PNG naidata Worldbook metadata is not valid UTF-8 JSON.',
+          ));
+        }
+        throw error;
+      }
+      metadata.set(keyword, payload);
     }
-    const selected = metadata.get('ccv3') ?? metadata.get('chara');
+    const selectedCharacter = metadata.get('ccv3') ?? metadata.get('chara');
+    const selectedWorldbook = metadata.get('naidata');
+    if (selectedCharacter !== undefined && selectedWorldbook !== undefined) {
+      preview.detected = { container: 'png', kind: 'unknown', candidates: ['character', 'worldbook'] };
+      preview.normalizedPreview = { metadataKeys: [...metadata.keys()] };
+      preview.warnings.push(diagnostic('ambiguous_png', 'PNG contains both Character and Worldbook metadata.'));
+      return;
+    }
+    if (selectedWorldbook !== undefined) {
+      preview.detected = { container: 'png', kind: 'worldbook', version: '1', candidates: ['worldbook'] };
+      preview.normalizedPreview = { metadataKeys: [...metadata.keys()], selectedMetadata: 'naidata' };
+      return;
+    }
+    const selected = selectedCharacter;
     if (selected === undefined) {
       preview.detected = { container: 'png', kind: 'unknown', candidates: [] };
       preview.normalizedPreview = { metadataKeys: [] };
-      preview.warnings.push(diagnostic('png_metadata_missing', 'PNG is valid but contains no supported character metadata.'));
+      preview.warnings.push(diagnostic('png_metadata_missing', 'PNG is valid but contains no supported Character or Worldbook metadata.'));
       return;
     }
     preview.detected = { container: 'png', kind: 'character', version: characterVersion(selected), candidates: ['character'] };
     preview.normalizedPreview = { metadataKeys: [...metadata.keys()], selectedMetadata: metadata.has('ccv3') ? 'ccv3' : 'chara' };
     if (metadata.size > 1) preview.warnings.push(diagnostic('png_multiple_character_chunks', 'Both legacy and V3 metadata are preserved; V3 is selected.'));
   } catch (error) {
-    if (error instanceof InspectionFailure && error.issue.code === 'corrupt_png_metadata') throw error;
+    if (
+      error instanceof InspectionFailure
+      && ['corrupt_png_metadata', 'worldbook_png_metadata_duplicate', 'worldbook_png_metadata_invalid'].includes(error.issue.code)
+    ) throw error;
     throw new InspectionFailure(diagnostic('corrupt_png', 'PNG chunks or metadata are corrupt.'));
   }
 }
