@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/domain" },
     { "path": "./packages/provider-openai-compatible" },
+    { "path": "./packages/tokenizer-engine" },
     { "path": "./apps/server" },
     { "path": "./apps/web" }
   ]
