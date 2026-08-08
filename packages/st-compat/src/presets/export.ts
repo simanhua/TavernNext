@@ -1,5 +1,10 @@
 import type { ExportArtifact } from '../characters/export.js';
-import { record, type PresetKind } from './schemas.js';
+import {
+  isDirectNovelPreset,
+  record,
+  textSettingAliases,
+  type PresetKind,
+} from './schemas.js';
 import type { PresetImportPreview } from './normalize.js';
 
 export interface PresetExportSource {
@@ -45,15 +50,58 @@ function sourceDocument(source: PresetExportInput): { root: Record<string, unkno
   return { root: {}, wrapperKey: undefined };
 }
 
+function deepOverlay(raw: unknown, edited: unknown): unknown {
+  if (Array.isArray(edited)) {
+    const rawArray = Array.isArray(raw) ? raw : [];
+    return edited.map((value, index) => deepOverlay(rawArray[index], value));
+  }
+  const editedObject = record(edited);
+  if (editedObject !== undefined) {
+    const result = record(raw) === undefined ? {} : structuredClone(record(raw)!);
+    for (const [key, value] of Object.entries(editedObject)) {
+      result[key] = deepOverlay(result[key], value);
+    }
+    return result;
+  }
+  return structuredClone(edited);
+}
+
+function aliasesFor(setting: string): readonly string[] {
+  return setting in textSettingAliases
+    ? textSettingAliases[setting as keyof typeof textSettingAliases]
+    : [setting];
+}
+
+function overlayTextSettings(body: Record<string, unknown>, settings: Record<string, unknown>): void {
+  const directNovel = isDirectNovelPreset(body);
+  const target = directNovel ? record(body.parameters)! : body;
+  for (const [canonicalKey, value] of Object.entries(settings)) {
+    if (directNovel && canonicalKey === 'presetVersion') {
+      body.presetVersion = structuredClone(value);
+      continue;
+    }
+    if (directNovel && canonicalKey === 'parameters' && record(value) !== undefined) {
+      body.parameters = deepOverlay(body.parameters, value);
+      continue;
+    }
+    const aliases = aliasesFor(canonicalKey);
+    const rawKey = aliases.find((key) => Object.hasOwn(target, key)) ?? aliases[0]!;
+    target[rawKey] = deepOverlay(target[rawKey], value);
+  }
+  if (directNovel) body.parameters = target;
+}
+
 export async function exportPreset(source: PresetExportInput): Promise<ExportArtifact> {
   if (source.kind === null) throw new Error('Cannot export an invalid Preset preview');
   const document = sourceDocument(source);
-  const body = document.wrapperKey === undefined
+  let body = document.wrapperKey === undefined
     ? document.root
     : record(document.root[document.wrapperKey]) ?? {};
-  for (const [key, value] of Object.entries(source.settings)) body[key] = structuredClone(value);
+  if (source.kind === 'text') overlayTextSettings(body, source.settings);
+  else body = deepOverlay(body, source.settings) as Record<string, unknown>;
   body.name = source.name;
   if (document.wrapperKey !== undefined) document.root[document.wrapperKey] = body;
+  else document.root = body;
   const serialized = `${JSON.stringify(stableValue(document.root), null, 2)}\n`;
   return {
     bytes: new TextEncoder().encode(serialized),

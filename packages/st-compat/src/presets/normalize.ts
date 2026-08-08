@@ -1,50 +1,42 @@
 import type { ImportDiagnostic } from '../warnings.js';
 import { diagnostic } from '../warnings.js';
 import { detectPresetKinds } from './detect.js';
-import { parsePresetDocument, type PresetKind, record } from './schemas.js';
+import {
+  executablePresetFields,
+  parsePresetDocument,
+  type PresetKind,
+  record,
+  validatePresetFamily,
+} from './schemas.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
-
-const knownSettings: Record<PresetKind, ReadonlySet<string>> = {
-  chat: new Set([
-    'prompts', 'prompt_order', 'temperature', 'top_p', 'top_k', 'top_a', 'min_p', 'repetition_penalty',
-    'frequency_penalty', 'presence_penalty', 'seed', 'tokenizer', 'max_tokens', 'openai_max_tokens',
-    'openai_max_context', 'stream_openai', 'squash_system_messages', 'send_if_empty', 'assistant_prefill',
-    'continue_prefill', 'continue_postfix', 'continue_nudge_prompt', 'new_chat_prompt', 'new_example_chat_prompt',
-    'new_group_chat_prompt', 'group_nudge_prompt', 'impersonation_prompt', 'personality_format', 'scenario_format',
-    'wi_format', 'names_behavior', 'use_sysprompt', 'max_context_unlocked', 'n',
-  ]),
-  text: new Set([
-    'presetVersion', 'parameters', 'temperature', 'temp', 'top_p', 'top_k', 'top_a', 'min_p', 'typical_p',
-    'tfs', 'rep_pen', 'rep_pen_range', 'rep_pen_slope', 'rep_pen_size', 'rep_pen_decay', 'repetition_penalty',
-    'frequency_penalty', 'presence_penalty', 'freq_pen', 'presence_pen', 'encoder_rep_pen', 'sampler_order',
-    'sampler_priority', 'samplers', 'samplers_priorities', 'tokenizer', 'max_context', 'max_length', 'max_new_tokens',
-    'add_bos_token', 'ban_eos_token', 'banned_tokens', 'do_sample', 'dry_allowed_length', 'dry_base',
-    'dry_multiplier', 'dry_penalty_last_n', 'dry_sequence_breakers', 'dynatemp', 'dynatemp_exponent',
-    'epsilon_cutoff', 'eta_cutoff', 'guidance_scale', 'ignore_eos_token', 'json_schema', 'json_schema_allow_empty',
-    'min_keep', 'min_length', 'mirostat_eta', 'mirostat_mode', 'mirostat_tau', 'negative_prompt',
-    'no_repeat_ngram_size', 'nsigma', 'num_beams', 'penalty_alpha', 'skew', 'skip_special_tokens',
-    'smoothing_curve', 'smoothing_factor', 'spaces_between_special_tokens', 'speculative_ngram',
-    'temperature_last', 'typical_p', 'xtc_probability', 'xtc_threshold', 'grammar_string', 'early_stopping',
-  ]),
-  context: new Set([
-    'story_string', 'story_string_position', 'story_string_depth', 'story_string_role', 'example_separator',
-    'chat_start', 'use_stop_strings', 'names_as_stop_strings', 'always_force_name2', 'single_line', 'trim_sentences',
-  ]),
-  instruct: new Set([
-    'activation_regex', 'first_input_sequence', 'first_output_sequence', 'input_sequence', 'input_suffix',
-    'last_input_sequence', 'last_output_sequence', 'last_system_sequence', 'macro', 'names_behavior',
-    'output_sequence', 'output_suffix', 'sequences_as_stop_strings', 'skip_examples', 'stop_sequence',
-    'story_string_prefix', 'story_string_suffix', 'system_same_as_user', 'system_sequence', 'system_suffix',
-    'user_alignment_message', 'wrap',
-  ]),
-  system: new Set(['content', 'post_history']),
-  reasoning: new Set(['prefix', 'separator', 'suffix', 'extract_regex', 'reasoning', 'reasoning_config']),
-};
+const noUnknown = Symbol('no-preset-unknown-field');
 
 function isProviderSetting(key: string): boolean {
-  return /^(?:ai21|chutes|claude|custom|electronhub|google|minimax|mistralai|openrouter|vertexai|vendor|provider)_/i.test(key)
-    || key === 'reverse_proxy' || key === 'proxy_password' || key === 'chat_completion_source';
+  return /^(?:ai21|chutes|claude|custom|electronhub|google|minimax|mistralai|openai|openrouter|vertexai)_/i.test(key)
+    || /(?:^|_)(?:provider|vendor)(?:_|$)/i.test(key)
+    || [
+      'reverse_proxy', 'proxy_password', 'chat_completion_source', 'stream_openai',
+      'use_cache', 'return_full_text', 'phrase_rep_pen', 'preamble', 'extensions',
+    ].includes(key);
+}
+
+function containsProviderSetting(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsProviderSetting);
+  const object = record(value);
+  if (object === undefined) return false;
+  return Object.entries(object).some(([key, nested]) => isProviderSetting(key) || containsProviderSetting(nested));
+}
+
+function withoutProviderSettings(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutProviderSettings);
+  const object = record(value);
+  if (object === undefined) return structuredClone(value);
+  return Object.fromEntries(
+    Object.entries(object)
+      .filter(([key]) => !isProviderSetting(key))
+      .map(([key, nested]) => [key, withoutProviderSettings(nested)]),
+  );
 }
 
 function fallbackName(fileName: string): string {
@@ -58,13 +50,62 @@ function stableWarnings(candidates: readonly PresetKind[], unknownFields: Record
   if (candidates.length > 1) {
     warnings.push(diagnostic('ambiguous_preset', `The document matches multiple preset families: ${candidates.join(', ')}.`));
   }
-  if (Object.keys(unknownFields).some(isProviderSetting)) {
+  const parameterUnknowns = record(unknownFields.parameters);
+  if (containsProviderSetting(unknownFields) || (parameterUnknowns !== undefined && Object.keys(parameterUnknowns).length > 0)) {
     warnings.push(diagnostic(
       'provider_field_preserved_not_executable',
       'Provider-specific settings are preserved for export but will not be executed by TavernNext.',
     ));
   }
   return warnings;
+}
+
+function placeholderFor(value: unknown): unknown {
+  if (Array.isArray(value)) return [];
+  if (record(value) !== undefined) return {};
+  return null;
+}
+
+function unknownDifference(raw: unknown, known: unknown): unknown | typeof noUnknown {
+  if (Array.isArray(raw) && Array.isArray(known)) {
+    let found = false;
+    const values = raw.map((value, index) => {
+      if (index >= known.length) {
+        found = true;
+        return structuredClone(value);
+      }
+      const nested = unknownDifference(value, known[index]);
+      if (nested === noUnknown) return placeholderFor(value);
+      found = true;
+      return nested;
+    });
+    return found ? values : noUnknown;
+  }
+  const rawObject = record(raw);
+  const knownObject = record(known);
+  if (rawObject !== undefined && knownObject !== undefined) {
+    const difference: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(rawObject)) {
+      if (!Object.hasOwn(knownObject, key)) {
+        difference[key] = structuredClone(value);
+        continue;
+      }
+      const nested = unknownDifference(value, knownObject[key]);
+      if (nested !== noUnknown) difference[key] = nested;
+    }
+    return Object.keys(difference).length === 0 ? noUnknown : difference;
+  }
+  return noUnknown;
+}
+
+function compatibilityFields(
+  raw: Record<string, unknown>,
+  knownRawFields: Record<string, unknown>,
+): Record<string, unknown> {
+  const knownWithName = structuredClone(knownRawFields);
+  if (typeof raw.name === 'string') knownWithName.name = raw.name;
+  const difference = unknownDifference(raw, knownWithName);
+  return difference === noUnknown ? {} : difference as Record<string, unknown>;
 }
 
 export interface PresetImportPreview {
@@ -112,16 +153,16 @@ export function decodeInspectedPreset(bytes: Uint8Array, fileName: string): Omit
   const candidates = detectPresetKinds(parsed.document);
   if (candidates.length === 0) invalid('preset_unrecognized', 'Document does not contain a recognized preset shape.');
   const kind = candidates[0]!;
-  const settings = Object.fromEntries(
-    Object.entries(parsed.document)
-      .filter(([key]) => knownSettings[kind].has(key))
-      .map(([key, value]) => [key, structuredClone(value)]),
-  );
-  const unknownFields: Record<string, unknown> = Object.fromEntries(
-    Object.entries(parsed.document)
-      .filter(([key]) => key !== 'name' && !knownSettings[kind].has(key))
-      .map(([key, value]) => [key, structuredClone(value)]),
-  );
+  let validated: Record<string, unknown>;
+  try {
+    validated = validatePresetFamily(kind, parsed.document);
+  } catch {
+    invalid('preset_fields_invalid', 'Preset contains malformed fields for its detected family.');
+  }
+  const executable = executablePresetFields(kind, validated);
+  const settings = withoutProviderSettings(executable.settings) as Record<string, unknown>;
+  const knownRawFields = withoutProviderSettings(executable.knownRawFields) as Record<string, unknown>;
+  const unknownFields = compatibilityFields(parsed.document, knownRawFields);
   if (parsed.wrapperKey !== undefined) {
     for (const [key, value] of Object.entries(parsed.root)) {
       if (key === parsed.wrapperKey || key === 'name') continue;

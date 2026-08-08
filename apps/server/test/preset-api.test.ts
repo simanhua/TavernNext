@@ -49,15 +49,19 @@ async function fixture(path: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(join(fixtureRoot, path)));
 }
 
-async function inspectAndCommit(app: ReturnType<typeof createApp>, path: string, fileName = path) {
+async function inspectAndCommitBytes(app: ReturnType<typeof createApp>, source: Uint8Array, fileName: string) {
   const inspected = await app.inject({
-    method: 'POST', url: '/api/imports/inspect', ...multipart(fileName, await fixture(path)),
+    method: 'POST', url: '/api/imports/inspect', ...multipart(fileName, source),
   });
   expect(inspected.statusCode).toBe(200);
   const committed = await app.inject({
     method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
   });
   return { inspected, committed };
+}
+
+async function inspectAndCommit(app: ReturnType<typeof createApp>, path: string, fileName = path) {
+  return inspectAndCommitBytes(app, await fixture(path), fileName);
 }
 
 describe('typed SillyTavern Preset import and export API', () => {
@@ -82,6 +86,8 @@ describe('typed SillyTavern Preset import and export API', () => {
       expect.objectContaining({ entityId: first.committed.json().entityId, sourceName: 'first-rename.bin' }),
       expect.objectContaining({ entityId: second.committed.json().entityId, sourceName: 'second-rename.bin' }),
     ]);
+    expect(Buffer.from(repositories.importArtifacts.list()[0]!.rawArtifact, 'base64'))
+      .toEqual(Buffer.from(await fixture('chat/synthetic-chat.settings')));
   });
 
   it('rolls back both the typed Preset and ImportArtifact when the outer asset move fails', async () => {
@@ -137,5 +143,72 @@ describe('typed SillyTavern Preset import and export API', () => {
 
     expect((await app.inject({ method: 'GET', url: `/api/presets/${id}/export?format=png` })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/api/presets/018f0000-0000-7000-8000-000000000999/export' })).statusCode).toBe(404);
+  });
+
+  it.each([
+    ['system/synthetic-system.json', 'system', { content: 'Write only synthetic notes.', post_history: 'After the chat, add a concise archive note.' }],
+    ['instruct/synthetic-instruct.json', 'instruct', { input_sequence: '<|user|>', output_sequence: '<|assistant|>' }],
+    ['reasoning/synthetic-reasoning.json', 'reasoning', { prefix: '<think>', separator: '</think>\n' }],
+  ] as const)('imports and exports a typed %s preset', async (path, kind, settings) => {
+    const { app, repositories } = await context();
+    const { inspected, committed } = await inspectAndCommit(app, path, `renamed-${kind}.settings`);
+
+    expect(inspected.json()).toMatchObject({
+      detected: { kind: 'preset' },
+      normalizedPreview: { kind, settings },
+      blockingErrors: [],
+    });
+    expect(committed.statusCode).toBe(201);
+    const id = committed.json().entityId as string;
+    expect(repositories.presets.get(id)).toMatchObject({ kind, settings });
+
+    const exported = await app.inject({ method: 'GET', url: `/api/presets/${id}/export` });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject(settings);
+  });
+
+  it('imports direct NovelAI parameters as typed settings and exports edits back to the nested source shape', async () => {
+    const { app, repositories } = await context();
+    const source = encoder.encode(JSON.stringify({
+      presetVersion: 3,
+      parameters: {
+        temperature: 0.43,
+        top_p: 0.8,
+        tail_free_sampling: 0.7,
+        repetition_penalty: 1.15,
+        provider_metadata: { retain: true },
+      },
+    }));
+    const { inspected, committed } = await inspectAndCommitBytes(app, source, 'direct-novel.preset');
+
+    expect(inspected.json()).toMatchObject({
+      detected: { kind: 'preset' },
+      normalizedPreview: {
+        kind: 'text',
+        settings: {
+          temperature: 0.43,
+          top_p: 0.8,
+          tail_free_sampling: 0.7,
+          repetition_penalty: 1.15,
+        },
+        unknownFields: { parameters: { provider_metadata: { retain: true } } },
+      },
+      warnings: expect.arrayContaining([expect.objectContaining({ code: 'provider_field_preserved_not_executable' })]),
+    });
+    expect(committed.statusCode).toBe(201);
+    const id = committed.json().entityId as string;
+    expect(repositories.presets.get(id)).toMatchObject({ kind: 'text', settings: { temperature: 0.43 } });
+    expect(repositories.presets.update(id, 0, {
+      settings: { ...repositories.presets.get(id)!.settings, temperature: 0.91 },
+    })).toMatchObject({ ok: true });
+
+    const exported = await app.inject({ method: 'GET', url: `/api/presets/${id}/export` });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject({
+      presetVersion: 3,
+      parameters: { temperature: 0.91, provider_metadata: { retain: true } },
+    });
+    expect(exported.json()).not.toHaveProperty('temperature');
+    expect(Buffer.from(repositories.importArtifacts.list()[0]!.rawArtifact, 'base64')).toEqual(Buffer.from(source));
   });
 });

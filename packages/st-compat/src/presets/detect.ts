@@ -22,7 +22,7 @@ export function detectPresetKinds(value: Record<string, unknown>): PresetKind[] 
   if (!hasChatShape && hasSamplerShape(value)) candidates.add('text');
   if (isString(value.story_string)) candidates.add('context');
   if (isString(value.input_sequence) && isString(value.output_sequence) && isString(value.system_sequence)) candidates.add('instruct');
-  if (isString(value.content) && typeof value.post_history === 'boolean') candidates.add('system');
+  if (isString(value.content) && isString(value.post_history)) candidates.add('system');
   if (isString(value.prefix) && isString(value.separator) && isString(value.suffix)) candidates.add('reasoning');
   return candidateOrder.filter((candidate) => candidates.has(candidate));
 }
@@ -38,6 +38,6 @@ export function isPresetDocument(value: unknown): boolean {
 function hasOwnFamilyField(value: Record<string, unknown>): boolean {
   return [
     'prompts', 'prompt_order', 'story_string', 'input_sequence', 'output_sequence', 'system_sequence',
-    'sampler_order', 'samplers', 'prefix', 'separator', 'suffix', 'content', 'post_history',
+    'sampler_order', 'samplers', 'presetVersion', 'parameters', 'prefix', 'separator', 'suffix', 'content', 'post_history',
   ].some((key) => key in value);
 }
