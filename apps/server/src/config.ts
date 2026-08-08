@@ -7,6 +7,14 @@ export interface ServerConfig {
   databasePath: string;
 }
 
+export interface BoundProviderSecret {
+  providerId: string;
+  baseUrl: string;
+  value: string;
+}
+
+export type ProviderSecretMap = Readonly<Record<string, BoundProviderSecret>>;
+
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): ServerConfig {
   const dataDir = resolve(environment.TAVERNNEXT_DATA_DIR ?? join(process.cwd(), '.tavernnext'));
   return {
@@ -15,4 +23,26 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
     dataDir,
     databasePath: resolve(environment.TAVERNNEXT_DATABASE_PATH ?? join(dataDir, 'tavernnext.sqlite')),
   };
+}
+
+export function loadProviderSecrets(environment: NodeJS.ProcessEnv = process.env): ProviderSecretMap {
+  const encoded = environment.TAVERNNEXT_PROVIDER_SECRETS_JSON;
+  if (encoded === undefined || encoded === '') return {};
+  try {
+    const parsed: unknown = JSON.parse(encoded);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('invalid map');
+    return Object.fromEntries(Object.entries(parsed).map(([reference, candidate]) => {
+      if (reference === '' || typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+        throw new Error('invalid entry');
+      }
+      const value = candidate as Record<string, unknown>;
+      if (typeof value.providerId !== 'string' || typeof value.baseUrl !== 'string' || typeof value.value !== 'string') {
+        throw new Error('invalid entry');
+      }
+      new URL(value.baseUrl);
+      return [reference, { providerId: value.providerId, baseUrl: value.baseUrl, value: value.value }];
+    }));
+  } catch {
+    throw new Error('Invalid TAVERNNEXT_PROVIDER_SECRETS_JSON');
+  }
 }

@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@tavernnext/domain": "*",
+    "@tavernnext/provider-openai-compatible": "*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.3",
     "sql.js": "^1.14.1"

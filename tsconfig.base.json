@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
     "paths": {
-      "@tavernnext/domain": ["./packages/domain/src/index.ts"]
+      "@tavernnext/domain": ["./packages/domain/src/index.ts"],
+      "@tavernnext/provider-openai-compatible": ["./packages/provider-openai-compatible/src/index.ts"]
     },
     "target": "ES2022",
     "module": "NodeNext",

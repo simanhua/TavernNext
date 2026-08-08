@@ -6,7 +6,8 @@
     "tsBuildInfoFile": "./.tsbuild/tsconfig.tsbuildinfo"
   },
   "references": [
-    { "path": "../../packages/domain" }
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/provider-openai-compatible" }
   ],
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

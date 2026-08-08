@@ -1,0 +1,446 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ChatRequest, OpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
+import { ProviderError } from '@tavernnext/provider-openai-compatible';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createApp } from '../src/app.js';
+import { createDatabase } from '../src/db/client.js';
+import { migrateDatabase } from '../src/db/migrate.js';
+import { createRepositories, type Repositories } from '../src/db/repositories.js';
+import { createGenerationService } from '../src/services/generation-service.js';
+
+const ids = {
+  character: '018f0000-0000-7000-8000-000000000101',
+  persona: '018f0000-0000-7000-8000-000000000102',
+  provider: '018f0000-0000-7000-8000-000000000103',
+  conversation: '018f0000-0000-7000-8000-000000000104',
+};
+
+const directories: string[] = [];
+const apps: Array<ReturnType<typeof createApp>> = [];
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.close()));
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  vi.unstubAllGlobals();
+});
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
+function mockClient(streamChat: OpenAICompatibleClient['streamChat']): OpenAICompatibleClient {
+  return {
+    listModels: async () => [],
+    streamChat,
+    streamText: async function* () { yield { type: 'completed', finishReason: 'stop' }; },
+  };
+}
+
+type TestAppOptions = NonNullable<Parameters<typeof createApp>[0]> & {
+  providerSecrets?: Readonly<Record<string, { providerId: string; baseUrl: string; value: string }>>;
+};
+
+async function createTestContext(client?: OpenAICompatibleClient, appOptions: TestAppOptions = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'tavernnext-api-'));
+  directories.push(directory);
+  const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+  migrateDatabase(database);
+  const repositories = createRepositories(database);
+  const app = createApp({
+    ...appOptions,
+    database,
+    ...(client === undefined ? {} : { providerClientFactory: () => client }),
+  });
+  apps.push(app);
+  await app.ready();
+  return { app, database, repositories };
+}
+
+function seed(repositories: Repositories) {
+  const character = repositories.characters.create({
+    id: ids.character,
+    name: 'Aster',
+    description: 'A careful archivist.',
+    personality: '',
+    scenario: '',
+    firstMessage: '',
+    alternateGreetings: [],
+    tags: [],
+  });
+  const persona = repositories.personas.create({
+    id: ids.persona,
+    name: 'Traveler',
+    description: 'A curious visitor.',
+    isDefault: true,
+  });
+  const provider = repositories.providerProfiles.create({
+    id: ids.provider,
+    name: 'Local mock',
+    baseUrl: 'http://127.0.0.1:8080/v1',
+    model: 'mock-model',
+    secretRef: 'mock-secret',
+  });
+  const conversation = repositories.conversations.create({
+    id: ids.conversation,
+    characterId: character.id,
+    personaId: persona.id,
+    title: 'Archive visit',
+  });
+  return { character, persona, provider, conversation };
+}
+
+interface SseEvent {
+  event: string;
+  data: Record<string, unknown>;
+}
+
+function parseSse(payload: string): SseEvent[] {
+  return payload.trim().split(/\r?\n\r?\n/).filter(Boolean).map((frame) => {
+    const lines = frame.split(/\r?\n/);
+    const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
+    const data = lines.find((line) => line.startsWith('data: '))?.slice(6);
+    if (event === undefined || data === undefined) throw new Error(`Malformed SSE frame: ${frame}`);
+    return { event, data: JSON.parse(data) as Record<string, unknown> };
+  });
+}
+
+async function generate(app: ReturnType<typeof createApp>, revision = 0) {
+  return app.inject({
+    method: 'POST',
+    url: `/api/conversations/${ids.conversation}/generations`,
+    payload: { conversationRevision: revision, mode: 'normal', userText: 'Hello' },
+  });
+}
+
+describe('resource CRUD API', () => {
+  it('creates, lists, reads, revises, and deletes characters, personas, providers, and conversations', async () => {
+    const client = mockClient(async function* () { yield { type: 'completed', finishReason: 'stop' }; });
+    const { app } = await createTestContext(client);
+    const resources = [
+      {
+        path: 'characters',
+        create: { id: ids.character, name: 'Aster', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [] },
+      },
+      {
+        path: 'personas',
+        create: { id: ids.persona, name: 'Traveler', description: '', isDefault: true },
+      },
+      {
+        path: 'providers',
+        create: { id: ids.provider, name: 'Local', baseUrl: 'http://127.0.0.1:8080', model: 'mock', secretRef: 'server-only' },
+      },
+    ];
+
+    for (const resource of resources) {
+      const created = await app.inject({ method: 'POST', url: `/api/${resource.path}`, payload: resource.create });
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toMatchObject({ id: resource.create.id, revision: 0 });
+      expect((await app.inject({ method: 'GET', url: `/api/${resource.path}` })).json()).toHaveLength(1);
+      expect((await app.inject({ method: 'GET', url: `/api/${resource.path}/${resource.create.id}` })).json()).toMatchObject({ id: resource.create.id });
+
+      const updated = await app.inject({
+        method: 'PATCH',
+        url: `/api/${resource.path}/${resource.create.id}`,
+        payload: { revision: 0, patch: { name: `${resource.create.name} revised` } },
+      });
+      expect(updated.json()).toMatchObject({ revision: 1, name: `${resource.create.name} revised` });
+    }
+
+    const conversation = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      payload: { id: ids.conversation, characterId: ids.character, personaId: ids.persona, title: 'Chat' },
+    });
+    expect(conversation.statusCode).toBe(201);
+    expect(conversation.json()).toMatchObject({ id: ids.conversation, revision: 0, worldbookIds: [] });
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/conversations/${ids.conversation}?revision=0` })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/providers/${ids.provider}?revision=1` })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/personas/${ids.persona}?revision=1` })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/characters/${ids.character}?revision=1` })).statusCode).toBe(204);
+  });
+});
+
+describe('generation API', () => {
+  it('streams a complete role-chat turn and persists its transactional snapshot and messages', async () => {
+    const requests: ChatRequest[] = [];
+    const client = mockClient(async function* (request) {
+      requests.push(request);
+      yield { type: 'delta', text: 'Hello ' };
+      yield { type: 'delta', text: 'there' };
+      yield { type: 'usage', inputTokens: 12, outputTokens: 2 };
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    const entities = seed(repositories);
+
+    const response = await generate(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    const events = parseSse(response.payload);
+    expect(events.map(({ event }) => event)).toEqual(['started', 'delta', 'delta', 'usage', 'completed']);
+    expect(events.filter(({ event }) => event === 'delta').map(({ data }) => data.text).join('')).toBe('Hello there');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ model: 'mock-model' });
+    expect(requests[0]?.messages[0]?.role).toBe('system');
+    expect(requests[0]?.messages[0]?.content).toContain(entities.character.description);
+    expect(requests[0]?.messages[0]?.content).toContain(entities.persona.description);
+    expect(requests[0]?.messages.at(-1)).toEqual({ role: 'user', content: 'Hello' });
+
+    const messages = repositories.messages.list().filter(({ conversationId }) => conversationId === ids.conversation);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ role: 'user', content: 'Hello', activeVariantId: null });
+    expect(messages[1]).toMatchObject({ role: 'assistant', content: '', activeVariantId: expect.any(String) });
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ messageId: messages[1]?.id, content: 'Hello there', status: 'completed', finishReason: 'stop' }),
+    ]);
+    expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 1 });
+    expect(repositories.generationSnapshots.list()).toEqual([
+      expect.objectContaining({
+        id: events[0]?.data.generationId,
+        conversationId: ids.conversation,
+        conversationRevision: 0,
+        payload: {
+          conversation: { id: ids.conversation, revision: 0 },
+          character: { id: ids.character, revision: 0 },
+          persona: { id: ids.persona, revision: 0 },
+          provider: { id: ids.provider, revision: 0 },
+        },
+      }),
+    ]);
+  });
+
+  it('rejects a second active generation and stale revisions before any write', async () => {
+    const entered = deferred();
+    const release = deferred();
+    const client = mockClient(async function* () {
+      entered.resolve();
+      await release.promise;
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const first = generate(app);
+    await entered.promise;
+    const simultaneous = await generate(app);
+    expect(simultaneous.statusCode).toBe(409);
+    expect(simultaneous.json()).toEqual({ error: 'generation_active' });
+    expect(repositories.messages.list()).toHaveLength(1);
+
+    release.resolve();
+    await first;
+    const beforeStale = {
+      messages: repositories.messages.list().length,
+      snapshots: repositories.generationSnapshots.list().length,
+    };
+    const stale = await generate(app, 0);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toEqual({ error: 'revision_conflict' });
+    expect(repositories.messages.list()).toHaveLength(beforeStale.messages);
+    expect(repositories.generationSnapshots.list()).toHaveLength(beforeStale.snapshots);
+  });
+
+  it('rejects generation modes that the temporary compiler does not implement', async () => {
+    const client = mockClient(async function* () { yield { type: 'completed', finishReason: 'stop' }; });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${ids.conversation}/generations`,
+      payload: { conversationRevision: 0, mode: 'regenerate' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'unsupported_mode' });
+    expect(repositories.messages.list()).toEqual([]);
+    expect(repositories.generationSnapshots.list()).toEqual([]);
+  });
+
+  it('releases the conversation lock when the SSE consumer disconnects after started', async () => {
+    const client = mockClient(async function* () { yield { type: 'completed', finishReason: 'stop' }; });
+    const { database, repositories } = await createTestContext(client);
+    seed(repositories);
+    const service = createGenerationService({ database, repositories, providerClientFactory: () => client });
+    const first = service.start({
+      conversationId: ids.conversation, conversationRevision: 0, mode: 'normal', userText: 'Hello',
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.reason);
+    const iterator = first.events[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'started' } });
+    await iterator.return?.();
+
+    const second = service.start({ conversationId: ids.conversation, conversationRevision: 1, mode: 'normal' });
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      for await (const event of second.events) void event;
+    }
+  });
+
+  it('aborts upstream and partial persistence when the SSE consumer disconnects mid-stream', async () => {
+    let providerSignal: AbortSignal | undefined;
+    const client = mockClient(async function* (_request, signal) {
+      providerSignal = signal;
+      yield { type: 'delta', text: 'Disconnected partial' };
+      await new Promise(() => undefined);
+    });
+    const { database, repositories } = await createTestContext(client);
+    seed(repositories);
+    const service = createGenerationService({ database, repositories, providerClientFactory: () => client });
+    const result = service.start({
+      conversationId: ids.conversation, conversationRevision: 0, mode: 'normal', userText: 'Hello',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    const iterator = result.events[Symbol.asyncIterator]();
+    await iterator.next();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'delta', text: 'Disconnected partial' } });
+    await iterator.return?.();
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: 'Disconnected partial', status: 'aborted' }),
+    ]);
+  });
+
+  it('flushes pending text after 250ms while the upstream stream remains open', async () => {
+    const waiting = deferred();
+    const release = deferred();
+    const client = mockClient(async function* () {
+      yield { type: 'delta', text: 'A' };
+      yield { type: 'delta', text: ' timed flush' };
+      waiting.resolve();
+      await release.promise;
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = generate(app);
+    await waiting.promise;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: 'A timed flush', status: 'streaming' }),
+    ]);
+    release.resolve();
+    await response;
+  });
+
+  it('flushes after 256 newly accumulated characters without waiting for the timer', async () => {
+    const waiting = deferred();
+    const release = deferred();
+    const client = mockClient(async function* () {
+      yield { type: 'delta', text: 'A' };
+      yield { type: 'delta', text: 'b'.repeat(256) };
+      waiting.resolve();
+      await release.promise;
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = generate(app);
+    await waiting.promise;
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: `A${'b'.repeat(256)}`, status: 'streaming' }),
+    ]);
+    release.resolve();
+    await response;
+  });
+
+  it('retains partial content and marks it aborted when cancellation is requested', async () => {
+    const waiting = deferred();
+    const client = mockClient(async function* (_request, signal) {
+      yield { type: 'delta', text: 'Partial answer' };
+      waiting.resolve();
+      await new Promise<void>((resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new ProviderError('aborted')), { once: true });
+      });
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = generate(app);
+    await waiting.promise;
+    const generationId = repositories.generationSnapshots.list()[0]?.id;
+    const cancellation = await app.inject({ method: 'DELETE', url: `/api/generations/${generationId}` });
+    expect(cancellation.statusCode).toBe(202);
+
+    const events = parseSse((await response).payload);
+    expect(events.map(({ event }) => event)).toEqual(['started', 'delta', 'aborted']);
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: 'Partial answer', status: 'aborted' }),
+    ]);
+  });
+
+  it('emits failed without creating an empty assistant message when upstream fails before a delta', async () => {
+    const client = mockClient(async function* () {
+      throw new ProviderError('connection');
+      yield undefined as never;
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = await generate(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(parseSse(response.payload).map(({ event }) => event)).toEqual(['started', 'failed']);
+    expect(repositories.messages.list()).toEqual([
+      expect.objectContaining({ role: 'user', content: 'Hello' }),
+    ]);
+    expect(repositories.messageVariants.list()).toEqual([]);
+  });
+
+  it('does not resolve a client-selected secret reference from the process environment', async () => {
+    let sentAuthorization = false;
+    vi.stubGlobal('fetch', async (_input: string | URL | Request, init?: RequestInit) => {
+      sentAuthorization = new Headers(init?.headers).has('authorization');
+      return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const { app, repositories } = await createTestContext();
+    seed(repositories);
+    expect(repositories.providerProfiles.update(ids.provider, 0, { secretRef: 'PATH' })).toMatchObject({ ok: true });
+
+    const response = await generate(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(sentAuthorization).toBe(false);
+  });
+
+  it('uses only server-owned credentials bound to the provider profile and Base URL', async () => {
+    const authorization: boolean[] = [];
+    vi.stubGlobal('fetch', async (_input: string | URL | Request, init?: RequestInit) => {
+      authorization.push(new Headers(init?.headers).has('authorization'));
+      return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const { app, repositories } = await createTestContext(undefined, {
+      providerSecrets: {
+        'mock-secret': {
+          providerId: ids.provider,
+          baseUrl: 'http://127.0.0.1:8080/v1',
+          value: 'server-owned-api-key',
+        },
+      },
+    });
+    seed(repositories);
+
+    expect((await generate(app)).statusCode).toBe(200);
+    expect(repositories.providerProfiles.update(ids.provider, 0, { baseUrl: 'http://attacker.invalid/v1' })).toMatchObject({ ok: true });
+    expect((await generate(app, 1)).statusCode).toBe(200);
+
+    expect(authorization).toEqual([true, false]);
+  });
+});
