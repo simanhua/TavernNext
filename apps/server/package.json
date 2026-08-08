@@ -1,0 +1,15 @@
+{
+  "name": "@tavernnext/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "fastify": "^5.11.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.11"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "tavernnext",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev -w @tavernnext/server\" \"npm:dev -w @tavernnext/web\"",
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^3.2.7",
+    "concurrently": "^10.0.4",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
+  }
+}
