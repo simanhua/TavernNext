@@ -112,7 +112,10 @@ export function registerCharacterExportRoutes(
           : repositories.worldbooks.get(character.worldbookId);
         const characterBook = linkedWorldbook === undefined
           ? character.characterBook
-          : exportCharacterBook(normalizedWorldbookFromRows(linkedWorldbook, repositories.worldbookEntries.list()));
+          : exportCharacterBook(normalizedWorldbookFromRows(
+            linkedWorldbook,
+            repositories.worldbookEntries.listByWorldbookId(linkedWorldbook.id),
+          ));
         const artifact = await exportCharacter({
           character: {
             name: character.name,

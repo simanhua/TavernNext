@@ -60,6 +60,7 @@ const WorldbookFilterSchema = z.object({
 export const WorldbookEntrySchema = MutableEntitySchema.extend({
   worldbookId: DomainIdSchema,
   sourceUid: z.union([z.string(), z.number().finite()]).optional(),
+  sourceOrdinal: z.number().int().nonnegative().optional(),
   keys: z.array(z.string()),
   secondaryKeys: z.array(z.string()).default([]),
   useRegex: z.boolean().default(true),
@@ -86,7 +87,7 @@ export const WorldbookEntrySchema = MutableEntitySchema.extend({
   useGroupScoring: z.boolean().nullable().default(null),
   excludeRecursion: z.boolean().default(false),
   preventRecursion: z.boolean().default(false),
-  delayUntilRecursion: z.number().default(0),
+  delayUntilRecursion: z.union([z.boolean(), z.number()]).default(0),
   sticky: z.number().nullable().default(null),
   cooldown: z.number().nullable().default(null),
   delay: z.number().nullable().default(null),

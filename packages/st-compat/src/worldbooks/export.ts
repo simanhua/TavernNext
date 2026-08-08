@@ -9,15 +9,24 @@ export interface WorldbookExportArtifact {
 
 function compareEntries(left: NormalizedWorldbookEntry, right: NormalizedWorldbookEntry): number {
   if (left.order !== right.order) return right.order - left.order;
-  const leftUid = `${typeof left.sourceUid}:${String(left.sourceUid)}`;
-  const rightUid = `${typeof right.sourceUid}:${String(right.sourceUid)}`;
-  if (leftUid !== rightUid) return leftUid < rightUid ? -1 : 1;
-  return left.id === right.id ? 0 : left.id < right.id ? -1 : 1;
+  return left.sourceOrdinal - right.sourceOrdinal;
+}
+
+function sourceObjectKey(sourceUid: NormalizedWorldbookEntry['sourceUid']): string {
+  return String(sourceUid);
+}
+
+function exportedFilter(filter: NormalizedWorldbookEntry['characterFilter']): JsonObject {
+  return {
+    ...structuredClone(filter.unknownFields ?? {}),
+    isExclude: filter.isExclude,
+    names: [...filter.names],
+    tags: [...filter.tags],
+  };
 }
 
 function nativeEntry(entry: NormalizedWorldbookEntry): JsonObject {
-  return {
-    ...entry.unknownFields,
+  const canonical: JsonObject = {
     uid: entry.sourceUid,
     key: entry.keys,
     keysecondary: entry.secondaryKeys,
@@ -59,22 +68,57 @@ function nativeEntry(entry: NormalizedWorldbookEntry): JsonObject {
     sticky: entry.sticky,
     cooldown: entry.cooldown,
     delay: entry.delay,
-    characterFilter: entry.characterFilter,
-    personaFilter: entry.personaFilter,
+    characterFilter: exportedFilter(entry.characterFilter),
+    personaFilter: exportedFilter(entry.personaFilter),
     triggers: entry.triggers,
     displayIndex: entry.displayIndex,
     useRegex: entry.useRegex,
     extensions: entry.extensions,
   };
+  const characterBookPassthrough = Object.fromEntries(
+    Object.entries(entry.unknownFields)
+      .filter(([key]) => Object.hasOwn(canonical, key))
+      .map(([key, value]) => [key, structuredClone(value)]),
+  );
+  const existingTavernNext = typeof entry.extensions.tavernnext === 'object'
+    && entry.extensions.tavernnext !== null
+    && !Array.isArray(entry.extensions.tavernnext)
+    ? entry.extensions.tavernnext as JsonObject
+    : {};
+  if (Object.keys(characterBookPassthrough).length > 0) {
+    canonical.extensions = {
+      ...entry.extensions,
+      tavernnext: { ...existingTavernNext, characterBookPassthrough },
+    };
+  }
+  return {
+    ...entry.unknownFields,
+    ...canonical,
+  };
 }
 
 export function nativeWorldbookDocument(worldbook: NormalizedWorldbook): JsonObject {
-  const entries: JsonObject = {};
-  for (const entry of [...worldbook.entries].sort(compareEntries)) {
-    const baseKey = String(entry.sourceUid);
+  const ordered = [...worldbook.entries].sort(compareEntries);
+  const entries = Object.create(null) as JsonObject;
+  const reservedSourceKeys = new Set(ordered.map((entry) => sourceObjectKey(entry.sourceUid)));
+  const occurrences = new Map<string, number>();
+  const usedKeys = new Set<string>();
+  for (const entry of ordered) {
+    const baseKey = sourceObjectKey(entry.sourceUid);
+    const occurrence = occurrences.get(baseKey) ?? 0;
     let key = baseKey;
-    if (Object.hasOwn(entries, key)) key = `${baseKey}~${entry.id}`;
-    entries[key] = nativeEntry(entry);
+    if (occurrence > 0 || usedKeys.has(key)) {
+      let disambiguator = 0;
+      do {
+        key = `${baseKey}~${occurrence}${disambiguator === 0 ? '' : `~${disambiguator}`}`;
+        disambiguator += 1;
+      } while (reservedSourceKeys.has(key) || usedKeys.has(key));
+    }
+    occurrences.set(baseKey, occurrence + 1);
+    usedKeys.add(key);
+    Object.defineProperty(entries, key, {
+      value: nativeEntry(entry), enumerable: true, configurable: true, writable: true,
+    });
   }
   return {
     ...worldbook.unknownFields,
@@ -91,7 +135,6 @@ export function nativeWorldbookDocument(worldbook: NormalizedWorldbook): JsonObj
 
 function characterBookEntry(entry: NormalizedWorldbookEntry): JsonObject {
   return {
-    ...entry.unknownFields,
     id: entry.sourceUid,
     keys: entry.keys,
     secondary_keys: entry.secondaryKeys,
@@ -139,10 +182,10 @@ function characterBookEntry(entry: NormalizedWorldbookEntry): JsonObject {
       match_creator_notes: entry.matchCreatorNotes,
       triggers: entry.triggers,
       ignore_budget: entry.ignoreBudget,
-      add_memo: entry.addMemo,
-      character_filter: entry.characterFilter,
-      persona_filter: entry.personaFilter,
+      character_filter: exportedFilter(entry.characterFilter),
+      persona_filter: exportedFilter(entry.personaFilter),
     },
+    ...entry.unknownFields,
   };
 }
 

@@ -168,6 +168,47 @@ describe('SQLite repositories', () => {
     expect(repositories.worldbookEntries.get(entry.id)).toMatchObject({ id: entry.id });
   });
 
+  it('lists entries by worldbook through the indexed repository method', async () => {
+    const { database, repositories } = await createTestRepositories();
+    const first = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000041', name: 'First lore', enabled: true,
+    });
+    const second = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000042', name: 'Second lore', enabled: true,
+    });
+    repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000000043', worldbookId: first.id, keys: ['first'], content: 'first', enabled: true, position: 0, order: 0,
+    });
+    repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000000044', worldbookId: second.id, keys: ['second'], content: 'second', enabled: true, position: 0, order: 0,
+    });
+
+    expect(repositories.worldbookEntries.listByWorldbookId(first.id)).toEqual([
+      expect.objectContaining({ worldbookId: first.id, content: 'first' }),
+    ]);
+    const plan = database.sqlite.prepare(
+      'EXPLAIN QUERY PLAN SELECT payload FROM worldbook_entries WHERE worldbook_id = ?',
+    ).all(first.id) as Array<{ detail: string }>;
+    expect(plan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_id_idx'))).toBe(true);
+  });
+
+  it('continues to read legacy entries with negative depth values', async () => {
+    const { repositories } = await createTestRepositories();
+    const worldbook = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000045', name: 'Legacy lore', enabled: true,
+    });
+    const entry = repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000000046', worldbookId: worldbook.id,
+      keys: ['legacy'], content: 'legacy', enabled: true, position: 0, order: 0,
+      depth: -1, scanDepth: -2,
+    });
+
+    expect(repositories.worldbookEntries.get(entry.id)).toMatchObject({ depth: -1, scanDepth: -2 });
+    expect(repositories.worldbookEntries.listByWorldbookId(worldbook.id)).toEqual([
+      expect.objectContaining({ id: entry.id, depth: -1, scanDepth: -2 }),
+    ]);
+  });
+
   it('upgrades the b87d7f7 legacy schema without losing payloads or relationships', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-legacy-'));
     testDirectories.push(directory);

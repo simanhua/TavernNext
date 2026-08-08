@@ -1,14 +1,18 @@
 import extractPngChunks from 'png-chunks-extract';
 import { decode as decodePngText } from 'png-chunk-text';
-import { NativeWorldbookSchema, type JsonObject } from './schemas.js';
-import { WorldbookCodecError } from './native-codec.js';
-
-const decoder = new TextDecoder('utf-8', { fatal: true });
+import type { JsonObject } from './schemas.js';
+import { decodeJsonWorldbook, MAX_WORLDBOOK_PREVIEW_BYTES, WorldbookCodecError } from './native-codec.js';
 
 function decodeStrictBase64(value: string): Uint8Array {
   const trimmed = value.trim();
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(trimmed)) {
     throw new WorldbookCodecError('worldbook_png_metadata_invalid', 'PNG naidata metadata is not valid base64.');
+  }
+  if (trimmed.length > Math.ceil(MAX_WORLDBOOK_PREVIEW_BYTES / 3) * 4) {
+    throw new WorldbookCodecError(
+      'worldbook_preview_limit',
+      `Worldbook source envelopes are limited to ${MAX_WORLDBOOK_PREVIEW_BYTES} bytes.`,
+    );
   }
   return Buffer.from(trimmed, 'base64');
 }
@@ -35,16 +39,18 @@ export function decodeNaidataPng(bytes: Uint8Array): JsonObject {
   if (encoded === undefined) {
     throw new WorldbookCodecError('worldbook_png_metadata_invalid', 'PNG contains no naidata Worldbook metadata.');
   }
-  let value: unknown;
+  let decoded: ReturnType<typeof decodeJsonWorldbook>;
   try {
-    value = JSON.parse(decoder.decode(decodeStrictBase64(encoded)));
+    decoded = decodeJsonWorldbook(decodeStrictBase64(encoded));
   } catch (error) {
-    if (error instanceof WorldbookCodecError) throw error;
-    throw new WorldbookCodecError('worldbook_png_metadata_invalid', 'PNG naidata metadata is not valid UTF-8 JSON.');
+    if (error instanceof WorldbookCodecError && error.code !== 'invalid_json') throw error;
+    throw new WorldbookCodecError(
+      'worldbook_png_metadata_invalid',
+      'PNG naidata metadata is not valid UTF-8 JSON.',
+    );
   }
-  const parsed = NativeWorldbookSchema.safeParse(value);
-  if (!parsed.success || !Object.values(parsed.data.entries).every((entry) => typeof entry.content === 'string')) {
+  if (decoded.sourceFormat !== 'st-native') {
     throw new WorldbookCodecError('worldbook_decode_failed', 'PNG naidata metadata is not a native Worldbook document.');
   }
-  return parsed.data;
+  return decoded.rawPayload;
 }

@@ -72,6 +72,10 @@ export interface Repository<T extends MutableEntity> {
   delete(id: string, expectedRevision: number): DeleteResult;
 }
 
+export interface WorldbookEntryRepository extends Repository<WorldbookEntry> {
+  listByWorldbookId(worldbookId: string): WorldbookEntry[];
+}
+
 type EntityRow = Record<string, unknown>;
 type EntityTable = SQLiteTable & {
   id: typeof characters.id;
@@ -223,11 +227,30 @@ function createPersonaRepository(database: TavernDatabase): Repository<Persona> 
   };
 }
 
+function createWorldbookEntryRepository(database: TavernDatabase): WorldbookEntryRepository {
+  const base = createRepository(database, {
+    table: entityTable(worldbookEntries),
+    schema: WorldbookEntrySchema,
+    toRow: (value: WorldbookEntry) => ({ ...baseRow(value), worldbookId: value.worldbookId }),
+  });
+  return {
+    ...base,
+    listByWorldbookId(worldbookId: string) {
+      return database.orm.select({ payload: worldbookEntries.payload })
+        .from(worldbookEntries)
+        .where(eq(worldbookEntries.worldbookId, worldbookId))
+        .orderBy(asc(worldbookEntries.createdAt))
+        .all()
+        .map((row) => WorldbookEntrySchema.parse(row.payload));
+    },
+  };
+}
+
 export interface Repositories {
   characters: Repository<Character>;
   personas: Repository<Persona>;
   worldbooks: Repository<Worldbook>;
-  worldbookEntries: Repository<WorldbookEntry>;
+  worldbookEntries: WorldbookEntryRepository;
   presets: Repository<Preset>;
   conversations: Repository<Conversation>;
   messages: Repository<Message>;
@@ -242,7 +265,7 @@ export function createRepositories(database: TavernDatabase): Repositories {
     characters: createRepository(database, { table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     personas: createPersonaRepository(database),
     worldbooks: createRepository(database, { table: entityTable(worldbooks), schema: WorldbookSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
-    worldbookEntries: createRepository(database, { table: entityTable(worldbookEntries), schema: WorldbookEntrySchema, toRow: (value) => ({ ...baseRow(value), worldbookId: value.worldbookId }) }),
+    worldbookEntries: createWorldbookEntryRepository(database),
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
     conversations: createRepository(database, { table: entityTable(conversations), schema: ConversationSchema, toRow: (value) => ({ ...baseRow(value), characterId: value.characterId, personaId: value.personaId, presetId: value.presetId ?? null, title: value.title }), syncRelationships: syncConversationWorldbooks }),
     messages: createRepository(database, { table: entityTable(messages), schema: MessageSchema, toRow: (value) => ({ ...baseRow(value), conversationId: value.conversationId, activeVariantId: value.activeVariantId, role: value.role }) }),

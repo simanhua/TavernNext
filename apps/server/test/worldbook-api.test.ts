@@ -2,11 +2,15 @@ import { readFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { inspectCharacter } from '@tavernnext/st-compat';
+import Fastify from 'fastify';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
+import { registerCharacterExportRoutes } from '../src/routes/character-exports.js';
+import { registerWorldbookExportRoutes } from '../src/routes/worldbook-exports.js';
 
 const encoder = new TextEncoder();
 const worldbookFixtures = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'worldbooks');
@@ -153,6 +157,57 @@ describe('typed Worldbook import and export API', () => {
     expect(repositories.importArtifacts.list()).toEqual([]);
   });
 
+  it('rejects persisted-domain violations during inspect and never reaches a mutating commit', async () => {
+    const { app, repositories } = await context();
+    const source = encoder.encode(JSON.stringify({
+      name: 'Invalid persisted values',
+      entries: {
+        invalid: {
+          uid: 'invalid', key: [], content: 'invalid', order: 1.5,
+          characterFilter: { names: 'not-an-array' },
+        },
+      },
+    }));
+
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('invalid-domain.json', source),
+    });
+    expect(inspected.statusCode).toBe(422);
+    expect(inspected.json()).toMatchObject({
+      normalizedPreview: null,
+      blockingErrors: expect.arrayContaining([
+        expect.objectContaining({ code: 'worldbook_content_invalid', path: 'entries[0].order' }),
+        expect.objectContaining({ code: 'worldbook_content_invalid', path: 'entries.invalid.characterFilter.names' }),
+      ]),
+    });
+    expect(inspected.json().inspectionToken).toBeUndefined();
+
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: 'blocked-worldbook-inspection-has-no-token' },
+    });
+    expect(committed.statusCode).toBe(404);
+    expect(committed.json()).toEqual({ error: 'inspection_token_invalid' });
+    expect(repositories.worldbooks.list()).toEqual([]);
+    expect(repositories.worldbookEntries.list()).toEqual([]);
+    expect(repositories.importArtifacts.list()).toEqual([]);
+  });
+
+  it('preserves stable Worldbook codec limit codes through the server inspection boundary', async () => {
+    const { app } = await context();
+    const entries = Object.fromEntries(Array.from({ length: 4_097 }, (_, index) => [String(index), {
+      uid: index, key: [], content: '',
+    }]));
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('too-many-worldbook-entries.json', encoder.encode(JSON.stringify({ entries }))),
+    });
+
+    expect(inspected.statusCode).toBe(422);
+    expect(inspected.json()).toMatchObject({
+      blockingErrors: [expect.objectContaining({ code: 'worldbook_entry_limit' })],
+    });
+    expect(inspected.json().inspectionToken).toBeUndefined();
+  });
+
   it('exports deterministic native JSON with an exact content type and rejects invalid formats and IDs', async () => {
     const { app, repositories } = await context();
     const { committed } = await inspectAndCommit(app);
@@ -160,9 +215,17 @@ describe('typed Worldbook import and export API', () => {
     const id = committed.json().entityId as string;
     const entry = repositories.worldbookEntries.list()[0]!;
     expect(repositories.worldbookEntries.update(entry.id, 0, { content: 'Edited persisted Worldbook content.' })).toMatchObject({ ok: true });
+    const indexedQuery = vi.spyOn(repositories.worldbookEntries, 'listByWorldbookId');
+    const fullScan = vi.spyOn(repositories.worldbookEntries, 'list').mockImplementation(() => {
+      throw new Error('full Worldbook entry scans are forbidden during export');
+    });
+    const exportApp = Fastify();
+    registerWorldbookExportRoutes(exportApp, repositories);
+    apps.push(exportApp);
+    await exportApp.ready();
 
-    const first = await app.inject({ method: 'GET', url: `/api/worldbooks/${id}/export?format=st-native` });
-    const second = await app.inject({ method: 'GET', url: `/api/worldbooks/${id}/export?format=st-native` });
+    const first = await exportApp.inject({ method: 'GET', url: `/api/worldbooks/${id}/export?format=st-native` });
+    const second = await exportApp.inject({ method: 'GET', url: `/api/worldbooks/${id}/export?format=st-native` });
     expect(first.statusCode).toBe(200);
     expect(first.headers['content-type']).toBe('application/json; charset=utf-8');
     expect(first.headers['content-disposition']).toMatch(/^attachment; filename="All Fields _+\.json"; filename\*=UTF-8''/);
@@ -170,8 +233,10 @@ describe('typed Worldbook import and export API', () => {
     expect(first.json()).toMatchObject({
       entries: { '7': { uid: 7, content: 'Edited persisted Worldbook content.', position: 4 } },
     });
-    expect((await app.inject({ method: 'GET', url: `/api/worldbooks/${id}/export?format=zip` })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'GET', url: `/api/worldbooks/${missingId}/export?format=st-native` })).statusCode).toBe(404);
+    expect(fullScan).not.toHaveBeenCalled();
+    expect(indexedQuery).toHaveBeenCalledWith(id);
+    expect((await exportApp.inject({ method: 'GET', url: `/api/worldbooks/${id}/export?format=zip` })).statusCode).toBe(400);
+    expect((await exportApp.inject({ method: 'GET', url: `/api/worldbooks/${missingId}/export?format=st-native` })).statusCode).toBe(404);
   });
 
   it('serves a path-hostile Unicode name over real HTTP without header injection', async () => {
@@ -225,6 +290,62 @@ describe('typed Worldbook import and export API', () => {
           })]),
         },
       },
+    });
+  });
+
+  it('uses the indexed entry query while replacing a linked book in the original Character PNG', async () => {
+    const { app, directory, repositories } = await context();
+    const seedCharacterId = await importCharacter(app);
+    const sourcePng = await app.inject({
+      method: 'GET', url: `/api/characters/${seedCharacterId}/export?format=png`,
+    });
+    expect(sourcePng.statusCode).toBe(200);
+
+    const inspectedPng = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('source-character.png', sourcePng.rawPayload, 'image/png'),
+    });
+    expect(inspectedPng.statusCode).toBe(200);
+    const committedPng = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspectedPng.json().inspectionToken },
+    });
+    expect(committedPng.statusCode).toBe(201);
+    const pngCharacterId = committedPng.json().entityId as string;
+
+    const { committed } = await inspectAndCommit(app, 'character-book.json');
+    const worldbookId = committed.json().entityId as string;
+    expect(repositories.characters.update(pngCharacterId, 0, { worldbookId })).toMatchObject({ ok: true });
+    const linkedEntry = repositories.worldbookEntries.list().find((entry) => entry.worldbookId === worldbookId && entry.sourceUid === 42)!;
+    expect(repositories.worldbookEntries.update(linkedEntry.id, 0, {
+      content: 'Current linked lore inside source PNG.',
+    })).toMatchObject({ ok: true });
+
+    const indexedRows = repositories.worldbookEntries.list().filter((entry) => entry.worldbookId === worldbookId);
+    const indexedQuery = vi.fn((requestedId: string) => requestedId === worldbookId ? indexedRows : []);
+    (repositories.worldbookEntries as unknown as { listByWorldbookId(id: string): typeof indexedRows }).listByWorldbookId = indexedQuery;
+    const fullScan = vi.spyOn(repositories.worldbookEntries, 'list').mockImplementation(() => {
+      throw new Error('full Worldbook entry scans are forbidden during export');
+    });
+    const exportApp = Fastify();
+    apps.push(exportApp);
+    registerCharacterExportRoutes(exportApp, repositories, directory);
+    await exportApp.ready();
+
+    const exported = await exportApp.inject({
+      method: 'GET', url: `/api/characters/${pngCharacterId}/export?format=png`,
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(fullScan).not.toHaveBeenCalled();
+    expect(indexedQuery).toHaveBeenCalledWith(worldbookId);
+    const preview = await inspectCharacter(Uint8Array.from(exported.rawPayload), 'linked-source.png');
+    expect(preview.blockingErrors).toEqual([]);
+    expect(preview.character?.characterBook).toMatchObject({
+      character_book_unknown: { preserve: true },
+      entries: expect.arrayContaining([expect.objectContaining({
+        id: 42,
+        content: 'Current linked lore inside source PNG.',
+        entry_extra: 'keep-character-book-entry',
+      })]),
     });
   });
 });

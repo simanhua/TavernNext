@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@tavernnext/domain": "*",
     "fflate": "0.8.3",
     "png-chunk-text": "1.0.0",
     "png-chunks-encode": "1.0.0",

@@ -32,7 +32,10 @@ export function registerWorldbookExportRoutes(app: FastifyInstance, repositories
       const worldbook = repositories.worldbooks.get(request.params.id);
       if (worldbook === undefined) return reply.code(404).send({ error: 'not_found' });
       try {
-        const artifact = await exportWorldbook(normalizedWorldbookFromRows(worldbook, repositories.worldbookEntries.list()));
+        const artifact = await exportWorldbook(normalizedWorldbookFromRows(
+          worldbook,
+          repositories.worldbookEntries.listByWorldbookId(worldbook.id),
+        ));
         reply.header('Content-Type', artifact.contentType);
         reply.header('Content-Disposition', attachmentHeader(artifact.fileName));
         return reply.send(Buffer.from(artifact.bytes));

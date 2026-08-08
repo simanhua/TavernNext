@@ -6,6 +6,8 @@ import {
   type NormalizedWorldbook,
   type NormalizedWorldbookEntry,
   type WorldbookSourceFormat,
+  WorldbookCodecError,
+  WorldbookValidationError,
 } from '@tavernnext/st-compat';
 import type { ImportHandler } from './import-service.js';
 
@@ -19,8 +21,11 @@ export interface StoredWorldbookSource {
 export interface StoredWorldbookEntrySource {
   sourceFormat: WorldbookSourceFormat;
   sourceUid: string | number;
+  sourceOrdinal?: number;
   unknownFields: Record<string, unknown>;
   extensions: Record<string, unknown>;
+  characterFilterUnknownFields?: Record<string, unknown>;
+  personaFilterUnknownFields?: Record<string, unknown>;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -49,16 +54,26 @@ function storedEntrySource(value: unknown): StoredWorldbookEntrySource | undefin
   return {
     sourceFormat: source.sourceFormat as WorldbookSourceFormat,
     sourceUid: source.sourceUid,
+    ...(typeof source.sourceOrdinal === 'number' && Number.isInteger(source.sourceOrdinal) && source.sourceOrdinal >= 0
+      ? { sourceOrdinal: source.sourceOrdinal }
+      : {}),
     unknownFields,
     extensions,
+    ...(record(source.characterFilterUnknownFields) === undefined
+      ? {}
+      : { characterFilterUnknownFields: record(source.characterFilterUnknownFields) }),
+    ...(record(source.personaFilterUnknownFields) === undefined
+      ? {}
+      : { personaFilterUnknownFields: record(source.personaFilterUnknownFields) }),
   };
 }
 
-function normalizedEntry(entry: WorldbookEntry): NormalizedWorldbookEntry {
+function normalizedEntry(entry: WorldbookEntry, fallbackOrdinal: number): NormalizedWorldbookEntry {
   const source = storedEntrySource(entry.compatibility?.rawPayload);
   return {
     id: entry.id,
     sourceUid: entry.sourceUid ?? source?.sourceUid ?? entry.id,
+    sourceOrdinal: entry.sourceOrdinal ?? source?.sourceOrdinal ?? fallbackOrdinal,
     keys: entry.keys,
     secondaryKeys: entry.secondaryKeys,
     useRegex: entry.useRegex,
@@ -87,8 +102,18 @@ function normalizedEntry(entry: WorldbookEntry): NormalizedWorldbookEntry {
     sticky: entry.sticky,
     cooldown: entry.cooldown,
     delay: entry.delay,
-    characterFilter: entry.characterFilter,
-    personaFilter: entry.personaFilter,
+    characterFilter: {
+      ...entry.characterFilter,
+      ...(source?.characterFilterUnknownFields === undefined
+        ? {}
+        : { unknownFields: structuredClone(source.characterFilterUnknownFields) }),
+    },
+    personaFilter: {
+      ...entry.personaFilter,
+      ...(source?.personaFilterUnknownFields === undefined
+        ? {}
+        : { unknownFields: structuredClone(source.personaFilterUnknownFields) }),
+    },
     matchPersonaDescription: entry.matchPersonaDescription,
     matchCharacterDescription: entry.matchCharacterDescription,
     matchCharacterPersonality: entry.matchCharacterPersonality,
@@ -142,10 +167,12 @@ export function createWorldbookImportHandler(): ImportHandler {
         return {
           normalizedPreview: null,
           warnings: [],
-          blockingErrors: [diagnostic(
-            'worldbook_decode_failed',
-            error instanceof Error ? error.message : 'Worldbook could not be decoded safely.',
-          )],
+          blockingErrors: error instanceof WorldbookValidationError
+            ? error.issues
+            : [diagnostic(
+              error instanceof WorldbookCodecError ? error.code : 'worldbook_decode_failed',
+              error instanceof Error ? error.message : 'Worldbook could not be decoded safely.',
+            )],
         };
       }
     },
@@ -178,8 +205,15 @@ export function createWorldbookImportHandler(): ImportHandler {
         const entrySource: StoredWorldbookEntrySource = {
           sourceFormat: decoded.sourceFormat,
           sourceUid: entry.sourceUid,
+          sourceOrdinal: entry.sourceOrdinal,
           unknownFields: structuredClone(entry.unknownFields),
           extensions: structuredClone(entry.extensions),
+          ...(entry.characterFilter.unknownFields === undefined
+            ? {}
+            : { characterFilterUnknownFields: structuredClone(entry.characterFilter.unknownFields) }),
+          ...(entry.personaFilter.unknownFields === undefined
+            ? {}
+            : { personaFilterUnknownFields: structuredClone(entry.personaFilter.unknownFields) }),
         };
         context.repositories.worldbookEntries.create({
           ...entry,

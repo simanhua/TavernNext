@@ -41,9 +41,10 @@ function limited(overrides: Partial<InspectionLimits>): InspectionLimits {
   return { ...DEFAULT_INSPECTION_LIMITS, ...overrides };
 }
 
-function executableEntry(entry: NormalizedWorldbookEntry): Omit<NormalizedWorldbookEntry, 'id' | 'unknownFields'> {
-  const { id: ignoredId, unknownFields: ignoredUnknown, ...value } = entry;
+function executableEntry(entry: NormalizedWorldbookEntry): Omit<NormalizedWorldbookEntry, 'id' | 'sourceOrdinal' | 'unknownFields'> {
+  const { id: ignoredId, sourceOrdinal: ignoredOrdinal, unknownFields: ignoredUnknown, ...value } = entry;
   void ignoredId;
+  void ignoredOrdinal;
   void ignoredUnknown;
   return value;
 }
@@ -87,6 +88,7 @@ describe('Worldbook all-field normalization', () => {
     expect(book.entries[0]).toEqual({
       id: expect.stringMatching(/^[0-9a-f-]{36}$/),
       sourceUid: 7,
+      sourceOrdinal: 0,
       keys: ['alpha', '/βeta/iu'],
       secondaryKeys: ['gamma', 'delta'],
       useRegex: true,
@@ -221,8 +223,8 @@ describe('Worldbook family codecs', () => {
     ]);
     expect(new Set(book.entries.map((entry) => entry.id)).size).toBe(3);
     expect(book.entries[0]).toMatchObject({
-      useRegex: false,
-      priority: 333,
+      useRegex: true,
+      priority: null,
       position: 4,
       role: 1,
       characterFilter: { isExclude: false, names: ['linked-character.png'], tags: ['linked-character-tag'] },
@@ -341,6 +343,25 @@ describe('Worldbook validation and naidata safety', () => {
       code: 'worldbook_png_metadata_invalid',
     }));
   });
+
+  it('applies pre-normalization logical entry caps to naidata metadata', async () => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const entries = Object.fromEntries(Array.from(
+      { length: 4_097 },
+      (_, index) => [String(index), { uid: index, key: [], content: '' }],
+    ));
+    const oversized = pngWithAdditionalMetadata(
+      blank,
+      'naidata',
+      Buffer.from(JSON.stringify({ entries }), 'utf8').toString('base64'),
+    );
+
+    const preview = await inspectWorldbook(oversized, 'oversized-naidata.png');
+    expect(preview.worldbook).toBeNull();
+    expect(preview.rawPayload).toBeNull();
+    expect(preview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'worldbook_entry_limit' }));
+  });
 });
 
 describe('deterministic native export and round trip', () => {
@@ -377,7 +398,7 @@ describe('deterministic native export and round trip', () => {
     const exported = JSON.parse(serialized) as any;
 
     expect(preview.worldbook?.entries.map((entry) => entry.sourceUid)).toEqual(['alpha-uid', 9]);
-    // ECMAScript enumerates canonical integer keys before string keys; executable order is explicit in each entry.
+    // Typed keys avoid ECMAScript's canonical-integer reordering while the exact UID stays in the entry.
     expect(Object.keys(exported.entries)).toEqual(['9', 'alpha-uid']);
     expect(exported.entries['alpha-uid']).toMatchObject({ uid: 'alpha-uid', order: 100 });
     expect(exported.entries['9']).toMatchObject({ uid: 9, order: 90 });
@@ -411,9 +432,88 @@ const oracleValidator = oracleRoot === undefined ? '' : join(oracleRoot, 'src', 
 const oracleWorldInfoRuntime = oracleRoot === undefined ? '' : join(oracleRoot, 'public', 'scripts', 'world-info.js');
 const oracleCharacters = oracleRoot === undefined ? '' : join(oracleRoot, 'src', 'endpoints', 'characters.js');
 const oracleCharacterBookTypes = oracleRoot === undefined ? '' : join(oracleRoot, 'src', 'types', 'spec-v2.d.ts');
+const oracleEldoria = oracleRoot === undefined ? '' : join(oracleRoot, 'default', 'content', 'Eldoria.json');
 
 function sha256(fileName: string): string {
   return createHash('sha256').update(readFileSync(fileName)).digest('hex').toUpperCase();
+}
+
+function exactConverter(runtime: string, name: string): (input: any) => { entries: Record<string, Record<string, unknown>> } {
+  const marker = name === 'convertCharacterBook' ? `export function ${name}` : `function ${name}`;
+  const start = runtime.indexOf(marker);
+  if (start < 0) throw new Error(`Pinned converter ${name} was not found`);
+  const brace = runtime.indexOf('{', start);
+  let depth = 0;
+  let end = brace;
+  for (; end < runtime.length; end += 1) {
+    if (runtime[end] === '{') depth += 1;
+    if (runtime[end] === '}') depth -= 1;
+    if (depth === 0) break;
+  }
+  const source = runtime.slice(start, end + 1).replace(/^export\s+/, '');
+  const template = {
+    key: [], keysecondary: [], comment: '', content: '', constant: false, vectorized: false,
+    selective: true, selectiveLogic: 0, addMemo: false, order: 100, position: 0, disable: false,
+    ignoreBudget: false, excludeRecursion: false, preventRecursion: false, matchPersonaDescription: false,
+    matchCharacterDescription: false, matchCharacterPersonality: false, matchCharacterDepthPrompt: false,
+    matchScenario: false, matchCreatorNotes: false, delayUntilRecursion: 0, probability: 100,
+    useProbability: true, depth: 4, outletName: '', group: '', groupOverride: false, groupWeight: 100,
+    scanDepth: null, caseSensitive: null, matchWholeWords: null, useGroupScoring: null, automationId: '',
+    role: 0, sticky: null, cooldown: null, delay: null, triggers: [],
+  };
+  return Function(
+    'newWorldInfoEntryTemplate', 'world_info_position', 'world_info_logic', 'DEFAULT_DEPTH', 'DEFAULT_WEIGHT', 'extension_prompt_roles',
+    `"use strict"; ${source}; return ${name};`,
+  )(template, { before: 0, after: 1 }, { AND_ANY: 0 }, 4, 100, { SYSTEM: 0 }) as ReturnType<typeof exactConverter>;
+}
+
+/** Full shared executable surface; identity and passthrough envelopes intentionally stay outside converter parity. */
+function normalizedConverterProjection(entry: NormalizedWorldbookEntry) {
+  return {
+    keys: entry.keys, secondaryKeys: entry.secondaryKeys, useRegex: entry.useRegex,
+    selective: entry.selective, selectiveLogic: entry.selectiveLogic,
+    constant: entry.constant, vectorized: entry.vectorized,
+    probability: entry.probability, useProbability: entry.useProbability,
+    group: entry.group, groupWeight: entry.groupWeight, groupOverride: entry.groupOverride,
+    priority: entry.priority, order: entry.order, position: entry.position, depth: entry.depth, role: entry.role,
+    ignoreBudget: entry.ignoreBudget, scanDepth: entry.scanDepth,
+    caseSensitive: entry.caseSensitive, matchWholeWords: entry.matchWholeWords,
+    useGroupScoring: entry.useGroupScoring, excludeRecursion: entry.excludeRecursion,
+    preventRecursion: entry.preventRecursion, delayUntilRecursion: entry.delayUntilRecursion,
+    sticky: entry.sticky, cooldown: entry.cooldown, delay: entry.delay,
+    matchPersonaDescription: entry.matchPersonaDescription,
+    matchCharacterDescription: entry.matchCharacterDescription,
+    matchCharacterPersonality: entry.matchCharacterPersonality,
+    matchCharacterDepthPrompt: entry.matchCharacterDepthPrompt,
+    matchScenario: entry.matchScenario, matchCreatorNotes: entry.matchCreatorNotes,
+    comment: entry.comment, content: entry.content, enabled: entry.enabled, addMemo: entry.addMemo,
+    displayIndex: entry.displayIndex, outletName: entry.outletName,
+    automationId: entry.automationId, triggers: entry.triggers,
+  };
+}
+
+function oracleConverterProjection(entry: Record<string, any>) {
+  return {
+    keys: entry.key, secondaryKeys: entry.keysecondary, useRegex: entry.useRegex ?? true,
+    selective: entry.selective, selectiveLogic: entry.selectiveLogic,
+    constant: entry.constant, vectorized: entry.vectorized,
+    probability: entry.probability, useProbability: Boolean(entry.useProbability),
+    group: entry.group, groupWeight: entry.groupWeight, groupOverride: entry.groupOverride,
+    priority: entry.priority ?? null, order: entry.order, position: entry.position, depth: entry.depth, role: entry.role,
+    ignoreBudget: entry.ignoreBudget, scanDepth: entry.scanDepth,
+    caseSensitive: entry.caseSensitive, matchWholeWords: entry.matchWholeWords,
+    useGroupScoring: entry.useGroupScoring, excludeRecursion: entry.excludeRecursion,
+    preventRecursion: entry.preventRecursion, delayUntilRecursion: entry.delayUntilRecursion,
+    sticky: entry.sticky, cooldown: entry.cooldown, delay: entry.delay,
+    matchPersonaDescription: entry.matchPersonaDescription,
+    matchCharacterDescription: entry.matchCharacterDescription,
+    matchCharacterPersonality: entry.matchCharacterPersonality,
+    matchCharacterDepthPrompt: entry.matchCharacterDepthPrompt,
+    matchScenario: entry.matchScenario, matchCreatorNotes: entry.matchCreatorNotes,
+    comment: entry.comment, content: entry.content, enabled: !entry.disable, addMemo: entry.addMemo,
+    displayIndex: entry.displayIndex, outletName: entry.outletName,
+    automationId: entry.automationId, triggers: entry.triggers,
+  };
 }
 
 describe.skipIf(
@@ -423,7 +523,8 @@ describe.skipIf(
   || !existsSync(oracleValidator)
   || !existsSync(oracleWorldInfoRuntime)
   || !existsSync(oracleCharacters)
-  || !existsSync(oracleCharacterBookTypes),
+  || !existsSync(oracleCharacterBookTypes)
+  || !existsSync(oracleEldoria),
 )('read-only SillyTavern 1.18.0 Worldbook oracle', () => {
   it('checks the pinned version/hash and accepts complete native and Character Book exports', async () => {
     expect((JSON.parse(readFileSync(oraclePackage, 'utf8')) as { version: string }).version).toBe('1.18.0');
@@ -472,7 +573,8 @@ describe.skipIf(
         "let input = ''; for await (const chunk of process.stdin) input += chunk;",
         'const book = readWorldInfoFile({ worlds: process.argv[3] }, "oracle", false);',
         'const card = JSON.parse(input);',
-        'process.stdout.write(JSON.stringify({ keys: Object.keys(book.entries), card: new TavernCardValidator(card).validate() }));',
+        'const entries = Object.values(book.entries);',
+        'process.stdout.write(JSON.stringify({ keys: Object.keys(book.entries), editable: entries.every(entry => book.entries[entry.uid] === entry), card: new TavernCardValidator(card).validate() }));',
       ].join('\n');
       const result = spawnSync(
         process.execPath,
@@ -480,9 +582,45 @@ describe.skipIf(
         { input: JSON.stringify(card), encoding: 'utf8' },
       );
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ keys: ['7'], card: 3 });
+      expect(readFileSync(oracleWorldInfoRuntime, 'utf8')).toContain('if (!data.entries[entry.uid]) return;');
+      expect(JSON.parse(result.stdout)).toEqual({ keys: ['7'], editable: true, card: 3 });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('executes the pinned Character, Novel, Agnai, and Risu converters and reads official Eldoria without mutation', async () => {
+    const runtime = readFileSync(oracleWorldInfoRuntime, 'utf8');
+    const characterSource = {
+      extensions: {},
+      entries: [{
+        id: 8, keys: ['key'], content: 'content', enabled: true, insertion_order: 10,
+        comment: '   ', name: 'ignored display name', priority: 99,
+        use_regex: false, case_sensitive: false,
+        extensions: { case_sensitive: true, delay_until_recursion: false },
+      }],
+    };
+    const characterOracle = exactConverter(runtime, 'convertCharacterBook')(structuredClone(characterSource)).entries['8']!;
+    const character = requireBook(await inspectWorldbook(encoder.encode(JSON.stringify(characterSource)), 'character.json')).entries[0]!;
+    expect(normalizedConverterProjection(character)).toEqual(oracleConverterProjection(characterOracle));
+
+    for (const [file, converterName] of [
+      ['novel.json', 'convertNovelLorebook'],
+      ['agnai.json', 'convertAgnaiMemoryBook'],
+      ['risu.json', 'convertRisuLorebook'],
+    ] as const) {
+      const source = json(file);
+      if (file === 'agnai.json') {
+        ((source.entries as Array<Record<string, unknown>>)[0]!).name = '   ';
+      }
+      const oracleEntry = Object.values(exactConverter(runtime, converterName)(structuredClone(source)).entries)[0]!;
+      const normalized = requireBook(await inspectWorldbook(encoder.encode(JSON.stringify(source)), file)).entries[0]!;
+      expect(normalizedConverterProjection(normalized)).toEqual(oracleConverterProjection(oracleEntry));
+    }
+
+    const eldoriaBytes = new Uint8Array(readFileSync(oracleEldoria));
+    const before = createHash('sha256').update(eldoriaBytes).digest('hex');
+    expect(requireBook(await inspectWorldbook(eldoriaBytes, 'Eldoria.json')).name).toBe('Eldoria');
+    expect(createHash('sha256').update(readFileSync(oracleEldoria)).digest('hex')).toBe(before);
   });
 });

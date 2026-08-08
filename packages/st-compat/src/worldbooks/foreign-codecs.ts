@@ -18,13 +18,14 @@ export interface NormalizedDecodedWorldbook {
 export function normalizeWorldbookPayload(
   rawPayload: JsonObject,
   sourceFormat: Exclude<WorldbookSourceFormat, 'unknown'>,
+  fallbackName = 'Imported Worldbook',
 ): NormalizedDecodedWorldbook {
   switch (sourceFormat) {
-    case 'st-native': return normalizeNative(rawPayload);
-    case 'naidata': return normalizeNative(rawPayload, 'naidata');
-    case 'character-book': return normalizeCharacterBook(rawPayload);
-    case 'novel': return normalizeNovel(rawPayload);
-    case 'agnai': return normalizeAgnai(rawPayload);
-    case 'risu': return normalizeRisu(rawPayload);
+    case 'st-native': return normalizeNative(rawPayload, 'st-native', fallbackName);
+    case 'naidata': return normalizeNative(rawPayload, 'naidata', fallbackName);
+    case 'character-book': return normalizeCharacterBook(rawPayload, fallbackName);
+    case 'novel': return normalizeNovel(rawPayload, fallbackName);
+    case 'agnai': return normalizeAgnai(rawPayload, fallbackName);
+    case 'risu': return normalizeRisu(rawPayload, fallbackName);
   }
 }

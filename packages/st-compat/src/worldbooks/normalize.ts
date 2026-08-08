@@ -10,6 +10,8 @@ export interface WorldbookFilter {
   isExclude: boolean;
   names: string[];
   tags: string[];
+  /** Nested future fields retained without making them executable. */
+  unknownFields?: JsonObject;
 }
 
 export interface NormalizedWorldbookEntry {
@@ -17,6 +19,8 @@ export interface NormalizedWorldbookEntry {
   id: string;
   /** Exact source identity, including its original string/number type. */
   sourceUid: SourceUid;
+  /** Stable source collection position, independent from TavernNext identity. */
+  sourceOrdinal: number;
   keys: string[];
   secondaryKeys: string[];
   useRegex: boolean;
@@ -41,7 +45,7 @@ export interface NormalizedWorldbookEntry {
   useGroupScoring: boolean | null;
   excludeRecursion: boolean;
   preventRecursion: boolean;
-  delayUntilRecursion: number;
+  delayUntilRecursion: boolean | number;
   sticky: number | null;
   cooldown: number | null;
   delay: number | null;
@@ -97,9 +101,11 @@ const nativeEntryFields = new Set([
   'personaFilter', 'triggers', 'displayIndex', 'useRegex', 'extensions',
 ]);
 const characterEntryFields = new Set([
-  'id', 'keys', 'secondary_keys', 'comment', 'name', 'content', 'constant', 'selective', 'insertion_order',
-  'priority', 'enabled', 'position', 'use_regex', 'case_sensitive', 'extensions',
+  'id', 'keys', 'secondary_keys', 'comment', 'content', 'constant', 'selective', 'insertion_order',
+  'enabled', 'position', 'extensions',
 ]);
+const filterFields = new Set(['isExclude', 'names', 'tags']);
+export const MAX_WORLDBOOK_FIELD_WARNINGS = 64;
 
 const knownPositions = new Set<number | string>([
   0, 1, 2, 3, 4, 5, 6, 7,
@@ -131,17 +137,36 @@ function nullableNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function recursionDelay(value: unknown, fallback: boolean | number): boolean | number {
+  return typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ? value : fallback;
+}
+
 function unknownFields(value: JsonObject, known: ReadonlySet<string>): JsonObject {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !known.has(key)));
 }
 
 function filter(value: unknown): WorldbookFilter {
   const source = record(value);
+  const unknown = unknownFields(source, filterFields);
   return {
     isExclude: boolean(source.isExclude),
     names: strings(source.names),
     tags: strings(source.tags),
+    ...(Object.keys(unknown).length === 0 ? {} : { unknownFields: unknown }),
   };
+}
+
+function pushWarning(warnings: ImportDiagnostic[], issue: ImportDiagnostic): void {
+  if (warnings.length < MAX_WORLDBOOK_FIELD_WARNINGS) {
+    warnings.push(issue);
+    return;
+  }
+  if (warnings.length === MAX_WORLDBOOK_FIELD_WARNINGS) {
+    warnings.push(diagnostic(
+      'worldbook_diagnostics_truncated',
+      `Additional Worldbook diagnostics were omitted after ${MAX_WORLDBOOK_FIELD_WARNINGS} field-specific warnings.`,
+    ));
+  }
 }
 
 function nativePosition(value: unknown): number | string {
@@ -151,14 +176,12 @@ function nativePosition(value: unknown): number | string {
 }
 
 function characterPosition(value: unknown): number | string {
-  if (value === 'after_char' || value === 'after_character' || value === 'after') return 1;
-  if (value === 'before_char' || value === 'before_character' || value === 'before') return 0;
-  return nativePosition(value);
+  return value === 'before_char' ? 0 : 1;
 }
 
 function warnUnknownPosition(position: number | string, path: string, warnings: ImportDiagnostic[]): void {
   if (!knownPositions.has(position)) {
-    warnings.push(diagnostic(
+    pushWarning(warnings, diagnostic(
       'worldbook_unknown_position',
       'The source position is not known to SillyTavern 1.18 and was preserved without changing its semantics.',
       path,
@@ -173,11 +196,11 @@ class UidAllocator {
     let source = value;
     if (source === undefined && (typeof fallback === 'string' || typeof fallback === 'number')) source = fallback;
     let uid: SourceUid;
-    if ((typeof source === 'string' && source.trim() !== '') || (typeof source === 'number' && Number.isFinite(source))) {
+    if (typeof source === 'string' || (typeof source === 'number' && Number.isFinite(source))) {
       uid = source;
     } else {
       uid = `tn-${randomUUID()}`;
-      warnings.push(diagnostic(
+      pushWarning(warnings, diagnostic(
         source === undefined ? 'worldbook_source_uid_generated' : 'worldbook_source_uid_invalid',
         source === undefined
           ? 'The entry had no source UID, so a new source-safe UID was generated.'
@@ -187,7 +210,7 @@ class UidAllocator {
     }
     const identity = `${typeof uid}:${String(uid)}`;
     if (this.seen.has(identity)) {
-      warnings.push(diagnostic(
+      pushWarning(warnings, diagnostic(
         'worldbook_source_uid_duplicate',
         'The source UID is duplicated. Its exact value was preserved and TavernNext assigned a separate UUID.',
         path,
@@ -198,10 +221,11 @@ class UidAllocator {
   }
 }
 
-function baseEntry(sourceUid: SourceUid): NormalizedWorldbookEntry {
+function baseEntry(sourceUid: SourceUid, sourceOrdinal: number): NormalizedWorldbookEntry {
   return {
     id: randomUUID(),
     sourceUid,
+    sourceOrdinal,
     keys: [],
     secondaryKeys: [],
     useRegex: true,
@@ -252,9 +276,9 @@ function baseEntry(sourceUid: SourceUid): NormalizedWorldbookEntry {
   };
 }
 
-function bookBase(raw: JsonObject, known: ReadonlySet<string>): Omit<NormalizedWorldbook, 'entries'> {
+function bookBase(raw: JsonObject, known: ReadonlySet<string>, fallbackName = 'Imported Worldbook'): Omit<NormalizedWorldbook, 'entries'> {
   return {
-    name: string(raw.name, 'Imported Worldbook'),
+    name: typeof raw.name === 'string' ? raw.name : fallbackName,
     description: string(raw.description),
     enabled: boolean(raw.enabled, true),
     scanDepth: nullableNumber(raw.scan_depth),
@@ -265,9 +289,22 @@ function bookBase(raw: JsonObject, known: ReadonlySet<string>): Omit<NormalizedW
   };
 }
 
-function nativeEntry(raw: JsonObject, sourceUid: SourceUid): NormalizedWorldbookEntry {
+function nativeEntry(raw: JsonObject, sourceUid: SourceUid, sourceOrdinal: number): NormalizedWorldbookEntry {
+  const sourceExtensions = record(raw.extensions);
+  const sourceTavernNext = record(sourceExtensions.tavernnext);
+  const compatibility = record(sourceTavernNext.characterBookPassthrough);
+  const { characterBookPassthrough: ignoredPassthrough, ...retainedTavernNext } = sourceTavernNext;
+  void ignoredPassthrough;
+  const { tavernnext: ignoredTavernNext, ...retainedExtensions } = sourceExtensions;
+  void ignoredTavernNext;
+  const extensions = compatibility === undefined
+    ? sourceExtensions
+    : {
+      ...retainedExtensions,
+      ...(Object.keys(retainedTavernNext).length === 0 ? {} : { tavernnext: retainedTavernNext }),
+    };
   return {
-    ...baseEntry(sourceUid),
+    ...baseEntry(sourceUid, sourceOrdinal),
     keys: strings(raw.key),
     secondaryKeys: strings(raw.keysecondary),
     useRegex: boolean(raw.useRegex, true),
@@ -292,7 +329,7 @@ function nativeEntry(raw: JsonObject, sourceUid: SourceUid): NormalizedWorldbook
     useGroupScoring: typeof raw.useGroupScoring === 'boolean' ? raw.useGroupScoring : null,
     excludeRecursion: boolean(raw.excludeRecursion),
     preventRecursion: boolean(raw.preventRecursion),
-    delayUntilRecursion: number(raw.delayUntilRecursion, 0),
+    delayUntilRecursion: recursionDelay(raw.delayUntilRecursion, 0),
     sticky: nullableNumber(raw.sticky),
     cooldown: nullableNumber(raw.cooldown),
     delay: nullableNumber(raw.delay),
@@ -313,17 +350,21 @@ function nativeEntry(raw: JsonObject, sourceUid: SourceUid): NormalizedWorldbook
     outletName: string(raw.outletName),
     automationId: string(raw.automationId),
     triggers: strings(raw.triggers),
-    extensions: record(raw.extensions),
-    unknownFields: unknownFields(raw, nativeEntryFields),
+    extensions,
+    unknownFields: { ...unknownFields(raw, nativeEntryFields), ...compatibility },
   };
 }
 
-export function normalizeNative(raw: JsonObject, sourceFormat: 'st-native' | 'naidata' = 'st-native'): NormalizationResult {
+export function normalizeNative(
+  raw: JsonObject,
+  sourceFormat: 'st-native' | 'naidata' = 'st-native',
+  fallbackName = 'Imported Worldbook',
+): NormalizationResult {
   const warnings: ImportDiagnostic[] = [];
   const allocator = new UidAllocator();
-  const entries = Object.entries(record(raw.entries)).map(([key, value]) => {
+  const entries = Object.entries(record(raw.entries)).map(([key, value], sourceOrdinal) => {
     const entryRaw = record(value);
-    const entry = nativeEntry(entryRaw, allocator.allocate(entryRaw.uid, `entries.${key}.uid`, warnings, key));
+    const entry = nativeEntry(entryRaw, allocator.allocate(entryRaw.uid, `entries.${key}.uid`, warnings, key), sourceOrdinal);
     warnUnknownPosition(entry.position, `entries.${key}.position`, warnings);
     return entry;
   }).sort((left, right) => {
@@ -332,7 +373,7 @@ export function normalizeNative(raw: JsonObject, sourceFormat: 'st-native' | 'na
     const rightUid = `${typeof right.sourceUid}:${String(right.sourceUid)}`;
     return leftUid === rightUid ? 0 : leftUid < rightUid ? -1 : 1;
   });
-  const base = bookBase(raw, nativeBookFields);
+  const base = bookBase(raw, nativeBookFields, fallbackName);
   if (sourceFormat === 'naidata') {
     // The decoded JSON is native ST data; sourceFormat is retained only by the preview.
   }
@@ -343,19 +384,26 @@ function extensionValue(extensions: JsonObject, key: string, fallback?: unknown)
   return extensions[key] === undefined ? fallback : extensions[key];
 }
 
-export function normalizeCharacterBook(raw: JsonObject): NormalizationResult {
+export function normalizeCharacterBook(raw: JsonObject, fallbackName = 'Imported Worldbook'): NormalizationResult {
   const warnings: ImportDiagnostic[] = [];
   const allocator = new UidAllocator();
   const entries = (raw.entries as JsonObject[]).map((entryRaw, index) => {
     const sourceUid = allocator.allocate(entryRaw.id, `entries[${index}].id`, warnings);
     const extensions = record(entryRaw.extensions);
     const fallbackPosition = characterPosition(entryRaw.position);
-    const position = nativePosition(extensionValue(extensions, 'position', fallbackPosition));
+    const position = nativePosition(extensions.position ?? fallbackPosition);
+    if (Object.hasOwn(extensions, 'add_memo')) {
+      pushWarning(warnings, diagnostic(
+        'worldbook_foreign_field_preserved',
+        'Character Book extensions.add_memo is ignored by SillyTavern and was preserved verbatim.',
+        `entries[${index}].extensions.add_memo`,
+      ));
+    }
     const entry: NormalizedWorldbookEntry = {
-      ...baseEntry(sourceUid),
+      ...baseEntry(sourceUid, index),
       keys: strings(entryRaw.keys),
       secondaryKeys: strings(entryRaw.secondary_keys),
-      useRegex: boolean(entryRaw.use_regex, true),
+      useRegex: true,
       selective: boolean(entryRaw.selective),
       selectiveLogic: number(extensionValue(extensions, 'selectiveLogic'), 0),
       constant: boolean(entryRaw.constant),
@@ -365,21 +413,21 @@ export function normalizeCharacterBook(raw: JsonObject): NormalizationResult {
       group: string(extensionValue(extensions, 'group')),
       groupWeight: number(extensionValue(extensions, 'group_weight'), 100),
       groupOverride: boolean(extensionValue(extensions, 'group_override')),
-      priority: nullableNumber(entryRaw.priority),
+      priority: null,
       order: number(entryRaw.insertion_order, 100),
       position,
       depth: number(extensionValue(extensions, 'depth'), 4),
       role: number(extensionValue(extensions, 'role'), 0),
       ignoreBudget: boolean(extensionValue(extensions, 'ignore_budget')),
       scanDepth: nullableNumber(extensionValue(extensions, 'scan_depth')),
-      caseSensitive: typeof extensionValue(extensions, 'case_sensitive', entryRaw.case_sensitive) === 'boolean'
-        ? extensionValue(extensions, 'case_sensitive', entryRaw.case_sensitive) as boolean
+      caseSensitive: typeof extensionValue(extensions, 'case_sensitive') === 'boolean'
+        ? extensionValue(extensions, 'case_sensitive') as boolean
         : null,
       matchWholeWords: typeof extensions.match_whole_words === 'boolean' ? extensions.match_whole_words : null,
       useGroupScoring: typeof extensions.use_group_scoring === 'boolean' ? extensions.use_group_scoring : null,
       excludeRecursion: boolean(extensionValue(extensions, 'exclude_recursion')),
       preventRecursion: boolean(extensionValue(extensions, 'prevent_recursion')),
-      delayUntilRecursion: number(extensionValue(extensions, 'delay_until_recursion'), 0),
+      delayUntilRecursion: recursionDelay(extensionValue(extensions, 'delay_until_recursion'), false),
       sticky: nullableNumber(extensionValue(extensions, 'sticky')),
       cooldown: nullableNumber(extensionValue(extensions, 'cooldown')),
       delay: nullableNumber(extensionValue(extensions, 'delay')),
@@ -392,21 +440,21 @@ export function normalizeCharacterBook(raw: JsonObject): NormalizationResult {
       matchScenario: boolean(extensionValue(extensions, 'match_scenario')),
       matchCreatorNotes: boolean(extensionValue(extensions, 'match_creator_notes')),
       comment: string(entryRaw.comment),
-      displayName: string(entryRaw.name, string(entryRaw.comment)),
+      displayName: string(entryRaw.comment),
       content: string(entryRaw.content),
       enabled: boolean(entryRaw.enabled, true),
-      addMemo: boolean(extensionValue(extensions, 'add_memo'), string(entryRaw.comment).trim() !== ''),
+      addMemo: Boolean(entryRaw.comment),
       displayIndex: nullableNumber(extensionValue(extensions, 'display_index')) ?? index,
       outletName: string(extensionValue(extensions, 'outlet_name')),
       automationId: string(extensionValue(extensions, 'automation_id')),
       triggers: strings(extensionValue(extensions, 'triggers')),
       extensions,
-      unknownFields: unknownFields(entryRaw, characterEntryFields),
+      unknownFields: warnForeignUnknown(entryRaw, characterEntryFields, `entries[${index}]`, warnings),
     };
     warnUnknownPosition(entry.position, `entries[${index}].extensions.position`, warnings);
     return entry;
   });
-  return { worldbook: { ...bookBase(raw, characterBookFields), entries }, warnings };
+  return { worldbook: { ...bookBase(raw, characterBookFields, fallbackName), entries }, warnings };
 }
 
 function foreignExtensions(format: Exclude<WorldbookSourceFormat, 'st-native' | 'character-book' | 'naidata' | 'unknown'>, raw: JsonObject): JsonObject {
@@ -429,7 +477,7 @@ function warnForeignUnknown(
 ): JsonObject {
   const unknown = unknownFields(raw, known);
   for (const key of Object.keys(unknown)) {
-    warnings.push(diagnostic(
+    pushWarning(warnings, diagnostic(
       'worldbook_foreign_field_preserved',
       'This foreign field has no verified SillyTavern runtime mapping and was preserved verbatim.',
       `${path}.${key}`,
@@ -459,7 +507,7 @@ function foreignBook(
   };
 }
 
-export function normalizeNovel(raw: JsonObject): NormalizationResult {
+export function normalizeNovel(raw: JsonObject, fallbackName = 'Imported Worldbook'): NormalizationResult {
   const warnings: ImportDiagnostic[] = [];
   const allocator = new UidAllocator();
   const entries = (raw.entries as JsonObject[]).map((entryRaw, index) => {
@@ -468,13 +516,14 @@ export function normalizeNovel(raw: JsonObject): NormalizationResult {
     const unknown = warnForeignUnknown(entryRaw, known, `entries[${index}]`, warnings);
     warnForeignUnknown(context, new Set(['budgetPriority']), `entries[${index}].contextConfig`, warnings);
     return {
-      ...baseEntry(allocator.allocate(entryRaw.id, `entries[${index}].id`, warnings)),
+      ...baseEntry(allocator.allocate(entryRaw.id, `entries[${index}].id`, warnings), index),
       keys: strings(entryRaw.keys),
       comment: string(entryRaw.displayName),
       displayName: string(entryRaw.displayName),
       content: string(entryRaw.text),
       enabled: boolean(entryRaw.enabled, true),
       selective: false,
+      delayUntilRecursion: false,
       order: number(context.budgetPriority, 0),
       addMemo: string(entryRaw.displayName).trim() !== '',
       displayIndex: index,
@@ -483,43 +532,45 @@ export function normalizeNovel(raw: JsonObject): NormalizationResult {
     };
   });
   return {
-    worldbook: foreignBook(raw, 'novel', new Set(['lorebookVersion', 'name', 'description', 'entries', 'extensions']), entries, warnings),
+    worldbook: { ...foreignBook(raw, 'novel', new Set(['lorebookVersion', 'name', 'description', 'entries', 'extensions']), entries, warnings), name: typeof raw.name === 'string' ? raw.name : fallbackName },
     warnings,
   };
 }
 
-export function normalizeAgnai(raw: JsonObject): NormalizationResult {
+export function normalizeAgnai(raw: JsonObject, fallbackName = 'Imported Worldbook'): NormalizationResult {
   const warnings: ImportDiagnostic[] = [];
   const allocator = new UidAllocator();
   const entries = (raw.entries as JsonObject[]).map((entryRaw, index) => {
     const known = new Set(['id', 'name', 'keywords', 'entry', 'enabled', 'weight', 'extensions']);
     return {
-      ...baseEntry(allocator.allocate(entryRaw.id, `entries[${index}].id`, warnings)),
+      ...baseEntry(allocator.allocate(entryRaw.id, `entries[${index}].id`, warnings), index),
       keys: strings(entryRaw.keywords),
       comment: string(entryRaw.name),
       displayName: string(entryRaw.name),
       content: string(entryRaw.entry),
       enabled: boolean(entryRaw.enabled, true),
       selective: false,
+      delayUntilRecursion: false,
       order: number(entryRaw.weight, 100),
-      addMemo: string(entryRaw.name).trim() !== '',
+      addMemo: Boolean(entryRaw.name),
       displayIndex: index,
       extensions: foreignExtensions('agnai', entryRaw),
       unknownFields: warnForeignUnknown(entryRaw, known, `entries[${index}]`, warnings),
     };
   });
   return {
-    worldbook: foreignBook(raw, 'agnai', new Set(['kind', 'name', 'description', 'entries', 'extensions']), entries, warnings),
+    worldbook: { ...foreignBook(raw, 'agnai', new Set(['kind', 'name', 'description', 'entries', 'extensions']), entries, warnings), name: typeof raw.name === 'string' ? raw.name : fallbackName },
     warnings,
   };
 }
 
-function commaSeparated(value: unknown): string[] {
+function commaSeparated(value: unknown, optional = false): string[] {
   if (Array.isArray(value)) return strings(value);
-  return typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : [];
+  if (typeof value !== 'string' || (optional && value === '')) return [];
+  return value.split(',').map((item) => item.trim());
 }
 
-export function normalizeRisu(raw: JsonObject): NormalizationResult {
+export function normalizeRisu(raw: JsonObject, fallbackName = 'Imported Worldbook'): NormalizationResult {
   const warnings: ImportDiagnostic[] = [];
   const allocator = new UidAllocator();
   const entries = (raw.data as JsonObject[]).map((entryRaw, index) => {
@@ -528,16 +579,17 @@ export function normalizeRisu(raw: JsonObject): NormalizationResult {
       'activationPercent', 'extensions',
     ]);
     return {
-      ...baseEntry(allocator.allocate(entryRaw.id, `data[${index}].id`, warnings)),
+      ...baseEntry(allocator.allocate(entryRaw.id, `data[${index}].id`, warnings), index),
       keys: commaSeparated(entryRaw.key),
-      secondaryKeys: commaSeparated(entryRaw.secondkey),
+      secondaryKeys: commaSeparated(entryRaw.secondkey, true),
       comment: string(entryRaw.comment),
       displayName: string(entryRaw.comment),
       content: string(entryRaw.content),
       constant: boolean(entryRaw.alwaysActive),
       selective: boolean(entryRaw.selective),
+      delayUntilRecursion: false,
       probability: number(entryRaw.activationPercent, 100),
-      useProbability: entryRaw.activationPercent !== undefined,
+      useProbability: Boolean(entryRaw.activationPercent ?? true),
       order: number(entryRaw.insertorder, 100),
       addMemo: true,
       displayIndex: index,
@@ -546,7 +598,7 @@ export function normalizeRisu(raw: JsonObject): NormalizationResult {
     };
   });
   return {
-    worldbook: foreignBook(raw, 'risu', new Set(['type', 'name', 'description', 'data', 'extensions']), entries, warnings),
+    worldbook: { ...foreignBook(raw, 'risu', new Set(['type', 'name', 'description', 'data', 'extensions']), entries, warnings), name: typeof raw.name === 'string' ? raw.name : fallbackName },
     warnings,
   };
 }
