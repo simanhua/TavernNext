@@ -124,8 +124,71 @@ describe('deterministic token budget ledger', () => {
     expect(result).toMatchObject({
       ok: true,
       totalTokens: 3,
-      tokenBreakdown: [{ source: 'disabled', includedTokens: 0, omittedTokens: 5, reason: 'disabled' }],
+      tokenBreakdown: [
+        { source: 'tokenizer:request-framing', includedTokens: 3, omittedTokens: 0 },
+        { source: 'disabled', includedTokens: 0, omittedTokens: 5, reason: 'disabled' },
+      ],
     });
     expect(overflow).toMatchObject({ ok: false, code: 'context_overflow' });
+  });
+
+  it('keeps the longest newest-history suffix when a shorter BPE candidate is larger', async () => {
+    const result = await allocateGroupedPromptBudget({
+      maxTokens: 1,
+      blocks: [
+        { source: 'history:old', policy: 'history' as const, value: 'old' },
+        { source: 'history:new', policy: 'history' as const, value: 'new' },
+      ],
+      countSelection: (selected) => {
+        const value = selected.map((block) => block.value).join('');
+        return ({ '': 0, old: 1, new: 2, oldnew: 1 } as const)[value as '' | 'old' | 'new' | 'oldnew'];
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      includedBlockIndexes: [0, 1],
+      includedSources: ['history:old', 'history:new'],
+      totalTokens: 1,
+    });
+  });
+
+  it('keeps the longest optional prefix when a shorter BPE candidate is larger', async () => {
+    const result = await allocateGroupedPromptBudget({
+      maxTokens: 1,
+      blocks: [
+        { source: 'example:first', policy: 'optional' as const, value: 'first' },
+        { source: 'example:second', policy: 'optional' as const, value: 'second' },
+      ],
+      countSelection: (selected) => {
+        const value = selected.map((block) => block.value).join('');
+        return ({ '': 0, first: 2, second: 1, firstsecond: 1 } as const)[value as '' | 'first' | 'second' | 'firstsecond'];
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      includedBlockIndexes: [0, 1],
+      includedSources: ['example:first', 'example:second'],
+      totalTokens: 1,
+    });
+  });
+
+  it('keeps every source in a tokenizer-error ledger even when standalone counting fails early', async () => {
+    const result = await allocateGroupedPromptBudget({
+      maxTokens: 10,
+      blocks: [
+        { source: 'first', policy: 'immutable' as const, value: 'first' },
+        { source: 'failed', policy: 'immutable' as const, value: 'failed' },
+        { source: 'unreached', policy: 'immutable' as const, value: 'unreached' },
+      ],
+      countSelection: (selected) => {
+        if (selected.length === 1 && selected[0]?.source === 'failed') throw new Error('offline');
+        return selected.length;
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'tokenizer_error' });
+    expect(result.tokenBreakdown.map((entry) => entry.source)).toEqual(['first', 'failed', 'unreached']);
   });
 });

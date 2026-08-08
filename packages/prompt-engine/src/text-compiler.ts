@@ -11,7 +11,9 @@ import type {
   TokenOmissionReason,
 } from './types.js';
 
-interface TextBlock extends PromptBudgetBlock<string> {}
+interface TextBlock extends PromptBudgetBlock<string> {
+  conversation?: boolean;
+}
 
 interface ExampleMessage {
   role: 'user' | 'assistant';
@@ -25,6 +27,7 @@ interface ConversationItem {
   content: string;
   policy: TextBlock['policy'];
   omitReason?: TokenOmissionReason;
+  continued?: boolean;
 }
 
 function role(value: string): PromptRole | undefined {
@@ -60,10 +63,10 @@ function exampleGroups(raw: string, user: string, character: string): ExampleMes
 
 function rawExampleGroups(raw: string): string[] {
   if (raw.trim() === '' || raw.trim() === '<START>') return [];
-  const source = /^\s*<START>/i.test(raw) ? raw : `<START>\n${raw.trim()}`;
+  const source = raw.startsWith('<START>') ? raw : `<START>\n${raw.trim()}`;
   return source.split(/<START>/i).slice(1)
-    .map((block) => block.replace(/\r/g, '').replace(/^\n/, '').trimEnd())
-    .filter((block) => block !== '');
+    .map((block) => `${block.replace(/\r/g, '').trim()}\n`)
+    .filter((block) => block !== '\n');
 }
 
 function asStopList(value: unknown): string[] {
@@ -187,9 +190,21 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
   }
 
   const blocks: TextBlock[] = [];
-  const add = (source: string, value: string, policy: TextBlock['policy'], omitReason?: TokenOmissionReason): number | undefined => {
+  const add = (
+    source: string,
+    value: string,
+    policy: TextBlock['policy'],
+    omitReason?: TokenOmissionReason,
+    conversation = false,
+  ): number | undefined => {
     if (value === '') return undefined;
-    blocks.push({ source, value, policy, ...(omitReason === undefined ? {} : { omitReason }) });
+    blocks.push({
+      source,
+      value,
+      policy,
+      ...(omitReason === undefined ? {} : { omitReason }),
+      ...(conversation ? { conversation: true } : {}),
+    });
     return blocks.length - 1;
   };
   if (!storyInChat) add('context:story-string', story, 'immutable');
@@ -199,24 +214,30 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
   const includeName = namesBehavior === 'always';
   const formatMessage = (
     message: { role: PromptRole; content: string },
-    options: { example?: boolean; first?: boolean; lastUser?: boolean; name?: string | null } = {},
+    options: { first?: boolean; lastUser?: boolean; name?: string | null; continued?: boolean } = {},
   ): string => {
     if (instruct === undefined) {
       if (message.role === 'system') return `${message.content}\n`;
-      const name = message.role === 'user' ? input.persona.name : input.character.name;
-      return `${name}: ${message.content}\n`;
+      const defaultName = message.role === 'user' ? input.persona.name : input.character.name;
+      const name = options.name === null ? '' : options.name ?? defaultName;
+      const formatted = name === '' ? `${message.content}\n` : `${name}: ${message.content}\n`;
+      return options.continued ? formatted.replace(/\n?$/, '') : formatted;
     }
     const defaultName = message.role === 'user' ? input.persona.name : message.role === 'assistant' ? input.character.name : 'System';
     const name = options.name === null ? '' : options.name ?? defaultName;
     const sequenceName = name || 'System';
     const prefixKey = message.role === 'user'
-      ? options.lastUser && stringSetting(instruct, 'last_input_sequence') !== ''
+      ? options.continued && stringSetting(instruct, 'last_input_sequence') !== ''
+        ? 'last_input_sequence'
+        : options.lastUser && stringSetting(instruct, 'last_input_sequence') !== ''
         ? 'last_input_sequence'
         : options.first && stringSetting(instruct, 'first_input_sequence') !== ''
           ? 'first_input_sequence'
           : 'input_sequence'
       : message.role === 'assistant'
-        ? options.first && stringSetting(instruct, 'first_output_sequence') !== ''
+        ? options.continued && stringSetting(instruct, 'last_output_sequence') !== ''
+          ? 'last_output_sequence'
+          : options.first && stringSetting(instruct, 'first_output_sequence') !== ''
           ? 'first_output_sequence'
           : 'output_sequence'
         : booleanSetting(instruct, 'system_same_as_user') ? 'input_sequence' : 'system_sequence';
@@ -226,22 +247,38 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     const prefix = sequence(prefixKey, sequenceName);
     let suffix = sequence(suffixKey, sequenceName);
     if (suffix === '' && wrap) suffix = '\n';
-    const forceExampleUserName = namesBehavior === 'force' && options.example === true && message.role === 'user';
-    const named = message.role !== 'system' && name !== '' && (includeName || forceExampleUserName)
+    if (options.continued) suffix = '';
+    const named = message.role !== 'system' && name !== '' && includeName
       ? `${name}: ${message.content}`
       : message.content;
     return [prefix, `${named}${suffix}`].filter((part) => part !== '').join(wrap ? '\n' : '');
   };
 
+  const formatExampleMessage = (message: ExampleMessage): string => {
+    if (instruct === undefined) {
+      const name = message.role === 'user' ? input.persona.name : input.character.name;
+      return `${name}: ${message.content}\n`;
+    }
+    const name = message.role === 'user' ? input.persona.name : input.character.name;
+    const prefixKey = message.role === 'user' ? 'input_sequence' : 'output_sequence';
+    const suffixKey = message.role === 'user' ? 'input_suffix' : 'output_suffix';
+    const prefix = sequence(prefixKey, name);
+    let suffix = sequence(suffixKey, name);
+    if (booleanSetting(instruct, 'macro') && suffix === '' && wrap) suffix = '\n';
+    const shouldName = includeName || (namesBehavior === 'force' && message.role === 'user');
+    const content = shouldName ? `${name}: ${message.content}` : message.content;
+    return [prefix, `${content}${suffix}`].filter((part) => part !== '').join(wrap ? '\n' : '');
+  };
+
   const expandedExamples = expand(input.character.examples, 'character:examples');
   const exampleSeparator = expand(stringSetting(context, 'example_separator'), 'context:example-separator');
-  if (instruct !== undefined && booleanSetting(instruct, 'skip_examples')) {
+  if (instruct === undefined || booleanSetting(instruct, 'skip_examples')) {
     rawExampleGroups(expandedExamples).forEach((raw, index) => {
       add(`example:${index}`, `${exampleSeparator === '' ? '' : `${exampleSeparator}\n`}${raw}`, 'optional');
     });
   } else {
     exampleGroups(expandedExamples, input.persona.name, input.character.name).forEach((messages, index) => {
-      const formatted = messages.map((message) => formatMessage(message, { example: true })).join('');
+      const formatted = messages.map(formatExampleMessage).join('');
       add(`example:${index}`, `${exampleSeparator === '' ? '' : `${exampleSeparator}\n`}${formatted}`, 'optional');
     });
   }
@@ -256,9 +293,12 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
       'instruct:user-alignment',
       formatMessage({ role: 'user', content: alignment }, { first: true }),
       'immutable',
+      undefined,
+      true,
     );
   }
 
+  const isContinue = (input.generationType ?? 'normal') === 'continue';
   const conversation: ConversationItem[] = input.history.map((message: PromptHistoryMessage, index) => {
     const source = `history:${message.id ?? index}`;
     const messageRole = role(message.role);
@@ -266,7 +306,14 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
       warnings.push({ code: 'unsupported_role', message: `History role ${message.role} is not supported.`, source });
       return { source, content: message.content, policy: 'history', omitReason: 'unsupported_role' };
     }
-    return { source, role: messageRole, content: message.content, policy: 'history' };
+    return {
+      source,
+      role: messageRole,
+      name: message.name,
+      content: message.content,
+      policy: 'history',
+      ...(isContinue && index === input.history.length - 1 ? { continued: true } : {}),
+    };
   });
   if (storyInChat && story !== '') {
     const rawDepth = context.story_string_depth;
@@ -280,13 +327,17 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     });
   }
   if (postHistory !== '') {
-    conversation.push({
+    const postHistoryItem: ConversationItem = {
       source: 'system:post-history',
       role: instruct === undefined ? 'system' : 'user',
       ...(instruct === undefined ? {} : { name: null }),
       content: postHistory,
       policy: 'immutable',
-    });
+    };
+    const postHistoryIndex = isContinue && conversation.some((item) => item.continued)
+      ? Math.max(0, conversation.findIndex((item) => item.continued))
+      : conversation.length;
+    conversation.splice(postHistoryIndex, 0, postHistoryItem);
   }
 
   let lastUserIndex = -1;
@@ -296,27 +347,66 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     break;
   }
   const conversationBlocks: Array<{ blockIndex: number; role: PromptRole }> = [];
+  const continuedIndex = conversation.findIndex((item) => item.continued);
+  const moveContinuedToCycle = isContinue && continuedIndex >= 0 && conversation.length > 1;
+  const continuedItem = moveContinuedToCycle ? conversation[continuedIndex] : undefined;
   conversation.forEach((message, index) => {
+    if (moveContinuedToCycle && index === continuedIndex) return;
     if (message.role === undefined) {
       add(message.source, message.content, message.policy, message.omitReason);
       return;
     }
     const blockIndex = add(message.source, formatMessage(
       { role: message.role, content: message.content },
-      { first: index === 0, lastUser: index === lastUserIndex, ...(message.name === undefined ? {} : { name: message.name }) },
-    ), message.policy, message.omitReason);
+      {
+        first: index === 0,
+        lastUser: index === lastUserIndex,
+        continued: message.continued,
+        ...(message.name === undefined ? {} : { name: message.name }),
+      },
+    ), message.policy, message.omitReason, true);
     if (blockIndex !== undefined) conversationBlocks.push({ blockIndex, role: message.role });
   });
 
+  if (continuedItem?.role !== undefined) {
+    const blockIndex = add(
+      continuedItem.source,
+      formatMessage(
+        { role: continuedItem.role, content: continuedItem.content },
+        {
+          first: continuedIndex === 0,
+          lastUser: continuedIndex === lastUserIndex,
+          continued: true,
+          ...(continuedItem.name === undefined ? {} : { name: continuedItem.name }),
+        },
+      ),
+      'immutable',
+      continuedItem.omitReason,
+      true,
+    );
+    if (blockIndex !== undefined) conversationBlocks.push({ blockIndex, role: continuedItem.role });
+  }
+
   let trigger = '';
-  if (instruct !== undefined) {
+  if (!isContinue && instruct !== undefined) {
     const lastOutput = stringSetting(instruct, 'last_output_sequence') !== '' ? 'last_output_sequence' : 'output_sequence';
     const prefix = sequence(lastOutput, input.character.name);
     const forceName = includeName;
-    trigger = [prefix, forceName ? `${input.character.name}:` : ''].filter((part) => part !== '').join(wrap ? '\n' : '');
-    if (!forceName && wrap && trigger !== '') trigger += '\n';
-  } else if (booleanSetting(context, 'always_force_name2')) {
-    trigger = `${input.character.name}:`;
+    const separator = wrap ? '\n' : '';
+    let nameFiller = '';
+    if (forceName
+      && stringSetting(instruct, 'last_output_sequence') !== ''
+      && /\s$/.test(stringSetting(instruct, 'output_sequence'))
+      && !/\s$/.test(stringSetting(instruct, 'last_output_sequence'))) {
+      nameFiller = stringSetting(instruct, 'output_sequence').slice(-1);
+    }
+    trigger = forceName
+      ? `${separator}${prefix}${separator}${nameFiller}${input.character.name}:`
+      : `${separator}${prefix}`;
+    if (wrap) trigger = trigger.trimEnd();
+    if (!forceName) trigger += separator;
+  } else if (!isContinue && booleanSetting(context, 'always_force_name2')) {
+    trigger = `\n${input.character.name}:`;
   }
   add('generation:trigger', trigger, 'immutable');
 
@@ -369,10 +459,23 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
       message: 'Macro expansion exceeded its deterministic safety bounds.',
     });
   }
+  const renderSelection = (selected: readonly TextBlock[]): string => {
+    const values = selected.map((block) => block.value);
+    if (!isContinue && (instruct === undefined || wrap)) {
+      let lastConversation = -1;
+      for (let index = selected.length - 1; index >= 0; index -= 1) {
+        if (selected[index]?.conversation !== true) continue;
+        lastConversation = index;
+        break;
+      }
+      if (lastConversation >= 0) values[lastConversation] = values[lastConversation]!.replace(/\n?$/, '');
+    }
+    return values.join('');
+  };
   let budget = await allocateGroupedPromptBudget({
     maxTokens: input.maxPromptTokens,
     blocks,
-    countSelection: async (selected) => input.tokenizer.countText(selected.map((block) => block.value).join('')),
+    countSelection: async (selected) => input.tokenizer.countText(renderSelection(selected)),
     fit: 'strict',
   });
   if (!budget.ok) {
@@ -395,7 +498,7 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
       budget = await allocateGroupedPromptBudget({
         maxTokens: input.maxPromptTokens,
         blocks: fixedBlocks,
-        countSelection: async (chosen) => input.tokenizer.countText(chosen.map((block) => block.value).join('')),
+        countSelection: async (chosen) => input.tokenizer.countText(renderSelection(chosen)),
         fit: 'strict',
       });
       if (!budget.ok) {
@@ -409,7 +512,7 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
   const included = new Set(budget.includedBlockIndexes);
   return {
     kind: 'text',
-    text: blocks.flatMap((block, index) => included.has(index) ? [block.value] : []).join(''),
+    text: renderSelection(blocks.filter((_block, index) => included.has(index))),
     stop,
     tokenBreakdown: budget.tokenBreakdown,
     totalTokens: budget.totalTokens,

@@ -193,9 +193,9 @@ describe('Chat preset compiler', () => {
     });
   });
 
-  it('applies wi_format and executes duplicate order references independently', async () => {
+  it('applies wi_format and overwrites duplicate order references at their first collection index', async () => {
     const result = await compileChatPrompt({
-      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 20,
+      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 3,
       preset: preset('chat', {
         prompts: [
           { identifier: 'worldInfoBefore', marker: true },
@@ -219,9 +219,86 @@ describe('Chat preset compiler', () => {
     expect(result.messages).toEqual([
       { role: 'system', content: '[WI]\nbefore\n[/WI]' },
       { role: 'user', content: 'repeat' },
-      { role: 'user', content: 'repeat' },
       { role: 'system', content: '[WI]\nafter\n[/WI]' },
     ]);
+    expect(result.tokenBreakdown.find((entry) => entry.reason === 'duplicate_order_reference')).toMatchObject({
+      source: 'prompt:repeat', includedTokens: 0,
+    });
+  });
+
+  it('applies solo DEFAULT, CONTENT, and COMPLETION name behavior to history', async () => {
+    const base = {
+      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 10,
+      history: [
+        { id: 'user', role: 'user', name: 'You Name!', content: 'hello' },
+        { id: 'assistant', role: 'assistant', name: 'Aster Name!', content: 'reply' },
+      ],
+      presetSettings: {
+        prompts: [{ identifier: 'chatHistory', marker: true }],
+        prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }],
+        new_chat_prompt: '',
+      },
+    };
+    const compile = (namesBehavior: number) => compileChatPrompt({
+      character: base.character,
+      persona: base.persona,
+      tokenizer: base.tokenizer,
+      maxPromptTokens: base.maxPromptTokens,
+      history: base.history,
+      preset: preset('chat', { ...base.presetSettings, names_behavior: namesBehavior }),
+    });
+
+    const defaultNames = await compile(0);
+    const contentNames = await compile(2);
+    const completionNames = await compile(1);
+
+    if (defaultNames.kind !== 'chat') throw new Error(defaultNames.message);
+    if (contentNames.kind !== 'chat') throw new Error(contentNames.message);
+    if (completionNames.kind !== 'chat') throw new Error(completionNames.message);
+    expect(defaultNames.messages).toEqual([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'reply' },
+    ]);
+    expect(contentNames.messages).toEqual([
+      { role: 'user', content: 'You Name!: hello' },
+      { role: 'assistant', content: 'Aster Name!: reply' },
+    ]);
+    expect(completionNames.messages).toEqual([
+      { role: 'user', content: 'hello', name: 'You_Name_' },
+      { role: 'assistant', content: 'reply', name: 'Aster_Name_' },
+    ]);
+  });
+
+  it('squashes eligible system messages before exact counting while preserving the new-chat boundary', async () => {
+    const result = await compileChatPrompt({
+      character: character(), persona: persona(), maxPromptTokens: 2, history: [],
+      tokenizer: {
+        countText: async (text) => text.length,
+        countMessages: async (messages) => messages.length,
+      },
+      preset: preset('chat', {
+        prompts: [
+          { identifier: 'first', role: 'system', content: 'one' },
+          { identifier: 'second', role: 'system', content: 'two' },
+          { identifier: 'chatHistory', marker: true },
+        ],
+        prompt_order: [{ character_id: 100001, order: [
+          { identifier: 'first', enabled: true },
+          { identifier: 'second', enabled: true },
+          { identifier: 'chatHistory', enabled: true },
+        ] }],
+        new_chat_prompt: 'new chat',
+        squash_system_messages: true,
+      }),
+    });
+
+    expect(result).toMatchObject({
+      kind: 'chat', totalTokens: 2,
+      messages: [
+        { role: 'system', content: 'one\ntwo' },
+        { role: 'system', content: 'new chat' },
+      ],
+    });
   });
 
   it('injects absolute prompts into history by depth, descending order group, and role', async () => {

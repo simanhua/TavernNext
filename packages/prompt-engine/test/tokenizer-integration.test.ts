@@ -72,7 +72,10 @@ describe('Task 6 tokenizer integration', () => {
 
     expect(exact).toMatchObject({
       kind: 'chat', messages: [], totalTokens: 3,
-      tokenBreakdown: [{ source: 'prompt:disabled', includedTokens: 0, omittedTokens: 5, reason: 'disabled' }],
+      tokenBreakdown: [
+        { source: 'tokenizer:request-framing', includedTokens: 3, omittedTokens: 0 },
+        { source: 'prompt:disabled', includedTokens: 0, omittedTokens: 5, reason: 'disabled' },
+      ],
     });
     expect(overflow).toMatchObject({ kind: 'error', target: 'chat', code: 'context_overflow' });
   });

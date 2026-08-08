@@ -59,7 +59,7 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
     };
   }
 
-  const standaloneTokens: number[] = [];
+  const standaloneTokens: Array<number | undefined> = new Array(input.blocks.length);
   const count = async (blocks: readonly TBlock[], source: string): Promise<number> => {
     const tokens = await input.countSelection(blocks);
     if (!Number.isSafeInteger(tokens) || tokens < 0) {
@@ -67,17 +67,18 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
     }
     return tokens;
   };
-  const failureBreakdown = (reason: TokenOmissionReason = 'context_overflow'): TokenBreakdownEntry[] => standaloneTokens
-    .map((tokens, index) => ({
-      source: input.blocks[index]!.source,
+  const failureBreakdown = (reason: TokenOmissionReason = 'context_overflow'): TokenBreakdownEntry[] => input.blocks
+    .map((block, index) => ({
+      source: block.source,
       includedTokens: 0,
-      omittedTokens: tokens,
-      reason: input.blocks[index]!.omitReason ?? reason,
+      omittedTokens: standaloneTokens[index] ?? 0,
+      reason: block.omitReason ?? reason,
     }));
 
   try {
-    for (const block of input.blocks) {
-      standaloneTokens.push(await count([block], block.source));
+    for (let index = 0; index < input.blocks.length; index += 1) {
+      const block = input.blocks[index]!;
+      standaloneTokens[index] = await count([block], `standalone:${block.source}`);
     }
   } catch (error) {
     return {
@@ -90,14 +91,23 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
   }
 
   const eligibleIndexes = input.blocks.flatMap((block, index) => block.omitReason === undefined ? [index] : []);
-  const selected = new Set(eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'immutable'));
-  const selectedBlocks = () => input.blocks.filter((_block, index) => selected.has(index));
+  const immutableIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'immutable');
+  const historyIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'history');
+  const optionalIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'optional');
+  const indexesFor = (historyCount: number, optionalCount: number): Set<number> => new Set([
+    ...immutableIndexes,
+    ...historyIndexes.slice(historyIndexes.length - historyCount),
+    ...optionalIndexes.slice(0, optionalCount),
+  ]);
+  const blocksFor = (indexes: ReadonlySet<number>): TBlock[] => input.blocks
+    .filter((_block, index) => indexes.has(index));
   const fits = (tokens: number) => input.fit === 'strict'
     ? tokens < input.maxTokens
     : tokens <= input.maxTokens;
-  let totalTokens: number;
+  const immutableSelection = indexesFor(0, 0);
+  let immutableTokens: number;
   try {
-    totalTokens = await count(selectedBlocks(), 'immutable prompt content');
+    immutableTokens = await count(blocksFor(immutableSelection), 'candidate:history=0,optional=0');
   } catch (error) {
     return {
       ok: false,
@@ -107,7 +117,7 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
       tokenBreakdown: failureBreakdown(),
     };
   }
-  if (totalTokens > input.maxTokens) {
+  if (immutableTokens > input.maxTokens) {
     return {
       ok: false,
       code: 'context_overflow',
@@ -118,40 +128,37 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
   }
 
   try {
-    let historyBlocked = false;
-    const historyIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'history');
-    for (let position = historyIndexes.length - 1; position >= 0; position -= 1) {
-      const index = historyIndexes[position]!;
-      if (historyBlocked) continue;
-      selected.add(index);
-      const candidateTokens = await count(selectedBlocks(), input.blocks[index]!.source);
-      if (fits(candidateTokens)) {
-        totalTokens = candidateTokens;
-      } else {
-        selected.delete(index);
-        historyBlocked = true;
+    const candidates: Array<{
+      historyCount: number;
+      optionalCount: number;
+      indexes: Set<number>;
+      tokens: number;
+    }> = [{ historyCount: 0, optionalCount: 0, indexes: immutableSelection, tokens: immutableTokens }];
+    for (let historyCount = 0; historyCount <= historyIndexes.length; historyCount += 1) {
+      for (let optionalCount = 0; optionalCount <= optionalIndexes.length; optionalCount += 1) {
+        if (historyCount === 0 && optionalCount === 0) continue;
+        const indexes = indexesFor(historyCount, optionalCount);
+        const tokens = await count(
+          blocksFor(indexes),
+          `candidate:history=${historyCount},optional=${optionalCount}`,
+        );
+        if (fits(tokens)) {
+          candidates.push({ historyCount, optionalCount, indexes, tokens });
+        }
       }
     }
-
-    let optionalBlocked = false;
-    for (const index of eligibleIndexes.filter((candidate) => input.blocks[candidate]!.policy === 'optional')) {
-      if (optionalBlocked) continue;
-      selected.add(index);
-      const candidateTokens = await count(selectedBlocks(), input.blocks[index]!.source);
-      if (fits(candidateTokens)) {
-        totalTokens = candidateTokens;
-      } else {
-        selected.delete(index);
-        optionalBlocked = true;
-      }
-    }
+    candidates.sort((left, right) => right.historyCount - left.historyCount
+      || right.optionalCount - left.optionalCount);
+    const chosen = candidates[0]!;
+    const selected = chosen.indexes;
+    const totalTokens = chosen.tokens;
 
     const includedTokens = new Map<number, number>();
     const selectedIndexes = input.blocks.flatMap((_block, index) => selected.has(index) ? [index] : []);
     let attributedTokens = 0;
     for (const index of selectedIndexes) {
       const without = input.blocks.filter((_block, candidate) => selected.has(candidate) && candidate !== index);
-      const withoutTokens = await count(without, input.blocks[index]!.source);
+      const withoutTokens = await count(without, `ledger:included:${index}:${input.blocks[index]!.source}`);
       const leaveOneOutMarginal = Math.max(0, totalTokens - withoutTokens);
       const allocation = Math.min(leaveOneOutMarginal, totalTokens - attributedTokens);
       includedTokens.set(index, allocation);
@@ -169,23 +176,28 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
     for (let index = 0; index < input.blocks.length; index += 1) {
       if (selected.has(index)) continue;
       const candidate = input.blocks.filter((_block, candidateIndex) => selected.has(candidateIndex) || candidateIndex === index);
-      const candidateTokens = await count(candidate, input.blocks[index]!.source);
+      const candidateTokens = await count(candidate, `ledger:omitted:${index}:${input.blocks[index]!.source}`);
       omittedTokens.set(index, Math.max(0, candidateTokens - totalTokens));
     }
+
+    const contentBreakdown = input.blocks.map((block, index): TokenBreakdownEntry => selected.has(index)
+      ? { source: block.source, includedTokens: includedTokens.get(index) ?? 0, omittedTokens: 0 }
+      : {
+          source: block.source,
+          includedTokens: 0,
+          omittedTokens: omittedTokens.get(index) ?? standaloneTokens[index] ?? 0,
+          reason: block.omitReason ?? (block.policy === 'history' ? 'history_budget' : 'optional_budget'),
+        });
+    const framingBreakdown: TokenBreakdownEntry[] = selectedIndexes.length === 0 && totalTokens > 0
+      ? [{ source: 'tokenizer:request-framing', includedTokens: totalTokens, omittedTokens: 0 }]
+      : [];
 
     return {
       ok: true,
       includedBlockIndexes: input.blocks.flatMap((_block, index) => selected.has(index) ? [index] : []),
       includedSources: input.blocks.flatMap((block, index) => selected.has(index) ? [block.source] : []),
       totalTokens,
-      tokenBreakdown: input.blocks.map((block, index) => selected.has(index)
-        ? { source: block.source, includedTokens: includedTokens.get(index) ?? 0, omittedTokens: 0 }
-        : {
-            source: block.source,
-            includedTokens: 0,
-            omittedTokens: omittedTokens.get(index) ?? standaloneTokens[index]!,
-            reason: block.omitReason ?? (block.policy === 'history' ? 'history_budget' : 'optional_budget'),
-          }),
+      tokenBreakdown: [...framingBreakdown, ...contentBreakdown],
     };
   } catch (error) {
     return {

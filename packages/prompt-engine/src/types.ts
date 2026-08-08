@@ -65,6 +65,8 @@ interface CompilationInputBase {
 
 export interface CompileChatPromptInput extends CompilationInputBase {
   preset: Preset;
+  /** This compiler models solo chat only; group and forced-avatar name rules are intentionally outside its contract. */
+  chatMode?: 'solo';
   generationType?: GenerationMode;
   promptOrderCharacterId?: string | number;
   worldInfoBefore?: string;

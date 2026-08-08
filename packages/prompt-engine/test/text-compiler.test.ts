@@ -142,7 +142,7 @@ describe('Text preset compiler', () => {
 
     expect(result.kind).toBe('text');
     if (result.kind !== 'text') throw new Error(result.message);
-    expect(result.text).toBe('<U>\nYou: Demo question</U>\n<A>\nDemo answer</A>\n<A>\n');
+    expect(result.text).toBe('<U>\nYou: Demo question</U>\n<A>\nDemo answer</A>\n\n<A>\n');
   });
 
   it('keeps raw example dialogue when the Instruct preset skips example formatting', async () => {
@@ -160,9 +160,108 @@ describe('Text preset compiler', () => {
       history: [],
     });
 
+    if (result.kind !== 'text') throw new Error(result.message);
+    expect(result.kind).toBe('text');
+    expect(result.text).toBe('***\nYou: Raw question\nAster: Raw answer\n');
+  });
+
+  it('does not synthesize example suffix newlines when macro expansion is disabled', async () => {
+    const result = await compileTextPrompt({
+      character: character({ examples: '<START>\nYou: question\nAster: answer' }),
+      persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 20, stop: [],
+      textPreset: preset('text', {}), contextPreset: preset('context', { story_string: '' }),
+      instructPreset: preset('instruct', {
+        input_sequence: '<U>', output_sequence: '<A>', system_sequence: '',
+        input_suffix: '', output_suffix: '', names_behavior: 'force', macro: false, wrap: true,
+      }),
+      history: [],
+    });
+
     expect(result.kind).toBe('text');
     if (result.kind !== 'text') throw new Error(result.message);
-    expect(result.text).toBe('***\nYou: Raw question\nAster: Raw answer');
+    expect(result.text).toBe('<U>\nYou: question<A>\nanswer\n<A>\n');
+  });
+
+  it('continues the newest assistant with last-output framing, no suffix, and PHI immediately before it', async () => {
+    const result = await compileTextPrompt({
+      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 30, stop: [],
+      textPreset: preset('text', {}), contextPreset: preset('context', { story_string: '' }),
+      instructPreset: preset('instruct', {
+        input_sequence: '<U>', last_input_sequence: '<LU>',
+        output_sequence: '<O>', first_output_sequence: '<FO>', last_output_sequence: '<LO>',
+        system_sequence: '<S>', input_suffix: '</U>', output_suffix: '</O>', wrap: true,
+      }),
+      systemPreset: preset('system', { content: '', post_history: 'PHI' }),
+      generationType: 'continue',
+      history: [
+        { id: 'greeting', role: 'assistant', content: 'greet' },
+        { id: 'question', role: 'user', content: 'question' },
+        { id: 'partial', role: 'assistant', content: 'partial' },
+      ],
+    });
+
+    expect(result.kind).toBe('text');
+    if (result.kind !== 'text') throw new Error(result.message);
+    expect(result.text).toBe('<FO>\ngreet</O><U>\nquestion</U><LU>\nPHI</U><LO>\npartial');
+    expect(result.tokenBreakdown.find((entry) => entry.source === 'generation:trigger')).toBeUndefined();
+  });
+
+  it('cuts the suffix for a one-message continuation without adding a generation trigger', async () => {
+    const result = await compileTextPrompt({
+      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 10, stop: [],
+      textPreset: preset('text', {}), contextPreset: preset('context', { story_string: '' }),
+      instructPreset: preset('instruct', {
+        input_sequence: '<U>', output_sequence: '<O>', first_output_sequence: '<FO>',
+        last_output_sequence: '<LO>', system_sequence: '', output_suffix: '</O>', wrap: true,
+      }),
+      generationType: 'continue',
+      history: [{ id: 'partial', role: 'assistant', content: 'partial' }],
+    });
+
+    if (result.kind !== 'text') throw new Error(result.message);
+    expect(result.kind).toBe('text');
+    expect(result.text).toBe('<LO>\npartial');
+  });
+
+  it('keeps an empty continuation empty and emits exact normal no-history separators', async () => {
+    const common = {
+      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 10, stop: [],
+      textPreset: preset('text', {}), contextPreset: preset('context', { story_string: '' }), history: [],
+    };
+    const continued = await compileTextPrompt({
+      ...common,
+      instructPreset: preset('instruct', {
+        input_sequence: '', output_sequence: '<O>', last_output_sequence: '<LO>', system_sequence: '', wrap: true,
+      }),
+      generationType: 'continue',
+    });
+    const instructNormal = await compileTextPrompt({
+      ...common,
+      instructPreset: preset('instruct', {
+        input_sequence: '', output_sequence: '<O>', last_output_sequence: '<LO>', system_sequence: '', wrap: true,
+      }),
+    });
+    const plainNormal = await compileTextPrompt({
+      ...common,
+      contextPreset: preset('context', { story_string: '', always_force_name2: true }),
+    });
+
+    if (continued.kind !== 'text') throw new Error(continued.message);
+    expect(continued).toMatchObject({ kind: 'text', text: '' });
+    expect(instructNormal).toMatchObject({ kind: 'text', text: '\n<LO>\n' });
+    expect(plainNormal).toMatchObject({ kind: 'text', text: '\nAster:' });
+  });
+
+  it('uses the actual message name and removes the final newline outside Instruct mode', async () => {
+    const result = await compileTextPrompt({
+      character: character(), persona: persona(), tokenizer: unitTokenizer(), maxPromptTokens: 10, stop: [],
+      textPreset: preset('text', {}), contextPreset: preset('context', { story_string: '' }),
+      history: [{ id: 'named', role: 'assistant', name: 'Guest', content: 'hello' }],
+    });
+
+    expect(result.kind).toBe('text');
+    if (result.kind !== 'text') throw new Error(result.message);
+    expect(result.text).toBe('Guest: hello');
   });
 
   it('formats post-history instructions as the newest user message and applies last-input sequencing', async () => {

@@ -1,7 +1,7 @@
 import type { GenerationMode } from '@tavernnext/domain';
 import { allocateGroupedPromptBudget, type PromptBudgetBlock } from './budget.js';
 import { expandMacros } from './macros.js';
-import { sanitizedPresetSettings, stringSetting } from './preset-settings.js';
+import { booleanSetting, sanitizedPresetSettings, stringSetting } from './preset-settings.js';
 import { appendWarnings, compilationFailure, stableStops } from './shared.js';
 import type {
   CompileChatPromptInput,
@@ -13,7 +13,13 @@ import type {
   TokenOmissionReason,
 } from './types.js';
 
-interface ChatBlock extends PromptBudgetBlock<PromptChatMessage[]> {}
+interface InternalChatMessage extends PromptChatMessage {
+  squashExcluded?: boolean;
+}
+
+interface ChatBlock extends PromptBudgetBlock<InternalChatMessage[]> {
+  history?: boolean;
+}
 
 interface ChatPromptDefinition {
   identifier: string;
@@ -239,7 +245,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
   };
   const add = (
     source: string,
-    messages: PromptChatMessage[],
+    messages: InternalChatMessage[],
     policy: ChatBlock['policy'] = 'immutable',
     omitReason?: TokenOmissionReason,
   ) => {
@@ -257,6 +263,17 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
         ? 'trigger_mismatch'
         : undefined;
   };
+  const seenExecutableIdentifiers = new Set<string>();
+  const executions = order.map((entry) => {
+    const prompt = byIdentifier.get(entry.identifier);
+    const fixedReason = prompt === undefined ? undefined : fixedReasonFor(entry, prompt);
+    if (prompt === undefined || fixedReason !== undefined) return { entry, prompt, fixedReason };
+    if (seenExecutableIdentifiers.has(entry.identifier)) {
+      return { entry, prompt, fixedReason: 'duplicate_order_reference' as const };
+    }
+    seenExecutableIdentifiers.add(entry.identifier);
+    return { entry, prompt, fixedReason };
+  });
   const contentFor = (prompt: ChatPromptDefinition): string => {
     if (prompt.identifier === 'main' && input.character.systemPrompt !== '' && prompt.forbid_overrides !== true) {
       return input.character.systemPrompt;
@@ -267,9 +284,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     return prompt.content ?? '';
   };
   const absolutePrompts: AbsolutePrompt[] = [];
-  for (const entry of order) {
-    const prompt = byIdentifier.get(entry.identifier);
-    if (prompt?.injection_position !== 1 || fixedReasonFor(entry, prompt) !== undefined) continue;
+  for (const { entry, prompt, fixedReason } of executions) {
+    if (prompt?.injection_position !== 1 || fixedReason !== undefined) continue;
     const promptRole = role(prompt.role);
     if (promptRole === undefined) continue;
     const source = `prompt:${entry.identifier}`;
@@ -286,14 +302,15 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     });
   }
 
-  for (const entry of order) {
+  for (const execution of executions) {
+    const { entry } = execution;
     const source = `prompt:${entry.identifier}`;
-    const prompt = byIdentifier.get(entry.identifier);
+    const { prompt } = execution;
     if (!prompt) {
       warnings.push(warning('missing_prompt', `Prompt order references missing prompt ${entry.identifier}.`, source));
       continue;
     }
-    const fixedReason = fixedReasonFor(entry, prompt);
+    const { fixedReason } = execution;
     const expandEnabled = (value: string, valueSource: string, values?: Readonly<Record<string, string>>) => fixedReason === undefined
       ? expand(value, valueSource, values)
       : value;
@@ -356,7 +373,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
           const heading = expandEnabled(stringSetting(settings, 'new_example_chat_prompt'), 'chat:new-example');
           for (const [index, messages] of exampleGroups(expanded, input.persona.name, input.character.name).entries()) {
             add(`example:${index}`, [
-              ...(heading === '' ? [] : [{ role: 'system' as const, content: heading }]),
+              ...(heading === '' ? [] : [{ role: 'system' as const, content: heading, squashExcluded: true }]),
               ...messages,
             ], 'optional', fixedReason);
           }
@@ -364,7 +381,12 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
         }
         case 'chatHistory': {
           const start = expandEnabled(stringSetting(settings, 'new_chat_prompt'), 'chat:new-chat');
-          add('chat:new-chat', start === '' ? [] : [{ role: 'system', content: start }], 'immutable', fixedReason);
+          add(
+            'chat:new-chat',
+            start === '' ? [] : [{ role: 'system', content: start, squashExcluded: true }],
+            'immutable',
+            fixedReason,
+          );
           const historyBlocks: ChatBlock[] = [];
           input.history.forEach((item, index) => {
             const message = historyMessage(item);
@@ -379,6 +401,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
             }
             historyBlocks.push({
               source: historySource, value: [message], policy: 'history',
+              history: true,
               ...(fixedReason === undefined ? {} : { omitReason: fixedReason }),
             });
           });
@@ -414,10 +437,60 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     });
   }
 
+  const namesBehavior = typeof settings.names_behavior === 'number' ? settings.names_behavior : 0;
+  const sanitizeCompletionName = (name: string): string => name.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 64);
+  const renderMessages = (selected: readonly ChatBlock[]): PromptChatMessage[] => {
+    const messages: InternalChatMessage[] = selected.flatMap((block) => block.value.map((message) => {
+      const rendered: InternalChatMessage = {
+        role: message.role,
+        content: block.history === true ? message.content.replace(/\r/g, '') : message.content,
+        ...(message.name === undefined ? {} : { name: message.name }),
+        ...(message.squashExcluded === true ? { squashExcluded: true } : {}),
+      };
+      if (block.history !== true) return rendered;
+
+      const fallbackName = rendered.role === 'user'
+        ? input.persona.name
+        : rendered.role === 'assistant' ? input.character.name : undefined;
+      const effectiveName = rendered.name ?? fallbackName;
+      if (namesBehavior === 2 && rendered.role !== 'system' && effectiveName !== undefined) {
+        rendered.content = `${effectiveName}: ${rendered.content}`;
+        delete rendered.name;
+      } else if (namesBehavior === 1 && effectiveName !== undefined && effectiveName !== '') {
+        rendered.name = sanitizeCompletionName(effectiveName);
+      } else {
+        delete rendered.name;
+      }
+      return rendered;
+    }));
+
+    const finalMessages: InternalChatMessage[] = [];
+    const squash = booleanSetting(settings, 'squash_system_messages');
+    const canSquash = (message: InternalChatMessage | undefined) => message !== undefined
+      && message.role === 'system'
+      && !message.name
+      && message.squashExcluded !== true;
+    for (const message of messages) {
+      if (squash && message.role === 'system' && message.content === '') continue;
+      const previous = finalMessages.at(-1);
+      if (squash && canSquash(previous) && canSquash(message)) {
+        previous!.content += `\n${message.content}`;
+      } else {
+        finalMessages.push({ ...message });
+      }
+    }
+
+    return finalMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      ...(message.name === undefined ? {} : { name: message.name }),
+    }));
+  };
+
   const budget = await allocateGroupedPromptBudget({
     maxTokens: input.maxPromptTokens,
     blocks,
-    countSelection: async (selected) => input.tokenizer.countMessages(selected.flatMap((block) => block.value)),
+    countSelection: async (selected) => input.tokenizer.countMessages(renderMessages(selected)),
   });
   if (!budget.ok) {
     return compilationFailure({
@@ -428,9 +501,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
   const included = new Set(budget.includedBlockIndexes);
   return {
     kind: 'chat',
-    messages: blocks.flatMap((block, index) => included.has(index)
-      ? block.value.map((message) => ({ ...message }))
-      : []),
+    messages: renderMessages(blocks.filter((_block, index) => included.has(index))),
     stop,
     tokenBreakdown: budget.tokenBreakdown,
     totalTokens: budget.totalTokens,

@@ -1,128 +1,81 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { Preset } from '@tavernnext/domain';
-import { inspectPreset, type PresetKind } from '@tavernnext/st-compat';
 import { describe, expect, it } from 'vitest';
 import { compileChatPrompt, compileTextPrompt } from '../src/index.js';
+import {
+  loadSillyTavern118Oracle,
+  SILLY_TAVERN_118_FIXTURE,
+} from './st-1.18-oracle-harness.js';
 import { character, persona, preset, unitTokenizer } from './fixtures.js';
 
 const oracleRoot = process.env.TAVERNNEXT_ST_ORACLE_ROOT;
 
-async function oraclePreset(
-  directory: string,
-  fileName: string,
-  expectedKind: PresetKind,
-): Promise<Preset> {
-  const source = new Uint8Array(readFileSync(join(
-    oracleRoot!, 'default', 'content', 'presets', directory, fileName,
-  )));
-  const preview = await inspectPreset(source, fileName);
-
-  expect(preview.blockingErrors, `${directory}/${fileName}`).toEqual([]);
-  expect(preview.kind, `${directory}/${fileName}`).toBe(expectedKind);
-  return preset(expectedKind, preview.settings, { name: preview.name });
-}
-
-describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 prompt parity probe', () => {
-  it('compiles the official Default Chat preset in its selected marker order', async () => {
-    const packageDocument = JSON.parse(readFileSync(join(oracleRoot!, 'package.json'), 'utf8')) as {
-      name?: string;
-      version?: string;
-    };
-    expect(packageDocument).toMatchObject({ name: 'sillytavern', version: '1.18.0' });
-
-    const result = await compileChatPrompt({
-      preset: await oraclePreset('openai', 'Default.json', 'chat'),
-      character: character({
-        description: 'ORACLE_DESCRIPTION',
-        personality: 'ORACLE_PERSONALITY',
-        scenario: 'ORACLE_SCENARIO',
-        examples: '<START>\nYou: ORACLE_EXAMPLE_USER\nAster: ORACLE_EXAMPLE_ASSISTANT',
-      }),
-      persona: persona({ description: 'ORACLE_PERSONA' }),
-      worldInfoBefore: 'ORACLE_WORLD_BEFORE',
-      worldInfoAfter: 'ORACLE_WORLD_AFTER',
-      history: [{ id: 'oracle-history', role: 'user', content: 'ORACLE_HISTORY' }],
-      tokenizer: unitTokenizer(),
-      generationType: 'normal',
-      maxPromptTokens: 1_000,
-      stop: [],
+describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 prompt parity oracle', () => {
+  it('matches complete Chat requests for DEFAULT, CONTENT+squash+duplicate, and COMPLETION names', async () => {
+    const oracle = await loadSillyTavern118Oracle(oracleRoot!);
+    expect(oracle.provenance).toMatchObject({
+      packageName: 'sillytavern',
+      version: '1.18.0',
+      execution: 'read-only hash-pinned upstream prompt orchestration',
+      orchestration: {
+        chat: ['setOpenAIMessages', 'setOpenAIMessageExamples', 'prepareOpenAIMessages'],
+        textSlice: {
+          source: 'public/script.js',
+          start: "if (main_api !== 'openai' && power_user.sysprompt.enabled)",
+          end: 'finalPrompt = eventData.prompt',
+        },
+      },
     });
 
-    expect(result.kind).toBe('chat');
-    if (result.kind !== 'chat') throw new Error(result.message);
-    expect(result.messages.map((message) => message.content)).toEqual(expect.arrayContaining([
-      'ORACLE_WORLD_BEFORE',
-      'ORACLE_PERSONA',
-      'ORACLE_DESCRIPTION',
-      'ORACLE_PERSONALITY',
-      'ORACLE_SCENARIO',
-      'ORACLE_WORLD_AFTER',
-      'ORACLE_EXAMPLE_USER',
-      'ORACLE_EXAMPLE_ASSISTANT',
-      '[Start a new Chat]',
-      'ORACLE_HISTORY',
-    ]));
-    expect(result.tokenBreakdown.map((entry) => entry.source)).toEqual([
-      'prompt:main',
-      'marker:worldInfoBefore',
-      'marker:personaDescription',
-      'marker:charDescription',
-      'marker:charPersonality',
-      'marker:scenario',
-      'prompt:enhanceDefinitions',
-      'marker:worldInfoAfter',
-      'example:0',
-      'chat:new-chat',
-      'history:oracle-history',
-    ]);
-    expect(result.tokenBreakdown.find((entry) => entry.source === 'prompt:enhanceDefinitions')).toMatchObject({
-      includedTokens: 0,
-      reason: 'disabled',
-    });
+    for (const oracleCase of oracle.chatCases) {
+      const result = await compileChatPrompt({
+        preset: preset('chat', oracleCase.settings, { name: oracleCase.label }),
+        character: character(SILLY_TAVERN_118_FIXTURE.character),
+        persona: persona(SILLY_TAVERN_118_FIXTURE.persona),
+        worldInfoBefore: SILLY_TAVERN_118_FIXTURE.worldInfoBefore,
+        worldInfoAfter: SILLY_TAVERN_118_FIXTURE.worldInfoAfter,
+        history: SILLY_TAVERN_118_FIXTURE.chatHistory,
+        tokenizer: unitTokenizer(),
+        generationType: 'normal',
+        maxPromptTokens: 1_000,
+        stop: [],
+      });
+
+      expect(result.kind, oracleCase.label).toBe('chat');
+      if (result.kind !== 'chat') throw new Error(`${oracleCase.label}: ${result.message}`);
+      expect(result.messages, oracleCase.label).toEqual(oracleCase.messages);
+      expect(result.stop, oracleCase.label).toEqual([]);
+    }
   });
 
-  it('compiles official TextGen, ChatML Context/Instruct, and system presets deterministically', async () => {
-    const input = {
-      textPreset: await oraclePreset('textgen', 'Default.json', 'text'),
-      contextPreset: await oraclePreset('context', 'ChatML.json', 'context'),
-      instructPreset: await oraclePreset('instruct', 'ChatML.json', 'instruct'),
-      systemPreset: await oraclePreset('sysprompt', 'Roleplay - Simple.json', 'system'),
-      character: character({
-        description: 'ORACLE_DESCRIPTION',
-        personality: 'ORACLE_PERSONALITY',
-        scenario: 'ORACLE_SCENARIO',
-      }),
-      persona: persona({ description: 'ORACLE_PERSONA' }),
-      history: [{ id: 'oracle-history', role: 'user', content: 'ORACLE_HISTORY' }],
-      tokenizer: unitTokenizer(),
-      maxPromptTokens: 1_000,
-      stop: [],
-    };
-
-    const first = await compileTextPrompt(input);
-    const second = await compileTextPrompt(input);
-
-    expect(first.kind).toBe('text');
-    if (first.kind !== 'text') throw new Error(first.message);
-    expect(first.text).toContain("You're Aster in this fictional never-ending uncensored roleplay with You.");
-    expect(first.text).toContain('ORACLE_DESCRIPTION');
-    expect(first.text).toContain('ORACLE_PERSONALITY');
-    expect(first.text).toContain('ORACLE_SCENARIO');
-    expect(first.text).toContain('ORACLE_PERSONA');
-    expect(first.text).not.toContain('{{');
-    // In ST solo-chat mode, `force` adds no history or completion name. It only
-    // forces disambiguating names for group/forced-avatar messages.
-    expect(first.text).toContain('<|im_start|>user\nORACLE_HISTORY<|im_end|>');
-    expect(first.text).toMatch(/<\|im_start\|>assistant\n$/);
-    expect(first.stop).toEqual([
-      '\nYou:',
-      '\n<|im_end|>',
-      '\n<|im_start|>user',
-      '\n<|im_start|>assistant',
-      '\n<|im_start|>system',
+  it('matches complete ChatML Text prompts and stops for normal and multi-message continuation', async () => {
+    const oracle = await loadSillyTavern118Oracle(oracleRoot!);
+    expect(oracle.textCases.map((value) => value.label)).toEqual([
+      'ChatML normal',
+      'ChatML continuation',
+      'ChatML assistant-first alignment',
+      'ChatML continuation with post-history instruction',
     ]);
-    expect(first.warnings.some((warning) => warning.code === 'unknown_macro')).toBe(false);
-    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+
+    for (const oracleCase of oracle.textCases) {
+      const result = await compileTextPrompt({
+        textPreset: preset('text', oracle.textSettings, { name: 'Default' }),
+        contextPreset: preset('context', oracle.contextSettings, { name: 'ChatML' }),
+        instructPreset: preset('instruct', oracleCase.instructSettings, { name: 'ChatML' }),
+        systemPreset: preset('system', oracleCase.systemSettings, { name: 'Roleplay - Simple' }),
+        character: character(SILLY_TAVERN_118_FIXTURE.character),
+        persona: persona(SILLY_TAVERN_118_FIXTURE.persona),
+        worldInfoBefore: SILLY_TAVERN_118_FIXTURE.worldInfoBefore,
+        worldInfoAfter: SILLY_TAVERN_118_FIXTURE.worldInfoAfter,
+        history: oracleCase.history,
+        tokenizer: unitTokenizer(),
+        generationType: oracleCase.generationType,
+        maxPromptTokens: 1_000,
+        stop: [],
+      });
+
+      expect(result.kind, oracleCase.label).toBe('text');
+      if (result.kind !== 'text') throw new Error(`${oracleCase.label}: ${result.message}`);
+      expect(result.text, oracleCase.label).toBe(oracleCase.text);
+      expect(result.stop, oracleCase.label).toEqual(oracleCase.stop);
+    }
   });
 });
