@@ -7,9 +7,13 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "fastify": "^5.11.3"
+    "@tavernnext/domain": "*",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.11.3",
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
+    "@types/sql.js": "^1.4.11",
     "tsx": "^4.23.11"
   }
 }

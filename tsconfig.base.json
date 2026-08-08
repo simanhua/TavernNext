@@ -1,5 +1,8 @@
 {
   "compilerOptions": {
+    "paths": {
+      "@tavernnext/domain": ["./packages/domain/src/index.ts"]
+    },
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
