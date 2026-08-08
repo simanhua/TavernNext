@@ -1,0 +1,8 @@
+{
+  "name": "Synthetic Reasoning",
+  "prefix": "<think>",
+  "separator": "</think>\n",
+  "suffix": "</answer>",
+  "extract_regex": "<think>([\\s\\S]*?)</think>",
+  "reasoning_unknown": { "retained": [true, false] }
+}

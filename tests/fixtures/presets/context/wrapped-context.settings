@@ -1,0 +1,9 @@
+{
+  "settings": {
+    "name": "Wrapped Synthetic Context",
+    "story_string": "{{system}}\n{{description}}",
+    "story_string_position": 0,
+    "use_stop_strings": false
+  },
+  "wrapper_unknown": { "nested": "preserved" }
+}

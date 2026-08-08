@@ -30,6 +30,7 @@ import {
   type SourceArtifact,
 } from './artifact.js';
 import { diagnostic, type ImportDiagnostic } from './warnings.js';
+import { isPresetDocument } from './presets/detect.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const zipSignature = Uint8Array.from([0x50, 0x4b]);
@@ -649,7 +650,7 @@ function jsonCandidates(value: unknown): ArtifactKind[] {
     || (data !== undefined && typeof data.name === 'string')
     || (typeof object.name === 'string' && ['description', 'personality', 'first_mes', 'firstMessage'].some((key) => key in object))
   ) candidates.push('character');
-  if (['prompts', 'prompt_order', 'story_string', 'input_sequence', 'output_sequence', 'reasoning'].some((key) => key in object)) candidates.push('preset');
+  if (isPresetDocument(object)) candidates.push('preset');
   if ('entries' in object || 'loreItems' in object) candidates.push('worldbook');
   return candidates;
 }

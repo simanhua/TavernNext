@@ -1,0 +1,43 @@
+{
+  "name": "Synthetic Chat Settings",
+  "prompts": [
+    {
+      "identifier": "system-main",
+      "name": "System Main",
+      "role": "system",
+      "content": "You are documenting a synthetic archive.",
+      "enabled": true,
+      "marker": false,
+      "injection_position": 0,
+      "injection_depth": 4,
+      "generation_trigger": ["normal", "regenerate"],
+      "unknown_prompt_nested": { "retain": [0, false, "yes"] }
+    },
+    {
+      "identifier": "empty-marker",
+      "name": "Empty Marker",
+      "role": "assistant",
+      "content": "",
+      "enabled": true,
+      "marker": true,
+      "generation_trigger": ["continue"],
+      "unknown_prompt_nested": { "retain": "empty-content" }
+    }
+  ],
+  "prompt_order": [
+    {
+      "character_id": 100000,
+      "order": [
+        { "identifier": "empty-marker", "enabled": true },
+        { "identifier": "system-main", "enabled": true },
+        { "identifier": "empty-marker", "enabled": false }
+      ]
+    }
+  ],
+  "temperature": 0.73,
+  "top_p": 0.91,
+  "tokenizer": 17,
+  "openrouter_model": "synthetic/never-called",
+  "vendor_provider_payload": { "nested": { "retain": true } },
+  "top_unknown": { "nested": ["preserve", { "all": true }] }
+}

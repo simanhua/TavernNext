@@ -1,0 +1,14 @@
+{
+  "name": "Synthetic Instruct",
+  "input_sequence": "<|user|>",
+  "output_sequence": "<|assistant|>",
+  "system_sequence": "<|system|>",
+  "input_suffix": "</u>",
+  "output_suffix": "</a>",
+  "system_suffix": "</s>",
+  "first_input_sequence": "",
+  "last_output_sequence": "<|end|>",
+  "stop_sequence": ["<|stop|>", ""],
+  "sequences_as_stop_strings": true,
+  "instruct_unknown": { "nested": ["keep"] }
+}

@@ -1,0 +1,10 @@
+{
+  "preset": {
+    "name": "Wrapped Synthetic Text",
+    "temperature": 0.42,
+    "top_p": 0.76,
+    "sampler_order": [0, 6],
+    "parameters": { "vendor": { "retained": true } }
+  },
+  "wrapper_unknown": { "keep": "at-root" }
+}

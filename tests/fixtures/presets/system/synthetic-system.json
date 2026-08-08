@@ -1,0 +1,6 @@
+{
+  "name": "Synthetic System",
+  "content": "Write only synthetic notes.",
+  "post_history": true,
+  "system_unknown": { "kept": true }
+}
