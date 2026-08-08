@@ -1,7 +1,7 @@
 import {
   closeSync,
   fstatSync,
-  mkdtempSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readSync,
@@ -54,6 +54,11 @@ interface ArchiveSource {
 interface ExtractedArchive {
   entries: string[];
   files: Map<string, { path: string; size: number }>;
+}
+
+export interface InspectionOptions {
+  /** Parent for UUID-owned disk workspaces. The caller manages stale children; this call removes its own child. */
+  workspaceRoot?: string;
 }
 
 function startsWith(bytes: Uint8Array, signature: Uint8Array): boolean {
@@ -467,8 +472,11 @@ function parseArchiveJson(archive: ExtractedArchive, name: string, limits: Inspe
   }
 }
 
-function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits): void {
-  const workspace = mkdtempSync(join(tmpdir(), 'tavernnext-import-inspect-'));
+function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits, options: InspectionOptions): void {
+  const workspaceRoot = options.workspaceRoot ?? join(tmpdir(), 'tavernnext-inspection-workspaces');
+  mkdirSync(workspaceRoot, { recursive: true });
+  const workspace = join(workspaceRoot, randomUUID());
+  mkdirSync(workspace, { mode: 0o700 });
   try {
     const archive = extractArchive(bytesSource(input.bytes), limits, { entries: 0, decompressedBytes: 0 }, 1, workspace);
     const previewEntries = archive.entries.slice(0, 256);
@@ -521,6 +529,7 @@ function isExtension(fileName: string, extensions: readonly string[]): boolean {
 export async function inspectArtifact(
   input: SourceArtifact,
   limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+  options: InspectionOptions = {},
 ): Promise<ImportPreview> {
   const preview = emptyPreview(input);
   if (input.bytes.byteLength > limits.maxUploadBytes) {
@@ -531,7 +540,7 @@ export async function inspectArtifact(
     if (startsWith(input.bytes, pngSignature) || isExtension(input.fileName, ['.png'])) {
       inspectPng(preview, input);
     } else if (startsWith(input.bytes, zipSignature) || isExtension(input.fileName, ['.zip', '.charx', '.byaf'])) {
-      inspectZip(preview, input, limits);
+      inspectZip(preview, input, limits, options);
     } else if (isExtension(input.fileName, ['.jsonl', '.ndjson']) || input.mediaType === 'application/x-ndjson') {
       inspectJsonLines(preview, input, limits);
     } else if (isExtension(input.fileName, ['.yaml', '.yml']) || input.mediaType === 'application/yaml' || input.mediaType === 'text/yaml') {

@@ -1,15 +1,19 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
+  closeSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
+  DEFAULT_INSPECTION_LIMITS,
   inspectArtifact,
   MEBIBYTE,
   type ImportDiagnostic,
@@ -100,6 +104,13 @@ interface InspectionStage {
   bytesAccounted: boolean;
 }
 
+interface ProvisionalInspection {
+  path: string;
+  size: number;
+  liveAccounted: boolean;
+  bytesAccounted: boolean;
+}
+
 type ExpiryItem =
   | { at: number; kind: 'stage'; token: string }
   | { at: number; kind: 'consumed'; token: string }
@@ -109,7 +120,7 @@ type ExpiryItem =
 
 interface CleanupTarget {
   path: string;
-  stage?: InspectionStage;
+  stage?: ProvisionalInspection;
 }
 
 class ExpiryHeap {
@@ -163,6 +174,14 @@ export class ImportQuotaError extends Error {
   }
 }
 
+export class ImportUploadError extends Error {
+  readonly statusCode = 413;
+
+  constructor() {
+    super('upload_too_large');
+  }
+}
+
 export class ImportCommitError extends Error {
   constructor(readonly causeError: unknown) {
     super('import_commit_failed');
@@ -200,9 +219,16 @@ function digestMatches(bytes: Uint8Array, expectedHex: string): boolean {
 }
 
 export interface ImportService {
+  acquireInspection(): ImportInspectionLease;
   inspect(artifact: SourceArtifact): Promise<ImportPreview | StagedImportPreview>;
   commit(inspectionToken: string): ImportCommitReceipt;
   close(): void;
+}
+
+export interface ImportInspectionLease {
+  write(bytes: Uint8Array): void;
+  complete(metadata: Omit<SourceArtifact, 'bytes'>): Promise<ImportPreview | StagedImportPreview>;
+  abort(): void;
 }
 
 export function createImportService(options: ImportServiceOptions): ImportService {
@@ -213,8 +239,10 @@ export function createImportService(options: ImportServiceOptions): ImportServic
   const limits = options.limits ?? DEFAULT_IMPORT_STAGING_LIMITS;
   const cleanupIntervalMs = Math.max(1, Math.min(options.cleanupIntervalMs ?? DEFAULT_CLEANUP_INTERVAL_MS, DEFAULT_CLEANUP_INTERVAL_MS));
   const stagingRoot = join(options.dataDir, 'tmp', 'imports');
+  const inspectionWorkspaceRoot = join(options.dataDir, 'tmp', 'inspection-workspaces');
   const assetRoot = join(options.dataDir, 'assets', 'imports');
   mkdirSync(stagingRoot, { recursive: true });
+  mkdirSync(inspectionWorkspaceRoot, { recursive: true });
   mkdirSync(assetRoot, { recursive: true });
 
   const stages = new Map<string, InspectionStage>();
@@ -222,17 +250,18 @@ export function createImportService(options: ImportServiceOptions): ImportServic
   const expired = new Map<string, number>();
   const expiry = new ExpiryHeap();
   const pendingCleanup = new Map<string, { target: CleanupTarget; retry: number }>();
+  const activeLeases = new Set<ImportInspectionLease>();
   let liveStages = 0;
   let stagedBytes = 0;
   let activeInspections = 0;
   let closed = false;
 
-  const releaseLiveStage = (stage: InspectionStage) => {
+  const releaseLiveStage = (stage: ProvisionalInspection) => {
     if (!stage.liveAccounted) return;
     stage.liveAccounted = false;
     liveStages -= 1;
   };
-  const releaseStageBytes = (stage: InspectionStage) => {
+  const releaseStageBytes = (stage: ProvisionalInspection) => {
     if (!stage.bytesAccounted) return;
     stage.bytesAccounted = false;
     stagedBytes -= stage.size;
@@ -279,98 +308,170 @@ export function createImportService(options: ImportServiceOptions): ImportServic
   };
 
   const startupNow = clock();
-  for (const entry of readdirSync(stagingRoot, { withFileTypes: true })) {
-    if (!uuidDirectory.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const path = join(stagingRoot, entry.name);
-    const details = lstatSync(path);
-    if (!details.isDirectory() || details.isSymbolicLink()) continue;
-    const removeAt = details.mtimeMs + INSPECTION_TOKEN_TTL_MS;
-    if (removeAt <= startupNow) attemptCleanup({ path });
-    else expiry.push({ at: removeAt, kind: 'orphan', path });
-  }
+  const recoverUuidDirectories = (root: string) => {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!uuidDirectory.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const path = join(root, entry.name);
+      const details = lstatSync(path);
+      if (!details.isDirectory() || details.isSymbolicLink()) continue;
+      const removeAt = details.mtimeMs + INSPECTION_TOKEN_TTL_MS;
+      if (removeAt <= startupNow) attemptCleanup({ path });
+      else expiry.push({ at: removeAt, kind: 'orphan', path });
+    }
+  };
+  recoverUuidDirectories(stagingRoot);
+  recoverUuidDirectories(inspectionWorkspaceRoot);
 
   const cleanupTimer = setInterval(() => purgeDue(clock()), cleanupIntervalMs);
   cleanupTimer.unref();
 
-  return {
-    async inspect(artifact) {
-      purgeDue(clock());
-      if (activeInspections >= limits.maxConcurrentInspections) throw new ImportQuotaError('import_inspection_concurrency_limit');
-      if (liveStages >= limits.maxLiveStages) throw new ImportQuotaError('import_live_stage_limit');
-      if (artifact.bytes.byteLength > limits.maxStagedBytes - stagedBytes) throw new ImportQuotaError('import_staged_bytes_limit');
+  const finalizeInspection = async (
+    provisional: ProvisionalInspection,
+    metadata: Omit<SourceArtifact, 'bytes'>,
+  ): Promise<{ preview: ImportPreview | StagedImportPreview; retained: boolean }> => {
+    const originalBytes = readFileSync(join(provisional.path, 'original.bin'));
+    const originalArtifact: SourceArtifact = {
+      fileName: metadata.fileName,
+      bytes: originalBytes,
+      ...(metadata.mediaType === undefined ? {} : { mediaType: metadata.mediaType }),
+    };
+    let preview = await inspectArtifact(originalArtifact, DEFAULT_INSPECTION_LIMITS, { workspaceRoot: inspectionWorkspaceRoot });
+    if (preview.blockingErrors.length > 0) return { preview: immutableClone(preview), retained: false };
+    const handler = handlers.find((candidate) => candidate.matches(immutableClone(preview)));
+    if (handler?.inspect !== undefined) {
+      const handlerPreview = await handler.inspect({
+        artifact: { ...originalArtifact, bytes: Uint8Array.from(originalBytes) },
+        preview: immutableClone(preview),
+      });
+      preview = {
+        ...preview,
+        normalizedPreview: structuredClone(handlerPreview.normalizedPreview),
+        warnings: [...preview.warnings, ...structuredClone(handlerPreview.warnings)],
+        blockingErrors: [...preview.blockingErrors, ...structuredClone(handlerPreview.blockingErrors)],
+      };
+      if (preview.blockingErrors.length > 0) return { preview: immutableClone(preview), retained: false };
+    } else if (handler === undefined) {
+      preview = {
+        ...preview,
+        warnings: [...preview.warnings, {
+          code: 'artifact_preserved_without_entity',
+          message: 'No typed codec is registered yet; commit will preserve only the ImportArtifact row.',
+        }],
+      };
+    }
 
-      activeInspections += 1;
-      liveStages += 1;
-      stagedBytes += artifact.bytes.byteLength;
-      let reservationRetained = false;
-      try {
-        const originalArtifact: SourceArtifact = {
-          fileName: artifact.fileName,
-          bytes: artifact.bytes.slice(),
-          ...(artifact.mediaType === undefined ? {} : { mediaType: artifact.mediaType }),
-        };
-        let preview = await inspectArtifact(originalArtifact);
-        if (preview.blockingErrors.length > 0) return immutableClone(preview);
-        const handler = handlers.find((candidate) => candidate.matches(immutableClone(preview)));
-        if (handler?.inspect !== undefined) {
-          const handlerPreview = await handler.inspect({
-            artifact: { ...originalArtifact, bytes: originalArtifact.bytes.slice() },
-            preview: immutableClone(preview),
-          });
-          preview = {
-            ...preview,
-            normalizedPreview: structuredClone(handlerPreview.normalizedPreview),
-            warnings: [...preview.warnings, ...structuredClone(handlerPreview.warnings)],
-            blockingErrors: [...preview.blockingErrors, ...structuredClone(handlerPreview.blockingErrors)],
-          };
-          if (preview.blockingErrors.length > 0) return immutableClone(preview);
-        } else if (handler === undefined) {
-          preview = {
-            ...preview,
-            warnings: [...preview.warnings, {
-              code: 'artifact_preserved_without_entity',
-              message: 'No typed codec is registered yet; commit will preserve only the ImportArtifact row.',
-            }],
-          };
-        }
+    const frozenPreview = immutableClone(preview);
+    const stage: InspectionStage = {
+      ...provisional,
+      preview: frozenPreview,
+      artifact: { fileName: metadata.fileName, ...(metadata.mediaType === undefined ? {} : { mediaType: metadata.mediaType }) },
+      expiresAt: clock() + INSPECTION_TOKEN_TTL_MS,
+      handler,
+    };
+    const token = randomBytes(32).toString('base64url');
+    stages.set(token, stage);
+    expiry.push({ at: stage.expiresAt, kind: 'stage', token });
+    return {
+      preview: immutableClone({
+        ...frozenPreview,
+        inspectionToken: token,
+        expiresAt: new Date(stage.expiresAt).toISOString(),
+      }),
+      retained: true,
+    };
+  };
 
-        const frozenPreview = immutableClone(preview);
-        const stageId = randomUUID();
-        const stagePath = join(stagingRoot, stageId);
-        mkdirSync(stagePath, { mode: 0o700 });
-        const stage: InspectionStage = {
-          path: stagePath,
-          preview: frozenPreview,
-          artifact: { fileName: originalArtifact.fileName, ...(originalArtifact.mediaType === undefined ? {} : { mediaType: originalArtifact.mediaType }) },
-          expiresAt: clock() + INSPECTION_TOKEN_TTL_MS,
-          handler,
-          size: originalArtifact.bytes.byteLength,
-          liveAccounted: true,
-          bytesAccounted: true,
-        };
+  const acquireInspection = (): ImportInspectionLease => {
+    if (closed) throw new Error('Import service is closed');
+    purgeDue(clock());
+    if (activeInspections >= limits.maxConcurrentInspections) throw new ImportQuotaError('import_inspection_concurrency_limit');
+    if (liveStages >= limits.maxLiveStages) throw new ImportQuotaError('import_live_stage_limit');
+
+    activeInspections += 1;
+    liveStages += 1;
+    const provisional: ProvisionalInspection = {
+      path: join(stagingRoot, randomUUID()),
+      size: 0,
+      liveAccounted: true,
+      bytesAccounted: true,
+    };
+    let descriptor: number | undefined;
+    try {
+      mkdirSync(provisional.path, { mode: 0o700 });
+      descriptor = openSync(join(provisional.path, 'original.bin'), 'wx', 0o600);
+    } catch (error) {
+      activeInspections -= 1;
+      releaseLiveStage(provisional);
+      attemptCleanup({ path: provisional.path, stage: provisional });
+      throw error;
+    }
+
+    let active = true;
+    const closeOriginal = () => {
+      if (descriptor === undefined) return;
+      closeSync(descriptor);
+      descriptor = undefined;
+    };
+    const releaseInspection = () => {
+      if (!active) return false;
+      active = false;
+      activeInspections -= 1;
+      activeLeases.delete(lease);
+      return true;
+    };
+    const lease: ImportInspectionLease = {
+      write(bytes) {
+        if (!active || descriptor === undefined) throw new Error('Inspection lease is no longer active');
+        if (bytes.byteLength > DEFAULT_INSPECTION_LIMITS.maxUploadBytes - provisional.size) throw new ImportUploadError();
+        if (bytes.byteLength > limits.maxStagedBytes - stagedBytes) throw new ImportQuotaError('import_staged_bytes_limit');
+        provisional.size += bytes.byteLength;
+        stagedBytes += bytes.byteLength;
+        let written = 0;
+        while (written < bytes.byteLength) written += writeSync(descriptor, bytes, written, bytes.byteLength - written);
+      },
+      async complete(metadata) {
+        if (!active) throw new Error('Inspection lease is no longer active');
         try {
-          writeFileSync(join(stagePath, 'original.bin'), originalArtifact.bytes, { flag: 'wx', mode: 0o600 });
+          closeOriginal();
+          const result = await finalizeInspection(provisional, metadata);
+          releaseInspection();
+          if (!result.retained) {
+            releaseLiveStage(provisional);
+            attemptCleanup({ path: provisional.path, stage: provisional });
+          }
+          return result.preview;
         } catch (error) {
-          releaseLiveStage(stage);
-          attemptCleanup({ path: stagePath, stage });
-          reservationRetained = true;
+          closeOriginal();
+          releaseInspection();
+          releaseLiveStage(provisional);
+          attemptCleanup({ path: provisional.path, stage: provisional });
           throw error;
         }
-        const token = randomBytes(32).toString('base64url');
-        stages.set(token, stage);
-        expiry.push({ at: stage.expiresAt, kind: 'stage', token });
-        reservationRetained = true;
-        return immutableClone({
-          ...frozenPreview,
-          inspectionToken: token,
-          expiresAt: new Date(stage.expiresAt).toISOString(),
+      },
+      abort() {
+        if (!releaseInspection()) return;
+        closeOriginal();
+        releaseLiveStage(provisional);
+        attemptCleanup({ path: provisional.path, stage: provisional });
+      },
+    };
+    activeLeases.add(lease);
+    return lease;
+  };
+
+  return {
+    acquireInspection,
+    async inspect(artifact) {
+      const lease = acquireInspection();
+      try {
+        lease.write(artifact.bytes);
+        return await lease.complete({
+          fileName: artifact.fileName,
+          ...(artifact.mediaType === undefined ? {} : { mediaType: artifact.mediaType }),
         });
-      } finally {
-        activeInspections -= 1;
-        if (!reservationRetained) {
-          liveStages -= 1;
-          stagedBytes -= artifact.bytes.byteLength;
-        }
+      } catch (error) {
+        lease.abort();
+        throw error;
       }
     },
 
@@ -459,6 +560,7 @@ export function createImportService(options: ImportServiceOptions): ImportServic
       if (closed) return;
       closed = true;
       clearInterval(cleanupTimer);
+      for (const lease of [...activeLeases]) lease.abort();
       const cleanupTargets = new Map<string, CleanupTarget>();
       for (const stage of stages.values()) {
         releaseLiveStage(stage);

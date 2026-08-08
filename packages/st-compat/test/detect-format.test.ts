@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_INSPECTION_LIMITS, inspectArtifact, type InspectionLimits } from '../src/index.js';
 
@@ -264,5 +267,37 @@ describe('artifact format detection', () => {
       limited({ maxDecompressedBytes: 16 * 1024, maxInMemoryEntryBytes: 1024 }),
     );
     expect(oversizedManifest.blockingErrors).toContainEqual(expect.objectContaining({ code: 'archive_entry_memory_limit', path: 'card.json' }));
+  });
+
+  it('owns and cleans each UUID workspace under an injected standalone workspace root', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-workspace-'));
+    const workspaceRoot = join(directory, 'managed-workspaces');
+    try {
+      const valid = await inspectArtifact(
+        {
+          fileName: 'managed.charx',
+          bytes: zip([{ name: 'card.json', data: encoder.encode('{"spec":"chara_card_v3","data":{"name":"Managed"}}') }]),
+        },
+        DEFAULT_INSPECTION_LIMITS,
+        { workspaceRoot },
+      );
+      expect(valid.blockingErrors).toEqual([]);
+      await expect(readdir(workspaceRoot)).resolves.toEqual([]);
+
+      const corrupt = zip([{ name: 'card.json', data: encoder.encode('{}') }]);
+      const centralOffset = corrupt.findIndex((byte, index) => (
+        byte === 0x50 && corrupt[index + 1] === 0x4b && corrupt[index + 2] === 0x01 && corrupt[index + 3] === 0x02
+      ));
+      corrupt[centralOffset + 16] ^= 0xff;
+      const failed = await inspectArtifact(
+        { fileName: 'managed-corrupt.charx', bytes: corrupt },
+        DEFAULT_INSPECTION_LIMITS,
+        { workspaceRoot },
+      );
+      expect(failed.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_archive' }));
+      await expect(readdir(workspaceRoot)).resolves.toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

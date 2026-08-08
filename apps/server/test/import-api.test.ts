@@ -2,6 +2,7 @@ import { rmSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase, type TavernDatabase } from '../src/db/client.js';
@@ -43,6 +44,61 @@ function multipart(fileName: string, bytes: Uint8Array, mediaType = 'application
   const tail = encoder.encode(`\r\n--${boundary}--\r\n`);
   const payload = Buffer.concat([head, bytes, tail]);
   return { payload, headers: { 'content-type': `multipart/form-data; boundary=${boundary}` } };
+}
+
+function multipartParts(fileName: string, bytes: Uint8Array, mediaType = 'application/json') {
+  const boundary = '----tavernnext-import-stream-boundary';
+  return {
+    bytes,
+    head: encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: ${mediaType}\r\n\r\n`),
+    tail: encoder.encode(`\r\n--${boundary}--\r\n`),
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  };
+}
+
+class HeldMultipartUpload extends Readable {
+  reads = 0;
+  private headSent = false;
+  private released = false;
+
+  constructor(private readonly parts: ReturnType<typeof multipartParts>) {
+    super();
+  }
+
+  override _read(): void {
+    this.reads += 1;
+    if (!this.headSent) {
+      this.headSent = true;
+      this.push(this.parts.head);
+    }
+  }
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    this.push(this.parts.bytes);
+    this.push(this.parts.tail);
+    this.push(null);
+  }
+}
+
+class SpyMultipartUpload extends Readable {
+  reads = 0;
+  private sent = false;
+
+  constructor(private readonly parts: ReturnType<typeof multipartParts>) {
+    super();
+  }
+
+  override _read(): void {
+    this.reads += 1;
+    if (this.sent) return;
+    this.sent = true;
+    this.push(this.parts.head);
+    this.push(this.parts.bytes);
+    this.push(this.parts.tail);
+    this.push(null);
+  }
 }
 
 const characterHandler: ImportHandler = {
@@ -472,6 +528,46 @@ describe('two-stage import API', () => {
     ]);
   });
 
+  it('leases inspection capacity before multipart reads and never consumes a rejected third upload', async () => {
+    const { directory, database } = await fixture();
+    const source = encoder.encode('{"spec":"chara_card_v3","data":{"name":"Streamed"}}');
+    const app = createApp({
+      database,
+      config: serverConfig(directory),
+      importHandlers: [characterHandler],
+      importLimits: { maxLiveStages: 8, maxStagedBytes: source.byteLength * 8, maxConcurrentInspections: 2 },
+    });
+    apps.push(app);
+    await app.ready();
+
+    const firstParts = multipartParts('first.json', source);
+    const secondParts = multipartParts('second.json', source);
+    const firstUpload = new HeldMultipartUpload(firstParts);
+    const secondUpload = new HeldMultipartUpload(secondParts);
+    const firstResponse = app.inject({ method: 'POST', url: '/api/imports/inspect', payload: firstUpload, headers: firstParts.headers });
+    const secondResponse = app.inject({ method: 'POST', url: '/api/imports/inspect', payload: secondUpload, headers: secondParts.headers });
+    await vi.waitFor(() => {
+      expect(firstUpload.reads).toBeGreaterThan(0);
+      expect(secondUpload.reads).toBeGreaterThan(0);
+    });
+
+    const thirdParts = multipartParts('third.json', source);
+    const thirdUpload = new SpyMultipartUpload(thirdParts);
+    try {
+      const rejected = await app.inject({ method: 'POST', url: '/api/imports/inspect', payload: thirdUpload, headers: thirdParts.headers });
+      expect(rejected.statusCode).toBe(429);
+      expect(rejected.json()).toMatchObject({ error: 'import_inspection_concurrency_limit' });
+      expect(thirdUpload.reads).toBe(0);
+    } finally {
+      firstUpload.release();
+      secondUpload.release();
+      thirdUpload.destroy();
+    }
+    await expect(Promise.all([firstResponse, secondResponse])).resolves.toEqual([
+      expect.objectContaining({ statusCode: 200 }), expect.objectContaining({ statusCode: 200 }),
+    ]);
+  });
+
   it('expires stages on the scheduled timer without requiring another request', async () => {
     const { directory, database } = await fixture();
     let now = Date.parse('2026-08-08T00:00:00.000Z');
@@ -519,5 +615,37 @@ describe('two-stage import API', () => {
     await expect(access(join(stagingRoot, staleUuid))).rejects.toThrow();
     await expect(access(join(stagingRoot, freshUuid))).resolves.toBeUndefined();
     await expect(access(join(stagingRoot, unrelated))).resolves.toBeUndefined();
+  });
+
+  it('recovers stale managed inspection workspaces while preserving fresh and unrelated directories', async () => {
+    const { directory, database } = await fixture();
+    const workspaceRoot = join(directory, 'tmp', 'inspection-workspaces');
+    await mkdir(workspaceRoot, { recursive: true });
+    const staleUuid = '018f0000-0000-7000-8000-000000000721';
+    const freshUuid = '018f0000-0000-7000-8000-000000000722';
+    const unrelated = 'another-tools-workspace';
+    await Promise.all([staleUuid, freshUuid, unrelated].map((name) => mkdir(join(workspaceRoot, name))));
+    let now = Date.parse('2026-08-08T12:00:00.000Z');
+    const staleTime = new Date(now - INSPECTION_TOKEN_TTL_MS - 1);
+    await utimes(join(workspaceRoot, staleUuid), staleTime, staleTime);
+    await utimes(join(workspaceRoot, freshUuid), new Date(now), new Date(now));
+
+    const app = createApp({
+      database,
+      config: serverConfig(directory),
+      importClock: () => now,
+      importCleanupIntervalMs: 5,
+    });
+    apps.push(app);
+    await app.ready();
+
+    await expect(access(join(workspaceRoot, staleUuid))).rejects.toThrow();
+    await expect(access(join(workspaceRoot, freshUuid))).resolves.toBeUndefined();
+    await expect(access(join(workspaceRoot, unrelated))).resolves.toBeUndefined();
+    now += INSPECTION_TOKEN_TTL_MS;
+    await vi.waitFor(async () => {
+      await expect(access(join(workspaceRoot, freshUuid))).rejects.toThrow();
+    }, { timeout: 500, interval: 10 });
+    await expect(access(join(workspaceRoot, unrelated))).resolves.toBeUndefined();
   });
 });
