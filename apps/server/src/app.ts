@@ -7,6 +7,7 @@ import { createRepositories } from './db/repositories.js';
 import { registerCharacterRoutes } from './routes/characters.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
+import { registerMessageRoutes } from './routes/messages.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
@@ -32,7 +33,9 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const database = options.database ?? createDatabase((options.config ?? loadConfig()).databasePath);
   migrateDatabase(database);
   const repositories = createRepositories(database);
-  const providerSecrets = options.providerSecrets ?? loadProviderSecrets();
+  const providerSecrets: Record<string, { providerId: string; baseUrl: string; value: string }> = {
+    ...(options.providerSecrets ?? loadProviderSecrets()),
+  };
   const resolveSecret = (profileId: string, baseUrl: string, secretRef: string): string | undefined => {
     const secret = providerSecrets[secretRef];
     if (secret === undefined) return undefined;
@@ -57,8 +60,22 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   app.get('/api/health', async () => ({ status: 'ok', app: 'TavernNext' }));
   registerCharacterRoutes(app, repositories);
   registerPersonaRoutes(app, repositories);
-  registerProviderRoutes(app, repositories);
+  registerProviderRoutes(app, repositories, {
+    has(profile) {
+      return profile.secretRef !== undefined
+        && resolveSecret(profile.id, profile.baseUrl, profile.secretRef) !== undefined;
+    },
+    put(profileId, baseUrl, apiKey) {
+      const secretRef = `browser:${profileId}`;
+      providerSecrets[secretRef] = { providerId: profileId, baseUrl, value: apiKey };
+      return secretRef;
+    },
+    remove(secretRef) {
+      delete providerSecrets[secretRef];
+    },
+  });
   registerConversationRoutes(app, repositories);
+  registerMessageRoutes(app, repositories);
   registerGenerationRoutes(app, generations);
 
   app.addHook('onClose', async () => {

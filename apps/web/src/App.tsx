@@ -1,30 +1,12 @@
-import { useEffect, useState } from 'react';
-
-type HealthResponse = {
-  app: string;
-  status: string;
-};
+import { QueryClientProvider } from '@tanstack/react-query';
+import { RouterProvider } from 'react-router-dom';
+import { queryClient } from './app/query-client.js';
+import { router } from './app/router.js';
 
 export function App() {
-  const [health, setHealth] = useState('Checking local API…');
-
-  useEffect(() => {
-    void fetch('/api/health')
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Health check failed: ${response.status}`);
-        }
-
-        return response.json() as Promise<HealthResponse>;
-      })
-      .then((response) => setHealth(`${response.app} is ${response.status}`))
-      .catch(() => setHealth('Local API is unavailable'));
-  }, []);
-
   return (
-    <main>
-      <h1>TavernNext</h1>
-      <p>{health}</p>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
   );
 }
