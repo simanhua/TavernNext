@@ -1,5 +1,4 @@
 import {
-  chmodSync,
   closeSync,
   constants,
   fchmodSync,
@@ -14,6 +13,7 @@ import {
   type Stats,
   writeSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -56,7 +56,7 @@ function inspectionWorkspaceUserComponent(): string {
 /** Stable per-user root so crash remnants remain discoverable without sharing a predictable cross-user directory. */
 export const DEFAULT_INSPECTION_WORKSPACE_ROOT = join(
   tmpdir(),
-  `tavernnext-st-compat-inspections-${inspectionWorkspaceUserComponent()}`,
+  `tavernnext-st-compat-private-inspections-${inspectionWorkspaceUserComponent()}`,
 );
 
 class InspectionFailure extends Error {
@@ -95,6 +95,48 @@ interface DirectoryIdentity {
   dev: number;
   ino: number;
 }
+
+type WindowsAclAction = 'identity' | 'secure' | 'verify';
+const trustedWindowsRootIdentities = new Map<string, DirectoryIdentity>();
+
+const windowsAclScript = Buffer.from(String.raw`
+$ErrorActionPreference = 'Stop'
+$path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_PATH', 'Process')
+$action = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_ACTION', 'Process')
+if ([String]::IsNullOrWhiteSpace($path)) { exit 40 }
+$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { exit 41 }
+$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($action -eq 'secure') {
+  $security = New-Object Security.AccessControl.DirectorySecurity
+  $security.SetOwner($currentSid)
+  $security.SetAccessRuleProtection($true, $false)
+  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+    $currentSid,
+    [Security.AccessControl.FileSystemRights]::FullControl,
+    $inheritance,
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow
+  )
+  [void]$security.AddAccessRule($rule)
+  [IO.Directory]::SetAccessControl($path, $security)
+}
+$sections = [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Access
+$acl = [IO.Directory]::GetAccessControl($path, $sections)
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
+if ($owner.Value -ne $currentSid.Value) { exit 42 }
+if (-not $acl.AreAccessRulesProtected) { exit 43 }
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+if ($rules.Count -ne 1) { exit 44 }
+$verified = $rules[0]
+if ($verified.IsInherited -or $verified.IdentityReference.Value -ne $currentSid.Value) { exit 45 }
+if ($verified.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 46 }
+if ($verified.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) { exit 47 }
+$expectedInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+if ($verified.InheritanceFlags -ne $expectedInheritance -or $verified.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { exit 48 }
+exit 0
+`, 'utf16le').toString('base64');
 
 function rootUntrusted(): InspectionFailure {
   return new InspectionFailure(diagnostic(
@@ -182,45 +224,85 @@ function validatePosixRoot(
 
 function validateWindowsRoot(
   root: string,
-  repairPermissions: boolean,
+  aclAction: WindowsAclAction,
   expected?: DirectoryIdentity,
 ): DirectoryIdentity {
-  const beforeRepair = lstatRoot(root);
-  assertRealDirectory(beforeRepair);
-  if (expected !== undefined && !sameDirectory(beforeRepair, expected)) throw rootUntrusted();
+  const beforeValidation = lstatRoot(root);
+  assertRealDirectory(beforeValidation);
+  if (expected !== undefined && !sameDirectory(beforeValidation, expected)) throw rootUntrusted();
 
-  if (repairPermissions) {
-    try {
-      chmodSync(root, privateDirectoryMode);
-    } catch {
-      // Windows chmod does not express a private ACL; creation mode and inherited ACLs are best-effort only.
-    }
+  const rootKey = root.toLocaleLowerCase('en-US');
+  const cachedIdentity = trustedWindowsRootIdentities.get(rootKey);
+  const needsAclCheck = aclAction !== 'identity'
+    && (cachedIdentity === undefined || !sameDirectory(beforeValidation, cachedIdentity));
+  if (needsAclCheck) {
+    const systemRoot = process.env.SystemRoot;
+    if (systemRoot === undefined) throw rootUntrusted();
+    const result = spawnSync(
+      join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', windowsAclScript],
+      {
+        env: {
+          ...process.env,
+          TAVERNNEXT_WINDOWS_ACL_ACTION: aclAction,
+          TAVERNNEXT_WINDOWS_ACL_PATH: root,
+        },
+        shell: false,
+        stdio: 'ignore',
+        timeout: 5_000,
+        windowsHide: true,
+      },
+    );
+    if (result.error !== undefined || result.signal !== null || result.status !== 0) throw rootUntrusted();
   }
 
-  const afterRepair = lstatRoot(root);
-  assertRealDirectory(afterRepair);
-  if (!sameDirectory(beforeRepair, afterRepair)) throw rootUntrusted();
-  if (expected !== undefined && !sameDirectory(afterRepair, expected)) throw rootUntrusted();
-  return { dev: afterRepair.dev, ino: afterRepair.ino };
+  const afterValidation = lstatRoot(root);
+  assertRealDirectory(afterValidation);
+  if (!sameDirectory(beforeValidation, afterValidation)) throw rootUntrusted();
+  if (expected !== undefined && !sameDirectory(afterValidation, expected)) throw rootUntrusted();
+  const identity = { dev: afterValidation.dev, ino: afterValidation.ino };
+  if (needsAclCheck) trustedWindowsRootIdentities.set(rootKey, identity);
+  return identity;
 }
 
 function validateInspectionWorkspaceRoot(
   root: string,
   repairPermissions: boolean,
   expected?: DirectoryIdentity,
+  windowsAclAction: WindowsAclAction = repairPermissions ? 'verify' : 'identity',
 ): DirectoryIdentity {
   return process.platform === 'win32'
-    ? validateWindowsRoot(root, repairPermissions, expected)
+    ? validateWindowsRoot(root, windowsAclAction, expected)
     : validatePosixRoot(root, repairPermissions, expected);
 }
 
 function ensureInspectionWorkspaceRoot(root: string): DirectoryIdentity {
+  let created = false;
   try {
     mkdirSync(root, { mode: privateDirectoryMode });
+    created = true;
   } catch (error) {
     if (errorCode(error) !== 'EEXIST') throw rootUnavailable();
   }
-  return validateInspectionWorkspaceRoot(root, true);
+  const isDefaultRoot = process.platform === 'win32'
+    && root.toLocaleLowerCase('en-US') === resolve(DEFAULT_INSPECTION_WORKSPACE_ROOT).toLocaleLowerCase('en-US');
+  const identity = validateInspectionWorkspaceRoot(
+    root,
+    true,
+    undefined,
+    created || !isDefaultRoot ? 'secure' : 'verify',
+  );
+  if (created && process.platform === 'win32') {
+    let entries: string[];
+    try {
+      entries = readdirSync(root);
+    } catch {
+      throw rootUntrusted();
+    }
+    validateInspectionWorkspaceRoot(root, false, identity);
+    if (entries.length !== 0) throw rootUntrusted();
+  }
+  return identity;
 }
 
 function isOwnedRealDirectory(details: Stats): boolean {
@@ -259,7 +341,23 @@ export function recoverInspectionWorkspaces(
     if (errorCode(error) === 'ENOENT') return;
     throw rootUnavailable();
   }
-  const rootIdentity = validateInspectionWorkspaceRoot(workspaceRoot, true);
+  const isDefaultRoot = process.platform === 'win32'
+    && workspaceRoot.toLocaleLowerCase('en-US') === resolve(DEFAULT_INSPECTION_WORKSPACE_ROOT).toLocaleLowerCase('en-US');
+  const rootIdentity = validateInspectionWorkspaceRoot(
+    workspaceRoot,
+    true,
+    undefined,
+    isDefaultRoot ? 'verify' : 'secure',
+  );
+  recoverTrustedInspectionWorkspaces(workspaceRoot, rootIdentity, now, ttl);
+}
+
+function recoverTrustedInspectionWorkspaces(
+  workspaceRoot: string,
+  rootIdentity: DirectoryIdentity,
+  now: number,
+  ttl: number,
+): void {
   let entries: string[];
   try {
     entries = readdirSync(workspaceRoot);
@@ -692,7 +790,7 @@ function parseArchiveJson(archive: ExtractedArchive, name: string, limits: Inspe
 function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits, options: InspectionOptions): void {
   const workspaceRoot = resolve(options.workspaceRoot ?? DEFAULT_INSPECTION_WORKSPACE_ROOT);
   let rootIdentity = ensureInspectionWorkspaceRoot(workspaceRoot);
-  recoverInspectionWorkspaces(workspaceRoot);
+  recoverTrustedInspectionWorkspaces(workspaceRoot, rootIdentity, Date.now(), inspectionWorkspaceTtlMs);
   rootIdentity = validateInspectionWorkspaceRoot(workspaceRoot, false, rootIdentity);
   const workspaceName = randomUUID();
   const workspace = join(workspaceRoot, workspaceName);

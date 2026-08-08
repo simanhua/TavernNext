@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { dirname, join, sep } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_INSPECTION_LIMITS,
   DEFAULT_INSPECTION_WORKSPACE_ROOT,
@@ -105,6 +106,17 @@ function zip(entries: readonly ZipEntry[]): Uint8Array {
 
 function limited(overrides: Partial<InspectionLimits>): InspectionLimits {
   return { ...DEFAULT_INSPECTION_LIMITS, ...overrides };
+}
+
+function makeWindowsDirectoryShared(path: string): void {
+  const result = spawnSync(
+    'icacls.exe',
+    [path, '/inheritance:r', '/grant:r', '*S-1-1-0:(OI)(CI)F'],
+    { encoding: 'utf8', shell: false, timeout: 5_000, windowsHide: true },
+  );
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(`Could not create shared Windows ACL fixture: ${result.error?.message ?? result.stderr}`);
+  }
 }
 
 describe('artifact format detection', () => {
@@ -306,6 +318,48 @@ describe('artifact format detection', () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform !== 'win32')(
+    'blocks a pre-created real default root inherited from a shared Windows temp parent without deleting its sentinel',
+    async () => {
+      const sharedTemp = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-shared-temp-'));
+      const priorTemp = process.env.TEMP;
+      const priorTmp = process.env.TMP;
+      makeWindowsDirectoryShared(sharedTemp);
+      process.env.TEMP = sharedTemp;
+      process.env.TMP = sharedTemp;
+      vi.resetModules();
+      try {
+        const isolated = await import('../src/index.js');
+        const workspaceRoot = isolated.DEFAULT_INSPECTION_WORKSPACE_ROOT;
+        const staleUuid = randomUUID();
+        const sentinel = join(workspaceRoot, staleUuid, 'preserve.txt');
+        expect(dirname(workspaceRoot)).toBe(sharedTemp);
+        await mkdir(join(workspaceRoot, staleUuid), { recursive: true });
+        await writeFile(sentinel, 'preserve');
+        const staleTime = new Date(Date.now() - (15 * 60 * 1000) - 10_000);
+        await utimes(join(workspaceRoot, staleUuid), staleTime, staleTime);
+
+        const preview = await isolated.inspectArtifact({
+          fileName: 'attacker-root.charx',
+          bytes: zip([{ name: 'card.json', data: encoder.encode('{"spec":"chara_card_v3","data":{"name":"Blocked"}}') }]),
+        });
+        const sentinelContents = await readFile(sentinel, 'utf8').catch(() => undefined);
+
+        expect(preview.blockingErrors).toContainEqual(expect.objectContaining({
+          code: 'inspection_workspace_root_untrusted',
+        }));
+        expect(sentinelContents).toBe('preserve');
+      } finally {
+        if (priorTemp === undefined) delete process.env.TEMP;
+        else process.env.TEMP = priorTemp;
+        if (priorTmp === undefined) delete process.env.TMP;
+        else process.env.TMP = priorTmp;
+        vi.resetModules();
+        await rm(sharedTemp, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('blocks a linked workspace root without traversing or deleting its target', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-root-link-'));
