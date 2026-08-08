@@ -164,6 +164,84 @@ describe('SillyTavern preset structural inspection', () => {
     expect(preview.warnings).toContainEqual(expect.objectContaining({ code: 'provider_field_preserved_not_executable' }));
   });
 
+  it('preserves provider-named data inside recognized opaque Text values atomically', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      temperature: 0.7,
+      top_p: 0.9,
+      json_schema: {
+        type: 'object',
+        properties: {
+          provider: { type: 'string' },
+          vendor_code: { type: 'integer' },
+        },
+        required: ['provider', 'vendor_code'],
+      },
+      logit_bias: [{ provider: 'literal-token', vendor_code: 42, bias: -1 }],
+    })), 'opaque-values.settings');
+
+    expect(preview.blockingErrors).toEqual([]);
+    expect(preview.settings).toMatchObject({
+      json_schema: {
+        properties: {
+          provider: { type: 'string' },
+          vendor_code: { type: 'integer' },
+        },
+        required: ['provider', 'vendor_code'],
+      },
+      logit_bias: [{ provider: 'literal-token', vendor_code: 42, bias: -1 }],
+    });
+    expect(preview.unknownFields).toEqual({});
+    expect(preview.warnings).not.toContainEqual(expect.objectContaining({ code: 'provider_field_preserved_not_executable' }));
+
+    const exported = JSON.parse(Buffer.from((await exportPreset(preview)).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(exported).toMatchObject({
+      json_schema: {
+        properties: {
+          provider: { type: 'string' },
+          vendor_code: { type: 'integer' },
+        },
+        required: ['provider', 'vendor_code'],
+      },
+      logit_bias: [{ provider: 'literal-token', vendor_code: 42, bias: -1 }],
+    });
+  });
+
+  it('still separates provider fields at actual family schema nodes', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      temperature: 0.7,
+      top_p: 0.9,
+      json_schema: { properties: { provider: { const: 'data' } }, required: ['provider'] },
+      phrase_rep_pen: 'medium',
+      vendor_transport: { endpoint: 'https://example.invalid/not-executed' },
+    })), 'provider-node.settings');
+
+    expect(preview.settings).toMatchObject({
+      json_schema: { properties: { provider: { const: 'data' } }, required: ['provider'] },
+    });
+    expect(preview.settings).not.toHaveProperty('phrase_rep_pen');
+    expect(preview.settings).not.toHaveProperty('vendor_transport');
+    expect(preview.unknownFields).toEqual({
+      phrase_rep_pen: 'medium',
+      vendor_transport: { endpoint: 'https://example.invalid/not-executed' },
+    });
+    expect(preview.warnings).toContainEqual(expect.objectContaining({ code: 'provider_field_preserved_not_executable' }));
+
+    const novel = await inspectPreset(encoder.encode(JSON.stringify({
+      presetVersion: 3,
+      parameters: {
+        temperature: 0.7,
+        phrase_rep_pen: 'aggressive',
+        json_schema: { properties: { provider: { const: 'data' } }, required: ['provider'] },
+      },
+    })), 'provider-node.preset');
+    expect(novel.settings).toMatchObject({
+      json_schema: { properties: { provider: { const: 'data' } }, required: ['provider'] },
+    });
+    expect(novel.settings).not.toHaveProperty('phrase_rep_pen');
+    expect(novel.unknownFields).toEqual({ parameters: { phrase_rep_pen: 'aggressive' } });
+    expect(novel.warnings).toContainEqual(expect.objectContaining({ code: 'provider_field_preserved_not_executable' }));
+  });
+
   it('keeps OpenAI transport and token-limit fields outside executable Chat settings', async () => {
     const preview = await inspectPreset(encoder.encode(JSON.stringify({
       prompts: [], prompt_order: [], temperature: 0.5,
@@ -349,6 +427,132 @@ describe('SillyTavern preset structural inspection', () => {
 });
 
 describe('lossless deterministic preset export', () => {
+  it('keeps prompt metadata with stable identifiers across reorder, insertion, and deletion', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      prompts: [
+        { identifier: 'alpha', content: 'A', opaque: { source: 'alpha' } },
+        { identifier: 'beta', content: 'B', opaque: { source: 'beta' } },
+      ],
+      prompt_order: [],
+    })), 'chat.settings');
+    const prompts = structuredClone(preview.settings.prompts) as Array<Record<string, unknown>>;
+    const alpha = prompts[0]!;
+    const beta = prompts[1]!;
+    const inserted = { identifier: 'inserted', content: 'new' };
+
+    const reordered = JSON.parse(Buffer.from((await exportPreset({
+      ...preview,
+      settings: { ...preview.settings, prompts: [beta, inserted, alpha] },
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(reordered.prompts).toEqual([
+      expect.objectContaining({ identifier: 'beta', opaque: { source: 'beta' } }),
+      { identifier: 'inserted', content: 'new' },
+      expect.objectContaining({ identifier: 'alpha', opaque: { source: 'alpha' } }),
+    ]);
+
+    const deleted = JSON.parse(Buffer.from((await exportPreset({
+      ...preview,
+      settings: { ...preview.settings, prompts: [beta] },
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(deleted.prompts).toEqual([
+      expect.objectContaining({ identifier: 'beta', opaque: { source: 'beta' } }),
+    ]);
+  });
+
+  it('matches prompt-order groups and duplicate order entries occurrence-aware', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      prompts: [],
+      prompt_order: [
+        {
+          character_id: 1,
+          group_opaque: 'one',
+          order: [
+            { identifier: 'dup', enabled: true, opaque: 'first-dup' },
+            { identifier: 'solo', enabled: true, opaque: 'solo' },
+            { identifier: 'dup', enabled: false, opaque: 'second-dup' },
+          ],
+        },
+        { character_id: 2, group_opaque: 'two', order: [] },
+      ],
+    })), 'chat.settings');
+    const groups = structuredClone(preview.settings.prompt_order) as Array<Record<string, unknown>>;
+    const first = groups[0]!;
+    const second = groups[1]!;
+    const firstOrder = first.order as Array<Record<string, unknown>>;
+    first.order = [firstOrder[1]!, firstOrder[0]!, firstOrder[2]!];
+
+    const document = JSON.parse(Buffer.from((await exportPreset({
+      ...preview,
+      settings: { ...preview.settings, prompt_order: [second, first] },
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(document.prompt_order).toEqual([
+      expect.objectContaining({ character_id: 2, group_opaque: 'two', order: [] }),
+      expect.objectContaining({
+        character_id: 1,
+        group_opaque: 'one',
+        order: [
+          expect.objectContaining({ identifier: 'solo', opaque: 'solo' }),
+          expect.objectContaining({ identifier: 'dup', opaque: 'first-dup' }),
+          expect.objectContaining({ identifier: 'dup', opaque: 'second-dup' }),
+        ],
+      }),
+    ]);
+  });
+
+  it('keeps NovelAI order metadata with stable ids and leaves new ids clean', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      presetVersion: 3,
+      parameters: {
+        temperature: 0.7,
+        order: [
+          { id: 'temperature', enabled: true, opaque: 'temperature' },
+          { id: 'top_p', enabled: true, opaque: 'top-p' },
+        ],
+      },
+    })), 'novel.preset');
+    const order = structuredClone(preview.settings.order) as Array<Record<string, unknown>>;
+
+    const document = JSON.parse(Buffer.from((await exportPreset({
+      ...preview,
+      settings: {
+        ...preview.settings,
+        order: [order[1]!, { id: 'min_p', enabled: false }, order[0]!],
+      },
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(document).toMatchObject({
+      parameters: {
+        order: [
+          { id: 'top_p', enabled: true, opaque: 'top-p' },
+          { id: 'min_p', enabled: false },
+          { id: 'temperature', enabled: true, opaque: 'temperature' },
+        ],
+      },
+    });
+  });
+
+  it('uses positional overlay for arrays without a defined stable identity', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      temperature: 0.7,
+      top_p: 0.9,
+      logit_bias: [
+        { token: 1, bias: -1, opaque: 'first-position' },
+        { token: 2, bias: -2, opaque: 'second-position' },
+      ],
+    })), 'text.settings');
+
+    const document = JSON.parse(Buffer.from((await exportPreset({
+      ...preview,
+      settings: {
+        ...preview.settings,
+        logit_bias: [{ token: 20, bias: -0.2 }, { token: 10, bias: -0.1 }],
+      },
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(document.logit_bias).toEqual([
+      { token: 20, bias: -0.2, opaque: 'first-position' },
+      { token: 10, bias: -0.1, opaque: 'second-position' },
+    ]);
+  });
+
   it('changes one executable field while losslessly reconstructing nested passthrough, provider, and wrapper fields', async () => {
     const preview = await inspectPreset(bytes('text/wrapped-text.preset'), 'looks-like-anything.bin');
     const edited = {

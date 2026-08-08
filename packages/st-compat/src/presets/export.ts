@@ -50,16 +50,65 @@ function sourceDocument(source: PresetExportInput): { root: Record<string, unkno
   return { root: {}, wrapperKey: undefined };
 }
 
-function deepOverlay(raw: unknown, edited: unknown): unknown {
-  if (Array.isArray(edited)) {
-    const rawArray = Array.isArray(raw) ? raw : [];
+type StableIdentityKey = 'identifier' | 'character_id' | 'id';
+
+function stableIdentityKey(propertyKey: string | undefined, values: readonly unknown[]): StableIdentityKey | undefined {
+  const candidates: readonly StableIdentityKey[] = propertyKey === 'prompts'
+    ? ['identifier']
+    : propertyKey === 'prompt_order'
+      ? ['character_id']
+      : propertyKey === 'order'
+        ? ['identifier', 'id']
+        : [];
+  return candidates.find((candidate) => values.some((value) => {
+    const object = record(value);
+    return object !== undefined && (typeof object[candidate] === 'string' || typeof object[candidate] === 'number');
+  }));
+}
+
+function identity(value: unknown, key: StableIdentityKey): string | number | undefined {
+  const candidate = record(value)?.[key];
+  return typeof candidate === 'string' || typeof candidate === 'number' ? candidate : undefined;
+}
+
+function identityToken(value: string | number): string {
+  return `${typeof value}:${String(value)}`;
+}
+
+function overlayArray(raw: unknown, edited: unknown[], propertyKey: string | undefined): unknown[] {
+  const rawArray = Array.isArray(raw) ? raw : [];
+  const identityKey = stableIdentityKey(propertyKey, [...rawArray, ...edited]);
+  if (identityKey === undefined) {
     return edited.map((value, index) => deepOverlay(rawArray[index], value));
+  }
+
+  const rawByIdentity = new Map<string, unknown[]>();
+  for (const value of rawArray) {
+    const valueIdentity = identity(value, identityKey);
+    if (valueIdentity === undefined) continue;
+    const token = identityToken(valueIdentity);
+    const matches = rawByIdentity.get(token) ?? [];
+    matches.push(value);
+    rawByIdentity.set(token, matches);
+  }
+  return edited.map((value) => {
+    const valueIdentity = identity(value, identityKey);
+    const rawValue = valueIdentity === undefined
+      ? undefined
+      : rawByIdentity.get(identityToken(valueIdentity))?.shift();
+    return deepOverlay(rawValue, value);
+  });
+}
+
+function deepOverlay(raw: unknown, edited: unknown, propertyKey?: string): unknown {
+  if (Array.isArray(edited)) {
+    return overlayArray(raw, edited, propertyKey);
   }
   const editedObject = record(edited);
   if (editedObject !== undefined) {
     const result = record(raw) === undefined ? {} : structuredClone(record(raw)!);
     for (const [key, value] of Object.entries(editedObject)) {
-      result[key] = deepOverlay(result[key], value);
+      result[key] = deepOverlay(result[key], value, key);
     }
     return result;
   }
@@ -86,7 +135,7 @@ function overlayTextSettings(body: Record<string, unknown>, settings: Record<str
     }
     const aliases = aliasesFor(canonicalKey);
     const rawKey = aliases.find((key) => Object.hasOwn(target, key)) ?? aliases[0]!;
-    target[rawKey] = deepOverlay(target[rawKey], value);
+    target[rawKey] = deepOverlay(target[rawKey], value, rawKey);
   }
   if (directNovel) body.parameters = target;
 }

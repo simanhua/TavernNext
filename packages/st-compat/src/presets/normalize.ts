@@ -39,6 +39,32 @@ function withoutProviderSettings(value: unknown): unknown {
   );
 }
 
+function withoutProviderSettingsAtNode(fields: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(fields)
+      .filter(([key]) => !isProviderSetting(key))
+      .map(([key, value]) => [key, structuredClone(value)]),
+  );
+}
+
+function schemaAwareProviderFilter(
+  kind: PresetKind,
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  const filtered = withoutProviderSettingsAtNode(fields);
+  const parameters = kind === 'text' ? record(filtered.parameters) : undefined;
+  if (parameters !== undefined) {
+    filtered.parameters = withoutProviderSettingsAtNode(parameters);
+  }
+  // reasoning_config is an executable settings bag whose members are configuration
+  // nodes. Other recognized object/array values (for example JSON Schema and
+  // logit-bias payloads) are opaque data and must not be filtered by key name.
+  if (kind === 'reasoning' && Object.hasOwn(filtered, 'reasoning_config')) {
+    filtered.reasoning_config = withoutProviderSettings(filtered.reasoning_config);
+  }
+  return filtered;
+}
+
 function fallbackName(fileName: string): string {
   const name = fileName.replace(/[\\/]/g, '/').split('/').at(-1) ?? 'preset';
   const stem = name.replace(/\.[^.]*$/, '').trim();
@@ -160,8 +186,8 @@ export function decodeInspectedPreset(bytes: Uint8Array, fileName: string): Omit
     invalid('preset_fields_invalid', 'Preset contains malformed fields for its detected family.');
   }
   const executable = executablePresetFields(kind, validated);
-  const settings = withoutProviderSettings(executable.settings) as Record<string, unknown>;
-  const knownRawFields = withoutProviderSettings(executable.knownRawFields) as Record<string, unknown>;
+  const settings = schemaAwareProviderFilter(kind, executable.settings);
+  const knownRawFields = schemaAwareProviderFilter(kind, executable.knownRawFields);
   const unknownFields = compatibilityFields(parsed.document, knownRawFields);
   if (parsed.wrapperKey !== undefined) {
     for (const [key, value] of Object.entries(parsed.root)) {
