@@ -1,4 +1,4 @@
-import { customType, index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { customType, index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 const jsonText = <T>() => customType<{ data: T; driverData: string }>({
   dataType: () => 'text',
@@ -28,7 +28,7 @@ export const worldbooks = sqliteTable('worldbooks', {
 });
 export const worldbookEntries = sqliteTable('worldbook_entries', {
   ...entityColumns,
-  worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id, { onDelete: 'cascade' }),
+  worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),
 }, (table) => [index('worldbook_entries_worldbook_id_idx').on(table.worldbookId)]);
 export const presets = sqliteTable('presets', {
   ...entityColumns,
@@ -45,16 +45,27 @@ export const conversations = sqliteTable('conversations', {
   index('conversations_character_id_idx').on(table.characterId),
   index('conversations_persona_id_idx').on(table.personaId),
 ]);
+export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),
+}, (table) => [
+  primaryKey({ columns: [table.conversationId, table.worldbookId] }),
+  index('conversation_worldbooks_worldbook_id_idx').on(table.worldbookId),
+]);
+export const messageVariants = sqliteTable('message_variants', {
+  ...entityColumns,
+  messageId: text('message_id').notNull(),
+  status: text('status').notNull(),
+}, (table) => [index('message_variants_message_id_idx').on(table.messageId)]);
 export const messages = sqliteTable('messages', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  activeVariantId: text('active_variant_id').references(() => messageVariants.id),
   role: text('role').notNull(),
-}, (table) => [index('messages_conversation_id_idx').on(table.conversationId)]);
-export const messageVariants = sqliteTable('message_variants', {
-  ...entityColumns,
-  messageId: text('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
-  status: text('status').notNull(),
-}, (table) => [index('message_variants_message_id_idx').on(table.messageId)]);
+}, (table) => [
+  index('messages_conversation_id_idx').on(table.conversationId),
+  index('messages_active_variant_id_idx').on(table.activeVariantId),
+]);
 export const providerProfiles = sqliteTable('provider_profiles', {
   ...entityColumns,
   name: text('name').notNull(),

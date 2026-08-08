@@ -29,6 +29,7 @@ describe('SQLite repositories', () => {
       'characters', 'personas', 'worldbooks', 'worldbook_entries', 'presets',
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
+      'conversation_worldbooks',
     ]));
   });
 
@@ -64,6 +65,73 @@ describe('SQLite repositories', () => {
 
     expect(repositories.characters.update(character.id, 0, { name: 'Aster Prime' })).toMatchObject({ ok: true, value: { revision: 1, name: 'Aster Prime' } });
     expect(repositories.characters.update(character.id, 0, { name: 'Stale write' })).toEqual({ ok: false, reason: 'conflict' });
+  });
+
+  it('persists metadata and revision across close and reopen', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-reopen-'));
+    testDirectories.push(directory);
+    const path = join(directory, 'tavernnext.sqlite');
+    const database = createDatabase(path);
+    migrateDatabase(database);
+    const repositories = createRepositories(database);
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000012',
+      name: 'Persistent', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+      compatibility: {
+        sourceFormat: 'st-character-v3', rawPayload: { retained: true }, unknownFields: { retained: true }, compatWarnings: [], parserVersion: '1',
+      },
+    });
+    repositories.characters.update(character.id, 0, { name: 'Persistent Prime' });
+    database.close();
+
+    const reopened = createDatabase(path);
+    migrateDatabase(reopened);
+    expect(createRepositories(reopened).characters.get(character.id)).toMatchObject({
+      name: 'Persistent Prime', revision: 1, compatibility: { rawPayload: { retained: true } },
+    });
+  });
+
+  it('flushes a committed multi-repository transaction once and rolls back failed work', async () => {
+    const { database } = await createTestRepositories();
+
+    database.transaction(() => {
+      const repositories = createRepositories(database);
+      repositories.characters.create({
+        id: '018f0000-0000-7000-8000-000000000013', name: 'Committed', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+      });
+      repositories.personas.create({
+        id: '018f0000-0000-7000-8000-000000000014', name: 'Committed persona', description: '', isDefault: false,
+      });
+    });
+
+    expect(() => database.transaction(() => {
+      const repositories = createRepositories(database);
+      repositories.characters.create({
+        id: '018f0000-0000-7000-8000-000000000015', name: 'Rolled back', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+      });
+      repositories.conversations.create({
+        id: '018f0000-0000-7000-8000-000000000016', characterId: '018f0000-0000-7000-8000-000000000099', personaId: '018f0000-0000-7000-8000-000000000014', title: 'Invalid',
+      });
+    })).toThrow(/FOREIGN KEY constraint failed/);
+
+    const repositories = createRepositories(database);
+    expect(repositories.characters.get('018f0000-0000-7000-8000-000000000013')).toMatchObject({ name: 'Committed' });
+    expect(repositories.personas.get('018f0000-0000-7000-8000-000000000014')).toMatchObject({ name: 'Committed persona' });
+    expect(repositories.characters.get('018f0000-0000-7000-8000-000000000015')).toBeUndefined();
+  });
+
+  it('does not cascade a worldbook delete to its entries', async () => {
+    const { repositories } = await createTestRepositories();
+    const worldbook = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000017', name: 'Lore', enabled: true,
+    });
+    const entry = repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000000018', worldbookId: worldbook.id, keys: ['lore'], content: 'retained', enabled: true, position: 'before_character', order: 0,
+    });
+
+    expect(() => repositories.worldbooks.delete(worldbook.id, 0)).toThrow(/FOREIGN KEY constraint failed/);
+    expect(repositories.worldbooks.get(worldbook.id)).toMatchObject({ id: worldbook.id });
+    expect(repositories.worldbookEntries.get(entry.id)).toMatchObject({ id: entry.id });
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {
