@@ -479,6 +479,9 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     fit: 'strict',
   });
   if (!budget.ok) {
+    if (budget.code === 'budget_search_limit') {
+      warnings.push({ code: budget.code, message: budget.message, source: 'token-budget' });
+    }
     return compilationFailure({
       target: 'text', code: budget.code, message: budget.message, stop, warnings,
       tokenBreakdown: budget.tokenBreakdown, totalTokens: budget.totalTokens,
@@ -502,6 +505,9 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
         fit: 'strict',
       });
       if (!budget.ok) {
+        if (budget.code === 'budget_search_limit') {
+          warnings.push({ code: budget.code, message: budget.message, source: 'token-budget' });
+        }
         return compilationFailure({
           target: 'text', code: budget.code, message: budget.message, stop, warnings,
           tokenBreakdown: budget.tokenBreakdown, totalTokens: budget.totalTokens,

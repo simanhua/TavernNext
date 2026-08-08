@@ -493,6 +493,9 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     countSelection: async (selected) => input.tokenizer.countMessages(renderMessages(selected)),
   });
   if (!budget.ok) {
+    if (budget.code === 'budget_search_limit') {
+      warnings.push({ code: budget.code, message: budget.message, source: 'token-budget' });
+    }
     return compilationFailure({
       target: 'chat', code: budget.code, message: budget.message, stop, warnings,
       tokenBreakdown: budget.tokenBreakdown, totalTokens: budget.totalTokens,

@@ -191,4 +191,178 @@ describe('deterministic token budget ledger', () => {
     expect(result).toMatchObject({ ok: false, code: 'tokenizer_error' });
     expect(result.tokenBreakdown.map((entry) => entry.source)).toEqual(['first', 'failed', 'unreached']);
   });
+
+  it('traverses exact candidates in history-then-optional priority and stops at the first fit', async () => {
+    const calls: string[] = [];
+    const result = await allocateGroupedPromptBudget({
+      maxTokens: 3,
+      blocks: [
+        { source: 'immutable', policy: 'immutable' as const, value: 'I' },
+        { source: 'history:old', policy: 'history' as const, value: 'H1' },
+        { source: 'history:new', policy: 'history' as const, value: 'H2' },
+        { source: 'optional:first', policy: 'optional' as const, value: 'O1' },
+        { source: 'optional:second', policy: 'optional' as const, value: 'O2' },
+      ],
+      countSelection: (selected) => {
+        const value = selected.map((block) => block.value).join('+');
+        calls.push(value);
+        if (value === 'I+H1+H2+O1+O2') return 4;
+        if (value === 'I+H1+H2+O1') return 3;
+        return selected.length;
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      includedBlockIndexes: [0, 1, 2, 3],
+      includedSources: ['immutable', 'history:old', 'history:new', 'optional:first'],
+      totalTokens: 3,
+    });
+    expect(calls.slice(5, 7)).toEqual(['I+H1+H2+O1+O2', 'I+H1+H2+O1']);
+    expect(calls).toHaveLength(12);
+  });
+
+  it('accepts the 4096-candidate boundary without retaining every fitting candidate', async () => {
+    const blocksAtBoundary = [
+      ...Array.from({ length: 63 }, (_value, index) => ({
+        source: `history:${index}`,
+        policy: 'history' as const,
+        value: `h${index}`,
+      })),
+      ...Array.from({ length: 63 }, (_value, index) => ({
+        source: `optional:${index}`,
+        policy: 'optional' as const,
+        value: `o${index}`,
+      })),
+    ];
+    let calls = 0;
+    const result = await allocateGroupedPromptBudget({
+      maxTokens: 1,
+      blocks: blocksAtBoundary,
+      countSelection: (selected) => {
+        calls += 1;
+        return selected.length === 0 ? 0 : 1;
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      includedBlockIndexes: Array.from({ length: 126 }, (_value, index) => index),
+      totalTokens: 1,
+    });
+    // 126 standalone + first exact candidate + 126 leave-one-out ledger calls.
+    expect(calls).toBe(253);
+  });
+
+  it('rejects 100x100 and per-dimension/total over-limit inputs before tokenization', async () => {
+    const adversarialInputs: Array<Array<{
+      source: string;
+      policy: 'immutable' | 'history' | 'optional';
+      value: number;
+    }>> = [
+      [
+        ...Array.from({ length: 100 }, (_value, index) => ({
+          source: `history:${index}`, policy: 'history' as const, value: index,
+        })),
+        ...Array.from({ length: 100 }, (_value, index) => ({
+          source: `optional:${index}`, policy: 'optional' as const, value: index,
+        })),
+      ],
+      Array.from({ length: 101 }, (_value, index) => ({
+        source: `history:${index}`, policy: 'history' as const, value: index,
+      })),
+      Array.from({ length: 257 }, (_value, index) => ({
+        source: `immutable:${index}`, policy: 'immutable' as const, value: index,
+      })),
+    ];
+
+    for (const blocks of adversarialInputs) {
+      let calls = 0;
+      const result = await allocateGroupedPromptBudget({
+        maxTokens: 1,
+        blocks,
+        countSelection: () => {
+          calls += 1;
+          return 0;
+        },
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'budget_search_limit', totalTokens: 0 });
+      expect(calls).toBe(0);
+      expect(result.tokenBreakdown).toHaveLength(blocks.length);
+      expect(result.tokenBreakdown.every((entry) => (
+        entry.includedTokens === 0
+        && entry.omittedTokens === 0
+        && entry.reason === 'budget_search_limit'
+      ))).toBe(true);
+    }
+  });
+
+  it('evaluates the sole zero-history/zero-optional candidate and only overflows after every candidate fails', async () => {
+    let emptyCalls = 0;
+    const empty = await allocateGroupedPromptBudget({
+      maxTokens: 0,
+      blocks: [],
+      countSelection: () => {
+        emptyCalls += 1;
+        return 0;
+      },
+    });
+    let overflowCalls = 0;
+    const overflow = await allocateGroupedPromptBudget({
+      maxTokens: 1,
+      blocks: [
+        { source: 'immutable', policy: 'immutable' as const, value: 'I' },
+        { source: 'history', policy: 'history' as const, value: 'H' },
+        { source: 'optional', policy: 'optional' as const, value: 'O' },
+      ],
+      countSelection: () => {
+        overflowCalls += 1;
+        return overflowCalls <= 3 ? 1 : 2;
+      },
+    });
+
+    expect(empty).toMatchObject({ ok: true, includedBlockIndexes: [], totalTokens: 0 });
+    expect(emptyCalls).toBe(1);
+    expect(overflow).toMatchObject({ ok: false, code: 'context_overflow' });
+    // 3 standalone calls, then all four policy-valid exact candidates.
+    expect(overflowCalls).toBe(7);
+  });
+
+  it('reports stable ledgers when the tokenizer fails at the first or a middle candidate', async () => {
+    const candidateFailure = async (failAt: 'first' | 'middle') => {
+      let calls = 0;
+      let candidateCalls = 0;
+      const result = await allocateGroupedPromptBudget({
+        maxTokens: 1,
+        blocks: [
+          { source: 'immutable', policy: 'immutable' as const, value: 'I' },
+          { source: 'history', policy: 'history' as const, value: 'H' },
+          { source: 'optional', policy: 'optional' as const, value: 'O' },
+        ],
+        countSelection: (selected) => {
+          calls += 1;
+          if (selected.length === 1) return 1;
+          candidateCalls += 1;
+          if (failAt === 'first' || candidateCalls === 2) throw new Error(`${failAt} candidate offline`);
+          return 2;
+        },
+      });
+      return { result, calls };
+    };
+
+    const first = await candidateFailure('first');
+    const middle = await candidateFailure('middle');
+
+    expect(first.calls).toBe(4);
+    expect(middle.calls).toBe(5);
+    for (const { result } of [first, middle]) {
+      expect(result).toMatchObject({ ok: false, code: 'tokenizer_error', totalTokens: 0 });
+      expect(result.tokenBreakdown).toEqual([
+        { source: 'immutable', includedTokens: 0, omittedTokens: 1, reason: 'context_overflow' },
+        { source: 'history', includedTokens: 0, omittedTokens: 1, reason: 'context_overflow' },
+        { source: 'optional', includedTokens: 0, omittedTokens: 1, reason: 'context_overflow' },
+      ]);
+    }
+  });
 });

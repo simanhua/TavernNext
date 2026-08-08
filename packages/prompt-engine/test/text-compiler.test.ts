@@ -502,6 +502,42 @@ describe('Text preset compiler', () => {
     expect(failed).toMatchObject({ kind: 'error', target: 'text', code: 'tokenizer_error' });
   });
 
+  it('returns a typed warning and zero tokenizer calls when budget search input exceeds safe limits', async () => {
+    let tokenizerCalls = 0;
+    const history = Array.from({ length: 101 }, (_value, index) => ({
+      id: `history-${index}`,
+      role: 'user',
+      content: `message-${index}`,
+    }));
+    const result = await compileTextPrompt({
+      character: character(), persona: persona(), maxPromptTokens: 10, stop: [], history,
+      tokenizer: {
+        countText: async () => {
+          tokenizerCalls += 1;
+          return 0;
+        },
+        countMessages: async () => 0,
+      },
+      textPreset: preset('text', {}),
+      contextPreset: preset('context', { story_string: '' }),
+    });
+
+    expect(result).toMatchObject({
+      kind: 'error',
+      target: 'text',
+      code: 'budget_search_limit',
+      totalTokens: 0,
+      warnings: [{
+        code: 'budget_search_limit',
+        source: 'token-budget',
+        message: 'Prompt budget search exceeds the safe evaluation limit.',
+      }],
+    });
+    expect(tokenizerCalls).toBe(0);
+    expect(result.tokenBreakdown).toHaveLength(101);
+    expect(result.tokenBreakdown.every((entry) => entry.reason === 'budget_search_limit')).toBe(true);
+  });
+
   it('omits unsupported roles with warnings and is deterministic on repeat', async () => {
     const input = {
       character: character({ description: '', personality: '', scenario: '' }), persona: persona({ description: '' }),

@@ -39,6 +39,7 @@ export type TokenOmissionReason =
   | 'not_applicable'
   | 'history_budget'
   | 'optional_budget'
+  | 'budget_search_limit'
   | 'context_overflow';
 
 export interface TokenBreakdownEntry {
@@ -106,6 +107,7 @@ export type PromptCompilationErrorCode =
   | 'invalid_budget'
   | 'invalid_preset'
   | 'macro_expansion_limit'
+  | 'budget_search_limit'
   | 'tokenizer_error'
   | 'context_overflow';
 

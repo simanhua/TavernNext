@@ -5,7 +5,12 @@ import {
   selectTokenizer,
 } from '@tavernnext/tokenizer-engine';
 import { describe, expect, it } from 'vitest';
-import { compileChatPrompt, compileTextPrompt, type PromptTokenizer } from '../src/index.js';
+import {
+  allocateGroupedPromptBudget,
+  compileChatPrompt,
+  compileTextPrompt,
+  type PromptTokenizer,
+} from '../src/index.js';
 import { character, persona, preset } from './fixtures.js';
 
 describe('Task 6 tokenizer integration', () => {
@@ -131,6 +136,34 @@ describe('Task 6 tokenizer integration', () => {
     expect(result.text).toBe('cgi');
     expect(result.totalTokens).toBe(1);
     expect(result.tokenBreakdown.every((entry) => entry.includedTokens >= 0)).toBe(true);
+    expect(result.tokenBreakdown.reduce((sum, entry) => sum + entry.includedTokens, 0)).toBe(1);
+  });
+
+  it('rescues an over-budget immutable GPT2 prefix with a merging history block', async () => {
+    const decision = selectTokenizer({ requestedId: TokenizerId.GPT2 });
+    expect(await countText('cg', decision)).toBe(2);
+    expect(await countText('i', decision)).toBe(1);
+    expect(await countText('cgi', decision)).toBe(1);
+
+    const result = await allocateGroupedPromptBudget({
+      maxTokens: 1,
+      blocks: [
+        { source: 'immutable:story', policy: 'immutable' as const, value: 'cg' },
+        { source: 'history:newest', policy: 'history' as const, value: 'i' },
+      ],
+      countSelection: (selected) => countText(selected.map((block) => block.value).join(''), decision),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      includedBlockIndexes: [0, 1],
+      includedSources: ['immutable:story', 'history:newest'],
+      totalTokens: 1,
+    });
+    expect(result.tokenBreakdown).toEqual([
+      { source: 'immutable:story', includedTokens: 1, omittedTokens: 0 },
+      { source: 'history:newest', includedTokens: 0, omittedTokens: 0 },
+    ]);
     expect(result.tokenBreakdown.reduce((sum, entry) => sum + entry.includedTokens, 0)).toBe(1);
   });
 });

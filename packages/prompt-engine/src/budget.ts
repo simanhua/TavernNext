@@ -19,7 +19,10 @@ export interface PromptBudgetSuccess {
 
 export interface PromptBudgetFailure {
   ok: false;
-  code: Extract<PromptCompilationErrorCode, 'invalid_budget' | 'tokenizer_error' | 'context_overflow'>;
+  code: Extract<
+    PromptCompilationErrorCode,
+    'invalid_budget' | 'budget_search_limit' | 'tokenizer_error' | 'context_overflow'
+  >;
   message: string;
   totalTokens: number;
   tokenBreakdown: TokenBreakdownEntry[];
@@ -35,6 +38,13 @@ interface CountedBlock<TBlock extends PromptBudgetBlock> {
 function validBudget(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
+
+// These hard limits bound grouped search to at most 4,096 exact candidates
+// and 4,608 total tokenizer calls (candidate search plus two ledger passes).
+const MAX_GROUPED_BLOCKS = 256;
+const MAX_GROUPED_HISTORY_BLOCKS = 100;
+const MAX_GROUPED_OPTIONAL_BLOCKS = 100;
+const MAX_GROUPED_CANDIDATE_EVALUATIONS = 4_096;
 
 /**
  * Allocates blocks whose tokenizer framing is not additive (for example Chat
@@ -75,6 +85,24 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
       reason: block.omitReason ?? reason,
     }));
 
+  const eligibleIndexes = input.blocks.flatMap((block, index) => block.omitReason === undefined ? [index] : []);
+  const immutableIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'immutable');
+  const historyIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'history');
+  const optionalIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'optional');
+  const candidateEvaluations = (historyIndexes.length + 1) * (optionalIndexes.length + 1);
+  if (input.blocks.length > MAX_GROUPED_BLOCKS
+    || historyIndexes.length > MAX_GROUPED_HISTORY_BLOCKS
+    || optionalIndexes.length > MAX_GROUPED_OPTIONAL_BLOCKS
+    || candidateEvaluations > MAX_GROUPED_CANDIDATE_EVALUATIONS) {
+    return {
+      ok: false,
+      code: 'budget_search_limit',
+      message: 'Prompt budget search exceeds the safe evaluation limit.',
+      totalTokens: 0,
+      tokenBreakdown: failureBreakdown('budget_search_limit'),
+    };
+  }
+
   try {
     for (let index = 0; index < input.blocks.length; index += 1) {
       const block = input.blocks[index]!;
@@ -90,10 +118,6 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
     };
   }
 
-  const eligibleIndexes = input.blocks.flatMap((block, index) => block.omitReason === undefined ? [index] : []);
-  const immutableIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'immutable');
-  const historyIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'history');
-  const optionalIndexes = eligibleIndexes.filter((index) => input.blocks[index]!.policy === 'optional');
   const indexesFor = (historyCount: number, optionalCount: number): Set<number> => new Set([
     ...immutableIndexes,
     ...historyIndexes.slice(historyIndexes.length - historyCount),
@@ -101,57 +125,37 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
   ]);
   const blocksFor = (indexes: ReadonlySet<number>): TBlock[] => input.blocks
     .filter((_block, index) => indexes.has(index));
-  const fits = (tokens: number) => input.fit === 'strict'
-    ? tokens < input.maxTokens
-    : tokens <= input.maxTokens;
-  const immutableSelection = indexesFor(0, 0);
-  let immutableTokens: number;
-  try {
-    immutableTokens = await count(blocksFor(immutableSelection), 'candidate:history=0,optional=0');
-  } catch (error) {
-    return {
-      ok: false,
-      code: 'tokenizer_error',
-      message: error instanceof Error ? error.message : 'Tokenizer failed while counting immutable prompt content.',
-      totalTokens: 0,
-      tokenBreakdown: failureBreakdown(),
-    };
-  }
-  if (immutableTokens > input.maxTokens) {
-    return {
-      ok: false,
-      code: 'context_overflow',
-      message: 'Immutable prompt content exceeds the available context budget.',
-      totalTokens: 0,
-      tokenBreakdown: failureBreakdown(),
-    };
-  }
 
   try {
-    const candidates: Array<{
-      historyCount: number;
-      optionalCount: number;
-      indexes: Set<number>;
-      tokens: number;
-    }> = [{ historyCount: 0, optionalCount: 0, indexes: immutableSelection, tokens: immutableTokens }];
-    for (let historyCount = 0; historyCount <= historyIndexes.length; historyCount += 1) {
-      for (let optionalCount = 0; optionalCount <= optionalIndexes.length; optionalCount += 1) {
-        if (historyCount === 0 && optionalCount === 0) continue;
+    let selected: Set<number> | undefined;
+    let totalTokens = 0;
+    candidateSearch:
+    for (let historyCount = historyIndexes.length; historyCount >= 0; historyCount -= 1) {
+      for (let optionalCount = optionalIndexes.length; optionalCount >= 0; optionalCount -= 1) {
         const indexes = indexesFor(historyCount, optionalCount);
         const tokens = await count(
           blocksFor(indexes),
           `candidate:history=${historyCount},optional=${optionalCount}`,
         );
-        if (fits(tokens)) {
-          candidates.push({ historyCount, optionalCount, indexes, tokens });
-        }
+        const hasVariableContent = historyCount > 0 || optionalCount > 0;
+        const fits = hasVariableContent && input.fit === 'strict'
+          ? tokens < input.maxTokens
+          : tokens <= input.maxTokens;
+        if (!fits) continue;
+        selected = indexes;
+        totalTokens = tokens;
+        break candidateSearch;
       }
     }
-    candidates.sort((left, right) => right.historyCount - left.historyCount
-      || right.optionalCount - left.optionalCount);
-    const chosen = candidates[0]!;
-    const selected = chosen.indexes;
-    const totalTokens = chosen.tokens;
+    if (selected === undefined) {
+      return {
+        ok: false,
+        code: 'context_overflow',
+        message: 'Immutable prompt content exceeds the available context budget.',
+        totalTokens: 0,
+        tokenBreakdown: failureBreakdown(),
+      };
+    }
 
     const includedTokens = new Map<number, number>();
     const selectedIndexes = input.blocks.flatMap((_block, index) => selected.has(index) ? [index] : []);
