@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { access, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_INSPECTION_LIMITS, inspectArtifact, type InspectionLimits } from '../src/index.js';
+import { DEFAULT_INSPECTION_LIMITS, inspectArtifact, recoverInspectionWorkspaces, type InspectionLimits } from '../src/index.js';
 
 const encoder = new TextEncoder();
 
@@ -296,6 +296,67 @@ describe('artifact format detection', () => {
       );
       expect(failed.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_archive' }));
       await expect(readdir(workspaceRoot)).resolves.toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers only stale UUID children from the stable default workspace root before inspection', async () => {
+    const workspaceRoot = join(tmpdir(), 'tavernnext-st-compat-inspections');
+    const staleUuid = randomUUID();
+    const freshUuid = randomUUID();
+    const unrelatedDirectory = `unrelated-${randomUUID()}`;
+    const unrelatedFile = `unrelated-${randomUUID()}.txt`;
+    const ownedPaths = [staleUuid, freshUuid, unrelatedDirectory, unrelatedFile].map((name) => join(workspaceRoot, name));
+    await mkdir(workspaceRoot, { recursive: true });
+    await Promise.all([
+      mkdir(join(workspaceRoot, staleUuid)),
+      mkdir(join(workspaceRoot, freshUuid)),
+      mkdir(join(workspaceRoot, unrelatedDirectory)),
+      writeFile(join(workspaceRoot, unrelatedFile), 'preserve'),
+    ]);
+    const staleTime = new Date(Date.now() - (15 * 60 * 1000) - 10_000);
+    await utimes(join(workspaceRoot, staleUuid), staleTime, staleTime);
+    try {
+      const preview = await inspectArtifact({
+        fileName: 'default-root.charx',
+        bytes: zip([{ name: 'card.json', data: encoder.encode('{"spec":"chara_card_v3","data":{"name":"Recovered"}}') }]),
+      });
+
+      expect(preview.blockingErrors).toEqual([]);
+      await expect(access(join(workspaceRoot, staleUuid))).rejects.toThrow();
+      await expect(access(join(workspaceRoot, freshUuid))).resolves.toBeUndefined();
+      await expect(access(join(workspaceRoot, unrelatedDirectory))).resolves.toBeUndefined();
+      await expect(access(join(workspaceRoot, unrelatedFile))).resolves.toBeUndefined();
+    } finally {
+      await Promise.all(ownedPaths.map((path) => rm(path, { recursive: true, force: true })));
+    }
+  });
+
+  it('exports idempotent recovery for caller-managed roots and preserves fresh UUIDs and unrelated entries', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-recovery-'));
+    const staleUuid = randomUUID();
+    const freshUuid = randomUUID();
+    const uuidFile = randomUUID();
+    const unrelatedDirectory = 'another-package';
+    const now = Date.parse('2026-08-08T12:00:00.000Z');
+    const ttl = 1_000;
+    try {
+      await Promise.all([
+        mkdir(join(directory, staleUuid)),
+        mkdir(join(directory, freshUuid)),
+        mkdir(join(directory, unrelatedDirectory)),
+        writeFile(join(directory, uuidFile), 'not a directory'),
+      ]);
+      await utimes(join(directory, staleUuid), new Date(now - ttl - 1), new Date(now - ttl - 1));
+      await utimes(join(directory, freshUuid), new Date(now), new Date(now));
+      expect(() => recoverInspectionWorkspaces(directory, now, ttl)).not.toThrow();
+      expect(() => recoverInspectionWorkspaces(directory, now, ttl)).not.toThrow();
+
+      await expect(access(join(directory, staleUuid))).rejects.toThrow();
+      await expect(access(join(directory, freshUuid))).resolves.toBeUndefined();
+      await expect(access(join(directory, unrelatedDirectory))).resolves.toBeUndefined();
+      await expect(access(join(directory, uuidFile))).resolves.toBeUndefined();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

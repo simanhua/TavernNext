@@ -1,9 +1,11 @@
 import {
   closeSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   readSync,
   rmSync,
   writeSync,
@@ -28,6 +30,9 @@ import { diagnostic, type ImportDiagnostic } from './warnings.js';
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const zipSignature = Uint8Array.from([0x50, 0x4b]);
 const pngSignature = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const defaultInspectionWorkspaceRoot = join(tmpdir(), 'tavernnext-st-compat-inspections');
+const inspectionWorkspaceTtlMs = 15 * 60 * 1000;
+const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 class InspectionFailure extends Error {
   constructor(readonly issue: ImportDiagnostic) {
@@ -57,8 +62,33 @@ interface ExtractedArchive {
 }
 
 export interface InspectionOptions {
-  /** Parent for UUID-owned disk workspaces. The caller manages stale children; this call removes its own child. */
+  /** Parent for UUID-owned disk workspaces. Inspection recovers stale children and removes its own child. */
   workspaceRoot?: string;
+}
+
+export function recoverInspectionWorkspaces(
+  root: string,
+  now: number = Date.now(),
+  ttl: number = inspectionWorkspaceTtlMs,
+): void {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!uuidDirectory.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const path = join(root, entry.name);
+    try {
+      const details = lstatSync(path);
+      if (details.isDirectory() && !details.isSymbolicLink() && details.mtimeMs + ttl <= now) {
+        rmSync(path, { recursive: true, force: true });
+      }
+    } catch {
+      // Recovery is opportunistic; another process may have removed or replaced the same child.
+    }
+  }
 }
 
 function startsWith(bytes: Uint8Array, signature: Uint8Array): boolean {
@@ -473,8 +503,9 @@ function parseArchiveJson(archive: ExtractedArchive, name: string, limits: Inspe
 }
 
 function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits, options: InspectionOptions): void {
-  const workspaceRoot = options.workspaceRoot ?? join(tmpdir(), 'tavernnext-inspection-workspaces');
+  const workspaceRoot = options.workspaceRoot ?? defaultInspectionWorkspaceRoot;
   mkdirSync(workspaceRoot, { recursive: true });
+  recoverInspectionWorkspaces(workspaceRoot);
   const workspace = join(workspaceRoot, randomUUID());
   mkdirSync(workspace, { mode: 0o700 });
   try {
