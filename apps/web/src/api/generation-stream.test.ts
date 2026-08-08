@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readGenerationEvents } from './generation-stream.js';
 
 function responseFrom(payloads: string[]): Response {
@@ -39,5 +39,25 @@ describe('readGenerationEvents', () => {
     };
 
     await expect(collect()).rejects.toThrow('Unsupported generation event: surprise');
+  });
+
+  it('cancels the response reader once when its signal aborts', async () => {
+    const cancel = vi.fn();
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: started\ndata: {"generationId":"generation-1"}\n\n'));
+      },
+      cancel,
+    }));
+    const controller = new AbortController();
+    const iterator = readGenerationEvents(response, controller.signal)[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'started' } });
+
+    const pending = iterator.next();
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });

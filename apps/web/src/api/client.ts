@@ -29,6 +29,11 @@ export class ApiError extends Error {
   }
 }
 
+export function errorCode(error: unknown): string {
+  if (error instanceof ApiError) return error.code;
+  return error instanceof Error ? error.message : 'unknown_error';
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined) headers.set('content-type', 'application/json');
@@ -81,11 +86,12 @@ export const api = {
     method: 'PATCH', body: JSON.stringify({ revision: message.revision, patch: { content } }),
   }),
   deleteMessage: (message: Message) => request<void>(`/api/messages/${message.id}?revision=${message.revision}`, { method: 'DELETE' }),
-  startGeneration: async (conversation: Conversation, userText: string) => {
+  startGeneration: async (conversation: Conversation, userText: string, signal?: AbortSignal) => {
     const response = await fetch(`/api/conversations/${conversation.id}/generations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ conversationRevision: conversation.revision, mode: 'normal', userText }),
+      signal,
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as { error?: string };

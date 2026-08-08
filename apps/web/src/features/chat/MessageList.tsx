@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, type MessageView } from '../../api/client.js';
+import { api, errorCode, type MessageView } from '../../api/client.js';
 import { useChatUi } from './chat-store.js';
 
 interface MessageListProps {
@@ -40,7 +40,10 @@ export function MessageList({ conversationId, messages, streamedText, controlsDi
           <article className={`message message-${message.role}`} key={message.id}>
             <header>{message.role === 'assistant' ? 'Assistant' : 'You'}</header>
             {editingId === message.id ? (
-              <form onSubmit={(event) => { event.preventDefault(); edit.mutate({ message, content: editText }); }}>
+              <form onSubmit={(event) => {
+                event.preventDefault();
+                void edit.mutateAsync({ message, content: editText }).catch(() => undefined);
+              }}>
                 <label htmlFor={`edit-${message.id}`}>Edit message</label>
                 <textarea id={`edit-${message.id}`} value={editText} onChange={(event) => setEditText(event.target.value)} />
                 <button type="submit" disabled={edit.isPending || editText.trim() === ''}>Save edit</button>
@@ -68,12 +71,14 @@ export function MessageList({ conversationId, messages, streamedText, controlsDi
                 type="button"
                 disabled={controlsDisabled || remove.isPending}
                 aria-label={`Delete ${label}`}
-                onClick={() => remove.mutate(message)}
+                onClick={() => { void remove.mutateAsync(message).catch(() => undefined); }}
               >Delete</button>
             </div>
           </article>
         );
       })}
+      {edit.error ? <p role="alert">Unable to edit message: {errorCode(edit.error)}</p> : null}
+      {remove.error ? <p role="alert">Unable to delete message: {errorCode(remove.error)}</p> : null}
       {streamedText !== '' ? (
         <article className="message message-assistant" aria-live="polite">
           <header>Assistant</header>

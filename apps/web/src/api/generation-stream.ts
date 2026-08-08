@@ -37,14 +37,28 @@ function parseFrame(frame: string): GenerationEvent | undefined {
   throw new Error(`Invalid data for generation event: ${type}`);
 }
 
-export async function* readGenerationEvents(response: Response): AsyncIterable<GenerationEvent> {
+function abortError(): DOMException {
+  return new DOMException('Generation stream aborted', 'AbortError');
+}
+
+export async function* readGenerationEvents(response: Response, signal?: AbortSignal): AsyncIterable<GenerationEvent> {
   if (response.body === null) throw new Error('Generation response has no body');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let finished = false;
+  let cancelPromise: Promise<void> | undefined;
+  const cancelReader = () => {
+    cancelPromise ??= reader.cancel(abortError()).catch(() => undefined);
+  };
+  const handleAbort = () => cancelReader();
+  signal?.addEventListener('abort', handleAbort, { once: true });
+  if (signal?.aborted) cancelReader();
   try {
     while (true) {
+      if (signal?.aborted) throw abortError();
       const { value, done } = await reader.read();
+      if (signal?.aborted) throw abortError();
       buffer += decoder.decode(value, { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() ?? '';
@@ -52,13 +66,19 @@ export async function* readGenerationEvents(response: Response): AsyncIterable<G
         const event = parseFrame(frame);
         if (event !== undefined) yield event;
       }
-      if (done) break;
+      if (done) {
+        finished = true;
+        break;
+      }
     }
     if (buffer.trim() !== '') {
       const event = parseFrame(buffer);
       if (event !== undefined) yield event;
     }
   } finally {
+    signal?.removeEventListener('abort', handleAbort);
+    if (!finished) cancelReader();
+    await cancelPromise;
     reader.releaseLock();
   }
 }

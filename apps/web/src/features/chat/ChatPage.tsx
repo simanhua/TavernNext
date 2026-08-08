@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { api, type Conversation } from '../../api/client.js';
+import { api, errorCode, type Conversation } from '../../api/client.js';
 import { CharacterQuickCreate } from '../characters/CharacterQuickCreate.js';
 import { PersonaQuickCreate } from '../personas/PersonaQuickCreate.js';
 import { useChatUi } from './chat-store.js';
@@ -55,16 +55,20 @@ export function ChatPage() {
     const text = draft.trim();
     if (text === '' || generation.isActive) return;
     let target: Conversation | undefined = detail.data?.conversation;
-    if (target === undefined) {
-      const character = characters.data?.find((candidate) => candidate.id === characterId);
-      target = await createConversation.mutateAsync({
-        characterId,
-        personaId,
-        title: character === undefined ? 'New chat' : `${character.name} chat`,
-      });
+    try {
+      if (target === undefined) {
+        const character = characters.data?.find((candidate) => candidate.id === characterId);
+        target = await createConversation.mutateAsync({
+          characterId,
+          personaId,
+          title: character === undefined ? 'New chat' : `${character.name} chat`,
+        });
+      }
+      setDraft('');
+      await generation.start(target, text);
+    } catch {
+      // Mutation state owns accessible feedback; keep the draft for retry.
     }
-    setDraft('');
-    await generation.start(target, text);
   };
 
   const prerequisitesReady = activeConversationId !== null || (characterId !== '' && personaId !== '');
@@ -122,6 +126,7 @@ export function ChatPage() {
           <span className={`generation-status status-${generation.status}`}>{generation.status}</span>
         </header>
         {detail.error ? <p role="alert">Unable to load this conversation.</p> : null}
+        {createConversation.error ? <p role="alert">Unable to create conversation: {errorCode(createConversation.error)}</p> : null}
         <MessageList
           conversationId={activeConversationId}
           messages={detail.data?.messages ?? []}
