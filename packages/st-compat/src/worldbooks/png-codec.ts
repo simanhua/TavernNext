@@ -2,24 +2,34 @@ import extractPngChunks from 'png-chunks-extract';
 import { decode as decodePngText } from 'png-chunk-text';
 import type { JsonObject } from './schemas.js';
 import { decodeJsonWorldbook, MAX_WORLDBOOK_PREVIEW_BYTES, WorldbookCodecError } from './native-codec.js';
+import { preflightNaidataPng } from './naidata-metadata.js';
 
 function decodeStrictBase64(value: string): Uint8Array {
-  const trimmed = value.trim();
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(trimmed)) {
-    throw new WorldbookCodecError('worldbook_png_metadata_invalid', 'PNG naidata metadata is not valid base64.');
-  }
-  if (trimmed.length > Math.ceil(MAX_WORLDBOOK_PREVIEW_BYTES / 3) * 4) {
+  if (value.length > MAX_WORLDBOOK_PREVIEW_BYTES) {
     throw new WorldbookCodecError(
       'worldbook_preview_limit',
       `Worldbook source envelopes are limited to ${MAX_WORLDBOOK_PREVIEW_BYTES} bytes.`,
     );
   }
-  return Buffer.from(trimmed, 'base64');
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new WorldbookCodecError('worldbook_png_metadata_invalid', 'PNG naidata metadata is not valid base64.');
+  }
+  return Buffer.from(value, 'base64');
 }
 
 export function decodeNaidataPng(bytes: Uint8Array): JsonObject {
   let encoded: string | undefined;
   try {
+    const preflightIssue = preflightNaidataPng(bytes, MAX_WORLDBOOK_PREVIEW_BYTES);
+    if (preflightIssue === 'worldbook_preview_limit') {
+      throw new WorldbookCodecError(
+        'worldbook_preview_limit',
+        `Worldbook source envelopes are limited to ${MAX_WORLDBOOK_PREVIEW_BYTES} bytes.`,
+      );
+    }
+    if (preflightIssue === 'corrupt_png') {
+      throw new WorldbookCodecError('corrupt_png', 'PNG chunks or checksums are corrupt.');
+    }
     for (const chunk of extractPngChunks(bytes)) {
       if (chunk.name !== 'tEXt') continue;
       const text = decodePngText(chunk);

@@ -7,9 +7,10 @@ import { pathToFileURL } from 'node:url';
 import { decode as decodePngText, encode as encodePngText } from 'png-chunk-text';
 import encodePngChunks from 'png-chunks-encode';
 import extractPngChunks from 'png-chunks-extract';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_INSPECTION_LIMITS,
+  decodeWorldbookArtifact,
   exportCharacterBook,
   exportWorldbook,
   inspectWorldbook,
@@ -18,10 +19,12 @@ import {
   type NormalizedWorldbookEntry,
   type WorldbookImportPreview,
 } from '../src/index.js';
+import { WorldbookCodecError } from '../src/worldbooks/native-codec.js';
 
 const fixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'worldbooks');
 const characterFixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'characters');
 const encoder = new TextEncoder();
+const naidataRawTextLimit = 2 * 1024 * 1024;
 
 function bytes(name: string): Uint8Array {
   return new Uint8Array(readFileSync(join(fixtureRoot, name)));
@@ -66,6 +69,48 @@ function pngWithAdditionalMetadata(source: Uint8Array, keyword: string, text: st
   const chunks = extractPngChunks(source);
   chunks.splice(-1, 0, encodePngText(keyword, text));
   return encodePngChunks(chunks);
+}
+
+async function withLargeTypedArrayAllocationRejected<T>(
+  threshold: number,
+  action: () => T | Promise<T>,
+): Promise<T> {
+  const guardedUint8Array = new Proxy(globalThis.Uint8Array, {
+    construct(target, argumentsList, newTarget) {
+      const requestedLength = argumentsList[0];
+      if (typeof requestedLength === 'number' && requestedLength > threshold) {
+        throw new WorldbookCodecError('allocation_probe', 'The PNG parser attempted an oversized allocation.');
+      }
+      return Reflect.construct(target, argumentsList, newTarget);
+    },
+  });
+  vi.stubGlobal('Uint8Array', guardedUint8Array);
+  try {
+    return await action();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
+function codecErrorCode(action: () => unknown): string {
+  try {
+    action();
+  } catch (error) {
+    expect(error).toBeInstanceOf(WorldbookCodecError);
+    return (error as WorldbookCodecError).code;
+  }
+  throw new Error('Expected the Worldbook codec to reject the PNG.');
+}
+
+function chunkHeaderOffset(bytes: Uint8Array, expectedName: string): number {
+  let offset = 8;
+  while (offset + 12 <= bytes.length) {
+    const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+    const name = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+    if (name === expectedName) return offset;
+    offset += length + 12;
+  }
+  throw new Error(`PNG chunk ${expectedName} was not found.`);
 }
 
 describe('Worldbook all-field normalization', () => {
@@ -342,6 +387,115 @@ describe('Worldbook validation and naidata safety', () => {
     expect((await inspectWorldbook(malformedJson, 'malformed-metadata.png')).blockingErrors).toContainEqual(expect.objectContaining({
       code: 'worldbook_png_metadata_invalid',
     }));
+  });
+
+  it.each([
+    ['leading', (value: string) => ` ${value}`],
+    ['trailing', (value: string) => `${value}\n`],
+  ])('rejects %s whitespace around otherwise canonical naidata base64', async (_label, surround) => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const canonical = Buffer.from('{"entries":{}}', 'utf8').toString('base64');
+    const preview = await inspectWorldbook(
+      pngWithAdditionalMetadata(blank, 'naidata', surround(canonical)),
+      'noncanonical-naidata.png',
+    );
+
+    expect(preview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'worldbook_png_metadata_invalid' }));
+    expect(preview.worldbook).toBeNull();
+  });
+
+  it('bounds the raw naidata text before trimming a padded small valid payload', async () => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const canonical = Buffer.from('{"entries":{}}', 'utf8').toString('base64');
+    const padded = `${' '.repeat(1_572_864)}${canonical}${' '.repeat(1_572_864)}`;
+    const preview = await inspectWorldbook(
+      pngWithAdditionalMetadata(blank, 'naidata', padded),
+      'padded-small-naidata.png',
+    );
+
+    expect(preview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'worldbook_preview_limit' }));
+    expect(preview.worldbook).toBeNull();
+    expect(preview.rawPayload).toBeNull();
+  });
+
+  it('rejects oversized naidata before the shared or typed PNG extractor allocates the raw value', async () => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const canonical = Buffer.from('{"entries":{}}', 'utf8').toString('base64');
+    const padded = `${' '.repeat(1_572_864)}${canonical}${' '.repeat(1_572_864)}`;
+    const oversized = pngWithAdditionalMetadata(blank, 'NAIDATA', padded);
+
+    const typedCode = await withLargeTypedArrayAllocationRejected(
+      naidataRawTextLimit,
+      () => codecErrorCode(() => decodeWorldbookArtifact(oversized, 'typed-oversized-naidata.png')),
+    );
+    const sharedPreview = await withLargeTypedArrayAllocationRejected(
+      naidataRawTextLimit,
+      () => inspectWorldbook(oversized, 'shared-oversized-naidata.png'),
+    );
+
+    expect(typedCode).toBe('worldbook_preview_limit');
+    expect(sharedPreview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'worldbook_preview_limit' }));
+  });
+
+  it('rejects a malformed declared naidata chunk length before the typed PNG extractor allocates it', async () => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const canonical = Buffer.from('{"entries":{}}', 'utf8').toString('base64');
+    const malformed = Uint8Array.from(pngWithAdditionalMetadata(blank, 'naidata', canonical));
+    const textHeader = chunkHeaderOffset(malformed, 'tEXt');
+    malformed.fill(0xff, textHeader, textHeader + 4);
+
+    const typedCode = await withLargeTypedArrayAllocationRejected(
+      malformed.byteLength,
+      () => codecErrorCode(() => decodeWorldbookArtifact(malformed, 'malformed-length-naidata.png')),
+    );
+
+    expect(typedCode).toBe('corrupt_png');
+  });
+
+  it('bounds oversized raw naidata bytes before decoding malformed tEXt content', async () => {
+    const chunks = extractPngChunks(bytes('naidata.png')).filter((chunk) => chunk.name !== 'tEXt');
+    const keyword = Buffer.from('naidata', 'latin1');
+    const rawText = new Uint8Array(keyword.length + 1 + naidataRawTextLimit + 1);
+    rawText.set(keyword);
+    chunks.splice(-1, 0, { name: 'tEXt', data: rawText });
+
+    const preview = await inspectWorldbook(encodePngChunks(chunks), 'malformed-oversized-naidata.png');
+
+    expect(preview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'worldbook_preview_limit' }));
+    expect(preview.worldbook).toBeNull();
+  });
+
+  it.each([
+    ['boundary minus one', naidataRawTextLimit - 1, 'worldbook_png_metadata_invalid'],
+    ['boundary', naidataRawTextLimit, 'worldbook_png_metadata_invalid'],
+    ['boundary plus one', naidataRawTextLimit + 1, 'worldbook_preview_limit'],
+  ])('applies the raw naidata text limit at %s', async (_label, length, code) => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const preview = await inspectWorldbook(
+      pngWithAdditionalMetadata(blank, 'naidata', 'A'.repeat(length)),
+      'raw-naidata-boundary.png',
+    );
+
+    expect(preview.blockingErrors).toContainEqual(expect.objectContaining({ code }));
+    expect(preview.worldbook).toBeNull();
+  });
+
+  it('accepts canonical naidata base64 without surrounding whitespace', async () => {
+    const good = bytes('naidata.png');
+    const blank = encodePngChunks(extractPngChunks(good).filter((chunk) => chunk.name !== 'tEXt'));
+    const canonical = Buffer.from('{"entries":{}}', 'utf8').toString('base64');
+    const preview = await inspectWorldbook(
+      pngWithAdditionalMetadata(blank, 'naidata', canonical),
+      'canonical-naidata.png',
+    );
+
+    expect(preview.blockingErrors).toEqual([]);
+    expect(requireBook(preview).entries).toEqual([]);
   });
 
   it('applies pre-normalization logical entry caps to naidata metadata', async () => {

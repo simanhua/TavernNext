@@ -31,6 +31,8 @@ import {
 } from './artifact.js';
 import { diagnostic, type ImportDiagnostic } from './warnings.js';
 import { isPresetDocument } from './presets/detect.js';
+import { preflightNaidataPng } from './worldbooks/naidata-metadata.js';
+import { MAX_WORLDBOOK_PREVIEW_BYTES } from './worldbooks/native-codec.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const zipSignature = Uint8Array.from([0x50, 0x4b]);
@@ -729,12 +731,19 @@ function strictBase64(
   value: string,
   code = 'corrupt_png_metadata',
   message = 'PNG character metadata is not valid base64.',
+  canonicalRawLimit?: number,
 ): Uint8Array {
-  const trimmed = value.trim();
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(trimmed)) {
+  if (canonicalRawLimit !== undefined && value.length > canonicalRawLimit) {
+    throw new InspectionFailure(diagnostic(
+      'worldbook_preview_limit',
+      `Worldbook source envelopes are limited to ${canonicalRawLimit} bytes.`,
+    ));
+  }
+  const encoded = canonicalRawLimit === undefined ? value.trim() : value;
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
     throw new InspectionFailure(diagnostic(code, message));
   }
-  return Buffer.from(trimmed, 'base64');
+  return Buffer.from(encoded, 'base64');
 }
 
 function validatePngBounds(bytes: Uint8Array): void {
@@ -763,6 +772,14 @@ function validatePngBounds(bytes: Uint8Array): void {
 
 function inspectPng(preview: ImportPreview, input: SourceArtifact): void {
   try {
+    const preflightIssue = preflightNaidataPng(input.bytes, MAX_WORLDBOOK_PREVIEW_BYTES);
+    if (preflightIssue === 'worldbook_preview_limit') {
+      throw new InspectionFailure(diagnostic(
+        'worldbook_preview_limit',
+        `Worldbook source envelopes are limited to ${MAX_WORLDBOOK_PREVIEW_BYTES} bytes.`,
+      ));
+    }
+    if (preflightIssue === 'corrupt_png') throw new Error('Invalid PNG chunk structure');
     validatePngBounds(input.bytes);
     const chunks = extractPngChunks(input.bytes);
     const metadata = new Map<string, unknown>();
@@ -791,6 +808,7 @@ function inspectPng(preview: ImportPreview, input: SourceArtifact): void {
           keyword === 'naidata'
             ? 'PNG naidata Worldbook metadata is not valid base64.'
             : 'PNG character metadata is not valid base64.',
+          keyword === 'naidata' ? MAX_WORLDBOOK_PREVIEW_BYTES : undefined,
         ));
       } catch (error) {
         if (keyword === 'naidata' && error instanceof InspectionFailure && error.issue.code === 'invalid_json') {
@@ -829,7 +847,12 @@ function inspectPng(preview: ImportPreview, input: SourceArtifact): void {
   } catch (error) {
     if (
       error instanceof InspectionFailure
-      && ['corrupt_png_metadata', 'worldbook_png_metadata_duplicate', 'worldbook_png_metadata_invalid'].includes(error.issue.code)
+      && [
+        'corrupt_png_metadata',
+        'worldbook_png_metadata_duplicate',
+        'worldbook_png_metadata_invalid',
+        'worldbook_preview_limit',
+      ].includes(error.issue.code)
     ) throw error;
     throw new InspectionFailure(diagnostic('corrupt_png', 'PNG chunks or metadata are corrupt.'));
   }

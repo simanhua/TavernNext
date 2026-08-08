@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspectCharacter } from '@tavernnext/st-compat';
@@ -12,6 +13,14 @@ import { createRepositories } from '../src/db/repositories.js';
 import { registerCharacterExportRoutes } from '../src/routes/character-exports.js';
 import { registerWorldbookExportRoutes } from '../src/routes/worldbook-exports.js';
 
+interface PngChunk { name: string; data: Uint8Array }
+
+const requireFromHere = createRequire(import.meta.url);
+const { encode: encodePngText } = requireFromHere('png-chunk-text') as {
+  encode(keyword: string, text: string): PngChunk;
+};
+const encodePngChunks = requireFromHere('png-chunks-encode') as (chunks: readonly PngChunk[]) => Uint8Array;
+const extractPngChunks = requireFromHere('png-chunks-extract') as (data: Uint8Array) => PngChunk[];
 const encoder = new TextEncoder();
 const worldbookFixtures = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'worldbooks');
 const characterFixtures = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'characters');
@@ -204,6 +213,24 @@ describe('typed Worldbook import and export API', () => {
     expect(inspected.statusCode).toBe(422);
     expect(inspected.json()).toMatchObject({
       blockingErrors: [expect.objectContaining({ code: 'worldbook_entry_limit' })],
+    });
+    expect(inspected.json().inspectionToken).toBeUndefined();
+  });
+
+  it('propagates the raw naidata metadata limit through server inspection', async () => {
+    const { app } = await context();
+    const source = await fixture(worldbookFixtures, 'naidata.png');
+    const chunks = extractPngChunks(source).filter((chunk) => chunk.name !== 'tEXt');
+    chunks.splice(-1, 0, encodePngText('naidata', ' '.repeat(2 * 1024 * 1024 + 1)));
+    const inspected = await app.inject({
+      method: 'POST',
+      url: '/api/imports/inspect',
+      ...multipart('oversized-naidata.png', encodePngChunks(chunks), 'image/png'),
+    });
+
+    expect(inspected.statusCode).toBe(422);
+    expect(inspected.json()).toMatchObject({
+      blockingErrors: [expect.objectContaining({ code: 'worldbook_preview_limit' })],
     });
     expect(inspected.json().inspectionToken).toBeUndefined();
   });
