@@ -51,6 +51,22 @@ function requireCharacter(preview: CharacterImportPreview) {
   return preview.character!;
 }
 
+function renameStoredZipEntry(source: Uint8Array, from: string, to: string): Uint8Array {
+  if (from.length !== to.length) throw new Error('ZIP test rename must preserve byte length');
+  const result = Uint8Array.from(source);
+  const original = encoder.encode(from);
+  const replacement = encoder.encode(to);
+  let replacements = 0;
+  for (let offset = 0; offset <= result.length - original.length; offset += 1) {
+    if (!original.every((byte, index) => result[offset + index] === byte)) continue;
+    result.set(replacement, offset);
+    replacements += 1;
+    offset += original.length - 1;
+  }
+  if (replacements !== 2) throw new Error(`Expected two ZIP filename records, found ${replacements}`);
+  return result;
+}
+
 describe('Character Card normalization', () => {
   it.each([
     {
@@ -113,6 +129,29 @@ describe('Character Card normalization', () => {
     expect(preview.unknownFields).toEqual({
       topLevel: { top_yaml_unknown: 'preserved' },
       data: { yaml_unknown: { keep: 'yaml' } },
+    });
+  });
+
+  it('maps the legacy ST YAML context/greeting envelope while preserving its original keys and raw payload', async () => {
+    const preview = await inspectCharacter(bytes('legacy-st.yaml'), 'legacy-st.yaml');
+    const character = requireCharacter(preview);
+
+    expect(preview).toMatchObject({ sourceFormat: 'yaml', version: '1', selectedPayload: 'document' });
+    expect(character).toMatchObject({
+      name: 'Legacy YAML Aster',
+      description: 'A synthetic legacy SillyTavern YAML context.',
+      firstMessage: 'The legacy YAML greeting is preserved.',
+    });
+    expect(preview.rawPayloads.document).toEqual({
+      name: 'Legacy YAML Aster',
+      context: 'A synthetic legacy SillyTavern YAML context.',
+      greeting: 'The legacy YAML greeting is preserved.',
+      legacy_unknown: { keep: 'legacy-yaml' },
+    });
+    expect(preview.unknownFields.topLevel).toEqual({
+      context: 'A synthetic legacy SillyTavern YAML context.',
+      greeting: 'The legacy YAML greeting is preserved.',
+      legacy_unknown: { keep: 'legacy-yaml' },
     });
   });
 
@@ -193,6 +232,24 @@ describe('bounded Character archives', () => {
       { path: 'assets/avatar.gif', bytes: syntheticGif },
       { path: 'assets/focused.bin', bytes: Uint8Array.from([1, 3, 3, 7]) },
       { path: 'unrecognized/notes.bin', bytes: Uint8Array.from([9, 8, 7, 6]) },
+    ]);
+  });
+
+  it('retains legal archive entries named __proto__, constructor, and prototype byte-for-byte', async () => {
+    const ordinaryName = '123456789';
+    const source = renameStoredZipEntry(zipSync({
+      'card.json': bytes('v3.json'),
+      [ordinaryName]: Uint8Array.from([1, 2, 3]),
+      constructor: Uint8Array.from([4, 5, 6]),
+      prototype: Uint8Array.from([7, 8, 9]),
+    }, { level: 0 }), ordinaryName, '__proto__');
+
+    const preview = await inspectCharacter(source, 'reserved-names.charx');
+    requireCharacter(preview);
+    expect(preview.auxiliaryAssets).toEqual([
+      { path: '__proto__', bytes: Uint8Array.from([1, 2, 3]) },
+      { path: 'constructor', bytes: Uint8Array.from([4, 5, 6]) },
+      { path: 'prototype', bytes: Uint8Array.from([7, 8, 9]) },
     ]);
   });
 
@@ -409,5 +466,13 @@ describe.skipIf(oracleRoot === undefined || !existsSync(validatorPath))('SillyTa
       .filter(({ keyword }) => keyword === 'chara' || keyword === 'ccv3')
       .map(({ text }) => JSON.parse(Buffer.from(text, 'base64').toString('utf8')) as unknown);
     expect(validateWithOracle(payloads)).toEqual([2, 3]);
+
+    const legacyYaml = await inspectCharacter(bytes('legacy-st.yaml'), 'legacy-st.yaml');
+    const legacyV2 = await exportCharacter(legacyYaml, 'json-v2');
+    const legacyV3 = await exportCharacter(legacyYaml, 'json-v3');
+    expect(validateWithOracle([
+      JSON.parse(Buffer.from(legacyV2.bytes).toString('utf8')),
+      JSON.parse(Buffer.from(legacyV3.bytes).toString('utf8')),
+    ])).toEqual([2, 3]);
   });
 });

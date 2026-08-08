@@ -44,11 +44,18 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return result;
 }
 
-function metadataPng(keyword = 'ccv3', payload: unknown = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'Aster' } }): Uint8Array {
+function metadataPngEntries(entries: readonly [keyword: string, payload: unknown][]): Uint8Array {
   const signature = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const ihdr = Uint8Array.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
-  const text = encoder.encode(`${keyword}\0${Buffer.from(JSON.stringify(payload)).toString('base64')}`);
-  return concat(signature, pngChunk('IHDR', ihdr), pngChunk('tEXt', text), pngChunk('IEND', new Uint8Array()));
+  const textChunks = entries.map(([keyword, payload]) => pngChunk(
+    'tEXt',
+    encoder.encode(`${keyword}\0${Buffer.from(JSON.stringify(payload)).toString('base64')}`),
+  ));
+  return concat(signature, pngChunk('IHDR', ihdr), ...textChunks, pngChunk('IEND', new Uint8Array()));
+}
+
+function metadataPng(keyword = 'ccv3', payload: unknown = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'Aster' } }): Uint8Array {
+  return metadataPngEntries([[keyword, payload]]);
 }
 
 interface ZipEntry {
@@ -207,6 +214,28 @@ describe('artifact format detection', () => {
     forgedText[textTypeOffset + 4 + textLength + 3] ^= 0xff;
     const textPreview = await inspectArtifact({ fileName: 'forged-text.png', bytes: forgedText });
     expect(textPreview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_png' }));
+  });
+
+  it('matches Character PNG keywords case-insensitively and rejects case-folded duplicates', async () => {
+    const v1 = { name: 'Legacy uppercase', description: '', personality: '', scenario: '', first_mes: '', mes_example: '' };
+    const v3 = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'Mixed V3' } };
+    const mixed = await inspectArtifact({
+      fileName: 'mixed.png',
+      bytes: metadataPngEntries([['ChArA', v1], ['CcV3', v3]]),
+    });
+    expect(mixed.detected).toMatchObject({ container: 'png', kind: 'character', version: '3.0' });
+    expect(mixed.normalizedPreview).toEqual({
+      metadataKeys: ['chara', 'ccv3'],
+      selectedMetadata: 'ccv3',
+    });
+    expect(mixed.warnings).toContainEqual(expect.objectContaining({ code: 'png_multiple_character_chunks' }));
+
+    const duplicate = await inspectArtifact({
+      fileName: 'duplicate.png',
+      bytes: metadataPngEntries([['ccv3', v3], ['CCV3', v3]]),
+    });
+    expect(duplicate.detected).toMatchObject({ container: 'unknown', kind: 'unknown' });
+    expect(duplicate.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_png_metadata' }));
   });
 
   it.each([

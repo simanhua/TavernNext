@@ -1,7 +1,8 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { zipSync } from 'fflate';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
@@ -144,6 +145,55 @@ describe('typed Character import and export API', () => {
     }
     expect((await app.inject({ method: 'GET', url: `/api/characters/${id}/export?format=zip` })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: `/api/characters/${characterId}/export?format=json-v2` })).statusCode).toBe(404);
+  });
+
+  it('uses a newly persisted current avatar ahead of the stale CharX source avatar', async () => {
+    const { app, directory, repositories } = await context();
+    const card = JSON.parse(await readFile(join(fixtureRoot, 'v3.json'), 'utf8')) as Record<string, unknown>;
+    const sourceAvatar = Uint8Array.from(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64'));
+    const archive = zipSync({
+      'card.json': encoder.encode(JSON.stringify(card)),
+      'assets/avatar.gif': sourceAvatar,
+    });
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('avatar.charx', archive, 'application/zip'),
+    });
+    expect(inspected.statusCode).toBe(200);
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+    expect(committed.statusCode).toBe(201);
+    const id = committed.json().entityId as string;
+
+    const currentAvatarPath = 'assets/current/avatar.svg';
+    await mkdir(join(directory, 'assets', 'current'), { recursive: true });
+    await writeFile(
+      join(directory, ...currentAvatarPath.split('/')),
+      '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"><rect width="2" height="3" fill="#123456"/></svg>',
+    );
+    expect(repositories.characters.update(id, 0, { avatarPath: currentAvatarPath })).toMatchObject({ ok: true });
+
+    const exported = await app.inject({ method: 'GET', url: `/api/characters/${id}/export?format=png` });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.rawPayload.subarray(12, 16).toString('ascii')).toBe('IHDR');
+    expect(exported.rawPayload.readUInt32BE(16)).toBe(2);
+    expect(exported.rawPayload.readUInt32BE(20)).toBe(3);
+  });
+
+  it('serves Unicode filenames over a real HTTP listener with an ASCII fallback and RFC 5987 filename', async () => {
+    const { app, repositories } = await context();
+    const { committed } = await inspectAndCommit(app);
+    const id = committed.json().entityId as string;
+    expect(repositories.characters.update(id, 0, { name: '雪姬\r\nX-Injected: yes' })).toMatchObject({ ok: true });
+
+    const origin = await app.listen({ host: '127.0.0.1', port: 0 });
+    const response = await fetch(`${origin}/api/characters/${id}/export?format=json-v3`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-disposition')).toBe(
+      'attachment; filename="___X-Injected_yes.json"; filename*=UTF-8\'\'%E9%9B%AA%E5%A7%AC_X-Injected_yes.json',
+    );
+    expect(response.headers.get('x-injected')).toBeNull();
+    expect(await response.json()).toMatchObject({ data: { name: '雪姬\r\nX-Injected: yes' } });
   });
 });
 

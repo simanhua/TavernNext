@@ -666,6 +666,15 @@ function characterVersion(value: unknown): string {
 
 function applyJsonDetection(preview: ImportPreview, value: unknown, container: 'json' | 'yaml'): void {
   const candidates = jsonCandidates(value);
+  const object = objectRecord(value);
+  if (
+    container === 'yaml'
+    && candidates.length === 0
+    && typeof object?.name === 'string'
+    && (typeof object.context === 'string' || typeof object.greeting === 'string')
+  ) {
+    candidates.push('character');
+  }
   const kind = candidates.length === 1 ? candidates[0] : 'unknown';
   preview.detected = {
     container,
@@ -673,7 +682,6 @@ function applyJsonDetection(preview: ImportPreview, value: unknown, container: '
     ...(kind === 'character' ? { version: characterVersion(value) } : kind === 'unknown' ? {} : { version: '1' }),
     candidates,
   };
-  const object = objectRecord(value);
   const data = objectRecord(object?.data);
   preview.normalizedPreview = {
     candidates,
@@ -751,8 +759,15 @@ function inspectPng(preview: ImportPreview, input: SourceArtifact): void {
     for (const chunk of chunks) {
       if (chunk.name !== 'tEXt') continue;
       const text = decodePngText(chunk);
-      if (text.keyword !== 'chara' && text.keyword !== 'ccv3') continue;
-      metadata.set(text.keyword, parseJson(strictBase64(text.text)));
+      const keyword = text.keyword.toLowerCase();
+      if (keyword !== 'chara' && keyword !== 'ccv3') continue;
+      if (metadata.has(keyword)) {
+        throw new InspectionFailure(diagnostic(
+          'corrupt_png_metadata',
+          `PNG contains more than one ${keyword} Character metadata chunk.`,
+        ));
+      }
+      metadata.set(keyword, parseJson(strictBase64(text.text)));
     }
     const selected = metadata.get('ccv3') ?? metadata.get('chara');
     if (selected === undefined) {

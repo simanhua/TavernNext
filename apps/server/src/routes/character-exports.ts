@@ -57,6 +57,23 @@ function asset(dataDir: string, originalPath: string, storedPath: string): Chara
   return bytes === undefined ? undefined : { path: originalPath, bytes };
 }
 
+function rfc5987(value: string): string {
+  const attrChar = /^[A-Za-z0-9!#$&+.^_`|~-]$/;
+  return [...Buffer.from(value, 'utf8')]
+    .map((byte) => {
+      const character = String.fromCharCode(byte);
+      return attrChar.test(character) ? character : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+    })
+    .join('');
+}
+
+function attachmentHeader(fileName: string): string {
+  const clean = fileName.replace(/[\u0000-\u001f\u007f-\u009f]/g, '_');
+  const fallback = clean.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const base = `attachment; filename="${fallback}"`;
+  return clean === fallback ? base : `${base}; filename*=UTF-8''${rfc5987(clean)}`;
+}
+
 export function registerCharacterExportRoutes(
   app: FastifyInstance,
   repositories: Repositories,
@@ -76,11 +93,13 @@ export function registerCharacterExportRoutes(
         const value = asset(dataDir, stored.originalPath, stored.storedPath);
         return value === undefined ? [] : [value];
       });
-      const avatar = source?.avatar === undefined
-        ? character.avatarPath === undefined
-          ? undefined
-          : asset(dataDir, 'avatar', character.avatarPath)
+      const currentAvatar = character.avatarPath === undefined
+        ? undefined
+        : asset(dataDir, 'avatar', character.avatarPath);
+      const sourceAvatar = source?.avatar === undefined
+        ? undefined
         : asset(dataDir, source.avatar.originalPath, source.avatar.storedPath);
+      const avatar = currentAvatar ?? sourceAvatar;
       const sourcePng = readDataAsset(dataDir, source?.sourcePngPath);
       const unknownFields = (source?.unknownFields ?? character.compatibility?.unknownFields ?? {
         topLevel: {}, data: {},
@@ -113,7 +132,7 @@ export function registerCharacterExportRoutes(
           ? { defaultPng: readDefaultCard() }
           : {});
         reply.header('Content-Type', artifact.contentType);
-        reply.header('Content-Disposition', `attachment; filename="${artifact.fileName}"`);
+        reply.header('Content-Disposition', attachmentHeader(artifact.fileName));
         return reply.send(Buffer.from(artifact.bytes));
       } catch {
         return reply.code(500).send({ error: 'character_export_failed' });

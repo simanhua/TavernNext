@@ -16,3 +16,6 @@ Binary PNG, CharX, and BYAF fixtures are assembled during tests from these
 JSON documents and tiny synthetic image bytes. This keeps provenance explicit
 and lets safety tests construct malformed archives without shipping opaque
 third-party assets.
+
+`legacy-st.yaml` is a synthetic probe for the root-level `context` and
+`greeting` envelope used by SillyTavern's legacy YAML Character importer.

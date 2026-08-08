@@ -1,0 +1,5 @@
+name: Legacy YAML Aster
+context: A synthetic legacy SillyTavern YAML context.
+greeting: The legacy YAML greeting is preserved.
+legacy_unknown:
+  keep: legacy-yaml

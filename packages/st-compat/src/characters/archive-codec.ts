@@ -1,10 +1,10 @@
 import { posix } from 'node:path';
-import { unzipSync } from 'fflate';
+import { Unzip, UnzipInflate } from 'fflate';
 import { diagnostic } from '../warnings.js';
 import { CharacterCodecError, decodeCharacterJson, decodeCharacterValue, strictCharacterText } from './json-codec.js';
 import type { CharacterAuxiliaryAsset } from './normalize.js';
 
-type ArchiveEntries = Record<string, Uint8Array>;
+type ArchiveEntries = Map<string, Uint8Array>;
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -17,7 +17,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 function jsonEntry(entries: ArchiveEntries, path: string, maxBytes: number): Record<string, unknown> {
-  const bytes = entries[path];
+  const bytes = entries.get(path);
   if (bytes === undefined) throw new CharacterCodecError(diagnostic('character_archive_entry_missing', `Archive entry ${path} is missing.`, path));
   if (bytes.byteLength > maxBytes) {
     throw new CharacterCodecError(diagnostic('archive_entry_memory_limit', `${path} exceeds the ${maxBytes}-byte manifest memory limit.`, path));
@@ -56,14 +56,41 @@ function safeManifestPath(value: unknown, label: string): string {
 
 function archiveEntries(bytes: Uint8Array): ArchiveEntries {
   try {
-    return unzipSync(bytes);
+    const entries: ArchiveEntries = new Map();
+    let streamError: unknown;
+    const unzip = new Unzip((file) => {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      file.ondata = (error, chunk, final) => {
+        if (error !== null) {
+          streamError = error;
+          return;
+        }
+        const retained = Uint8Array.from(chunk);
+        chunks.push(retained);
+        size += retained.byteLength;
+        if (!final) return;
+        const entry = new Uint8Array(size);
+        let offset = 0;
+        for (const part of chunks) {
+          entry.set(part, offset);
+          offset += part.byteLength;
+        }
+        entries.set(file.name, entry);
+      };
+      file.start();
+    });
+    unzip.register(UnzipInflate);
+    unzip.push(bytes, true);
+    if (streamError !== undefined) throw streamError;
+    return entries;
   } catch {
     throw new CharacterCodecError(diagnostic('corrupt_archive', 'Character archive could not be decompressed.'));
   }
 }
 
 function auxiliary(entries: ArchiveEntries, excluded: ReadonlySet<string>): CharacterAuxiliaryAsset[] {
-  return Object.entries(entries)
+  return [...entries.entries()]
     .filter(([path]) => !excluded.has(path) && !path.endsWith('/'))
     .sort(([left], [right]) => compareText(left, right))
     .map(([path, bytes]) => ({ path, bytes: Uint8Array.from(bytes) }));
@@ -89,7 +116,7 @@ function charxAvatar(card: Record<string, unknown>, assets: readonly CharacterAu
 
 export function decodeCharX(bytes: Uint8Array, maxMetadataBytes: number) {
   const entries = archiveEntries(bytes);
-  const cardBytes = entries['card.json'];
+  const cardBytes = entries.get('card.json');
   if (cardBytes === undefined) throw new CharacterCodecError(diagnostic('character_archive_entry_missing', 'CharX archive is missing card.json.', 'card.json'));
   if (cardBytes.byteLength > maxMetadataBytes) {
     throw new CharacterCodecError(diagnostic('archive_entry_memory_limit', `card.json exceeds the ${maxMetadataBytes}-byte manifest memory limit.`, 'card.json'));
