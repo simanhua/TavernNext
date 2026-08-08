@@ -12,6 +12,21 @@ function bundled(fileName: string): string {
   return resolve(packageDirectory, 'models', fileName);
 }
 
+const SILLY_TAVERN_COMMIT = '51ad27fb86d39a3daca3adaa970375c9670c12df';
+
+function provenance(fileName: string, sha256: string) {
+  return {
+    sourceRepository: 'https://github.com/SillyTavern/SillyTavern',
+    sourcePath: `src/tokenizers/${fileName}`,
+    version: '1.18.0',
+    commit: SILLY_TAVERN_COMMIT,
+    sha256,
+    licenseIdentifier: 'AGPL-3.0',
+    licenseUrl: `https://github.com/SillyTavern/SillyTavern/blob/${SILLY_TAVERN_COMMIT}/LICENSE`,
+    noticeFile: 'THIRD_PARTY_NOTICES.md',
+  } as const;
+}
+
 export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, TokenizerModelManifestEntry>>> = {
   [TokenizerId.LLAMA]: {
     tokenizerId: TokenizerId.LLAMA,
@@ -19,6 +34,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: '9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347',
     bundledPath: bundled('llama.model'),
+    provenance: provenance('llama.model', '9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347'),
   },
   [TokenizerId.NERD]: {
     tokenizerId: TokenizerId.NERD,
@@ -26,6 +42,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: '578fa0ed4d6dbee435f21d7f7a741506d09cdd93cce241008abf725407cbdb41',
     bundledPath: bundled('nerdstash.model'),
+    provenance: provenance('nerdstash.model', '578fa0ed4d6dbee435f21d7f7a741506d09cdd93cce241008abf725407cbdb41'),
   },
   [TokenizerId.NERD2]: {
     tokenizerId: TokenizerId.NERD2,
@@ -33,6 +50,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: '005ad680b10f1abd406bdb0ca9c6a5d83fc1f6e0a855bdd1942c1ceab1fb47ab',
     bundledPath: bundled('nerdstash_v2.model'),
+    provenance: provenance('nerdstash_v2.model', '005ad680b10f1abd406bdb0ca9c6a5d83fc1f6e0a855bdd1942c1ceab1fb47ab'),
   },
   [TokenizerId.MISTRAL]: {
     tokenizerId: TokenizerId.MISTRAL,
@@ -40,6 +58,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: 'dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055',
     bundledPath: bundled('mistral.model'),
+    provenance: provenance('mistral.model', 'dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055'),
   },
   [TokenizerId.YI]: {
     tokenizerId: TokenizerId.YI,
@@ -47,6 +66,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: '386c49cf943d71aa110361135338c50e38beeff0a66593480421f37b319e1a39',
     bundledPath: bundled('yi.model'),
+    provenance: provenance('yi.model', '386c49cf943d71aa110361135338c50e38beeff0a66593480421f37b319e1a39'),
   },
   [TokenizerId.CLAUDE]: {
     tokenizerId: TokenizerId.CLAUDE,
@@ -54,6 +74,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'web-tokenizer',
     sha256: 'c241737df24b4e7f7c9af4fdcee29a0ca903dcb288a8b753bc346a3092911767',
     bundledPath: bundled('claude.json'),
+    provenance: provenance('claude.json', 'c241737df24b4e7f7c9af4fdcee29a0ca903dcb288a8b753bc346a3092911767'),
   },
   [TokenizerId.LLAMA3]: {
     tokenizerId: TokenizerId.LLAMA3,
@@ -61,6 +82,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'web-tokenizer',
     sha256: '126f3c57d297e9a5a18427338812d9fed68f132c612b3c42e361ce3157beb729',
     bundledPath: bundled('llama3.json'),
+    provenance: provenance('llama3.json', '126f3c57d297e9a5a18427338812d9fed68f132c612b3c42e361ce3157beb729'),
   },
   [TokenizerId.GEMMA]: {
     tokenizerId: TokenizerId.GEMMA,
@@ -68,6 +90,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: '61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2',
     bundledPath: bundled('gemma.model'),
+    provenance: provenance('gemma.model', '61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2'),
   },
   [TokenizerId.JAMBA]: {
     tokenizerId: TokenizerId.JAMBA,
@@ -75,6 +98,7 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     format: 'sentencepiece',
     sha256: '8b0df4fb43262c452ef37061951a06df4c63ca191d02a60ea08f14428af24376',
     bundledPath: bundled('jamba.model'),
+    provenance: provenance('jamba.model', '8b0df4fb43262c452ef37061951a06df4c63ca191d02a60ea08f14428af24376'),
   },
   [TokenizerId.QWEN2]: {
     tokenizerId: TokenizerId.QWEN2,

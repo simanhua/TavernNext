@@ -68,23 +68,40 @@ function validRemoteEndpoint(endpoint: string | undefined): endpoint is string {
   }
 }
 
-export function modelTokenizerId(modelName: string | undefined): TokenizerId | undefined {
+export function openAiChatTokenizerId(modelName: string | undefined): TokenizerId | undefined {
   const model = String(modelName ?? '').toLowerCase();
   if (!model) return undefined;
 
   if (model.includes('claude')) return TokenizerId.CLAUDE;
   if (model.includes('llama3') || model.includes('llama-3')) return TokenizerId.LLAMA3;
-  if (model.includes('nemo') || model.includes('pixtral')) return TokenizerId.NEMO;
+  if (model.includes('llama')) return TokenizerId.LLAMA;
   if (model.includes('mistral') || model.includes('mixtral')) return TokenizerId.MISTRAL;
+  if (model.includes('yi')) return TokenizerId.YI;
+  if (model.includes('deepseek')) return TokenizerId.DEEPSEEK;
   if (model.includes('gemma') || model.includes('gemini') || model.includes('learnlm')) return TokenizerId.GEMMA;
+  if (model.includes('jamba')) return TokenizerId.JAMBA;
+  if (model.includes('qwen2')) return TokenizerId.QWEN2;
+  if (model.includes('command-r')) return TokenizerId.COMMAND_R;
+  if (model.includes('command-a')) return TokenizerId.COMMAND_A;
+  if (model.includes('nemo')) return TokenizerId.NEMO;
+  return undefined;
+}
+
+export const modelTokenizerId = openAiChatTokenizerId;
+
+export function textGenerationTokenizerId(modelName: string | undefined): TokenizerId {
+  const model = String(modelName ?? '').toLowerCase();
+  if (model.includes('llama3') || model.includes('llama-3')) return TokenizerId.LLAMA3;
+  if (model.includes('mistral') || model.includes('mixtral')) return TokenizerId.MISTRAL;
+  if (model.includes('gemma')) return TokenizerId.GEMMA;
+  if (model.includes('nemo') || model.includes('pixtral')) return TokenizerId.NEMO;
   if (model.includes('deepseek')) return TokenizerId.DEEPSEEK;
   if (model.includes('yi')) return TokenizerId.YI;
   if (model.includes('jamba')) return TokenizerId.JAMBA;
   if (model.includes('command-r')) return TokenizerId.COMMAND_R;
   if (model.includes('command-a')) return TokenizerId.COMMAND_A;
   if (model.includes('qwen2')) return TokenizerId.QWEN2;
-  if (model.includes('llama')) return TokenizerId.LLAMA;
-  return undefined;
+  return TokenizerId.LLAMA;
 }
 
 export function tiktokenModelName(modelName: string | undefined): string {
@@ -110,11 +127,17 @@ function localBestMatch(input: TokenizerSelectionInput): TokenizerId {
     return TokenizerId.NONE;
   }
 
-  const modelMatch = modelTokenizerId(model);
-  if (modelMatch !== undefined) return modelMatch;
-  if (input.api === 'kobold' || input.api === 'koboldhorde' || input.api === 'textgenerationwebui') return TokenizerId.LLAMA;
-  if (input.api === 'openai') return TokenizerId.OPENAI;
+  if (input.api === 'textgenerationwebui') return textGenerationTokenizerId(model);
+  if (input.api === 'kobold' || input.api === 'koboldhorde') return TokenizerId.LLAMA;
+  if (input.api === 'openai') return openAiChatTokenizerId(model) ?? TokenizerId.OPENAI;
   return TokenizerId.NONE;
+}
+
+export function remoteFallbackTokenizerId(
+  remoteId: TokenizerId.API_KOBOLD | TokenizerId.API_TEXTGENERATIONWEBUI,
+  modelName: string | undefined,
+): TokenizerId {
+  return remoteId === TokenizerId.API_KOBOLD ? TokenizerId.LLAMA : textGenerationTokenizerId(modelName);
 }
 
 function remoteMode(api: string | undefined): TokenizerId | undefined {
@@ -157,14 +180,18 @@ export function selectTokenizer(input: TokenizerSelectionInput): TokenizerDecisi
   } else if (selected === TokenizerId.API_CURRENT) {
     selected = remoteMode(input.api) ?? localBestMatch(input);
   } else if (selected === TokenizerId.OPENAI) {
-    selected = modelTokenizerId(input.model) ?? TokenizerId.OPENAI;
+    selected = openAiChatTokenizerId(input.model) ?? TokenizerId.OPENAI;
   }
 
   const result = decision(input, selected);
 
   if ([TokenizerId.API_CURRENT, TokenizerId.API_KOBOLD, TokenizerId.API_TEXTGENERATIONWEBUI].includes(input.requestedId)
     && (!validRemoteEndpoint(input.remoteEndpoint) || ![TokenizerId.API_KOBOLD, TokenizerId.API_TEXTGENERATIONWEBUI].includes(selected))) {
-    const fallbackId = localBestMatch(input);
+    const fallbackId = input.requestedId === TokenizerId.API_KOBOLD
+      ? remoteFallbackTokenizerId(TokenizerId.API_KOBOLD, input.model)
+      : input.requestedId === TokenizerId.API_TEXTGENERATIONWEBUI
+        ? remoteFallbackTokenizerId(TokenizerId.API_TEXTGENERATIONWEBUI, input.model)
+        : localBestMatch(input);
     return withFallback(
       result,
       input.requestedId,
@@ -186,7 +213,10 @@ export function selectTokenizer(input: TokenizerSelectionInput): TokenizerDecisi
   }
 
   if ([TokenizerId.API_KOBOLD, TokenizerId.API_TEXTGENERATIONWEBUI].includes(selected)) {
-    result.fallbackTokenizerId = localBestMatch(input);
+    result.fallbackTokenizerId = remoteFallbackTokenizerId(
+      selected as TokenizerId.API_KOBOLD | TokenizerId.API_TEXTGENERATIONWEBUI,
+      input.model,
+    );
   }
   return result;
 }

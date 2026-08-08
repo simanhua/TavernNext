@@ -67,6 +67,21 @@ describe('estimation and message counting', () => {
     ], decision)).resolves.toBe(16);
   });
 
+  it('stops at the first non-tokenizable OpenAI field within each message', async () => {
+    const decision = selectTokenizer({
+      requestedId: TokenizerId.OPENAI,
+      api: 'openai',
+      model: 'gpt-3.5-turbo',
+    });
+
+    await expect(countMessages([{
+      role: 'user',
+      content: 'hello',
+      tool_calls: [{ id: 'call-1', type: 'function' }],
+      later: 'this field must not be counted',
+    }], decision)).resolves.toBe(8);
+  });
+
   it('uses the configured runtime adapter while counting OpenAI messages', async () => {
     const decision = selectTokenizer({
       requestedId: TokenizerId.OPENAI,
@@ -126,6 +141,39 @@ describe('estimation and message counting', () => {
 });
 
 describe('model cache', () => {
+  it('routes runtime model downloads through the injected fetch boundary', async () => {
+    const data = new TextEncoder().encode('{"model":"download-fixture"}');
+    const sha256 = createHash('sha256').update(data).digest('hex');
+    const dataDir = await temporaryDirectory();
+    const globalFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('global network forbidden'));
+    const injectedFetch = vi.fn(async () => new Response(data, { status: 200 }));
+    const decision = selectTokenizer({ requestedId: TokenizerId.QWEN2 });
+
+    await expect(encodeText('hello', decision, {
+      dataDir,
+      fetch: injectedFetch,
+      manifest: {
+        [TokenizerId.QWEN2]: {
+          tokenizerId: TokenizerId.QWEN2,
+          fileName: 'download-fixture.json',
+          format: 'web-tokenizer',
+          url: 'https://models.invalid/download-fixture.json',
+          sha256,
+          fallbackTokenizerId: TokenizerId.LLAMA3,
+        },
+      },
+      loadWebTokenizer: async () => ({
+        encode: () => Int32Array.from([77]),
+        decode: () => 'hello',
+      }),
+    })).resolves.toEqual([77]);
+
+    expect(decision.tokenizerId).toBe(TokenizerId.QWEN2);
+    expect(injectedFetch).toHaveBeenCalledTimes(1);
+    expect(globalFetch).not.toHaveBeenCalled();
+    await expect(readFile(join(dataDir, 'tokenizers', 'download-fixture.json'))).resolves.toEqual(Buffer.from(data));
+  });
+
   it('downloads to a temporary file, verifies SHA-256, and atomically renames into dataDir/tokenizers', async () => {
     const data = new TextEncoder().encode('{"model":"fixture"}');
     const sha256 = createHash('sha256').update(data).digest('hex');
@@ -201,6 +249,42 @@ describe('model cache', () => {
 });
 
 describe('remote and model fallback behavior', () => {
+  it.each([
+    TokenizerId.LLAMA3,
+    TokenizerId.CLAUDE,
+    TokenizerId.QWEN2,
+  ])('serializes messages for the final web tokenizer %s on first and repeated remote fallback calls', async (fallbackTokenizerId) => {
+    const decision = selectTokenizer({
+      requestedId: TokenizerId.API_TEXTGENERATIONWEBUI,
+      api: 'textgenerationwebui',
+      model: 'llama-3.1',
+      remoteEndpoint: 'http://127.0.0.1:5001/tokenize',
+    });
+    decision.fallbackTokenizerId = fallbackTokenizerId;
+    const messages = [
+      { role: 'system', content: 'rules' },
+      { role: 'user', content: 'hello' },
+    ] as const;
+    const options = {
+      adapters: {
+        [TokenizerId.API_TEXTGENERATIONWEBUI]: {
+          encode: async () => { throw new Error('remote unavailable'); },
+          decode: async () => { throw new Error('remote unavailable'); },
+          count: async () => { throw new Error('remote unavailable'); },
+        },
+        [fallbackTokenizerId]: {
+          encode: async (text: string) => Array.from({ length: text.length }, (_, index) => index),
+          decode: async () => '',
+          count: async (text: string) => text.length,
+        },
+      },
+    };
+
+    await expect(countMessages(messages, decision, options)).resolves.toBe(28);
+    await expect(countMessages(messages, decision, options)).resolves.toBe(28);
+    expect(decision.tokenizerId).toBe(fallbackTokenizerId);
+  });
+
   it('posts only to the explicit tokenizer endpoint and accepts a valid remote response', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ count: 2, ids: [101, 102] }), {
       status: 200,
@@ -289,12 +373,14 @@ describe('remote and model fallback behavior', () => {
   ])('deterministically falls back tokenizer %s to bundled Llama 3 without network', async (tokenizerId) => {
     const dataDir = await temporaryDirectory();
     const decision = selectTokenizer({ requestedId: tokenizerId });
-    const fetch = vi.fn(async () => { throw new Error('network must not be used'); });
+    const globalFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('global network must not be used'));
+    const downloadModel = vi.fn(async () => { throw new Error('model download must not be used'); });
 
-    await expect(encodeText('A dragon appears 🐉✨', decision, { dataDir, fetch })).resolves.toEqual([
+    await expect(encodeText('A dragon appears 🐉✨', decision, { dataDir, downloadModel })).resolves.toEqual([
       32, 26161, 8111, 11410, 238, 231, 38798, 101,
     ]);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(downloadModel).not.toHaveBeenCalled();
+    expect(globalFetch).not.toHaveBeenCalled();
     expect(decision).toMatchObject({
       tokenizerId: TokenizerId.LLAMA3,
       fallbackFrom: tokenizerId,

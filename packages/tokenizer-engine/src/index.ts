@@ -4,7 +4,7 @@ import { TokenizerId } from './ids.js';
 import { ModelCache, type ModelCacheLike, type TokenizerModelManifestEntry } from './model-cache.js';
 import {
   isDownloadableWebTokenizer,
-  modelTokenizerId,
+  remoteFallbackTokenizerId,
   selectTokenizer,
   type TokenizerDecision,
 } from './model-selection.js';
@@ -65,7 +65,13 @@ function estimation(text: string): number {
 function getModelCache(options: TokenizerRuntimeOptions): ModelCacheLike {
   if (options.modelCache) return options.modelCache;
   const dataDir = options.dataDir ?? defaultDataDir();
-  if (options.downloadModel) return new ModelCache({ dataDir, download: options.downloadModel });
+  if (options.downloadModel || options.fetch) {
+    return new ModelCache({
+      dataDir,
+      ...(options.downloadModel ? { download: options.downloadModel } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+  }
   let cache = modelCaches.get(dataDir);
   if (!cache) {
     cache = new ModelCache({ dataDir });
@@ -129,8 +135,7 @@ function adapter(decision: TokenizerDecision, options: TokenizerRuntimeOptions):
 
 function fallbackId(decision: TokenizerDecision, failedId: TokenizerId): TokenizerId {
   if (failedId === TokenizerId.API_KOBOLD || failedId === TokenizerId.API_TEXTGENERATIONWEBUI) {
-    return decision.fallbackTokenizerId ?? modelTokenizerId(decision.model)
-      ?? (decision.api === 'kobold' || decision.api === 'textgenerationwebui' ? TokenizerId.LLAMA : TokenizerId.NONE);
+    return decision.fallbackTokenizerId ?? remoteFallbackTokenizerId(failedId, decision.model);
   }
   if (isDownloadableWebTokenizer(failedId)) return TokenizerId.LLAMA3;
   return TokenizerId.NONE;
@@ -150,34 +155,49 @@ function recordFallback(decision: TokenizerDecision, failedId: TokenizerId, repl
   }
 }
 
+async function executeOnce<T>(
+  decision: TokenizerDecision,
+  options: TokenizerRuntimeOptions,
+  operation: 'encode' | 'decode' | 'count',
+  value: string | readonly number[],
+): Promise<T> {
+  const id = decision.tokenizerId;
+  if (id === TokenizerId.NONE) {
+    if (operation === 'count' && typeof value === 'string') return estimation(value) as T;
+    throw new Error('The NONE / Estimated tokenizer cannot encode or decode token IDs');
+  }
+  if (id === TokenizerId.BEST_MATCH || id === TokenizerId.API_CURRENT) {
+    throw new Error(`Unresolved tokenizer selector: ${id}`);
+  }
+  if (operation === 'decode' && (id === TokenizerId.API_KOBOLD || id === TokenizerId.API_TEXTGENERATIONWEBUI)) {
+    throw new Error(`${getTokenizerRegistryEntry(id).name} cannot decode token IDs`);
+  }
+
+  const selectedAdapter = adapter(decision, options);
+  if (operation === 'encode' && typeof value === 'string') return await selectedAdapter.encode(value) as T;
+  if (operation === 'decode' && typeof value !== 'string') return await selectedAdapter.decode(value) as T;
+  if (operation === 'count' && typeof value === 'string') {
+    return (selectedAdapter.count ? await selectedAdapter.count(value) : (await selectedAdapter.encode(value)).length) as T;
+  }
+  throw new TypeError(`Invalid tokenizer ${operation} input`);
+}
+
 async function execute<T>(
   decision: TokenizerDecision,
   options: TokenizerRuntimeOptions,
   operation: 'encode' | 'decode' | 'count',
   value: string | readonly number[],
 ): Promise<T> {
+  if (operation === 'decode'
+    && (decision.tokenizerId === TokenizerId.API_KOBOLD || decision.tokenizerId === TokenizerId.API_TEXTGENERATIONWEBUI)) {
+    return executeOnce<T>(decision, options, operation, value);
+  }
   const attempted = new Set<TokenizerId>();
   while (true) {
     const id = decision.tokenizerId;
-    if (id === TokenizerId.NONE) {
-      if (operation === 'count' && typeof value === 'string') return estimation(value) as T;
-      throw new Error('The NONE / Estimated tokenizer cannot encode or decode token IDs');
-    }
-    if (id === TokenizerId.BEST_MATCH || id === TokenizerId.API_CURRENT) {
-      throw new Error(`Unresolved tokenizer selector: ${id}`);
-    }
-    if (operation === 'decode' && (id === TokenizerId.API_KOBOLD || id === TokenizerId.API_TEXTGENERATIONWEBUI)) {
-      throw new Error(`${getTokenizerRegistryEntry(id).name} cannot decode token IDs`);
-    }
 
     try {
-      const selectedAdapter = adapter(decision, options);
-      if (operation === 'encode' && typeof value === 'string') return await selectedAdapter.encode(value) as T;
-      if (operation === 'decode' && typeof value !== 'string') return await selectedAdapter.decode(value) as T;
-      if (operation === 'count' && typeof value === 'string') {
-        return (selectedAdapter.count ? await selectedAdapter.count(value) : (await selectedAdapter.encode(value)).length) as T;
-      }
-      throw new TypeError(`Invalid tokenizer ${operation} input`);
+      return await executeOnce<T>(decision, options, operation, value);
     } catch (error) {
       attempted.add(id);
       const replacement = fallbackId(decision, id);
@@ -278,10 +298,14 @@ async function countOpenAiMessages(
   let count = 3;
   for (const message of messages) {
     count += tokensPerMessage;
-    for (const [key, value] of Object.entries(message)) {
-      if (typeof value !== 'string') continue;
-      count += await countText(value, decision, options);
-      if (key === 'name') count += tokensPerName;
+    try {
+      for (const [key, value] of Object.entries(message)) {
+        if (typeof value !== 'string') throw new TypeError(`OpenAI message field ${key} is not a string`);
+        count += await executeOnce<number>(decision, options, 'count', value);
+        if (key === 'name') count += tokensPerName;
+      }
+    } catch {
+      // SillyTavern stops processing the current message after its first field-level tokenizer error.
     }
   }
   if (framingModel.includes('gpt-3.5-turbo-0301')) count += 9;
@@ -297,9 +321,19 @@ export async function countMessages(
 ): Promise<number> {
   const messages = Array.isArray(first) ? first as readonly TokenizerMessage[] : second as readonly TokenizerMessage[];
   const decision = asDecision((Array.isArray(first) ? second : first) as TokenizerReference);
-  if (decision.tokenizerId === TokenizerId.OPENAI) return countOpenAiMessages(messages, decision, options);
-
-  const kind = getTokenizerRegistryEntry(decision.tokenizerId).kind;
-  const text = kind === 'web-tokenizer' ? webTokenizerTranscript(messages) : flattenMessages(messages);
-  return countText(text, decision, options);
+  const attempted = new Set<TokenizerId>();
+  while (true) {
+    const id = decision.tokenizerId;
+    try {
+      if (id === TokenizerId.OPENAI) return await countOpenAiMessages(messages, decision, options);
+      const kind = getTokenizerRegistryEntry(id).kind;
+      const text = kind === 'web-tokenizer' ? webTokenizerTranscript(messages) : flattenMessages(messages);
+      return await executeOnce<number>(decision, options, 'count', text);
+    } catch (error) {
+      attempted.add(id);
+      const replacement = fallbackId(decision, id);
+      if (replacement === id || attempted.has(replacement)) throw error;
+      recordFallback(decision, id, replacement);
+    }
+  }
 }

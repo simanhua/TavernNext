@@ -7,7 +7,8 @@ describe('tokenizer selection', () => {
     ['meta-llama/Llama-3.3-70B-Instruct', TokenizerId.LLAMA3],
     ['mistralai/Mixtral-8x7B-Instruct', TokenizerId.MISTRAL],
     ['google/gemma-2-9b-it', TokenizerId.GEMMA],
-    ['mistralai/pixtral-12b', TokenizerId.NEMO],
+    ['mistralai/pixtral-12b', TokenizerId.MISTRAL],
+    ['pixtral-12b', TokenizerId.NEMO],
     ['deepseek-ai/DeepSeek-V3', TokenizerId.DEEPSEEK],
     ['01-ai/Yi-34B-Chat', TokenizerId.YI],
     ['ai21labs/Jamba-1.5-Large', TokenizerId.JAMBA],
@@ -21,6 +22,25 @@ describe('tokenizer selection', () => {
       api: 'textgenerationwebui',
       model,
     }).tokenizerId).toBe(tokenizerId);
+  });
+
+  it.each([
+    ['mistral-nemo', TokenizerId.MISTRAL],
+    ['claude-3-opus', TokenizerId.LLAMA],
+  ])('uses text-generation Best Match precedence for ambiguous model %s', (model, tokenizerId) => {
+    expect(selectTokenizer({
+      requestedId: TokenizerId.BEST_MATCH,
+      api: 'textgenerationwebui',
+      model,
+    }).tokenizerId).toBe(tokenizerId);
+  });
+
+  it('uses the generic Llama fallback for Kobold even when its model name contains llama-3', () => {
+    expect(selectTokenizer({
+      requestedId: TokenizerId.BEST_MATCH,
+      api: 'kobold',
+      model: 'llama-3.1-8b',
+    }).tokenizerId).toBe(TokenizerId.LLAMA);
   });
 
   it('honors an explicit local tokenizer choice', () => {
@@ -45,6 +65,14 @@ describe('tokenizer selection', () => {
       api: 'openai',
       model: 'anthropic/claude-3.7-sonnet',
     })).toMatchObject({ requestedId: TokenizerId.OPENAI, tokenizerId: TokenizerId.CLAUDE });
+  });
+
+  it('uses OpenAI/chat dispatch precedence for an ambiguous Mistral Nemo name', () => {
+    expect(selectTokenizer({
+      requestedId: TokenizerId.OPENAI,
+      api: 'openai',
+      model: 'mistral-nemo',
+    }).tokenizerId).toBe(TokenizerId.MISTRAL);
   });
 
   it('uses the baseline OpenAI tokenizer for an unknown model', () => {
@@ -72,6 +100,31 @@ describe('tokenizer selection', () => {
     });
   });
 
+  it.each([
+    ['mistral-nemo', TokenizerId.MISTRAL],
+    ['claude-3-opus', TokenizerId.LLAMA],
+    ['qwen2.5-72b', TokenizerId.QWEN2],
+  ])('preselects the text-generation remote fallback for model %s', (model, fallbackTokenizerId) => {
+    expect(selectTokenizer({
+      requestedId: TokenizerId.API_TEXTGENERATIONWEBUI,
+      api: 'textgenerationwebui',
+      model,
+      remoteEndpoint: 'http://127.0.0.1:5001/tokenize',
+    })).toMatchObject({
+      tokenizerId: TokenizerId.API_TEXTGENERATIONWEBUI,
+      fallbackTokenizerId,
+    });
+  });
+
+  it('preselects generic Llama for a Kobold remote failure regardless of model name', () => {
+    expect(selectTokenizer({
+      requestedId: TokenizerId.API_KOBOLD,
+      api: 'kobold',
+      model: 'llama-3.1-8b',
+      remoteEndpoint: 'http://127.0.0.1:5001/extra/tokencount',
+    })).toMatchObject({ tokenizerId: TokenizerId.API_KOBOLD, fallbackTokenizerId: TokenizerId.LLAMA });
+  });
+
   it('warns and selects the matching local family when a requested remote endpoint is absent', () => {
     expect(selectTokenizer({
       requestedId: TokenizerId.API_KOBOLD,
@@ -79,7 +132,7 @@ describe('tokenizer selection', () => {
       model: 'llama-3.1',
     })).toMatchObject({
       requestedId: TokenizerId.API_KOBOLD,
-      tokenizerId: TokenizerId.LLAMA3,
+      tokenizerId: TokenizerId.LLAMA,
       fallbackFrom: TokenizerId.API_KOBOLD,
       warning: expect.stringContaining('explicit tokenizer endpoint'),
     });

@@ -8,6 +8,17 @@ import type { TokenizerId } from './ids.js';
 
 const gunzip = promisify(gunzipCallback);
 
+export interface TokenizerAssetProvenance {
+  readonly sourceRepository: string;
+  readonly sourcePath: string;
+  readonly version: string;
+  readonly commit: string;
+  readonly sha256: string;
+  readonly licenseIdentifier: string;
+  readonly licenseUrl: string;
+  readonly noticeFile: string;
+}
+
 export interface TokenizerModelManifestEntry {
   readonly tokenizerId: TokenizerId;
   readonly fileName: string;
@@ -18,6 +29,7 @@ export interface TokenizerModelManifestEntry {
   readonly compression?: 'gzip';
   readonly downloadSha256?: string;
   readonly fallbackTokenizerId?: TokenizerId;
+  readonly provenance?: TokenizerAssetProvenance;
 }
 
 export interface ModelCacheLike {
@@ -35,6 +47,7 @@ export interface ModelCacheIo {
 export interface ModelCacheOptions {
   readonly dataDir: string;
   readonly download?: (url: string) => Promise<Uint8Array>;
+  readonly fetch?: typeof fetch;
   readonly io?: Partial<ModelCacheIo>;
 }
 
@@ -51,8 +64,8 @@ function assertHash(data: Uint8Array, expected: string, label: string): void {
   }
 }
 
-async function defaultDownload(url: string): Promise<Uint8Array> {
-  const response = await fetch(url);
+async function downloadWithFetch(fetchImplementation: typeof fetch, url: string): Promise<Uint8Array> {
+  const response = await fetchImplementation(url);
   if (!response.ok) {
     throw new Error(`Tokenizer model download failed with HTTP ${response.status}`);
   }
@@ -67,7 +80,8 @@ export class ModelCache implements ModelCacheLike {
 
   constructor(options: ModelCacheOptions) {
     this.#dataDir = options.dataDir;
-    this.#download = options.download ?? defaultDownload;
+    const fetchImplementation = options.fetch ?? globalThis.fetch;
+    this.#download = options.download ?? ((url) => downloadWithFetch(fetchImplementation, url));
     this.#io = { ...defaultIo, ...options.io };
   }
 
