@@ -1,5 +1,9 @@
 import type { ExportArtifact } from '../characters/export.js';
 import {
+  isPresetSourceAssociationKey,
+  presetSourceAssociation,
+} from './associations.js';
+import {
   isDirectNovelPreset,
   record,
   textSettingAliases,
@@ -52,18 +56,22 @@ function sourceDocument(source: PresetExportInput): { root: Record<string, unkno
 
 type StableIdentityKey = 'identifier' | 'character_id' | 'id';
 
-function stableIdentityKey(propertyKey: string | undefined, values: readonly unknown[]): StableIdentityKey | undefined {
-  const candidates: readonly StableIdentityKey[] = propertyKey === 'prompts'
-    ? ['identifier']
-    : propertyKey === 'prompt_order'
-      ? ['character_id']
-      : propertyKey === 'order'
-        ? ['identifier', 'id']
-        : [];
-  return candidates.find((candidate) => values.some((value) => {
+function stableIdentityKey(kind: PresetKind, path: readonly string[], values: readonly unknown[]): StableIdentityKey | undefined {
+  const pathToken = path.join('/');
+  const candidate: StableIdentityKey | undefined = kind === 'chat'
+    ? pathToken === 'prompts' || pathToken === 'prompt_order/order'
+      ? 'identifier'
+      : pathToken === 'prompt_order'
+        ? 'character_id'
+        : undefined
+    : kind === 'text' && (pathToken === 'order' || pathToken === 'parameters/order')
+      ? 'id'
+      : undefined;
+  if (candidate === undefined) return undefined;
+  return values.some((value) => {
     const object = record(value);
     return object !== undefined && (typeof object[candidate] === 'string' || typeof object[candidate] === 'number');
-  }));
+  }) ? candidate : undefined;
 }
 
 function identity(value: unknown, key: StableIdentityKey): string | number | undefined {
@@ -75,11 +83,63 @@ function identityToken(value: string | number): string {
   return `${typeof value}:${String(value)}`;
 }
 
-function overlayArray(raw: unknown, edited: unknown[], propertyKey: string | undefined): unknown[] {
+interface OverlayContext {
+  kind: PresetKind;
+  rawRoot: Record<string, unknown>;
+  consumedAssociations: Set<string>;
+}
+
+interface AssociatedRaw {
+  raw: unknown;
+  token: string;
+}
+
+function sourceAtPath(root: Record<string, unknown>, path: readonly (string | number)[]): unknown {
+  let value: unknown = root;
+  for (const part of path) {
+    if (typeof part === 'number') {
+      if (!Array.isArray(value) || part < 0 || part >= value.length) return undefined;
+      value = value[part];
+      continue;
+    }
+    const object = record(value);
+    if (object === undefined || !Object.hasOwn(object, part)) return undefined;
+    value = object[part];
+  }
+  return value;
+}
+
+function equalJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => equalJsonValue(value, right[index]));
+  }
+  const leftObject = record(left);
+  const rightObject = record(right);
+  if (leftObject === undefined || rightObject === undefined) return false;
+  const leftEntries = Object.entries(leftObject).filter(([key]) => !isPresetSourceAssociationKey(key));
+  const rightEntries = Object.entries(rightObject).filter(([key]) => !isPresetSourceAssociationKey(key));
+  return leftEntries.length === rightEntries.length
+    && leftEntries.every(([key, value]) => Object.hasOwn(rightObject, key) && equalJsonValue(value, rightObject[key]));
+}
+
+function matchesKnownFields(raw: unknown, edited: unknown): boolean {
+  const rawObject = record(raw);
+  const editedObject = record(edited);
+  if (rawObject === undefined || editedObject === undefined) return false;
+  return Object.entries(editedObject)
+    .filter(([key]) => !isPresetSourceAssociationKey(key))
+    .every(([key, value]) => Object.hasOwn(rawObject, key) && equalJsonValue(rawObject[key], value));
+}
+
+function overlayArray(raw: unknown, edited: unknown[], context: OverlayContext, path: readonly string[]): unknown[] {
   const rawArray = Array.isArray(raw) ? raw : [];
-  const identityKey = stableIdentityKey(propertyKey, [...rawArray, ...edited]);
+  const identityKey = stableIdentityKey(context.kind, path, [...rawArray, ...edited]);
   if (identityKey === undefined) {
-    return edited.map((value, index) => deepOverlay(rawArray[index], value));
+    return edited.map((value, index) => deepOverlay(rawArray[index], value, context, path));
   }
 
   const rawByIdentity = new Map<string, unknown[]>();
@@ -91,24 +151,73 @@ function overlayArray(raw: unknown, edited: unknown[], propertyKey: string | und
     matches.push(value);
     rawByIdentity.set(token, matches);
   }
-  return edited.map((value) => {
+
+  const associatedByEdited = new Map<unknown, AssociatedRaw>();
+  const identityHasAssociation = new Set<string>();
+  for (const value of edited) {
+    const association = presetSourceAssociation(value);
     const valueIdentity = identity(value, identityKey);
-    const rawValue = valueIdentity === undefined
-      ? undefined
-      : rawByIdentity.get(identityToken(valueIdentity))?.shift();
-    return deepOverlay(rawValue, value);
+    if (association === undefined || valueIdentity === undefined) continue;
+    const associatedRaw = sourceAtPath(context.rawRoot, association);
+    if (!rawArray.includes(associatedRaw) || identity(associatedRaw, identityKey) !== valueIdentity) continue;
+    const token = JSON.stringify(association);
+    associatedByEdited.set(value, { raw: associatedRaw, token });
+    identityHasAssociation.add(identityToken(valueIdentity));
+  }
+
+  const editedByIdentity = new Map<string, unknown[]>();
+  for (const value of edited) {
+    const valueIdentity = identity(value, identityKey);
+    if (valueIdentity === undefined) continue;
+    const token = identityToken(valueIdentity);
+    const matches = editedByIdentity.get(token) ?? [];
+    matches.push(value);
+    editedByIdentity.set(token, matches);
+  }
+
+  const fallbackByEdited = new Map<unknown, unknown>();
+  for (const [token, editedMatches] of editedByIdentity) {
+    if (identityHasAssociation.has(token)) continue;
+    const rawMatches = rawByIdentity.get(token) ?? [];
+    if (rawMatches.length === 1 && editedMatches.length === 1) {
+      fallbackByEdited.set(editedMatches[0], rawMatches[0]);
+      continue;
+    }
+    if (rawMatches.length < 2 || rawMatches.length !== editedMatches.length) continue;
+    const exactMatches = editedMatches.map((value) => ({
+      value,
+      candidates: rawMatches.filter((candidate) => matchesKnownFields(candidate, value)),
+    }));
+    if (exactMatches.some(({ candidates }) => candidates.length !== 1)) continue;
+    const selected = exactMatches.map(({ candidates }) => candidates[0]!);
+    if (new Set(selected).size !== selected.length) continue;
+    exactMatches.forEach(({ value, candidates }) => fallbackByEdited.set(value, candidates[0]));
+  }
+
+  return edited.map((value) => {
+    const associated = associatedByEdited.get(value);
+    let rawValue: unknown;
+    if (associated !== undefined && !context.consumedAssociations.has(associated.token)) {
+      context.consumedAssociations.add(associated.token);
+      rawValue = associated.raw;
+    } else {
+      rawValue = fallbackByEdited.get(value);
+    }
+    return deepOverlay(rawValue, value, context, path);
   });
 }
 
-function deepOverlay(raw: unknown, edited: unknown, propertyKey?: string): unknown {
+function deepOverlay(raw: unknown, edited: unknown, context: OverlayContext, path: readonly string[] = []): unknown {
   if (Array.isArray(edited)) {
-    return overlayArray(raw, edited, propertyKey);
+    return overlayArray(raw, edited, context, path);
   }
   const editedObject = record(edited);
   if (editedObject !== undefined) {
-    const result = record(raw) === undefined ? {} : structuredClone(record(raw)!);
+    const rawObject = record(raw);
+    const result = rawObject === undefined ? {} : structuredClone(rawObject);
     for (const [key, value] of Object.entries(editedObject)) {
-      result[key] = deepOverlay(result[key], value, key);
+      if (isPresetSourceAssociationKey(key)) continue;
+      result[key] = deepOverlay(rawObject?.[key], value, context, [...path, key]);
     }
     return result;
   }
@@ -121,23 +230,32 @@ function aliasesFor(setting: string): readonly string[] {
     : [setting];
 }
 
-function overlayTextSettings(body: Record<string, unknown>, settings: Record<string, unknown>): void {
-  const directNovel = isDirectNovelPreset(body);
-  const target = directNovel ? record(body.parameters)! : body;
+function overlayTextSettings(
+  rawBody: Record<string, unknown>,
+  settings: Record<string, unknown>,
+  context: OverlayContext,
+): Record<string, unknown> {
+  const body = structuredClone(rawBody);
+  const directNovel = isDirectNovelPreset(rawBody);
+  const rawTarget = directNovel ? record(rawBody.parameters)! : rawBody;
+  let target = directNovel ? record(body.parameters)! : body;
   for (const [canonicalKey, value] of Object.entries(settings)) {
+    if (isPresetSourceAssociationKey(canonicalKey)) continue;
     if (directNovel && canonicalKey === 'presetVersion') {
       body.presetVersion = structuredClone(value);
       continue;
     }
     if (directNovel && canonicalKey === 'parameters' && record(value) !== undefined) {
-      body.parameters = deepOverlay(body.parameters, value);
+      body.parameters = deepOverlay(rawBody.parameters, value, context, ['parameters']);
+      target = record(body.parameters)!;
       continue;
     }
     const aliases = aliasesFor(canonicalKey);
-    const rawKey = aliases.find((key) => Object.hasOwn(target, key)) ?? aliases[0]!;
-    target[rawKey] = deepOverlay(target[rawKey], value, rawKey);
+    const rawKey = aliases.find((key) => Object.hasOwn(rawTarget, key)) ?? aliases[0]!;
+    target[rawKey] = deepOverlay(rawTarget[rawKey], value, context, [canonicalKey]);
   }
   if (directNovel) body.parameters = target;
+  return body;
 }
 
 export async function exportPreset(source: PresetExportInput): Promise<ExportArtifact> {
@@ -146,8 +264,9 @@ export async function exportPreset(source: PresetExportInput): Promise<ExportArt
   let body = document.wrapperKey === undefined
     ? document.root
     : record(document.root[document.wrapperKey]) ?? {};
-  if (source.kind === 'text') overlayTextSettings(body, source.settings);
-  else body = deepOverlay(body, source.settings) as Record<string, unknown>;
+  const context: OverlayContext = { kind: source.kind, rawRoot: body, consumedAssociations: new Set() };
+  if (source.kind === 'text') body = overlayTextSettings(body, source.settings, context);
+  else body = deepOverlay(body, source.settings, context) as Record<string, unknown>;
   body.name = source.name;
   if (document.wrapperKey !== undefined) document.root[document.wrapperKey] = body;
   else document.root = body;

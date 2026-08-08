@@ -1,13 +1,54 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { exportPreset, inspectPreset } from '../src/index.js';
+import { exportPreset, inspectPreset, persistPresetSourceAssociations } from '../src/index.js';
 
 const fixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'presets');
 const encoder = new TextEncoder();
 
 function bytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(join(fixtureRoot, path)));
+}
+
+type PresetPreview = Awaited<ReturnType<typeof inspectPreset>>;
+
+async function duplicateOrderFixture(): Promise<{
+  preview: PresetPreview;
+  group: Record<string, unknown>;
+  first: Record<string, unknown>;
+  second: Record<string, unknown>;
+}> {
+  const preview = await inspectPreset(encoder.encode(JSON.stringify({
+    prompts: [],
+    prompt_order: [{
+      character_id: 7,
+      order: [
+        { identifier: 'duplicate', enabled: true, opaque: { origin: 'first' } },
+        { identifier: 'duplicate', enabled: false, opaque: { origin: 'second' } },
+      ],
+    }],
+  })), 'duplicate-order.settings');
+  preview.settings = persistPresetSourceAssociations(preview);
+  const group = (preview.settings.prompt_order as Array<Record<string, unknown>>)[0]!;
+  const order = group.order as Array<Record<string, unknown>>;
+  return { preview, group, first: order[0]!, second: order[1]! };
+}
+
+async function exportDuplicateOrder(
+  preview: PresetPreview,
+  group: Record<string, unknown>,
+  order: Array<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  const artifact = await exportPreset({
+    ...preview,
+    settings: { ...preview.settings, prompt_order: [{ ...group, order }] },
+  });
+  return JSON.parse(Buffer.from(artifact.bytes).toString('utf8')) as Record<string, unknown>;
+}
+
+function exportedChatOrder(document: Record<string, unknown>): Array<Record<string, unknown>> {
+  const groups = document.prompt_order as Array<Record<string, unknown>>;
+  return groups[0]!.order as Array<Record<string, unknown>>;
 }
 
 const oracleRoot = process.env.TAVERNNEXT_ST_ORACLE_ROOT;
@@ -162,6 +203,59 @@ describe('SillyTavern preset structural inspection', () => {
       reasoning_config: { provider_endpoint: 'https://example.invalid/not-executed' },
     });
     expect(preview.warnings).toContainEqual(expect.objectContaining({ code: 'provider_field_preserved_not_executable' }));
+  });
+
+  it('filters actual reasoning provider settings without stripping schema-like opaque descendants', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      prefix: '<think>', separator: '</think>', suffix: '<answer>',
+      reasoning_config: {
+        mode: 'visible',
+        provider_endpoint: 'https://example.invalid/not-executed',
+        response_schema: {
+          type: 'object',
+          properties: {
+            provider: { type: 'string' },
+            vendor_code: { type: 'integer' },
+          },
+          required: ['provider', 'vendor_code'],
+        },
+        examples: [{ provider: 'literal-data', vendor_code: 7 }],
+      },
+    })), 'reasoning-opaque.settings');
+
+    expect(preview.settings).toMatchObject({
+      reasoning_config: {
+        mode: 'visible',
+        response_schema: {
+          properties: {
+            provider: { type: 'string' },
+            vendor_code: { type: 'integer' },
+          },
+          required: ['provider', 'vendor_code'],
+        },
+        examples: [{ provider: 'literal-data', vendor_code: 7 }],
+      },
+    });
+    expect(preview.settings.reasoning_config).not.toHaveProperty('provider_endpoint');
+    expect(preview.unknownFields).toEqual({
+      reasoning_config: { provider_endpoint: 'https://example.invalid/not-executed' },
+    });
+    expect(preview.warnings).toContainEqual(expect.objectContaining({ code: 'provider_field_preserved_not_executable' }));
+
+    const exported = JSON.parse(Buffer.from((await exportPreset(preview)).bytes).toString('utf8')) as Record<string, unknown>;
+    expect(exported).toMatchObject({
+      reasoning_config: {
+        provider_endpoint: 'https://example.invalid/not-executed',
+        response_schema: {
+          properties: {
+            provider: { type: 'string' },
+            vendor_code: { type: 'integer' },
+          },
+          required: ['provider', 'vendor_code'],
+        },
+        examples: [{ provider: 'literal-data', vendor_code: 7 }],
+      },
+    });
   });
 
   it('preserves provider-named data inside recognized opaque Text values atomically', async () => {
@@ -499,6 +593,83 @@ describe('lossless deterministic preset export', () => {
     ]);
   });
 
+  it('keeps duplicate-id metadata attached through swaps and known-field edits', async () => {
+    const { preview, group, first, second } = await duplicateOrderFixture();
+
+    const document = await exportDuplicateOrder(preview, group, [
+      { ...second, enabled: true },
+      { ...first, enabled: false },
+    ]);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
+      { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
+    ]);
+  });
+
+  it('does not migrate duplicate-id metadata when either original occurrence is deleted', async () => {
+    const { preview, group, first, second } = await duplicateOrderFixture();
+
+    const withoutFirst = await exportDuplicateOrder(preview, group, [{ ...second, enabled: true }]);
+    expect(exportedChatOrder(withoutFirst)).toEqual([
+      { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
+    ]);
+
+    const withoutSecond = await exportDuplicateOrder(preview, group, [{ ...first, enabled: false }]);
+    expect(exportedChatOrder(withoutSecond)).toEqual([
+      { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
+    ]);
+  });
+
+  it('leaves new duplicate ids clean before, between, and after associated originals', async () => {
+    const { preview, group, first, second } = await duplicateOrderFixture();
+
+    const document = await exportDuplicateOrder(preview, group, [
+      { identifier: 'duplicate', enabled: true },
+      { ...first, enabled: false },
+      { identifier: 'duplicate', enabled: false },
+      { ...second, enabled: true },
+      { identifier: 'duplicate', enabled: true },
+    ]);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: true },
+      { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
+      { identifier: 'duplicate', enabled: false },
+      { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
+      { identifier: 'duplicate', enabled: true },
+    ]);
+  });
+
+  it('rebuilds duplicate source associations after JSON persistence', async () => {
+    const reimported = await inspectPreset(encoder.encode(JSON.stringify({
+      prompts: [],
+      prompt_order: [{
+        character_id: 7,
+        order: [
+          { identifier: 'duplicate', enabled: true },
+          { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
+          { identifier: 'duplicate', enabled: false },
+          { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
+          { identifier: 'duplicate', enabled: true },
+        ],
+      }],
+    })), 'persisted-duplicates.settings');
+    reimported.settings = JSON.parse(JSON.stringify(persistPresetSourceAssociations(reimported))) as Record<string, unknown>;
+    const group = (reimported.settings.prompt_order as Array<Record<string, unknown>>)[0]!;
+    const order = group.order as Array<Record<string, unknown>>;
+
+    const document = await exportDuplicateOrder(reimported, group, [
+      { ...order[3]!, enabled: false },
+      { ...order[1]!, enabled: true },
+    ]);
+
+    expect(exportedChatOrder(document)).toEqual([
+      { identifier: 'duplicate', enabled: false, opaque: { origin: 'second' } },
+      { identifier: 'duplicate', enabled: true, opaque: { origin: 'first' } },
+    ]);
+  });
+
   it('keeps NovelAI order metadata with stable ids and leaves new ids clean', async () => {
     const preview = await inspectPreset(encoder.encode(JSON.stringify({
       presetVersion: 3,
@@ -525,6 +696,34 @@ describe('lossless deterministic preset export', () => {
           { id: 'top_p', enabled: true, opaque: 'top-p' },
           { id: 'min_p', enabled: false },
           { id: 'temperature', enabled: true, opaque: 'temperature' },
+        ],
+      },
+    });
+  });
+
+  it('uses required NovelAI order ids even when entries carry opaque identifiers', async () => {
+    const preview = await inspectPreset(encoder.encode(JSON.stringify({
+      presetVersion: 3,
+      parameters: {
+        temperature: 0.7,
+        order: [
+          { id: 'temperature', identifier: 'opaque-first', enabled: true, opaque: 'temperature' },
+          { id: 'top_p', identifier: 'opaque-second', enabled: false, opaque: 'top-p' },
+        ],
+      },
+    })), 'novel-opaque-identifiers.preset');
+    const order = structuredClone(preview.settings.order) as Array<Record<string, unknown>>;
+
+    const document = JSON.parse(Buffer.from((await exportPreset({
+      ...preview,
+      settings: { ...preview.settings, order: [order[1]!, order[0]!] },
+    })).bytes).toString('utf8')) as Record<string, unknown>;
+
+    expect(document).toMatchObject({
+      parameters: {
+        order: [
+          { id: 'top_p', identifier: 'opaque-second', enabled: false, opaque: 'top-p' },
+          { id: 'temperature', identifier: 'opaque-first', enabled: true, opaque: 'temperature' },
         ],
       },
     });

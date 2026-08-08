@@ -28,17 +28,6 @@ function containsProviderSetting(value: unknown): boolean {
   return Object.entries(object).some(([key, nested]) => isProviderSetting(key) || containsProviderSetting(nested));
 }
 
-function withoutProviderSettings(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutProviderSettings);
-  const object = record(value);
-  if (object === undefined) return structuredClone(value);
-  return Object.fromEntries(
-    Object.entries(object)
-      .filter(([key]) => !isProviderSetting(key))
-      .map(([key, nested]) => [key, withoutProviderSettings(nested)]),
-  );
-}
-
 function withoutProviderSettingsAtNode(fields: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(fields)
@@ -59,8 +48,9 @@ function schemaAwareProviderFilter(
   // reasoning_config is an executable settings bag whose members are configuration
   // nodes. Other recognized object/array values (for example JSON Schema and
   // logit-bias payloads) are opaque data and must not be filtered by key name.
-  if (kind === 'reasoning' && Object.hasOwn(filtered, 'reasoning_config')) {
-    filtered.reasoning_config = withoutProviderSettings(filtered.reasoning_config);
+  const reasoningConfig = kind === 'reasoning' ? record(filtered.reasoning_config) : undefined;
+  if (reasoningConfig !== undefined) {
+    filtered.reasoning_config = withoutProviderSettingsAtNode(reasoningConfig);
   }
   return filtered;
 }

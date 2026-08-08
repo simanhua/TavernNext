@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { presetSettingsForExecution } from '@tavernnext/st-compat';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -210,5 +211,56 @@ describe('typed SillyTavern Preset import and export API', () => {
     });
     expect(exported.json()).not.toHaveProperty('temperature');
     expect(Buffer.from(repositories.importArtifacts.list()[0]!.rawArtifact, 'base64')).toEqual(Buffer.from(source));
+  });
+
+  it('keeps duplicate prompt-order metadata associated after repository JSON persistence, edits, and reorder', async () => {
+    const { app, repositories } = await context();
+    const source = encoder.encode(JSON.stringify({
+      prompts: [],
+      prompt_order: [{
+        character_id: 7,
+        order: [
+          { identifier: 'duplicate', enabled: true, opaque: { origin: 'first' } },
+          { identifier: 'duplicate', enabled: false, opaque: { origin: 'second' } },
+        ],
+      }],
+    }));
+    const { committed } = await inspectAndCommitBytes(app, source, 'duplicate-order.settings');
+    expect(committed.statusCode).toBe(201);
+    const id = committed.json().entityId as string;
+
+    const persistedSettings = JSON.parse(JSON.stringify(repositories.presets.get(id)!.settings)) as Record<string, unknown>;
+    const group = (persistedSettings.prompt_order as Array<Record<string, unknown>>)[0]!;
+    const order = group.order as Array<Record<string, unknown>>;
+    expect(presetSettingsForExecution(persistedSettings)).toEqual({
+      prompts: [],
+      prompt_order: [{
+        character_id: 7,
+        order: [
+          { identifier: 'duplicate', enabled: true },
+          { identifier: 'duplicate', enabled: false },
+        ],
+      }],
+    });
+    expect(repositories.presets.update(id, 0, {
+      settings: {
+        ...persistedSettings,
+        prompt_order: [{
+          ...group,
+          order: [
+            { ...order[1]!, enabled: true },
+            { ...order[0]!, enabled: false },
+          ],
+        }],
+      },
+    })).toMatchObject({ ok: true });
+
+    const exported = await app.inject({ method: 'GET', url: `/api/presets/${id}/export` });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json().prompt_order[0].order).toEqual([
+      { identifier: 'duplicate', enabled: true, opaque: { origin: 'second' } },
+      { identifier: 'duplicate', enabled: false, opaque: { origin: 'first' } },
+    ]);
+    expect(JSON.stringify(exported.json())).not.toContain('tavernnextPresetSource');
   });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeInspectedPreset,
   diagnostic,
+  persistPresetSourceAssociations,
   presetWarnings,
   type PresetImportPreview,
 } from '@tavernnext/st-compat';
@@ -58,7 +59,12 @@ export function createPresetImportHandler(): ImportHandler {
         id: randomUUID(),
         name: decoded.name,
         kind: decoded.kind,
-        settings: structuredClone(decoded.settings),
+        settings: persistPresetSourceAssociations({
+          kind: decoded.kind,
+          settings: decoded.settings,
+          rawPayload: decoded.rawPayload,
+          ...(decoded.wrapperKey === undefined ? {} : { wrapperKey: decoded.wrapperKey }),
+        }),
         compatibility: {
           sourceFormat: 'preset:json',
           rawPayload: source,
