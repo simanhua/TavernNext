@@ -20,6 +20,28 @@ async function createTestRepositories() {
   return { database, repositories: createRepositories(database) };
 }
 
+function createLegacySchema(database: ReturnType<typeof createDatabase>): void {
+  database.sqlite.exec(`
+    CREATE TABLE characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE personas (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE worldbooks (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE worldbook_entries (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id) ON DELETE CASCADE);
+    CREATE INDEX worldbook_entries_worldbook_id_idx ON worldbook_entries(worldbook_id);
+    CREATE TABLE presets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL);
+    CREATE TABLE conversations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, character_id TEXT NOT NULL REFERENCES characters(id), persona_id TEXT NOT NULL REFERENCES personas(id), preset_id TEXT REFERENCES presets(id), title TEXT NOT NULL);
+    CREATE INDEX conversations_character_id_idx ON conversations(character_id);
+    CREATE INDEX conversations_persona_id_idx ON conversations(persona_id);
+    CREATE TABLE messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL);
+    CREATE INDEX messages_conversation_id_idx ON messages(conversation_id);
+    CREATE TABLE message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, status TEXT NOT NULL);
+    CREATE INDEX message_variants_message_id_idx ON message_variants(message_id);
+    CREATE TABLE provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
+    CREATE TABLE generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE);
+    CREATE INDEX generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
+  `);
+}
+
 describe('SQLite repositories', () => {
   it('creates every planned persistence table', async () => {
     const { database } = await createTestRepositories();
@@ -31,6 +53,18 @@ describe('SQLite repositories', () => {
       'import_artifacts', 'generation_snapshots',
       'conversation_worldbooks',
     ]));
+  });
+
+  it('keeps a clean database migration idempotent', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-idempotent-'));
+    testDirectories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+
+    migrateDatabase(database);
+    migrateDatabase(database);
+
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 2 }]);
+    expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
   it('preserves character compatibility metadata through a create and get cycle', async () => {
@@ -132,6 +166,54 @@ describe('SQLite repositories', () => {
     expect(() => repositories.worldbooks.delete(worldbook.id, 0)).toThrow(/FOREIGN KEY constraint failed/);
     expect(repositories.worldbooks.get(worldbook.id)).toMatchObject({ id: worldbook.id });
     expect(repositories.worldbookEntries.get(entry.id)).toMatchObject({ id: entry.id });
+  });
+
+  it('upgrades the b87d7f7 legacy schema without losing payloads or relationships', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-legacy-'));
+    testDirectories.push(directory);
+    const path = join(directory, 'tavernnext.sqlite');
+    const database = createDatabase(path);
+    createLegacySchema(database);
+    const createdAt = '2026-08-08T00:00:00.000Z';
+    const ids = {
+      character: '018f0000-0000-7000-8000-000000000030', persona: '018f0000-0000-7000-8000-000000000031', worldbook: '018f0000-0000-7000-8000-000000000032', entry: '018f0000-0000-7000-8000-000000000033',
+      conversation: '018f0000-0000-7000-8000-000000000034', message: '018f0000-0000-7000-8000-000000000035', variant: '018f0000-0000-7000-8000-000000000036',
+    };
+    const character = { id: ids.character, revision: 2, createdAt, updatedAt: createdAt, name: 'Legacy character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], compatibility: { sourceFormat: 'st-character-v3', rawPayload: { legacy: true }, unknownFields: { legacy: true }, compatWarnings: [], parserVersion: '1' } };
+    const persona = { id: ids.persona, revision: 0, createdAt, updatedAt: createdAt, name: 'Legacy persona', description: '', isDefault: true };
+    const worldbook = { id: ids.worldbook, revision: 0, createdAt, updatedAt: createdAt, name: 'Legacy lore', enabled: true };
+    const entry = { id: ids.entry, revision: 0, createdAt, updatedAt: createdAt, worldbookId: ids.worldbook, keys: ['legacy'], content: 'kept', enabled: true, position: 'before_character', order: 0 };
+    const conversation = { id: ids.conversation, revision: 0, createdAt, updatedAt: createdAt, characterId: ids.character, personaId: ids.persona, title: 'Legacy chat', worldbookIds: [ids.worldbook] };
+    const message = { id: ids.message, revision: 0, createdAt, updatedAt: createdAt, conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.variant };
+    const variant = { id: ids.variant, revision: 0, createdAt, updatedAt: createdAt, messageId: ids.message, content: 'Legacy response', status: 'completed' };
+    const insert = (table: string, payload: { id: string; revision: number; createdAt: string; updatedAt: string }, columns: string[], values: (string | null)[]) => {
+      database.sqlite.prepare(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`).run(...values);
+    };
+    insert('characters', character, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [character.id, '2', createdAt, createdAt, JSON.stringify(character), character.name]);
+    insert('personas', persona, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [persona.id, '0', createdAt, createdAt, JSON.stringify(persona), persona.name]);
+    insert('worldbooks', worldbook, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [worldbook.id, '0', createdAt, createdAt, JSON.stringify(worldbook), worldbook.name]);
+    insert('worldbook_entries', entry, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'worldbook_id'], [entry.id, '0', createdAt, createdAt, JSON.stringify(entry), entry.worldbookId]);
+    insert('conversations', conversation, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'character_id', 'persona_id', 'preset_id', 'title'], [conversation.id, '0', createdAt, createdAt, JSON.stringify(conversation), conversation.characterId, conversation.personaId, null, conversation.title]);
+    insert('messages', message, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'conversation_id', 'role'], [message.id, '0', createdAt, createdAt, JSON.stringify(message), message.conversationId, message.role]);
+    insert('message_variants', variant, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'message_id', 'status'], [variant.id, '0', createdAt, createdAt, JSON.stringify(variant), variant.messageId, variant.status]);
+
+    migrateDatabase(database);
+    migrateDatabase(database);
+    const repositories = createRepositories(database);
+
+    expect(repositories.characters.get(ids.character)).toMatchObject({ revision: 2, compatibility: { rawPayload: { legacy: true } } });
+    expect(repositories.messages.get(ids.message)).toMatchObject({ activeVariantId: ids.variant });
+    expect(database.sqlite.prepare('PRAGMA table_info(messages)').all().map((column) => column.name)).toContain('active_variant_id');
+    expect(database.sqlite.prepare('PRAGMA index_list(messages)').all().map((index) => index.name)).toContain('messages_active_variant_id_idx');
+    expect(database.sqlite.prepare('SELECT worldbook_id FROM conversation_worldbooks WHERE conversation_id = ?').all(ids.conversation)).toEqual([{ worldbook_id: ids.worldbook }]);
+    expect(() => repositories.worldbooks.delete(ids.worldbook, 0)).toThrow(/FOREIGN KEY constraint failed/);
+
+    const insertedMessage = repositories.messages.create({
+      id: '018f0000-0000-7000-8000-000000000037', conversationId: ids.conversation, role: 'user', content: 'Current write', activeVariantId: null,
+    });
+    expect(insertedMessage.id).toBe('018f0000-0000-7000-8000-000000000037');
+    expect(database.sqlite.prepare('SELECT active_variant_id FROM messages WHERE id = ?').get(insertedMessage.id)).toEqual({ active_variant_id: null });
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 2 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {
