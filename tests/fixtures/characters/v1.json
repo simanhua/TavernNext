@@ -1,0 +1,23 @@
+{
+  "name": "V1 Aster",
+  "description": "A synthetic V1 archivist.",
+  "personality": "Methodical",
+  "scenario": "Inside a quiet archive.",
+  "first_mes": "Welcome to the archive.",
+  "mes_example": "<START>\n{{char}}: This is a synthetic example.",
+  "creatorcomment": "Legacy creator note",
+  "system_prompt": "Preserve the catalogue.",
+  "post_history_instructions": "Answer concisely.",
+  "alternate_greetings": ["The archive is open."],
+  "tags": ["synthetic", "v1"],
+  "creator": "TavernNext tests",
+  "character_version": "1.2-test",
+  "extensions": {
+    "fixture_extension": {
+      "enabled": true
+    }
+  },
+  "legacy_unknown": {
+    "keep": "v1"
+  }
+}

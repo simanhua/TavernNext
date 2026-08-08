@@ -807,7 +807,15 @@ function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: Inspe
     const previewEntries = archive.entries.slice(0, 256);
     const entryPreview = { entries: previewEntries, entryCount: archive.entries.length };
     const hasCharx = archive.files.has('card.json');
-    const hasByaf = archive.files.has('manifest.json') && archive.entries.some((name) => /^characters\/[^/]+\/character\.json$/i.test(name));
+    const manifest = archive.files.has('manifest.json')
+      ? objectRecord(parseArchiveJson(archive, 'manifest.json', limits))
+      : undefined;
+    const manifestCharacters = Array.isArray(manifest?.characters) ? manifest.characters : [];
+    const hasByaf = manifest !== undefined && manifestCharacters.some((entry) => {
+      if (typeof entry === 'string') return entry.trim() !== '';
+      const object = objectRecord(entry);
+      return typeof object?.path === 'string' && object.path.trim() !== '';
+    });
     if (hasCharx && hasByaf) {
       preview.detected = { container: 'zip', kind: 'unknown', candidates: ['character'] };
       preview.normalizedPreview = entryPreview;
@@ -821,8 +829,8 @@ function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: Inspe
       return;
     }
     if (hasByaf) {
-      const manifest = objectRecord(parseArchiveJson(archive, 'manifest.json', limits));
-      const version = typeof manifest?.version === 'string' || typeof manifest?.version === 'number' ? String(manifest.version) : '1';
+      const declaredVersion = manifest?.version ?? manifest?.schemaVersion;
+      const version = typeof declaredVersion === 'string' || typeof declaredVersion === 'number' ? String(declaredVersion) : '1';
       preview.detected = { container: 'byaf', kind: 'character', version, candidates: ['character'] };
       preview.normalizedPreview = entryPreview;
       return;

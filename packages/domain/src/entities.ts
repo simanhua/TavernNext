@@ -21,8 +21,15 @@ export const CharacterSchema = MutableEntitySchema.extend({
   personality: z.string(),
   scenario: z.string(),
   firstMessage: z.string(),
+  examples: z.string().default(''),
+  systemPrompt: z.string().default(''),
+  postHistoryInstructions: z.string().default(''),
+  creatorNotes: z.string().default(''),
+  creator: z.string().default(''),
+  characterVersion: z.string().default(''),
   alternateGreetings: z.array(z.string()),
   tags: z.array(z.string()),
+  characterBook: z.record(z.string(), z.unknown()).optional(),
   avatarPath: z.string().optional(),
 }).extend(WithCompatibilitySchema.shape);
 

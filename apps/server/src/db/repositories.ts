@@ -47,7 +47,9 @@ type MutableEntity = {
   createdAt: string;
   updatedAt: string;
 };
-type DefaultedField = 'enabled' | 'position' | 'order' | 'settings' | 'worldbookIds' | 'apiMode' | 'headerSecretRefs';
+type DefaultedField =
+  | 'enabled' | 'position' | 'order' | 'settings' | 'worldbookIds' | 'apiMode' | 'headerSecretRefs'
+  | 'examples' | 'systemPrompt' | 'postHistoryInstructions' | 'creatorNotes' | 'creator' | 'characterVersion';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -158,6 +160,61 @@ function syncConversationWorldbooks(database: TavernDatabase, conversation: Conv
   }
 }
 
+function createPersonaRepository(database: TavernDatabase): Repository<Persona> {
+  const base = createRepository(database, {
+    table: entityTable(personas),
+    schema: PersonaSchema,
+    toRow: (value: Persona) => ({ ...baseRow(value), name: value.name }),
+  });
+  const unsetOtherDefaults = (id: string) => {
+    for (const persona of base.list()) {
+      if (persona.id === id || !persona.isDefault) continue;
+      const updated = base.update(persona.id, persona.revision, { isDefault: false });
+      if (!updated.ok) throw new Error('Could not update Persona default');
+    }
+  };
+  const promoteOldest = (excludedId?: string) => {
+    const candidate = base.list().find((persona) => persona.id !== excludedId);
+    if (candidate === undefined || candidate.isDefault) return;
+    const updated = base.update(candidate.id, candidate.revision, { isDefault: true });
+    if (!updated.ok) throw new Error('Could not promote Persona default');
+  };
+  return {
+    create(input) {
+      return database.transaction(() => {
+        const shouldDefault = base.list().length === 0 || input.isDefault === true;
+        if (shouldDefault) unsetOtherDefaults(input.id);
+        return base.create({ ...input, isDefault: shouldDefault });
+      });
+    },
+    get: base.get,
+    list: base.list,
+    update(id, expectedRevision, patch) {
+      return database.transaction(() => {
+        const current = base.get(id);
+        if (current === undefined) return { ok: false, reason: 'not_found' };
+        if (current.revision !== expectedRevision) return { ok: false, reason: 'conflict' };
+        const requestsDefault = patch.isDefault === true;
+        if (requestsDefault) unsetOtherDefaults(id);
+        const keepsOnlyDefault = current.isDefault && patch.isDefault === false && base.list().every((persona) => persona.id === id || !persona.isDefault);
+        const result = base.update(id, expectedRevision, keepsOnlyDefault ? { ...patch, isDefault: true } : patch);
+        if (result.ok && current.isDefault && !result.value.isDefault) promoteOldest(id);
+        return result;
+      });
+    },
+    delete(id, expectedRevision) {
+      return database.transaction(() => {
+        const current = base.get(id);
+        if (current === undefined) return { ok: false, reason: 'not_found' };
+        if (current.revision !== expectedRevision) return { ok: false, reason: 'conflict' };
+        const result = base.delete(id, expectedRevision);
+        if (result.ok && current.isDefault) promoteOldest(id);
+        return result;
+      });
+    },
+  };
+}
+
 export interface Repositories {
   characters: Repository<Character>;
   personas: Repository<Persona>;
@@ -175,7 +232,7 @@ export interface Repositories {
 export function createRepositories(database: TavernDatabase): Repositories {
   return {
     characters: createRepository(database, { table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
-    personas: createRepository(database, { table: entityTable(personas), schema: PersonaSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
+    personas: createPersonaRepository(database),
     worldbooks: createRepository(database, { table: entityTable(worldbooks), schema: WorldbookSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     worldbookEntries: createRepository(database, { table: entityTable(worldbookEntries), schema: WorldbookEntrySchema, toRow: (value) => ({ ...baseRow(value), worldbookId: value.worldbookId }) }),
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),

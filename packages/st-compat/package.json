@@ -12,6 +12,8 @@
     "png-chunk-text": "1.0.0",
     "png-chunks-encode": "1.0.0",
     "png-chunks-extract": "1.0.0",
-    "yaml": "2.9.0"
+    "sharp": "0.35.3",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
   }
 }

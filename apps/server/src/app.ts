@@ -7,6 +7,7 @@ import { createDatabase, type TavernDatabase } from './db/client.js';
 import { migrateDatabase } from './db/migrate.js';
 import { createRepositories } from './db/repositories.js';
 import { registerCharacterRoutes } from './routes/characters.js';
+import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
 import { registerMessageRoutes } from './routes/messages.js';
@@ -14,6 +15,7 @@ import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
+import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 
 export interface CreateAppOptions {
@@ -48,7 +50,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     dataDir: config.dataDir,
     database,
     repositories,
-    ...(options.importHandlers === undefined ? {} : { handlers: options.importHandlers }),
+    handlers: options.importHandlers ?? [createCharacterImportHandler()],
     ...(options.importClock === undefined ? {} : { clock: options.importClock }),
     ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
     ...(options.importRemoveStage === undefined ? {} : { removeStage: options.importRemoveStage }),
@@ -91,6 +93,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   app.get('/api/health', async () => ({ status: 'ok', app: 'TavernNext' }));
   registerImportRoutes(app, imports);
   registerCharacterRoutes(app, repositories);
+  registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPersonaRoutes(app, repositories);
   registerProviderRoutes(app, repositories, {
     has(profile) {
