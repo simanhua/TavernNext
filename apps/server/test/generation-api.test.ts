@@ -246,21 +246,98 @@ describe('generation API', () => {
     expect(repositories.generationSnapshots.list()).toHaveLength(beforeStale.snapshots);
   });
 
-  it('rejects generation modes that the temporary compiler does not implement', async () => {
-    const client = mockClient(async function* () { yield { type: 'completed', finishReason: 'stop' }; });
-    const { app, repositories } = await createTestContext(client);
+  it('rejects unsupported or invalid requests and cleans up reservations before iteration', async () => {
+    let providerCalls = 0;
+    const client = mockClient(async function* () {
+      providerCalls += 1;
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, database, repositories } = await createTestContext(client);
     seed(repositories);
 
-    const response = await app.inject({
+    const unsupported = await app.inject({
       method: 'POST',
       url: `/api/conversations/${ids.conversation}/generations`,
       payload: { conversationRevision: 0, mode: 'regenerate' },
     });
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json()).toEqual({ error: 'unsupported_mode' });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'unsupported_mode' });
+    for (const userText of [undefined, '', '   ', '\t\n']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/conversations/${ids.conversation}/generations`,
+        payload: {
+          conversationRevision: 0,
+          mode: 'normal',
+          ...(userText === undefined ? {} : { userText }),
+        },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ error: 'invalid_user_text' });
+    }
+
+    expect(providerCalls).toBe(0);
     expect(repositories.messages.list()).toEqual([]);
     expect(repositories.generationSnapshots.list()).toEqual([]);
+    expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 0 });
+    const service = createGenerationService({ database, repositories, providerClientFactory: () => client });
+
+    expect(service.start({ conversationId: ids.conversation, conversationRevision: 0, mode: 'normal' }))
+      .toEqual({ ok: false, reason: 'invalid_user_text' });
+    expect(providerCalls).toBe(0);
+    expect(repositories.messages.list()).toEqual([]);
+    expect(repositories.generationSnapshots.list()).toEqual([]);
+    expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 0 });
+
+    const accepted = service.start({
+      conversationId: ids.conversation, conversationRevision: 0, mode: 'normal', userText: 'Accepted',
+    });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      for await (const event of accepted.events) void event;
+    }
+
+    expect(providerCalls).toBe(1);
+    expect(repositories.messages.list()).toEqual([
+      expect.objectContaining({ role: 'user', content: 'Accepted' }),
+    ]);
+    expect(repositories.generationSnapshots.list()).toHaveLength(1);
+    expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 1 });
+
+    const first = service.start({
+      conversationId: ids.conversation, conversationRevision: 1, mode: 'normal', userText: 'Cancelled before iteration',
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.reason);
+
+    expect(service.cancel(first.generationId)).toBe(true);
+    await expect(first.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({ done: true });
+    const second = service.start({
+      conversationId: ids.conversation, conversationRevision: 2, mode: 'normal', userText: 'After cancellation',
+    });
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      for await (const event of second.events) void event;
+    }
+
+    const abandoned = service.start({
+      conversationId: ids.conversation, conversationRevision: 3, mode: 'normal', userText: 'Closed before iteration',
+    });
+    expect(abandoned.ok).toBe(true);
+    if (!abandoned.ok) throw new Error(abandoned.reason);
+    const iterator = abandoned.events[Symbol.asyncIterator]();
+
+    await iterator.return?.();
+    const afterClose = service.start({
+      conversationId: ids.conversation, conversationRevision: 4, mode: 'normal', userText: 'After close',
+    });
+    expect(afterClose.ok).toBe(true);
+    if (afterClose.ok) {
+      for await (const event of afterClose.events) void event;
+    }
+
+    expect(providerCalls).toBe(3);
   });
 
   it('releases the conversation lock when the SSE consumer disconnects after started', async () => {
@@ -277,7 +354,9 @@ describe('generation API', () => {
     await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'started' } });
     await iterator.return?.();
 
-    const second = service.start({ conversationId: ids.conversation, conversationRevision: 1, mode: 'normal' });
+    const second = service.start({
+      conversationId: ids.conversation, conversationRevision: 1, mode: 'normal', userText: 'Again',
+    });
     expect(second.ok).toBe(true);
     if (second.ok) {
       for await (const event of second.events) void event;

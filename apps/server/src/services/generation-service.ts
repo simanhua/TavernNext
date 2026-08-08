@@ -25,11 +25,14 @@ export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatib
 
 export type StartGenerationResult =
   | { ok: true; generationId: string; events: AsyncIterable<GenerationEvent> }
-  | { ok: false; reason: 'generation_active' | 'not_found' | 'revision_conflict' | 'provider_not_configured' | 'unsupported_mode' };
+  | { ok: false; reason: 'generation_active' | 'invalid_user_text' | 'not_found' | 'revision_conflict' | 'provider_not_configured' | 'unsupported_mode' };
 
 interface ActiveGeneration {
+  generationId: string;
   conversationId: string;
   controller: AbortController;
+  state: 'reserved' | 'iterating' | 'closed';
+  cleanup(): void;
 }
 
 interface PreparedGeneration {
@@ -80,17 +83,15 @@ export function createGenerationService(options: {
       const provider = repositories.providerProfiles.list()[0];
       if (provider === undefined) return { ok: false as const, reason: 'provider_not_configured' as const };
 
-      if (input.userText !== undefined && input.userText !== '') {
-        repositories.messages.create({
-          id: randomUUID(),
-          conversationId: conversation.id,
-          role: 'user',
-          content: input.userText,
-          activeVariantId: null,
-        });
-        const revision = repositories.conversations.update(conversation.id, input.conversationRevision, {});
-        if (!revision.ok) return { ok: false as const, reason: 'revision_conflict' as const };
-      }
+      repositories.messages.create({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: 'user',
+        content: input.userText!,
+        activeVariantId: null,
+      });
+      const revision = repositories.conversations.update(conversation.id, input.conversationRevision, {});
+      if (!revision.ok) return { ok: false as const, reason: 'revision_conflict' as const };
 
       repositories.generationSnapshots.create({
         id: generationId,
@@ -117,7 +118,8 @@ export function createGenerationService(options: {
     return prepared;
   }
 
-  async function* stream(prepared: PreparedGeneration, controller: AbortController): AsyncIterable<GenerationEvent> {
+  async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<GenerationEvent> {
+    const { controller } = active;
     let variant: MessageVariant | undefined;
     let content = '';
     let persistedContent = '';
@@ -215,8 +217,7 @@ export function createGenerationService(options: {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
       }
-      activeByConversation.delete(prepared.conversationId);
-      activeById.delete(prepared.generationId);
+      active.cleanup();
     }
 
     if (outcome === 'completed') yield { type: 'completed', finishReason };
@@ -224,25 +225,66 @@ export function createGenerationService(options: {
     else yield { type: 'failed', code: failureCode };
   }
 
+  function lifecycleEvents(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterableIterator<GenerationEvent> {
+    const source = stream(prepared, active)[Symbol.asyncIterator]();
+    return {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      async next() {
+        if (active.state === 'closed') return { done: true, value: undefined };
+        if (active.state === 'reserved') active.state = 'iterating';
+        return source.next();
+      },
+      async return(value) {
+        if (active.state === 'reserved') {
+          active.controller.abort();
+          active.cleanup();
+          return { done: true, value };
+        }
+        if (active.state === 'closed') return { done: true, value };
+        if (source.return !== undefined) return source.return(value);
+        active.controller.abort();
+        active.cleanup();
+        return { done: true, value };
+      },
+    };
+  }
+
   return {
     start(input) {
       if (input.mode !== 'normal') return { ok: false, reason: 'unsupported_mode' };
+      if (typeof input.userText !== 'string' || input.userText.trim() === '') {
+        return { ok: false, reason: 'invalid_user_text' };
+      }
       if (activeByConversation.has(input.conversationId)) return { ok: false, reason: 'generation_active' };
       const generationId = randomUUID();
-      activeByConversation.set(input.conversationId, generationId);
       const controller = new AbortController();
-      activeById.set(generationId, { conversationId: input.conversationId, controller });
+      const active: ActiveGeneration = {
+        generationId,
+        conversationId: input.conversationId,
+        controller,
+        state: 'reserved',
+        cleanup() {
+          if (active.state === 'closed') return;
+          active.state = 'closed';
+          if (activeByConversation.get(active.conversationId) === active.generationId) {
+            activeByConversation.delete(active.conversationId);
+          }
+          activeById.delete(active.generationId);
+        },
+      };
+      activeByConversation.set(input.conversationId, generationId);
+      activeById.set(generationId, active);
       try {
         const prepared = prepare(input, generationId);
         if ('ok' in prepared) {
-          activeByConversation.delete(input.conversationId);
-          activeById.delete(generationId);
+          active.cleanup();
           return prepared;
         }
-        return { ok: true, generationId, events: stream(prepared, controller) };
+        return { ok: true, generationId, events: lifecycleEvents(prepared, active) };
       } catch (error) {
-        activeByConversation.delete(input.conversationId);
-        activeById.delete(generationId);
+        active.cleanup();
         throw error;
       }
     },
@@ -250,6 +292,7 @@ export function createGenerationService(options: {
       const active = activeById.get(generationId);
       if (active === undefined) return false;
       active.controller.abort();
+      if (active.state === 'reserved') active.cleanup();
       return true;
     },
   };

@@ -21,7 +21,7 @@ export function registerGenerationRoutes(app: FastifyInstance, service: Generati
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     const result = service.start(parsed.data);
     if (!result.ok) {
-      const status = result.reason === 'unsupported_mode' ? 400
+      const status = result.reason === 'unsupported_mode' || result.reason === 'invalid_user_text' ? 400
         : result.reason === 'not_found' ? 404
         : result.reason === 'provider_not_configured' ? 422
           : 409;
@@ -32,6 +32,22 @@ export function registerGenerationRoutes(app: FastifyInstance, service: Generati
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
     });
+    const detachLifecycleListeners = () => {
+      request.raw.off('aborted', cancelGeneration);
+      reply.raw.off('close', handleClose);
+      reply.raw.off('finish', detachLifecycleListeners);
+    };
+    const cancelGeneration = () => {
+      service.cancel(result.generationId);
+      detachLifecycleListeners();
+    };
+    const handleClose = () => {
+      if (!reply.raw.writableEnded) cancelGeneration();
+      else detachLifecycleListeners();
+    };
+    request.raw.once('aborted', cancelGeneration);
+    reply.raw.once('close', handleClose);
+    reply.raw.once('finish', detachLifecycleListeners);
     return reply.send(Readable.from(encodeEvents(result.events)));
   });
 
