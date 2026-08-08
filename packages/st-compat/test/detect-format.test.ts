@@ -1,9 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_INSPECTION_LIMITS, inspectArtifact, recoverInspectionWorkspaces, type InspectionLimits } from '../src/index.js';
+import {
+  DEFAULT_INSPECTION_LIMITS,
+  DEFAULT_INSPECTION_WORKSPACE_ROOT,
+  inspectArtifact,
+  recoverInspectionWorkspaces,
+  type InspectionLimits,
+} from '../src/index.js';
 
 const encoder = new TextEncoder();
 
@@ -292,7 +298,7 @@ describe('artifact format detection', () => {
       const failed = await inspectArtifact(
         { fileName: 'managed-corrupt.charx', bytes: corrupt },
         DEFAULT_INSPECTION_LIMITS,
-        { workspaceRoot },
+        { workspaceRoot: `${workspaceRoot}${sep}` },
       );
       expect(failed.blockingErrors).toContainEqual(expect.objectContaining({ code: 'corrupt_archive' }));
       await expect(readdir(workspaceRoot)).resolves.toEqual([]);
@@ -301,8 +307,83 @@ describe('artifact format detection', () => {
     }
   });
 
+  it('blocks a linked workspace root without traversing or deleting its target', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-root-link-'));
+    const targetRoot = join(directory, 'link-target');
+    const workspaceRoot = join(directory, 'workspace-root');
+    const staleUuid = randomUUID();
+    const sentinel = join(targetRoot, staleUuid, 'preserve.txt');
+    try {
+      await mkdir(join(targetRoot, staleUuid), { recursive: true });
+      await writeFile(sentinel, 'preserve');
+      const staleTime = new Date(Date.now() - (15 * 60 * 1000) - 10_000);
+      await utimes(join(targetRoot, staleUuid), staleTime, staleTime);
+      await symlink(targetRoot, workspaceRoot, process.platform === 'win32' ? 'junction' : 'dir');
+
+      expect(() => recoverInspectionWorkspaces(`${workspaceRoot}${sep}`)).toThrow('trusted real directory');
+
+      const preview = await inspectArtifact(
+        {
+          fileName: 'linked-root.charx',
+          bytes: zip([{ name: 'card.json', data: encoder.encode('{"spec":"chara_card_v3","data":{"name":"Blocked"}}') }]),
+        },
+        DEFAULT_INSPECTION_LIMITS,
+        { workspaceRoot: `${workspaceRoot}${sep}` },
+      );
+
+      expect(preview.blockingErrors).toContainEqual(expect.objectContaining({
+        code: 'inspection_workspace_root_untrusted',
+        message: expect.stringContaining('trusted real directory'),
+      }));
+      await expect(readFile(sentinel, 'utf8')).resolves.toBe('preserve');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('never removes a UUID-named child link or its target during recovery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-child-link-'));
+    const workspaceRoot = join(directory, 'managed-workspaces');
+    const linkTarget = join(directory, 'link-target');
+    const linkedUuid = randomUUID();
+    const linkedWorkspace = join(workspaceRoot, linkedUuid);
+    const sentinel = join(linkTarget, 'preserve.txt');
+    try {
+      await Promise.all([mkdir(workspaceRoot), mkdir(linkTarget)]);
+      await writeFile(sentinel, 'preserve');
+      await symlink(linkTarget, linkedWorkspace, process.platform === 'win32' ? 'junction' : 'dir');
+
+      expect(() => recoverInspectionWorkspaces(workspaceRoot, Date.now(), 0)).not.toThrow();
+
+      expect((await lstat(linkedWorkspace)).isSymbolicLink()).toBe(true);
+      await expect(readFile(sentinel, 'utf8')).resolves.toBe('preserve');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || typeof process.getuid !== 'function')(
+    'repairs an owned permissive POSIX recovery root to owner-only permissions',
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-compat-root-mode-'));
+      const workspaceRoot = join(directory, 'managed-workspaces');
+      try {
+        await mkdir(workspaceRoot);
+        await chmod(workspaceRoot, 0o777);
+
+        expect(() => recoverInspectionWorkspaces(workspaceRoot)).not.toThrow();
+
+        const details = await stat(workspaceRoot);
+        expect(details.uid).toBe(process.getuid!());
+        expect(details.mode & 0o777).toBe(0o700);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('recovers only stale UUID children from the stable default workspace root before inspection', async () => {
-    const workspaceRoot = join(tmpdir(), 'tavernnext-st-compat-inspections');
+    const workspaceRoot = DEFAULT_INSPECTION_WORKSPACE_ROOT;
     const staleUuid = randomUUID();
     const freshUuid = randomUUID();
     const unrelatedDirectory = `unrelated-${randomUUID()}`;

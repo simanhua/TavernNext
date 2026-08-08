@@ -1,5 +1,8 @@
 import {
+  chmodSync,
   closeSync,
+  constants,
+  fchmodSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -8,11 +11,12 @@ import {
   readdirSync,
   readSync,
   rmSync,
+  type Stats,
   writeSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { tmpdir, userInfo } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { Unzip, UnzipInflate } from 'fflate';
 import { parse as parseYaml } from 'yaml';
 import extractPngChunks from 'png-chunks-extract';
@@ -30,9 +34,30 @@ import { diagnostic, type ImportDiagnostic } from './warnings.js';
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const zipSignature = Uint8Array.from([0x50, 0x4b]);
 const pngSignature = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const defaultInspectionWorkspaceRoot = join(tmpdir(), 'tavernnext-st-compat-inspections');
 const inspectionWorkspaceTtlMs = 15 * 60 * 1000;
-const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const privateDirectoryMode = 0o700;
+const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function inspectionWorkspaceUserComponent(): string {
+  let identity: string;
+  if (typeof process.getuid === 'function') {
+    identity = `uid:${process.getuid()}`;
+  } else {
+    try {
+      const user = userInfo();
+      identity = `user:${user.username}\0home:${user.homedir}`;
+    } catch {
+      identity = `platform:${process.platform}\0tmp:${tmpdir()}`;
+    }
+  }
+  return createHash('sha256').update(identity).digest('hex').slice(0, 24);
+}
+
+/** Stable per-user root so crash remnants remain discoverable without sharing a predictable cross-user directory. */
+export const DEFAULT_INSPECTION_WORKSPACE_ROOT = join(
+  tmpdir(),
+  `tavernnext-st-compat-inspections-${inspectionWorkspaceUserComponent()}`,
+);
 
 class InspectionFailure extends Error {
   constructor(readonly issue: ImportDiagnostic) {
@@ -62,8 +87,164 @@ interface ExtractedArchive {
 }
 
 export interface InspectionOptions {
-  /** Parent for UUID-owned disk workspaces. Inspection recovers stale children and removes its own child. */
+  /** Existing-parent path for UUID-owned disk workspaces. Inspection recovers stale children and removes its own child. */
   workspaceRoot?: string;
+}
+
+interface DirectoryIdentity {
+  dev: number;
+  ino: number;
+}
+
+function rootUntrusted(): InspectionFailure {
+  return new InspectionFailure(diagnostic(
+    'inspection_workspace_root_untrusted',
+    'Inspection workspace root must be a trusted real directory; links, reparse points, and unsafe access are blocked.',
+  ));
+}
+
+function rootUnavailable(): InspectionFailure {
+  return new InspectionFailure(diagnostic(
+    'inspection_workspace_root_unavailable',
+    'Inspection workspace root could not be created or opened safely.',
+  ));
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error !== null && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+function sameDirectory(left: DirectoryIdentity, right: DirectoryIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function assertRealDirectory(details: Stats): void {
+  if (!details.isDirectory() || details.isSymbolicLink()) throw rootUntrusted();
+}
+
+function lstatRoot(root: string): Stats {
+  try {
+    return lstatSync(root);
+  } catch {
+    throw rootUnavailable();
+  }
+}
+
+function validatePosixRoot(
+  root: string,
+  repairPermissions: boolean,
+  expected?: DirectoryIdentity,
+): DirectoryIdentity {
+  const beforeOpen = lstatRoot(root);
+  assertRealDirectory(beforeOpen);
+  if (typeof process.getuid !== 'function' || beforeOpen.uid !== process.getuid()) throw rootUntrusted();
+  if (expected !== undefined && !sameDirectory(beforeOpen, expected)) throw rootUntrusted();
+
+  let descriptor: number;
+  try {
+    descriptor = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch {
+    throw rootUntrusted();
+  }
+  try {
+    const opened = fstatSync(descriptor);
+    const afterOpen = lstatRoot(root);
+    assertRealDirectory(opened);
+    assertRealDirectory(afterOpen);
+    if (!sameDirectory(beforeOpen, opened) || !sameDirectory(opened, afterOpen)) throw rootUntrusted();
+    if (opened.uid !== process.getuid() || afterOpen.uid !== process.getuid()) throw rootUntrusted();
+
+    if ((opened.mode & 0o7777) !== privateDirectoryMode) {
+      if (!repairPermissions) throw rootUntrusted();
+      try {
+        fchmodSync(descriptor, privateDirectoryMode);
+      } catch {
+        throw rootUntrusted();
+      }
+    }
+
+    const secured = fstatSync(descriptor);
+    const finalPath = lstatRoot(root);
+    assertRealDirectory(secured);
+    assertRealDirectory(finalPath);
+    if (!sameDirectory(opened, secured) || !sameDirectory(secured, finalPath)) throw rootUntrusted();
+    if (secured.uid !== process.getuid() || finalPath.uid !== process.getuid()) throw rootUntrusted();
+    if ((secured.mode & 0o7777) !== privateDirectoryMode || (finalPath.mode & 0o7777) !== privateDirectoryMode) {
+      throw rootUntrusted();
+    }
+    return { dev: secured.dev, ino: secured.ino };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function validateWindowsRoot(
+  root: string,
+  repairPermissions: boolean,
+  expected?: DirectoryIdentity,
+): DirectoryIdentity {
+  const beforeRepair = lstatRoot(root);
+  assertRealDirectory(beforeRepair);
+  if (expected !== undefined && !sameDirectory(beforeRepair, expected)) throw rootUntrusted();
+
+  if (repairPermissions) {
+    try {
+      chmodSync(root, privateDirectoryMode);
+    } catch {
+      // Windows chmod does not express a private ACL; creation mode and inherited ACLs are best-effort only.
+    }
+  }
+
+  const afterRepair = lstatRoot(root);
+  assertRealDirectory(afterRepair);
+  if (!sameDirectory(beforeRepair, afterRepair)) throw rootUntrusted();
+  if (expected !== undefined && !sameDirectory(afterRepair, expected)) throw rootUntrusted();
+  return { dev: afterRepair.dev, ino: afterRepair.ino };
+}
+
+function validateInspectionWorkspaceRoot(
+  root: string,
+  repairPermissions: boolean,
+  expected?: DirectoryIdentity,
+): DirectoryIdentity {
+  return process.platform === 'win32'
+    ? validateWindowsRoot(root, repairPermissions, expected)
+    : validatePosixRoot(root, repairPermissions, expected);
+}
+
+function ensureInspectionWorkspaceRoot(root: string): DirectoryIdentity {
+  try {
+    mkdirSync(root, { mode: privateDirectoryMode });
+  } catch (error) {
+    if (errorCode(error) !== 'EEXIST') throw rootUnavailable();
+  }
+  return validateInspectionWorkspaceRoot(root, true);
+}
+
+function isOwnedRealDirectory(details: Stats): boolean {
+  if (!details.isDirectory() || details.isSymbolicLink()) return false;
+  return typeof process.getuid !== 'function' || details.uid === process.getuid();
+}
+
+function removeCanonicalWorkspace(
+  root: string,
+  name: string,
+  rootIdentity: DirectoryIdentity,
+  staleAt?: number,
+): void {
+  if (!uuidDirectory.test(name)) return;
+  const path = join(root, name);
+  validateInspectionWorkspaceRoot(root, false, rootIdentity);
+  const observed = lstatSync(path);
+  if (!isOwnedRealDirectory(observed) || (staleAt !== undefined && observed.mtimeMs > staleAt)) return;
+
+  validateInspectionWorkspaceRoot(root, false, rootIdentity);
+  const beforeRemoval = lstatSync(path);
+  if (!isOwnedRealDirectory(beforeRemoval) || !sameDirectory(observed, beforeRemoval)) return;
+  if (staleAt !== undefined && beforeRemoval.mtimeMs > staleAt) return;
+  rmSync(path, { recursive: true, force: true });
 }
 
 export function recoverInspectionWorkspaces(
@@ -71,21 +252,27 @@ export function recoverInspectionWorkspaces(
   now: number = Date.now(),
   ttl: number = inspectionWorkspaceTtlMs,
 ): void {
-  let entries;
+  const workspaceRoot = resolve(root);
   try {
-    entries = readdirSync(root, { withFileTypes: true });
+    lstatSync(workspaceRoot);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return;
+    throw rootUnavailable();
+  }
+  const rootIdentity = validateInspectionWorkspaceRoot(workspaceRoot, true);
+  let entries: string[];
+  try {
+    entries = readdirSync(workspaceRoot);
   } catch {
+    validateInspectionWorkspaceRoot(workspaceRoot, false, rootIdentity);
     return;
   }
-  for (const entry of entries) {
-    if (!uuidDirectory.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const path = join(root, entry.name);
+  validateInspectionWorkspaceRoot(workspaceRoot, false, rootIdentity);
+  for (const name of entries) {
     try {
-      const details = lstatSync(path);
-      if (details.isDirectory() && !details.isSymbolicLink() && details.mtimeMs + ttl <= now) {
-        rmSync(path, { recursive: true, force: true });
-      }
-    } catch {
+      removeCanonicalWorkspace(workspaceRoot, name, rootIdentity, now - ttl);
+    } catch (error) {
+      if (error instanceof InspectionFailure) throw error;
       // Recovery is opportunistic; another process may have removed or replaced the same child.
     }
   }
@@ -503,12 +690,21 @@ function parseArchiveJson(archive: ExtractedArchive, name: string, limits: Inspe
 }
 
 function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits, options: InspectionOptions): void {
-  const workspaceRoot = options.workspaceRoot ?? defaultInspectionWorkspaceRoot;
-  mkdirSync(workspaceRoot, { recursive: true });
+  const workspaceRoot = resolve(options.workspaceRoot ?? DEFAULT_INSPECTION_WORKSPACE_ROOT);
+  let rootIdentity = ensureInspectionWorkspaceRoot(workspaceRoot);
   recoverInspectionWorkspaces(workspaceRoot);
-  const workspace = join(workspaceRoot, randomUUID());
-  mkdirSync(workspace, { mode: 0o700 });
+  rootIdentity = validateInspectionWorkspaceRoot(workspaceRoot, false, rootIdentity);
+  const workspaceName = randomUUID();
+  const workspace = join(workspaceRoot, workspaceName);
+  mkdirSync(workspace, { mode: privateDirectoryMode });
   try {
+    const workspaceDetails = lstatSync(workspace);
+    if (
+      !isOwnedRealDirectory(workspaceDetails)
+      || (process.platform !== 'win32' && (workspaceDetails.mode & 0o777) !== privateDirectoryMode)
+    ) {
+      throw rootUntrusted();
+    }
     const archive = extractArchive(bytesSource(input.bytes), limits, { entries: 0, decompressedBytes: 0 }, 1, workspace);
     const previewEntries = archive.entries.slice(0, 256);
     const entryPreview = { entries: previewEntries, entryCount: archive.entries.length };
@@ -537,7 +733,11 @@ function inspectZip(preview: ImportPreview, input: SourceArtifact, limits: Inspe
     preview.normalizedPreview = entryPreview;
     preview.warnings.push(diagnostic('unrecognized_archive', 'ZIP is safe and valid but is not a recognized CharX or BYAF archive.'));
   } finally {
-    rmSync(workspace, { recursive: true, force: true });
+    try {
+      removeCanonicalWorkspace(workspaceRoot, workspaceName, rootIdentity);
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+    }
   }
 }
 
