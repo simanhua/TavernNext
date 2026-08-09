@@ -8,6 +8,7 @@ import { createDatabase, type TavernDatabase } from './db/client.js';
 import { migrateDatabase } from './db/migrate.js';
 import { createRepositories } from './db/repositories.js';
 import { registerCharacterRoutes } from './routes/characters.js';
+import { registerAvatarRoutes } from './routes/avatars.js';
 import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
@@ -19,6 +20,7 @@ import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
+import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
@@ -128,9 +130,11 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerImportRoutes(app, imports);
   registerChatImportExportRoutes(app, imports, repositories);
   registerCharacterRoutes(app, repositories);
+  registerAvatarRoutes(app, repositories, config.dataDir);
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
   registerPresetRoutes(app, repositories);
+  registerWorldbookRoutes(app, database, repositories);
   registerWorldbookExportRoutes(app, repositories);
   registerPersonaRoutes(app, repositories);
   registerProviderRoutes(app, repositories, {

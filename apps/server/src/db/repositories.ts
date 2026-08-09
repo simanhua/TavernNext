@@ -102,7 +102,7 @@ export type DeleteResult = { ok: true } | { ok: false; reason: 'not_found' | 'co
 export interface Repository<T extends MutableEntity> {
   create(input: CreateInput<T>): T;
   get(id: string): T | undefined;
-  list(): T[];
+  list(limit?: number): T[];
   update(id: string, expectedRevision: number, patch: Partial<CreateInput<T>>): UpdateResult<T>;
   delete(id: string, expectedRevision: number): DeleteResult;
 }
@@ -183,9 +183,10 @@ function createRepository<T extends MutableEntity>(database: TavernDatabase, def
       });
     },
     get,
-    list() {
-      return database.orm.select({ payload: table.payload }).from(table).orderBy(asc(table.createdAt), asc(table.id)).all()
-        .map((row) => definition.schema.parse(row.payload));
+    list(limit) {
+      const query = database.orm.select({ payload: table.payload }).from(table).orderBy(asc(table.createdAt), asc(table.id));
+      const rows = limit === undefined ? query.all() : query.limit(limit).all();
+      return rows.map((row) => definition.schema.parse(row.payload));
     },
     update(id, expectedRevision, patch) {
       return database.transaction(() => {

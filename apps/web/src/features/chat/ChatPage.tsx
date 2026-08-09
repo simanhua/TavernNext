@@ -6,6 +6,7 @@ import { PersonaQuickCreate } from '../personas/PersonaQuickCreate.js';
 import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
+import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
 
 export function ChatPage() {
@@ -248,7 +249,10 @@ export function ChatPage() {
       <section className="chat-main">
         <header className="chat-header">
           <h2>{detail.data?.conversation.title ?? 'New conversation'}</h2>
-          <span className={`generation-status status-${generation.status}`}>{generation.status}</span>
+          <div className="chat-header-actions">
+            {detail.data?.conversation === undefined ? null : <PromptPreviewDialog conversation={detail.data.conversation} userText={draft} />}
+            <span className={`generation-status status-${generation.status}`}>{generation.status}</span>
+          </div>
         </header>
         {detail.error ? <p role="alert">Unable to load this conversation.</p> : null}
         {createConversation.error ? <p role="alert">Unable to create conversation: {errorCode(createConversation.error)}</p> : null}

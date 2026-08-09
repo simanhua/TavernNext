@@ -92,6 +92,7 @@ let messageDeleteFailure = false;
 let conversationConfigurationPatches = 0;
 let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
+let promptPreviewRequests = 0;
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
 const encoder = new TextEncoder();
 const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -141,6 +142,25 @@ const server = setupServer(
       conversation: { ...conversation, revision: conversationRevision },
       messages,
     });
+  }),
+  http.post('/api/conversations/:id/prompt-preview', async ({ request }) => {
+    promptPreviewRequests += 1;
+    expect(await request.json()).toEqual({ conversationRevision, mode: 'normal', userText: 'Preview me' });
+    return HttpResponse.json({
+      snapshotId: '018f0000-0000-7000-8000-000000000119', kind: 'chat',
+      messages: [{ role: 'system', content: 'Preview from ChatPage' }], stop: [], tokenBreakdown: [], totalTokens: 3,
+      tokenizerDecision: { requestedId: 12, tokenizerId: 12, tokenizerName: 'Llama 3' },
+      worldbook: {
+        activated: [], excluded: [], timedState: { messageIndex: 0, sticky: [], cooldown: [] },
+        tokenUsage: { budget: 0, used: 0, overflowed: false }, recursionSteps: 1, warnings: [],
+      },
+      previousTimedState: { messageIndex: null, sticky: [], cooldown: [] }, warnings: [],
+      entityRevisions: {
+        conversation: { id: ids.conversation, revision: conversationRevision },
+        character: { id: ids.character, revision: 0 }, persona: { id: ids.persona, revision: 0 },
+        provider: { id: ids.provider, revision: 0 }, presets: [], globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
+      },
+    }, { status: 201 });
   }),
   http.post('/api/conversations/:id/generations', async ({ request }) => {
     if (generationNetworkFailure) return HttpResponse.error();
@@ -274,6 +294,7 @@ afterEach(() => {
   conversationConfigurationPatches = 0;
   requestedGenerationModes = [];
   activeVariantSwitches = [];
+  promptPreviewRequests = 0;
   activeStream = undefined;
   useChatUi.setState({ activeConversationId: null, draft: '' });
 });
@@ -291,6 +312,19 @@ function renderChatPage() {
 }
 
 describe('ChatPage', () => {
+  it('opens Prompt Preview for the configured conversation without starting generation', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: 'Preview me' });
+    renderChatPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Preview prompt' }));
+    expect(await screen.findByText('Preview from ChatPage')).not.toBeNull();
+    expect(promptPreviewRequests).toBe(1);
+    expect(generationCount).toBe(0);
+    expect(conversationRevision).toBe(0);
+  });
+
   it('persists per-message Swipe selection and exposes Regenerate and Continue without a user turn', async () => {
     const user = userEvent.setup();
     conversations = [conversation];
