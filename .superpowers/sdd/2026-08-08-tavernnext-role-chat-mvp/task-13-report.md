@@ -318,3 +318,97 @@ storage now have explicit fail-closed contracts.
 
 Fix Round 2 ships as `fix: harden immutable snapshot replay` for independent
 controller review. Task 13 retains its documented normal-turn-only boundary.
+
+## Fix Round 3
+
+All four remaining Important controller findings were reproduced and closed.
+Snapshot v2 now has an out-of-band trust anchor, aggregate reads stop before
+unbounded parsing/allocation, legacy Character migration is stable across
+restarts, and Chat Author's Note placement matches the pinned SillyTavern
+1.18.0 execution path.
+
+### Corrected execution contracts
+
+- Schema-v6 migration adds a nullable `integrity_tag` storage column without
+  changing snapshot payload schema v2. Existing untagged rows fail closed.
+  Every newly persisted snapshot is signed with HMAC-SHA-256 over a canonical
+  envelope binding the storage row identity and the entire persisted replay
+  artifact, including executable audit, history, tokenizer decision, exact
+  messages/text/stops/request, manifest, public hashes, and next timed state.
+  The tag is stored outside the mutable JSON payload and verified before any
+  payload schema parse or generation side effect.
+- The HMAC uses a 256-bit key injected by tests/deployments, supplied as a
+  strictly canonical base64 environment value, or generated once in the data
+  directory. The local fallback uses exclusive creation, exact-length reads,
+  no-follow/file-identity checks, owner-private POSIX modes, and a protected
+  current-user-only Windows DACL. The key is never hard-coded, derived from
+  snapshot data, stored in SQLite, or included in API/audit data.
+- Fully rehashed mutations of Character audit data, history, tokenizer
+  decisions, next timed state, and root messages plus compiled request now all
+  return `snapshot_invalid` before provider calls, message writes, or runtime-
+  state advancement. Untampered accepted snapshots remain self-contained and
+  replay without compiler, evaluator, tokenizer, or aggregate loading.
+- Global Worldbooks use the composite
+  `(is_global, created_at, id)` index and `LIMIT 65`; more than 64 fails before
+  payload parsing. Initial preview maps the cap to `aggregate_limit` (422),
+  while manifest revalidation maps it to `snapshot_stale` (409).
+- Conversation variants are read by a bounded, indexed parent-message scan,
+  then bounded per-message `(message_id, created_at, id)` scans sharing one
+  4,096-row budget. This avoids SQLite's join-wide temporary sort, stops at
+  `max + 1`, preserves stable message/variant tie-breaks, and rejects message
+  or variant overflow before parsing. Entry and message revalidation caps also
+  map to `snapshot_stale`.
+- Character schema-v5 depth-prompt backfill now appends
+  `character_depth_prompt_invalid` only when absent. Malformed
+  `compatibility.rawPayload.extensions` remains loadable, keeps revision 0,
+  receives exactly one warning, and produces byte-identical payloads across
+  repeated migrations/startups.
+- The selected Chat preset's `authorsNote` definition overrides relative versus
+  absolute injection, depth, order, and role while the actual configured note
+  replaces preset placeholder content. A relative note beside an absolute
+  `main` prompt inherits the main absolute role/depth/order and is spliced into
+  the same bucket, matching SillyTavern's before/after squash behavior.
+
+### Strict TDD and debugging evidence
+
+- Consolidated pre-production RED: 45 tests ran, 29 passed and 16 failed. The
+  failures covered stable migration, five fully rehashed attack classes,
+  secure key reuse, global/variant bounded reads and query plans, overflow
+  error mapping, preset Author's Note overrides, and absolute-main placement.
+- The first query implementation used one joined variant scan; an executable
+  `EXPLAIN QUERY PLAN` regression exposed `USE TEMP B-TREE FOR ORDER BY`.
+  Replacing it with the bounded parent/per-message strategy removed the sort
+  and kept allocation bounded without relaxing ordering or caps.
+- The Author's Note oracle initially omitted upstream in-chat execution at the
+  absolute main depth. The read-only harness was corrected to derive the
+  configured maximum injection depth from the pinned preset, after which both
+  the upstream oracle and local compiler agreed for absolute overrides and
+  relative-before-absolute-main cases.
+- A full-suite-only RED found the health test sharing the default `.tavernnext`
+  directory across workers, causing Windows ACL contention. The test now uses
+  a temporary database/data directory and injected test key; the isolated
+  production key lifecycle remained green and no production relaxation was
+  made.
+
+### Fresh verification
+
+- Consolidated Fix Round 3 gate: 45/45 tests passed.
+- Repository/migration gate: 16/16 tests passed, including idempotent malformed
+  migration, bounded pre-parse failures, stable ordering, required indexes,
+  and query plans with no temporary variant/global sort.
+- Snapshot integrity/key gate: 6/6 tests passed, including all five rehashed
+  attacks and stable owner-private key reuse.
+- Chat compiler plus executable SillyTavern 1.18.0 oracle: 21/21 tests passed.
+- Affected server/compiler gate: 64/64 tests passed.
+- Oracle-enabled full suite: 666 tests passed and one existing platform-
+  conditional test was skipped (667 total).
+- `npm run typecheck` passed. From a confirmed source-only tree with zero
+  generated workspace files, `npm run build` passed the TypeScript graph and
+  Vite transformed 182 modules; generated outputs were cleaned back to zero.
+- `git diff --check` passed. Static self-review found no mutable in-row trust
+  anchor, replay recompile, unbounded aggregate parse, provider/state side
+  effect before integrity verification, secret-bearing key material, or
+  generated workspace output.
+
+Fix Round 3 ships as `fix: anchor immutable snapshot replay` for independent
+controller review. Task 13 retains its documented normal-turn-only boundary.

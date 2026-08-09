@@ -12,6 +12,7 @@ import { createApp, type CreateAppOptions } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories, type Repositories } from '../src/db/repositories.js';
+import { TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 
 export const integrationIds = {
   character: '018f1000-0000-7000-8000-000000000101',
@@ -105,13 +106,15 @@ export async function createPromptIntegrationContext(options: {
   directories.push(directory);
   const database = createDatabase(join(directory, 'tavernnext.sqlite'));
   migrateDatabase(database);
-  const repositories = createRepositories(database);
+  const snapshotIntegrityKey = options.appOptions?.snapshotIntegrityKey ?? TEST_SNAPSHOT_INTEGRITY_KEY;
+  const repositories = createRepositories(database, { snapshotIntegrityKey });
   databasesByRepository.set(repositories, database);
   const provider = options.provider ?? capturedProvider();
   const app = createApp({
     database,
     providerClientFactory: () => provider.client,
     tokenizerRuntime: options.tokenizerRuntime ?? unitTokenizerRuntime(),
+    snapshotIntegrityKey,
     ...options.appOptions,
   });
   apps.push(app);

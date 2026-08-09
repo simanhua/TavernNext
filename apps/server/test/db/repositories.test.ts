@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/client.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { createRepositories } from '../../src/db/repositories.js';
+import { TEST_REPOSITORY_OPTIONS } from '../test-integrity-key.js';
 
 const testDirectories: string[] = [];
 
@@ -17,7 +18,7 @@ async function createTestRepositories() {
   testDirectories.push(directory);
   const database = createDatabase(join(directory, 'tavernnext.sqlite'));
   migrateDatabase(database);
-  return { database, repositories: createRepositories(database) };
+  return { database, repositories: createRepositories(database, TEST_REPOSITORY_OPTIONS) };
 }
 
 function createLegacySchema(database: ReturnType<typeof createDatabase>): void {
@@ -63,7 +64,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 5 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 6 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -107,7 +108,7 @@ describe('SQLite repositories', () => {
     const path = join(directory, 'tavernnext.sqlite');
     const database = createDatabase(path);
     migrateDatabase(database);
-    const repositories = createRepositories(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
     const character = repositories.characters.create({
       id: '018f0000-0000-7000-8000-000000000012',
       name: 'Persistent', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
@@ -120,7 +121,7 @@ describe('SQLite repositories', () => {
 
     const reopened = createDatabase(path);
     migrateDatabase(reopened);
-    expect(createRepositories(reopened).characters.get(character.id)).toMatchObject({
+    expect(createRepositories(reopened, TEST_REPOSITORY_OPTIONS).characters.get(character.id)).toMatchObject({
       name: 'Persistent Prime', revision: 1, compatibility: { rawPayload: { retained: true } },
     });
   });
@@ -129,7 +130,7 @@ describe('SQLite repositories', () => {
     const { database } = await createTestRepositories();
 
     database.transaction(() => {
-      const repositories = createRepositories(database);
+      const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
       repositories.characters.create({
         id: '018f0000-0000-7000-8000-000000000013', name: 'Committed', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
       });
@@ -139,7 +140,7 @@ describe('SQLite repositories', () => {
     });
 
     expect(() => database.transaction(() => {
-      const repositories = createRepositories(database);
+      const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
       repositories.characters.create({
         id: '018f0000-0000-7000-8000-000000000015', name: 'Rolled back', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
       });
@@ -148,7 +149,7 @@ describe('SQLite repositories', () => {
       });
     })).toThrow(/FOREIGN KEY constraint failed/);
 
-    const repositories = createRepositories(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
     expect(repositories.characters.get('018f0000-0000-7000-8000-000000000013')).toMatchObject({ name: 'Committed' });
     expect(repositories.personas.get('018f0000-0000-7000-8000-000000000014')).toMatchObject({ name: 'Committed persona' });
     expect(repositories.characters.get('018f0000-0000-7000-8000-000000000015')).toBeUndefined();
@@ -218,6 +219,9 @@ describe('SQLite repositories', () => {
     const lowVariant = repositories.messageVariants.create({
       id: '018f0000-0000-7000-8000-000000000065', messageId: highMessage.id, content: 'low', status: 'completed',
     });
+    const lowMessageVariant = repositories.messageVariants.create({
+      id: '018f0000-0000-7000-8000-000000000071', messageId: lowMessage.id, content: 'low-message', status: 'completed',
+    });
     const book = repositories.worldbooks.create({
       id: '018f0000-0000-7000-8000-000000000066', name: 'Stable entries',
     });
@@ -232,7 +236,7 @@ describe('SQLite repositories', () => {
     const tied = '2026-08-08T00:00:00.000Z';
     database.sqlite.exec(`
       UPDATE messages SET created_at = '${tied}' WHERE conversation_id = '${conversation.id}';
-      UPDATE message_variants SET created_at = '${tied}' WHERE message_id = '${highMessage.id}';
+      UPDATE message_variants SET created_at = '${tied}' WHERE message_id IN ('${highMessage.id}', '${lowMessage.id}');
       UPDATE worldbook_entries SET created_at = '${tied}' WHERE worldbook_id = '${book.id}';
     `);
 
@@ -241,7 +245,7 @@ describe('SQLite repositories', () => {
     expect(repositories.messageVariants.listByMessageId(highMessage.id).map((row) => row.id))
       .toEqual([lowVariant.id, highVariant.id]);
     expect(repositories.messageVariants.listByConversationId(conversation.id).map((row) => row.id))
-      .toEqual([lowVariant.id, highVariant.id]);
+      .toEqual([lowMessageVariant.id, lowVariant.id, highVariant.id]);
     expect(repositories.worldbookEntries.listByWorldbookId(book.id).map((row) => row.id))
       .toEqual([lowEntry.id, highEntry.id]);
 
@@ -251,20 +255,13 @@ describe('SQLite repositories', () => {
     const variantPlan = database.sqlite.prepare(
       'EXPLAIN QUERY PLAN SELECT payload FROM message_variants WHERE message_id = ? ORDER BY created_at, id LIMIT 4097',
     ).all(highMessage.id) as Array<{ detail: string }>;
-    const conversationVariantPlan = database.sqlite.prepare(`
-      EXPLAIN QUERY PLAN
-      SELECT message_variants.payload FROM message_variants
-      INNER JOIN messages ON message_variants.message_id = messages.id
-      WHERE messages.conversation_id = ?
-      ORDER BY message_variants.created_at, message_variants.id LIMIT 4097
-    `).all(conversation.id) as Array<{ detail: string }>;
     const entryPlan = database.sqlite.prepare(
       'EXPLAIN QUERY PLAN SELECT payload FROM worldbook_entries WHERE worldbook_id = ? ORDER BY created_at, id LIMIT 4097',
     ).all(book.id) as Array<{ detail: string }>;
     expect(messagePlan.some(({ detail }) => detail.includes('messages_conversation_created_id_idx'))).toBe(true);
     expect(variantPlan.some(({ detail }) => detail.includes('message_variants_message_created_id_idx'))).toBe(true);
-    expect(conversationVariantPlan.some(({ detail }) => detail.includes('messages_conversation'))).toBe(true);
-    expect(conversationVariantPlan.some(({ detail }) => detail.includes('message_variants_message'))).toBe(true);
+    expect(messagePlan.some(({ detail }) => detail.includes('USE TEMP B-TREE'))).toBe(false);
+    expect(variantPlan.some(({ detail }) => detail.includes('USE TEMP B-TREE'))).toBe(false);
     expect(entryPlan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_created_id_idx'))).toBe(true);
   });
 
@@ -325,9 +322,24 @@ describe('SQLite repositories', () => {
       expect.objectContaining({ name: 'Global lore', isGlobal: true }),
     ]);
     const plan = database.sqlite.prepare(
-      'EXPLAIN QUERY PLAN SELECT payload FROM worldbooks WHERE is_global = 1',
+      'EXPLAIN QUERY PLAN SELECT payload FROM worldbooks WHERE is_global = 1 ORDER BY created_at, id LIMIT 65',
     ).all() as Array<{ detail: string }>;
-    expect(plan.some(({ detail }) => detail.includes('worldbooks_is_global_idx'))).toBe(true);
+    expect(plan.some(({ detail }) => detail.includes('worldbooks_global_created_id_idx'))).toBe(true);
+    expect(plan.some(({ detail }) => detail.includes('USE TEMP B-TREE'))).toBe(false);
+  });
+
+  it('caps global Worldbook reads with LIMIT max+1 before parsing rows', async () => {
+    const { database, repositories } = await createTestRepositories();
+    const digits = '(VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9))';
+    database.sqlite.exec(`
+      WITH seq(n) AS (
+        SELECT a.column1 + 10*b.column1 FROM ${digits} a, ${digits} b LIMIT 65
+      ) INSERT INTO worldbooks (id, revision, created_at, updated_at, payload, name, is_global)
+        SELECT printf('overflow-global-%03d', n), 0, '2026-08-08T00:00:00.000Z',
+          '2026-08-08T00:00:00.000Z', '{}', printf('overflow-%03d', n), 1 FROM seq;
+    `);
+
+    expect(() => repositories.worldbooks.listGlobal()).toThrow('global_worldbook_relation_limit');
   });
 
   it('continues to read legacy entries with negative depth values', async () => {
@@ -411,8 +423,15 @@ describe('SQLite repositories', () => {
     insert('message_variants', variant, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'message_id', 'status'], [variant.id, '0', createdAt, createdAt, JSON.stringify(variant), variant.messageId, variant.status]);
 
     migrateDatabase(database);
+    const firstMalformedRow = database.sqlite.prepare('SELECT revision, payload FROM characters WHERE id = ?')
+      .get(ids.malformedCharacter);
     migrateDatabase(database);
-    const repositories = createRepositories(database);
+    migrateDatabase(database);
+    const repeatedMalformedRow = database.sqlite.prepare('SELECT revision, payload FROM characters WHERE id = ?')
+      .get(ids.malformedCharacter);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+
+    expect(repeatedMalformedRow).toEqual(firstMalformedRow);
 
     expect(repositories.characters.get(ids.character)).toMatchObject({
       revision: 2,
@@ -421,7 +440,8 @@ describe('SQLite repositories', () => {
     });
     expect(repositories.characters.get(ids.malformedCharacter)).toMatchObject({
       depthPrompt: '',
-      compatibility: { compatWarnings: expect.arrayContaining(['character_depth_prompt_invalid']) },
+      revision: 0,
+      compatibility: { compatWarnings: ['character_depth_prompt_invalid'] },
     });
     expect(repositories.messages.get(ids.message)).toMatchObject({ activeVariantId: ids.variant });
     expect(database.sqlite.prepare('PRAGMA table_info(messages)').all().map((column) => column.name)).toContain('active_variant_id');
@@ -438,11 +458,13 @@ describe('SQLite repositories', () => {
     expect(database.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).toEqual(expect.arrayContaining([
       'provider_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id',
     ]));
+    expect(database.sqlite.prepare('PRAGMA table_info(generation_snapshots)').all().map((column) => column.name))
+      .toContain('integrity_tag');
     expect(repositories.worldbooks.get(ids.worldbook)).toMatchObject({ isGlobal: false });
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 4096, maxResponseTokens: 512,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 5 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 6 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

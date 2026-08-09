@@ -26,6 +26,7 @@ import { createCharacterImportHandler } from './services/character-import-handle
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
+import { injectedSnapshotIntegrityKey, loadSnapshotIntegrityKey } from './snapshot-integrity-key.js';
 
 export interface CreateAppOptions {
   config?: ServerConfig;
@@ -39,6 +40,7 @@ export interface CreateAppOptions {
   importRemoveStage?: (path: string) => void;
   importCleanupIntervalMs?: number;
   importLimits?: ImportStagingLimits;
+  snapshotIntegrityKey?: Uint8Array;
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -53,9 +55,12 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   });
 
   const config = options.config ?? loadConfig();
+  const snapshotIntegrityKey = options.snapshotIntegrityKey === undefined
+    ? loadSnapshotIntegrityKey(config.dataDir)
+    : injectedSnapshotIntegrityKey(options.snapshotIntegrityKey);
   const database = options.database ?? createDatabase(config.databasePath);
   migrateDatabase(database);
-  const repositories = createRepositories(database);
+  const repositories = createRepositories(database, { snapshotIntegrityKey });
   const imports = createImportService({
     dataDir: config.dataDir,
     database,

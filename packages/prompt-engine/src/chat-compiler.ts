@@ -293,6 +293,11 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     return { entry, prompt, fixedReason };
   });
   const placements = input.worldInfoPlacements;
+  const authorNoteDefinition = byIdentifier.get('authorsNote');
+  const authorNoteIsAbsolute = placements !== undefined && (
+    authorNoteDefinition?.injection_position === 1
+    || (authorNoteDefinition?.injection_position === undefined && placements.authorNote.position === 1)
+  );
   if (placements !== undefined) {
     const hasMarker = (identifier: string) => executions.some(({ prompt, fixedReason }) => (
       fixedReason === undefined && prompt?.marker === true && prompt.identifier === identifier
@@ -302,8 +307,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       && ['charDescription', 'charPersonality', 'scenario'].includes(prompt.identifier)
     ));
     const configuredAuthorNote = authorNoteText(placements.authorNote);
-    const hasRelativeMain = executions.some(({ prompt, fixedReason }) => (
-      fixedReason === undefined && prompt?.identifier === 'main' && prompt.injection_position !== 1
+    const hasMainTarget = executions.some(({ prompt, fixedReason }) => (
+      fixedReason === undefined && prompt?.identifier === 'main'
     ));
     const missingTarget = (
       (placements.beforeCharacter !== '' && !hasMarker('worldInfoBefore') && !hasCharacterTarget)
@@ -311,8 +316,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       || ([...placements.examplesBefore, ...placements.examplesAfter].some(({ content }) => content !== '')
         && !hasMarker('dialogueExamples'))
       || (placements.atDepth.some(({ content }) => content !== '') && !hasMarker('chatHistory'))
-      || (configuredAuthorNote !== '' && placements.authorNote.position === 1 && !hasMarker('chatHistory'))
-      || (configuredAuthorNote !== '' && placements.authorNote.position !== 1 && !hasRelativeMain)
+      || (configuredAuthorNote !== '' && authorNoteIsAbsolute && !hasMarker('chatHistory'))
+      || (configuredAuthorNote !== '' && !authorNoteIsAbsolute && !hasMainTarget)
     );
     if (missingTarget) {
       return compilationFailure({
@@ -333,6 +338,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
   const absolutePrompts: AbsolutePrompt[] = [];
   for (const { entry, prompt, fixedReason } of executions) {
     if (prompt?.injection_position !== 1 || fixedReason !== undefined) continue;
+    if (prompt.identifier === 'authorsNote') continue;
     const promptRole = role(prompt.role);
     if (promptRole === undefined) continue;
     const source = `prompt:${entry.identifier}`;
@@ -348,16 +354,52 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       order: Number.isFinite(prompt.injection_order) ? prompt.injection_order! : 100,
     });
   }
+  let authorNoteMappedToAbsoluteMain = false;
   if (placements !== undefined) {
     const authorNote = authorNoteText(placements.authorNote);
-    if (authorNote !== '' && placements.authorNote.position === 1) {
+    const authorNoteSource = [
+      ...placements.authorNote.before.map(({ source }) => source),
+      'author-note',
+      ...placements.authorNote.after.map(({ source }) => source),
+    ].join('+');
+    const overriddenAuthorNoteRole = authorNoteDefinition?.role === undefined
+      ? undefined
+      : role(authorNoteDefinition.role);
+    const authorNoteRole = overriddenAuthorNoteRole ?? placements.authorNote.role;
+    const configuredAuthorNoteDepth = authorNoteDefinition?.injection_depth;
+    const authorNoteDepth = typeof configuredAuthorNoteDepth === 'number'
+      && Number.isSafeInteger(configuredAuthorNoteDepth) && configuredAuthorNoteDepth >= 0
+      ? configuredAuthorNoteDepth
+      : placements.authorNote.depth;
+    const configuredAuthorNoteOrder = authorNoteDefinition?.injection_order;
+    const authorNoteOrder = typeof configuredAuthorNoteOrder === 'number' && Number.isFinite(configuredAuthorNoteOrder)
+      ? configuredAuthorNoteOrder
+      : 100;
+    if (authorNote !== '' && authorNoteIsAbsolute) {
       absolutePrompts.push({
-        source: [...placements.authorNote.before, ...placements.authorNote.after].map(({ source }) => source).join('+'),
-        role: placements.authorNote.role,
+        source: authorNoteSource,
+        role: authorNoteRole,
         content: expand(authorNote, 'worldbook:author-note'),
-        depth: placements.authorNote.depth,
-        order: 100,
+        depth: authorNoteDepth,
+        order: authorNoteOrder,
       });
+    } else if (authorNote !== '' && placements.authorNote.position !== 1) {
+      const absoluteMainIndex = absolutePrompts.findIndex(({ source }) => source === 'prompt:main');
+      if (absoluteMainIndex >= 0) {
+        const absoluteMain = absolutePrompts[absoluteMainIndex]!;
+        const authorNotePrompt: AbsolutePrompt = {
+          source: authorNoteSource,
+          role: absoluteMain.role,
+          content: expand(authorNote, 'worldbook:author-note'),
+          depth: absoluteMain.depth,
+          order: absoluteMain.order,
+        };
+        const insertionIndex = placements.authorNote.position === 0
+          ? absoluteMainIndex + 1
+          : absoluteMainIndex;
+        absolutePrompts.splice(insertionIndex, 0, authorNotePrompt);
+        authorNoteMappedToAbsoluteMain = true;
+      }
     }
     for (const item of placements.atDepth) {
       if (item.content === '') continue;
@@ -386,7 +428,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
   for (const [executionIndex, execution] of executions.entries()) {
     const relativeAuthorNote = placements === undefined ? '' : authorNoteText(placements.authorNote);
     if (placements !== undefined && execution.fixedReason === undefined
-      && execution.prompt?.identifier === 'main' && placements.authorNote.position === 2
+      && execution.prompt?.identifier === 'main' && !authorNoteIsAbsolute
+      && !authorNoteMappedToAbsoluteMain && placements.authorNote.position === 2
       && relativeAuthorNote !== '') {
       add(
         [...placements.authorNote.before.map(({ source }) => source), 'author-note', ...placements.authorNote.after.map(({ source }) => source)].join('+'),
@@ -419,6 +462,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     const expandEnabled = (value: string, valueSource: string, values?: Readonly<Record<string, string>>) => fixedReason === undefined
       ? expand(value, valueSource, values)
       : value;
+
+    if (prompt.identifier === 'authorsNote') continue;
 
     if (prompt.injection_position === 1) {
       if (fixedReason !== undefined) {
@@ -541,7 +586,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     const expanded = expandEnabled(content, source, { original: prompt.content ?? '' });
     add(source, expanded === '' ? [] : [{ role: promptRole, content: expanded }], 'immutable', fixedReason);
     if (placements !== undefined && fixedReason === undefined
-      && prompt.identifier === 'main' && placements.authorNote.position === 0
+      && prompt.identifier === 'main' && !authorNoteIsAbsolute
+      && !authorNoteMappedToAbsoluteMain && placements.authorNote.position === 0
       && relativeAuthorNote !== '') {
       add(
         [...placements.authorNote.before.map(({ source: itemSource }) => itemSource), 'author-note', ...placements.authorNote.after.map(({ source: itemSource }) => itemSource)].join('+'),

@@ -9,6 +9,7 @@ import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import type { ImportHandler } from '../src/services/import-service.js';
+import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 
 const encoder = new TextEncoder();
 const sourceAssociationKey = '__tavernnextPresetSource';
@@ -26,10 +27,11 @@ async function context(options: Partial<NonNullable<Parameters<typeof createApp>
   directories.push(directory);
   const database = createDatabase(join(directory, 'test.sqlite'));
   migrateDatabase(database);
-  const repositories = createRepositories(database);
+  const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
   const app = createApp({
     ...options,
     database,
+    snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
     config: { host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'test.sqlite') },
   });
   apps.push(app);

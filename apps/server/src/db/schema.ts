@@ -26,7 +26,10 @@ export const worldbooks = sqliteTable('worldbooks', {
   ...entityColumns,
   name: text('name').notNull(),
   isGlobal: integer('is_global', { mode: 'boolean' }).notNull(),
-}, (table) => [index('worldbooks_is_global_idx').on(table.isGlobal)]);
+}, (table) => [
+  index('worldbooks_is_global_idx').on(table.isGlobal),
+  index('worldbooks_global_created_id_idx').on(table.isGlobal, table.createdAt, table.id),
+]);
 export const worldbookEntries = sqliteTable('worldbook_entries', {
   ...entityColumns,
   worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),
@@ -91,6 +94,7 @@ export const importArtifacts = sqliteTable('import_artifacts', {
 export const generationSnapshots = sqliteTable('generation_snapshots', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  integrityTag: text('integrity_tag'),
 }, (table) => [index('generation_snapshots_conversation_id_idx').on(table.conversationId)]);
 export const worldbookRuntimeStates = sqliteTable('worldbook_runtime_states', {
   ...entityColumns,

@@ -46,6 +46,46 @@ describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 prompt pa
     }
   });
 
+  it('matches upstream Author Note preset overrides and relative placement beside an absolute main prompt', async () => {
+    const oracle = await loadSillyTavern118Oracle(oracleRoot!);
+    const roles = ['system', 'user', 'assistant'] as const;
+
+    for (const oracleCase of oracle.authorNoteCases) {
+      const result = await compileChatPrompt({
+        preset: preset('chat', oracleCase.settings, { name: oracleCase.label }),
+        character: character(SILLY_TAVERN_118_FIXTURE.character),
+        persona: persona(SILLY_TAVERN_118_FIXTURE.persona),
+        worldInfoBefore: SILLY_TAVERN_118_FIXTURE.worldInfoBefore,
+        worldInfoAfter: SILLY_TAVERN_118_FIXTURE.worldInfoAfter,
+        history: SILLY_TAVERN_118_FIXTURE.chatHistory,
+        tokenizer: unitTokenizer(),
+        generationType: 'normal',
+        maxPromptTokens: 1_000,
+        stop: [],
+        worldInfoPlacements: {
+          beforeCharacter: SILLY_TAVERN_118_FIXTURE.worldInfoBefore,
+          afterCharacter: SILLY_TAVERN_118_FIXTURE.worldInfoAfter,
+          examplesBefore: [],
+          examplesAfter: [],
+          authorNote: {
+            before: [],
+            content: oracleCase.authorNote.content,
+            after: [],
+            position: oracleCase.authorNote.position,
+            depth: oracleCase.authorNote.depth,
+            role: roles[oracleCase.authorNote.role],
+          },
+          atDepth: [],
+          outlets: {},
+        },
+      });
+
+      expect(result.kind, oracleCase.label).toBe('chat');
+      if (result.kind !== 'chat') throw new Error(`${oracleCase.label}: ${result.message}`);
+      expect(result.messages, oracleCase.label).toEqual(oracleCase.messages);
+    }
+  });
+
   it('matches complete ChatML Text prompts and stops for normal and multi-message continuation', async () => {
     const oracle = await loadSillyTavern118Oracle(oracleRoot!);
     expect(oracle.textCases.map((value) => value.label)).toEqual([

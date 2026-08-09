@@ -1,6 +1,6 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
@@ -14,12 +14,13 @@ const tables = `
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
-  CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
 `;
 
 const indexes = `
   CREATE INDEX IF NOT EXISTS worldbooks_is_global_idx ON worldbooks(is_global);
+  CREATE INDEX IF NOT EXISTS worldbooks_global_created_id_idx ON worldbooks(is_global, created_at, id);
   CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_created_id_idx ON worldbook_entries(worldbook_id, created_at, id);
   CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_id_idx ON worldbook_entries(worldbook_id);
   CREATE INDEX IF NOT EXISTS conversations_character_id_idx ON conversations(character_id);
@@ -88,6 +89,7 @@ function addPromptSnapshotColumns(database: TavernDatabase): void {
   addColumn(database, 'conversations', 'context_preset_id', 'TEXT REFERENCES presets(id)');
   addColumn(database, 'conversations', 'instruct_preset_id', 'TEXT REFERENCES presets(id)');
   addColumn(database, 'conversations', 'system_preset_id', 'TEXT REFERENCES presets(id)');
+  addColumn(database, 'generation_snapshots', 'integrity_tag', 'TEXT');
   database.sqlite.exec(`
     UPDATE worldbooks SET is_global = CASE
       WHEN json_valid(payload) AND json_extract(payload, '$.isGlobal') = 1 THEN 1 ELSE 0 END;
@@ -124,13 +126,28 @@ function backfillCharacterDepthPrompt(database: TavernDatabase): void {
       payload,
       '$.compatibility.compatWarnings',
       json_insert(
-        COALESCE(json_extract(payload, '$.compatibility.compatWarnings'), json('[]')),
+        CASE
+          WHEN json_type(payload, '$.compatibility.compatWarnings') = 'array'
+            THEN json_extract(payload, '$.compatibility.compatWarnings')
+          ELSE json('[]')
+        END,
         '$[#]',
         'character_depth_prompt_invalid'
       )
     )
     WHERE json_valid(payload)
       AND json_type(payload, '$.compatibility') = 'object'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(
+          CASE
+            WHEN json_type(payload, '$.compatibility.compatWarnings') = 'array'
+              THEN json_extract(payload, '$.compatibility.compatWarnings')
+            ELSE json('[]')
+          END
+        )
+        WHERE json_each.value = 'character_depth_prompt_invalid'
+      )
       AND (
         (json_type(payload, '$.extensions') IS NOT NULL
           AND (

@@ -15,6 +15,7 @@ import {
   type StagedImportPreview,
 } from '../src/services/import-service.js';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
+import { TEST_REPOSITORY_OPTIONS } from './test-integrity-key.js';
 
 const encoder = new TextEncoder();
 const directories: string[] = [];
@@ -35,7 +36,7 @@ async function fixture() {
   directories.push(directory);
   const database = createDatabase(join(directory, 'test.sqlite'));
   migrateDatabase(database);
-  return { directory, database, repositories: createRepositories(database) };
+  return { directory, database, repositories: createRepositories(database, TEST_REPOSITORY_OPTIONS) };
 }
 
 function multipart(fileName: string, bytes: Uint8Array, mediaType = 'application/json') {

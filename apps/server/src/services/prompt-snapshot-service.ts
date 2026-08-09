@@ -321,6 +321,16 @@ function boundedRelation<T>(read: () => T): T {
   }
 }
 
+function revalidatedRelation<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (error instanceof RelationshipLimitError
+      || (error instanceof PromptSnapshotError && error.code === 'aggregate_limit')) stale();
+    throw error;
+  }
+}
+
 function appendCompatibilityWarnings(
   target: PromptWarning[],
   value: { compatibility?: { compatWarnings: string[] } },
@@ -486,7 +496,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     }
     books.push(loaded);
   };
-  const globalBooks = repositories.worldbooks.listGlobal();
+  const globalBooks = boundedRelation(() => repositories.worldbooks.listGlobal());
   for (const row of globalBooks) addPersisted(row, 'global');
   if (character.worldbookId !== undefined) addPersisted(repositories.worldbooks.get(character.worldbookId), 'character');
   const embedded = stableEmbeddedBook(character);
@@ -587,7 +597,7 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     exact(current, preset);
     if (current?.kind !== preset.kind) stale();
   }
-  const currentGlobals = repositories.worldbooks.listGlobal().map(ref);
+  const currentGlobals = revalidatedRelation(() => repositories.worldbooks.listGlobal()).map(ref);
   if (!sameCanonical(currentGlobals, manifest.globalWorldbooks)) stale();
   const expectedWorldbooks: Array<{ id: string; source: WorldbookRevisionRef['source'] }> = [];
   const seenWorldbooks = new Set<string>();
@@ -605,10 +615,13 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   )) stale();
   for (const book of manifest.worldbooks) {
     exact(repositories.worldbooks.get(book.id), book);
-    const entries = boundedRelation(() => repositories.worldbookEntries.listByWorldbookId(book.id)).map(ref);
+    const entries = revalidatedRelation(() => repositories.worldbookEntries.listByWorldbookId(book.id)).map(ref);
     if (!sameCanonical(entries, book.entries)) stale();
   }
-  if (!sameCanonical(currentMessageManifest(repositories, manifest.conversation.id), manifest.messages)) stale();
+  if (!sameCanonical(
+    revalidatedRelation(() => currentMessageManifest(repositories, manifest.conversation.id)),
+    manifest.messages,
+  )) stale();
   const runtimeState = runtimeStateFor(repositories, manifest.conversation.id);
   if (manifest.runtimeState === null) {
     if (runtimeState !== undefined) stale();
@@ -1505,12 +1518,14 @@ export function createPromptSnapshotService(options: {
       });
     },
     async acceptExisting(input) {
-      let snapshot: ReturnType<typeof repositories.generationSnapshots.get>;
-      try {
-        snapshot = repositories.generationSnapshots.get(input.snapshotId);
-      } catch {
-        throw new PromptSnapshotError('snapshot_invalid');
-      }
+      const getStoredSnapshot = () => {
+        try {
+          return repositories.generationSnapshots.get(input.snapshotId);
+        } catch {
+          throw new PromptSnapshotError('snapshot_invalid');
+        }
+      };
+      const snapshot = getStoredSnapshot();
       if (snapshot === undefined) throw new PromptSnapshotError('not_found');
       let payload: PromptSnapshotPayload;
       try {
@@ -1521,7 +1536,7 @@ export function createPromptSnapshotService(options: {
       }
       assertSnapshotInput(payload, input);
       return database.transaction(() => {
-        const current = repositories.generationSnapshots.get(input.snapshotId);
+        const current = getStoredSnapshot();
         if (current === undefined) throw new PromptSnapshotError('not_found');
         let currentPayload: PromptSnapshotPayload;
         try {

@@ -26,6 +26,22 @@ function runtimeStates(repositories: Repositories): Array<{ conversationId: stri
   return repositories.worldbookRuntimeStates.list();
 }
 
+function createSignedPayload(
+  repositories: Repositories,
+  sourceSnapshotId: string,
+  id: string,
+  payload: Record<string, unknown>,
+) {
+  const source = repositories.generationSnapshots.get(sourceSnapshotId);
+  if (source === undefined) throw new Error('Missing source snapshot fixture.');
+  return repositories.generationSnapshots.create({
+    id,
+    conversationId: source.conversationId,
+    conversationRevision: source.conversationRevision,
+    payload: structuredClone(payload),
+  });
+}
+
 describe('generation persistence and snapshot trust boundary', () => {
   it('rolls back terminal completion when timed-state persistence faults in the same durable transaction', async () => {
     const provider = capturedProvider([
@@ -75,35 +91,38 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(tampered.json()).toEqual({ error: 'snapshot_invalid' });
 
     const unsupportedPreview = (await requestPreview(app)).json();
-    const unsupportedRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(unsupportedPreview.snapshotId);
-    const unsupportedEntity = JSON.parse(String(unsupportedRow?.payload));
-    unsupportedEntity.payload.schemaVersion = 999;
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(unsupportedEntity), unsupportedPreview.snapshotId);
-    const unsupported = await requestGeneration(app, unsupportedPreview.snapshotId);
+    const unsupportedPayload = structuredClone(unsupportedPreview) as Record<string, unknown>;
+    delete unsupportedPayload.snapshotId;
+    unsupportedPayload.schemaVersion = 999;
+    const unsupportedSnapshot = createSignedPayload(
+      repositories, unsupportedPreview.snapshotId,
+      '018f1000-0000-7000-8000-000000000301', unsupportedPayload,
+    );
+    const unsupported = await requestGeneration(app, unsupportedSnapshot.id);
     expect(unsupported.statusCode).toBe(409);
     expect(unsupported.json()).toEqual({ error: 'snapshot_unsupported' });
 
     const legacyPreview = (await requestPreview(app)).json();
-    const legacyRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(legacyPreview.snapshotId);
-    const legacyEntity = JSON.parse(String(legacyRow?.payload));
-    legacyEntity.payload.schemaVersion = 1;
-    const { payloadHash: ignoredLegacyHash, ...legacyWithoutHash } = legacyEntity.payload;
+    const legacyPayload = structuredClone(legacyPreview) as Record<string, unknown>;
+    delete legacyPayload.snapshotId;
+    legacyPayload.schemaVersion = 1;
+    const { payloadHash: ignoredLegacyHash, ...legacyWithoutHash } = legacyPayload;
     void ignoredLegacyHash;
-    legacyEntity.payload.payloadHash = canonicalHash(legacyWithoutHash);
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(legacyEntity), legacyPreview.snapshotId);
-    const legacy = await requestGeneration(app, legacyPreview.snapshotId);
+    legacyPayload.payloadHash = canonicalHash(legacyWithoutHash);
+    const legacySnapshot = createSignedPayload(
+      repositories, legacyPreview.snapshotId,
+      '018f1000-0000-7000-8000-000000000302', legacyPayload,
+    );
+    const legacy = await requestGeneration(app, legacySnapshot.id);
     expect(legacy.statusCode).toBe(409);
     expect(legacy.json()).toEqual({ error: 'snapshot_unsupported' });
 
     const malformedPreview = (await requestPreview(app)).json();
-    const malformedRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(malformedPreview.snapshotId);
-    const malformedEntity = JSON.parse(String(malformedRow?.payload));
-    malformedEntity.payload = { schemaVersion: 2 };
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(malformedEntity), malformedPreview.snapshotId);
-    const malformed = await requestGeneration(app, malformedPreview.snapshotId);
+    const malformedSnapshot = createSignedPayload(
+      repositories, malformedPreview.snapshotId,
+      '018f1000-0000-7000-8000-000000000303', { schemaVersion: 2 },
+    );
+    const malformed = await requestGeneration(app, malformedSnapshot.id);
     expect(malformed.statusCode).toBe(409);
     expect(malformed.json()).toEqual({ error: 'snapshot_invalid' });
 
@@ -187,16 +206,18 @@ describe('generation persistence and snapshot trust boundary', () => {
     const { app, database, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, 'chat');
     const preview = (await requestPreview(app)).json();
-    const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(preview.snapshotId);
-    const entity = JSON.parse(String(row?.payload));
-    mutate(entity.payload);
-    const { payloadHash: ignoredPayloadHash, ...withoutPayloadHash } = entity.payload;
+    const payload = structuredClone(preview) as Record<string, unknown>;
+    delete payload.snapshotId;
+    mutate(payload);
+    const { payloadHash: ignoredPayloadHash, ...withoutPayloadHash } = payload;
     void ignoredPayloadHash;
-    entity.payload.payloadHash = canonicalHash(withoutPayloadHash);
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(entity), preview.snapshotId);
+    payload.payloadHash = canonicalHash(withoutPayloadHash);
+    const signed = createSignedPayload(
+      repositories, preview.snapshotId,
+      `018f1000-0000-7000-8000-00000000031${String(_label.length % 10)}`, payload,
+    );
 
-    const response = await requestGeneration(app, preview.snapshotId);
+    const response = await requestGeneration(app, signed.id);
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: 'snapshot_invalid' });
@@ -211,22 +232,24 @@ describe('generation persistence and snapshot trust boundary', () => {
     const { app, database, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, 'chat');
     const preview = (await requestPreview(app)).json();
-    const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(preview.snapshotId);
-    const entity = JSON.parse(String(row?.payload));
-    const manifest = entity.payload.entityRevisions as Record<string, unknown>;
+    const payload = structuredClone(preview) as Record<string, unknown>;
+    delete payload.snapshotId;
+    const manifest = payload.entityRevisions as Record<string, unknown>;
     const books = manifest.worldbooks as Array<Record<string, unknown>>;
     const omitted = books.shift()!;
-    const executable = entity.payload.executable as Record<string, unknown>;
+    const executable = payload.executable as Record<string, unknown>;
     executable.entityRevisions = structuredClone(manifest);
     executable.worldbooks = (executable.worldbooks as Array<Record<string, unknown>>)
       .filter((book) => book.source === 'embedded' || book.id !== omitted.id);
-    const { payloadHash: ignoredPayloadHash, ...withoutPayloadHash } = entity.payload;
+    const { payloadHash: ignoredPayloadHash, ...withoutPayloadHash } = payload;
     void ignoredPayloadHash;
-    entity.payload.payloadHash = canonicalHash(withoutPayloadHash);
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(entity), preview.snapshotId);
+    payload.payloadHash = canonicalHash(withoutPayloadHash);
+    const signed = createSignedPayload(
+      repositories, preview.snapshotId,
+      '018f1000-0000-7000-8000-000000000320', payload,
+    );
 
-    const response = await requestGeneration(app, preview.snapshotId);
+    const response = await requestGeneration(app, signed.id);
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: 'snapshot_stale' });

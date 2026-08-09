@@ -500,6 +500,85 @@ describe('Chat preset compiler', () => {
     expect(side === 'before' ? noteIndex : mainIndex).toBeLessThan(side === 'before' ? mainIndex : noteIndex);
   });
 
+  it('applies the selected authorsNote absolute position, depth, order, and role overrides', async () => {
+    const result = await compileChatPrompt({
+      character: character({ description: '', personality: '', scenario: '' }),
+      persona: persona({ description: '' }), maxPromptTokens: 1_000, tokenizer: unitTokenizer(),
+      preset: preset('chat', {
+        prompts: [
+          { identifier: 'main', role: 'system', content: 'MAIN' },
+          { identifier: 'authorsNote', role: 'assistant', content: 'PRESET-CONTENT-IS-REPLACED', injection_position: 1, injection_depth: 0, injection_order: 250 },
+          { identifier: 'low', role: 'assistant', content: 'LOW-ORDER', injection_position: 1, injection_depth: 0, injection_order: 100 },
+          { identifier: 'chatHistory', marker: true },
+        ],
+        prompt_order: [{ character_id: 100001, order: [
+          { identifier: 'main', enabled: true },
+          { identifier: 'low', enabled: true },
+          { identifier: 'chatHistory', enabled: true },
+        ] }],
+        new_chat_prompt: '',
+      }),
+      history: [
+        { id: 'old', role: 'user', content: 'OLD' },
+        { id: 'new', role: 'assistant', content: 'NEW' },
+      ],
+      worldInfoPlacements: {
+        beforeCharacter: '', afterCharacter: '', examplesBefore: [], examplesAfter: [], atDepth: [], outlets: {},
+        authorNote: {
+          before: [{ source: 'wi:an-top', content: 'AN-TOP' }], content: 'ACTUAL-NOTE', after: [],
+          position: 0, depth: 37, role: 'user',
+        },
+      },
+    });
+
+    expect(result.kind).toBe('chat');
+    if (result.kind !== 'chat') throw new Error(result.message);
+    expect(result.messages.slice(-4)).toEqual([
+      { role: 'user', content: 'OLD' },
+      { role: 'assistant', content: 'NEW' },
+      { role: 'assistant', content: 'LOW-ORDER' },
+      { role: 'assistant', content: 'AN-TOP\nACTUAL-NOTE' },
+    ]);
+    expect(JSON.stringify(result.messages)).not.toContain('PRESET-CONTENT-IS-REPLACED');
+  });
+
+  it('maps a relative Author Note beside an absolute main prompt in the same absolute bucket', async () => {
+    const result = await compileChatPrompt({
+      character: character({ description: '', personality: '', scenario: '' }),
+      persona: persona({ description: '' }), maxPromptTokens: 1_000, tokenizer: unitTokenizer(),
+      preset: preset('chat', {
+        prompts: [
+          { identifier: 'main', role: 'assistant', content: 'ABSOLUTE-MAIN', injection_position: 1, injection_depth: 1, injection_order: 300 },
+          { identifier: 'chatHistory', marker: true },
+        ],
+        prompt_order: [{ character_id: 100001, order: [
+          { identifier: 'main', enabled: true },
+          { identifier: 'chatHistory', enabled: true },
+        ] }],
+        new_chat_prompt: '',
+      }),
+      history: [
+        { id: 'old', role: 'user', content: 'OLD' },
+        { id: 'new', role: 'assistant', content: 'NEW' },
+      ],
+      worldInfoPlacements: {
+        beforeCharacter: '', afterCharacter: '', examplesBefore: [], examplesAfter: [], atDepth: [], outlets: {},
+        authorNote: {
+          before: [{ source: 'wi:an-top', content: 'AN-TOP' }], content: 'ACTUAL-NOTE', after: [],
+          position: 2, depth: 37, role: 'user',
+        },
+      },
+    });
+
+    expect(result.kind).toBe('chat');
+    if (result.kind !== 'chat') throw new Error(result.message);
+    expect(result.messages).toEqual([
+      { role: 'user', content: 'OLD' },
+      { role: 'assistant', content: 'AN-TOP\nACTUAL-NOTE\nABSOLUTE-MAIN' },
+      { role: 'assistant', content: 'NEW' },
+    ]);
+  });
+
   it('fails closed when an activated Worldbook example has no executable dialogue-example target', async () => {
     const result = await compileChatPrompt({
       character: character(), persona: persona(), maxPromptTokens: 100, tokenizer: unitTokenizer(), history: [],

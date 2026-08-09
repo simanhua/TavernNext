@@ -43,6 +43,10 @@ interface OracleChatCase {
   messages: PromptChatMessage[];
 }
 
+interface OracleAuthorNoteCase extends OracleChatCase {
+  authorNote: { content: string; position: 0 | 1 | 2; depth: number; role: 0 | 1 | 2 };
+}
+
 interface OracleTextCase {
   label: string;
   generationType: 'normal' | 'continue';
@@ -65,6 +69,7 @@ export interface SillyTavern118Oracle {
     };
   };
   chatCases: OracleChatCase[];
+  authorNoteCases: OracleAuthorNoteCase[];
   textSettings: Record<string, unknown>;
   contextSettings: Record<string, unknown>;
   instructSettings: Record<string, unknown>;
@@ -341,6 +346,12 @@ function chatRuntime(root: string, settings: Record<string, unknown>): ChatRunti
     pin_examples: false,
     console_log_prompts: false,
   };
+  const maximumConfiguredDepth = Math.max(0, ...(Array.isArray(settings.prompts) ? settings.prompts : [])
+    .flatMap((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
+      const depth = Reflect.get(value, 'injection_depth');
+      return Number.isSafeInteger(depth) && Number(depth) >= 0 ? [Number(depth)] : [];
+    }));
   const promptRuntime = evaluateDeclarations<{
     PromptManager: UpstreamPromptManagerConstructor;
     Prompt: new(value?: Record<string, unknown>) => unknown;
@@ -412,7 +423,7 @@ function chatRuntime(root: string, settings: Record<string, unknown>): ChatRunti
       getMediaIndex: () => undefined,
       getGroupNames: () => [],
       character_names_behavior: { NONE: -1, DEFAULT: 0, COMPLETION: 1, CONTENT: 2 },
-      getExtensionPromptMaxDepth: () => 0,
+      getExtensionPromptMaxDepth: () => maximumConfiguredDepth,
       getExtensionPrompt: async () => '',
       ToolManager: {
         canPerformToolCalls: () => false,
@@ -438,7 +449,11 @@ function chatRuntime(root: string, settings: Record<string, unknown>): ChatRunti
   return runtime;
 }
 
-async function chatMessages(root: string, settings: Record<string, unknown>): Promise<PromptChatMessage[]> {
+async function chatMessages(
+  root: string,
+  settings: Record<string, unknown>,
+  extensionPrompts: Record<string, unknown> = {},
+): Promise<PromptChatMessage[]> {
   const runtime = chatRuntime(root, settings);
   const rawHistory = SILLY_TAVERN_118_FIXTURE.chatHistory.map((message) => ({
     is_user: message.role === 'user',
@@ -459,7 +474,7 @@ async function chatMessages(root: string, settings: Record<string, unknown>): Pr
     type: 'normal',
     quietPrompt: '',
     quietImage: '',
-    extensionPrompts: {},
+    extensionPrompts,
     cyclePrompt: '',
     systemPromptOverride: '',
     jailbreakPromptOverride: '',
@@ -467,6 +482,33 @@ async function chatMessages(root: string, settings: Record<string, unknown>): Pr
     messageExamples,
   }, false);
   return chat;
+}
+
+function withAuthorNoteOverrides(
+  settings: Record<string, unknown>,
+  options: { absoluteAuthorNote?: boolean; absoluteMain?: boolean },
+): Record<string, unknown> {
+  const result = structuredClone(settings);
+  const prompts = Array.isArray(result.prompts) ? result.prompts as Array<Record<string, unknown>> : [];
+  const main = prompts.find((prompt) => prompt.identifier === 'main');
+  if (options.absoluteMain && main !== undefined) {
+    main.role = 'assistant';
+    main.injection_position = 1;
+    main.injection_depth = 1;
+    main.injection_order = 300;
+  }
+  if (options.absoluteAuthorNote) {
+    prompts.push({
+      identifier: 'authorsNote', role: 'assistant', content: '', system_prompt: true,
+      injection_position: 1, injection_depth: 0, injection_order: 250,
+    });
+    for (const value of Array.isArray(result.prompt_order) ? result.prompt_order : []) {
+      const group = value as Record<string, unknown>;
+      if (String(group.character_id) !== '100001' || !Array.isArray(group.order)) continue;
+      group.order.splice(1, 0, { identifier: 'authorsNote', enabled: true });
+    }
+  }
+  return result;
 }
 
 function withChatOverrides(
@@ -735,6 +777,29 @@ export async function loadSillyTavern118Oracle(root: string): Promise<SillyTaver
   for (const variant of chatVariants) {
     chatCases.push({ ...variant, messages: await chatMessages(root, variant.settings) });
   }
+  const authorNoteCases: OracleAuthorNoteCase[] = [];
+  const absoluteAuthorNote = {
+    label: 'Author Note preset absolute override',
+    settings: withAuthorNoteOverrides(chatSettings, { absoluteAuthorNote: true }),
+    authorNote: { content: 'ORACLE-AUTHOR-NOTE', position: 1 as const, depth: 37, role: 1 as const },
+  };
+  authorNoteCases.push({
+    ...absoluteAuthorNote,
+    messages: await chatMessages(root, absoluteAuthorNote.settings, {
+      '2_floating_prompt': { value: absoluteAuthorNote.authorNote.content, position: 1, depth: 37, role: 1 },
+    }),
+  });
+  const absoluteMain = {
+    label: 'Relative Author Note beside absolute main',
+    settings: withAuthorNoteOverrides(chatSettings, { absoluteMain: true }),
+    authorNote: { content: 'ORACLE-AUTHOR-NOTE', position: 2 as const, depth: 37, role: 1 as const },
+  };
+  authorNoteCases.push({
+    ...absoluteMain,
+    messages: await chatMessages(root, absoluteMain.settings, {
+      '2_floating_prompt': { value: absoluteMain.authorNote.content, position: 2, depth: 37, role: 1 },
+    }),
+  });
   const normalHistory = [SILLY_TAVERN_118_FIXTURE.chatHistory[0]];
   const continuationHistory = [...SILLY_TAVERN_118_FIXTURE.chatHistory];
   const assistantFirstHistory = [SILLY_TAVERN_118_FIXTURE.chatHistory[1]];
@@ -758,6 +823,7 @@ export async function loadSillyTavern118Oracle(root: string): Promise<SillyTaver
       },
     },
     chatCases,
+    authorNoteCases,
     textSettings,
     contextSettings,
     instructSettings,

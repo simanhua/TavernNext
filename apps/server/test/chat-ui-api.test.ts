@@ -7,6 +7,7 @@ import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
+import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 
 const ids = {
   character: '018f0000-0000-7000-8000-000000000101',
@@ -41,9 +42,10 @@ describe('chat UI API bindings', () => {
     directories.push(directory);
     const database = createDatabase(join(directory, 'test.sqlite'));
     migrateDatabase(database);
-    const repositories = createRepositories(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
     const app = createApp({
       database,
+      snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
       config: { host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'test.sqlite') },
     });
     apps.push(app);

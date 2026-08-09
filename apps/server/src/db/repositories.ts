@@ -43,20 +43,34 @@ import {
   worldbooks,
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
+import {
+  SNAPSHOT_INTEGRITY_KEY_BYTES,
+  createSnapshotIntegrityTag,
+  verifySnapshotIntegrityTag,
+} from './snapshot-integrity.js';
 
 export const MAX_MESSAGES_PER_CONVERSATION = 2048;
 export const MAX_VARIANTS_PER_RELATION = 4096;
 export const MAX_ENTRIES_PER_WORLDBOOK = 4096;
+export const MAX_GLOBAL_WORLDBOOKS = 64;
 
 export type RelationshipLimitCode =
   | 'message_relation_limit'
   | 'variant_relation_limit'
-  | 'worldbook_entry_relation_limit';
+  | 'worldbook_entry_relation_limit'
+  | 'global_worldbook_relation_limit';
 
 export class RelationshipLimitError extends Error {
   constructor(readonly code: RelationshipLimitCode) {
     super(code);
     this.name = 'RelationshipLimitError';
+  }
+}
+
+export class SnapshotIntegrityError extends Error {
+  constructor() {
+    super('snapshot_integrity_invalid');
+    this.name = 'SnapshotIntegrityError';
   }
 }
 
@@ -207,14 +221,6 @@ function createRepository<T extends MutableEntity>(database: TavernDatabase, def
   };
 }
 
-function immutableRepository<T extends MutableEntity>(repository: Repository<T>): ImmutableRepository<T> {
-  return {
-    create: repository.create,
-    get: repository.get,
-    list: repository.list,
-  };
-}
-
 function syncConversationWorldbooks(database: TavernDatabase, conversation: Conversation): void {
   database.orm.delete(conversationWorldbooks).where(eq(conversationWorldbooks.conversationId, conversation.id)).run();
   if (conversation.worldbookIds.length > 0) {
@@ -355,13 +361,30 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
         .all());
     },
     listByConversationId(conversationId) {
-      return decode(database.orm.select({ payload: messageVariants.payload })
-        .from(messageVariants)
-        .innerJoin(messages, eq(messageVariants.messageId, messages.id))
+      const parentRows = database.orm.select({ id: messages.id })
+        .from(messages)
         .where(eq(messages.conversationId, conversationId))
-        .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
-        .limit(MAX_VARIANTS_PER_RELATION + 1)
-        .all());
+        .orderBy(asc(messages.createdAt), asc(messages.id))
+        .limit(MAX_MESSAGES_PER_CONVERSATION + 1)
+        .all();
+      if (parentRows.length > MAX_MESSAGES_PER_CONVERSATION) {
+        throw new RelationshipLimitError('variant_relation_limit');
+      }
+      const rows: Array<{ payload: unknown }> = [];
+      for (const parent of parentRows) {
+        const remaining = MAX_VARIANTS_PER_RELATION + 1 - rows.length;
+        const related = database.orm.select({ payload: messageVariants.payload })
+          .from(messageVariants)
+          .where(eq(messageVariants.messageId, parent.id))
+          .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+          .limit(remaining)
+          .all();
+        rows.push(...related);
+        if (rows.length > MAX_VARIANTS_PER_RELATION) {
+          throw new RelationshipLimitError('variant_relation_limit');
+        }
+      }
+      return decode(rows);
     },
   };
 }
@@ -375,12 +398,112 @@ function createWorldbookRepository(database: TavernDatabase): WorldbookRepositor
   return {
     ...base,
     listGlobal() {
-      return database.orm.select({ payload: worldbooks.payload })
+      const rows = database.orm.select({ payload: worldbooks.payload })
         .from(worldbooks)
         .where(eq(worldbooks.isGlobal, true))
         .orderBy(asc(worldbooks.createdAt), asc(worldbooks.id))
+        .limit(MAX_GLOBAL_WORLDBOOKS + 1)
+        .all();
+      if (rows.length > MAX_GLOBAL_WORLDBOOKS) {
+        throw new RelationshipLimitError('global_worldbook_relation_limit');
+      }
+      return rows.map((row) => WorldbookSchema.parse(row.payload));
+    },
+  };
+}
+
+interface SnapshotStorageRow {
+  id: string;
+  conversationId: string;
+  integrityTag: string | null;
+  payload: unknown;
+}
+
+function snapshotConversationRevision(artifact: unknown): unknown {
+  if (typeof artifact !== 'object' || artifact === null || Array.isArray(artifact)) return null;
+  return Reflect.get(artifact, 'conversationRevision');
+}
+
+function snapshotEnvelope(row: Pick<SnapshotStorageRow, 'id' | 'conversationId' | 'payload'>) {
+  return {
+    snapshotId: row.id,
+    conversationId: row.conversationId,
+    conversationRevision: snapshotConversationRevision(row.payload),
+    artifact: row.payload,
+  };
+}
+
+function persistedJson(value: unknown): unknown {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new SnapshotIntegrityError();
+  return JSON.parse(encoded);
+}
+
+function createGenerationSnapshotRepository(
+  database: TavernDatabase,
+  snapshotIntegrityKey: Uint8Array,
+): ImmutableRepository<GenerationSnapshot> {
+  if (snapshotIntegrityKey.byteLength !== SNAPSHOT_INTEGRITY_KEY_BYTES) {
+    throw new Error(`Snapshot integrity key must be exactly ${SNAPSHOT_INTEGRITY_KEY_BYTES} bytes.`);
+  }
+  const key = Uint8Array.from(snapshotIntegrityKey);
+  const decode = (row: SnapshotStorageRow | undefined): GenerationSnapshot | undefined => {
+    if (row === undefined) return undefined;
+    if (!verifySnapshotIntegrityTag(key, snapshotEnvelope(row), row.integrityTag)) {
+      throw new SnapshotIntegrityError();
+    }
+    const parsed = GenerationSnapshotSchema.safeParse(row.payload);
+    if (!parsed.success
+      || parsed.data.id !== row.id
+      || parsed.data.conversationId !== row.conversationId) {
+      throw new SnapshotIntegrityError();
+    }
+    return parsed.data;
+  };
+
+  return {
+    create(input) {
+      const now = new Date().toISOString();
+      const value = GenerationSnapshotSchema.parse(persistedJson({
+        ...input,
+        revision: 0,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      const row = { id: value.id, conversationId: value.conversationId, payload: value };
+      const integrityTag = createSnapshotIntegrityTag(key, snapshotEnvelope(row));
+      return database.transaction(() => {
+        database.orm.insert(generationSnapshots).values({
+          id: value.id,
+          revision: value.revision,
+          createdAt: value.createdAt,
+          updatedAt: value.updatedAt,
+          payload: value,
+          conversationId: value.conversationId,
+          integrityTag,
+        }).run();
+        database.persist();
+        return value;
+      });
+    },
+    get(id) {
+      return decode(database.orm.select({
+        id: generationSnapshots.id,
+        conversationId: generationSnapshots.conversationId,
+        integrityTag: generationSnapshots.integrityTag,
+        payload: generationSnapshots.payload,
+      }).from(generationSnapshots).where(eq(generationSnapshots.id, id)).get());
+    },
+    list() {
+      return database.orm.select({
+        id: generationSnapshots.id,
+        conversationId: generationSnapshots.conversationId,
+        integrityTag: generationSnapshots.integrityTag,
+        payload: generationSnapshots.payload,
+      }).from(generationSnapshots)
+        .orderBy(asc(generationSnapshots.createdAt), asc(generationSnapshots.id))
         .all()
-        .map((row) => WorldbookSchema.parse(row.payload));
+        .map((row) => decode(row)!);
     },
   };
 }
@@ -418,7 +541,11 @@ export interface Repositories {
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
 }
 
-export function createRepositories(database: TavernDatabase): Repositories {
+export interface CreateRepositoriesOptions {
+  snapshotIntegrityKey: Uint8Array;
+}
+
+export function createRepositories(database: TavernDatabase, options: CreateRepositoriesOptions): Repositories {
   return {
     characters: createRepository(database, { table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     personas: createPersonaRepository(database),
@@ -440,7 +567,7 @@ export function createRepositories(database: TavernDatabase): Repositories {
     messageVariants: createMessageVariantRepository(database),
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
-    generationSnapshots: immutableRepository(createRepository(database, { table: entityTable(generationSnapshots), schema: GenerationSnapshotSchema, toRow: (value) => ({ ...baseRow(value), conversationId: value.conversationId }) })),
+    generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
   };
 }
