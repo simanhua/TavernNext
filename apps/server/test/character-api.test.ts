@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync } from 'fflate';
+import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
@@ -182,12 +183,16 @@ describe('typed Character import and export API', () => {
     expect(committed.statusCode).toBe(201);
     const id = committed.json().entityId as string;
 
-    const currentAvatarPath = 'assets/current/avatar.svg';
-    await mkdir(join(directory, 'assets', 'current'), { recursive: true });
-    await writeFile(
-      join(directory, ...currentAvatarPath.split('/')),
-      '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"><rect width="2" height="3" fill="#123456"/></svg>',
-    );
+    const imported = repositories.characters.get(id)!;
+    expect(imported.avatarPath).toMatch(new RegExp(`^assets/avatars/characters/${id}/[0-9a-f-]+\\.gif$`));
+    const importedAvatar = await app.inject({ method: 'GET', url: `/api/characters/${id}/avatar` });
+    expect(importedAvatar.statusCode).toBe(200);
+    expect(importedAvatar.rawPayload).toEqual(Buffer.from(sourceAvatar));
+
+    const currentAvatarPath = `assets/avatars/characters/${id}/018f0000-0000-7000-8000-000000000999.png`;
+    await writeFile(join(directory, ...currentAvatarPath.split('/')), await sharp({
+      create: { width: 2, height: 3, channels: 4, background: '#123456' },
+    }).png().toBuffer());
     expect(repositories.characters.update(id, 0, { avatarPath: currentAvatarPath })).toMatchObject({ ok: true });
 
     const exported = await app.inject({ method: 'GET', url: `/api/characters/${id}/export?format=png` });
@@ -195,6 +200,31 @@ describe('typed Character import and export API', () => {
     expect(exported.rawPayload.subarray(12, 16).toString('ascii')).toBe('IHDR');
     expect(exported.rawPayload.readUInt32BE(16)).toBe(2);
     expect(exported.rawPayload.readUInt32BE(20)).toBe(3);
+  });
+
+  it('copies a standalone PNG Character Card into its entity-bound avatar directory', async () => {
+    const { app, directory, repositories } = await context();
+    const { committed: sourceCommit } = await inspectAndCommit(app);
+    const sourceId = sourceCommit.json().entityId as string;
+    const sourceCard = await app.inject({ method: 'GET', url: `/api/characters/${sourceId}/export?format=png` });
+    expect(sourceCard.statusCode).toBe(200);
+
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('standalone-card.png', sourceCard.rawPayload, 'image/png'),
+    });
+    expect(inspected.statusCode).toBe(200);
+    const imported = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+    expect(imported.statusCode).toBe(201);
+    const importedId = imported.json().entityId as string;
+    const row = repositories.characters.get(importedId)!;
+
+    expect(row.avatarPath).toMatch(new RegExp(`^assets/avatars/characters/${importedId}/[0-9a-f-]+\\.png$`));
+    expect(await readFile(join(directory, ...row.avatarPath!.split('/')))).toEqual(sourceCard.rawPayload);
+    const avatar = await app.inject({ method: 'GET', url: `/api/characters/${importedId}/avatar` });
+    expect(avatar.statusCode).toBe(200);
+    expect(avatar.rawPayload).toEqual(sourceCard.rawPayload);
   });
 
   it('serves Unicode filenames over a real HTTP listener with an ASCII fallback and RFC 5987 filename', async () => {

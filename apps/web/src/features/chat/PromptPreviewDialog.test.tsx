@@ -24,8 +24,8 @@ let generationCalls = 0;
 
 const timed = {
   messageIndex: 3,
-  sticky: [{ entryKey: 'book:42', fingerprint: 'abc', start: 2, end: 4, protected: true }],
-  cooldown: [],
+  sticky: [{ entryKey: 'book:42', fingerprint: 'must-not-render-fingerprint', hmac: 'must-not-render-hmac', start: 2, end: 4, protected: true }],
+  cooldown: [{ entryKey: 'book:43', fingerprint: 'must-not-render-fingerprint', start: 4, end: 7, protected: false }],
 };
 
 const server = setupServer(
@@ -55,7 +55,11 @@ const server = setupServer(
         tokenUsage: { budget: 64, used: 6, overflowed: false }, recursionSteps: 1,
         warnings: [{ code: 'unsafe_regex', message: 'One regex was excluded.' }],
       },
-      previousTimedState: { messageIndex: 2, sticky: [], cooldown: [] },
+      previousTimedState: {
+        messageIndex: 2,
+        sticky: [{ entryKey: 'book:40', fingerprint: 'must-not-render-fingerprint', start: 0, end: 2, protected: false }],
+        cooldown: [{ entryKey: 'book:41', hmac: 'must-not-render-hmac', start: 1, end: 3, protected: true }],
+      },
       warnings: [{ code: 'compatibility_warning', message: 'A future field is preserved.', source: 'character' }],
       entityRevisions: {
         conversation: { id: conversation.id, revision: 7 },
@@ -106,15 +110,25 @@ describe('PromptPreviewDialog', () => {
     expect(within(dialog).getByText('Archive Lore · UID 42')).not.toBeNull();
     expect(within(dialog).getByText('book:99 · budget')).not.toBeNull();
     expect(within(dialog).getByText('Previous timed state · message 2')).not.toBeNull();
-    expect(within(dialog).getByText('Previous: 0 sticky · 0 cooldown')).not.toBeNull();
+    expect(within(dialog).getByText('Previous: 1 sticky · 1 cooldown')).not.toBeNull();
     expect(within(dialog).getByText('Next timed state · message 3')).not.toBeNull();
-    expect(within(dialog).getByText('Next: 1 sticky · 0 cooldown')).not.toBeNull();
+    expect(within(dialog).getByText('Next: 1 sticky · 1 cooldown')).not.toBeNull();
+    expect(within(dialog).getByRole('list', { name: 'Previous sticky entries' }).textContent).toContain('book:40');
+    expect(within(dialog).getByRole('list', { name: 'Previous sticky entries' }).textContent).toContain('start 0 · end 2 · protected no');
+    expect(within(dialog).getByRole('list', { name: 'Previous cooldown entries' }).textContent).toContain('book:41');
+    expect(within(dialog).getByRole('list', { name: 'Previous cooldown entries' }).textContent).toContain('start 1 · end 3 · protected yes');
+    expect(within(dialog).getByRole('list', { name: 'Next sticky entries' }).textContent).toContain('book:42');
+    expect(within(dialog).getByRole('list', { name: 'Next sticky entries' }).textContent).toContain('start 2 · end 4 · protected yes');
+    expect(within(dialog).getByRole('list', { name: 'Next cooldown entries' }).textContent).toContain('book:43');
+    expect(within(dialog).getByRole('list', { name: 'Next cooldown entries' }).textContent).toContain('start 4 · end 7 · protected no');
     expect(within(dialog).getByText('A future field is preserved.')).not.toBeNull();
     expect(within(dialog).getByText('Conversation r7 · Character r2 · Persona r1 · Provider r0')).not.toBeNull();
     expect(within(dialog).getByText('Presets: chat r4')).not.toBeNull();
     expect(within(dialog).getByText('0 global Worldbooks · 0 linked Worldbooks · 0 messages')).not.toBeNull();
     expect(within(dialog).queryByText('must-not-render-payload-hash')).toBeNull();
     expect(within(dialog).queryByText('must-not-render-secret')).toBeNull();
+    expect(dialog.textContent).not.toContain('must-not-render-fingerprint');
+    expect(dialog.textContent).not.toContain('must-not-render-hmac');
     expect(generationCalls).toBe(0);
 
     await user.click(within(dialog).getByRole('button', { name: 'Close Prompt Preview' }));

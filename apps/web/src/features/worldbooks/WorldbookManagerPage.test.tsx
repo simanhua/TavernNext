@@ -40,18 +40,22 @@ let detail: WorldbookView = {
 let entryPatchCalls = 0;
 let reorderCalls = 0;
 let conflictOnce = false;
+let bookPatches: Array<{ revision: number; patch: Record<string, unknown> }> = [];
+let entryPatches: Array<{ revision: number; patch: Record<string, unknown> }> = [];
 
 const server = setupServer(
   http.get('/api/worldbooks', () => HttpResponse.json([{ id: bookId, revision: detail.revision, name: detail.name, enabled: detail.enabled, entryCount: detail.entries.length }])),
   http.get('/api/worldbooks/:id', () => HttpResponse.json(detail)),
   http.patch('/api/worldbooks/:bookId', async ({ request }) => {
-    const body = await request.json() as { revision: number; patch: Partial<typeof detail> };
-    detail = { ...detail, ...body.patch, revision: body.revision + 1 };
+    const body = await request.json() as { revision: number; patch: Record<string, unknown> };
+    bookPatches.push(body);
+    detail = { ...detail, ...body.patch as Partial<typeof detail>, revision: body.revision + 1 };
     return HttpResponse.json(detail);
   }),
   http.patch('/api/worldbooks/:bookId/entries/:entryId', async ({ params, request }) => {
     entryPatchCalls += 1;
     const body = await request.json() as { revision: number; patch: Partial<WorldbookEntryView> };
+    entryPatches.push({ revision: body.revision, patch: body.patch });
     expect(body.patch).not.toHaveProperty('sourceUid');
     expect(body.patch).not.toHaveProperty('sourceOrdinal');
     if (conflictOnce) {
@@ -60,6 +64,10 @@ const server = setupServer(
         ...detail,
         entries: detail.entries.map((entry) => entry.id === params.entryId ? { ...entry, revision: 5, content: 'Server entry content' } : entry),
       };
+      return HttpResponse.json({ error: 'conflict' }, { status: 409 });
+    }
+    const current = detail.entries.find((entry) => entry.id === params.entryId);
+    if (current === undefined || current.revision !== body.revision) {
       return HttpResponse.json({ error: 'conflict' }, { status: 409 });
     }
     let updated: WorldbookEntryView | undefined;
@@ -106,6 +114,8 @@ afterEach(() => {
   entryPatchCalls = 0;
   reorderCalls = 0;
   conflictOnce = false;
+  bookPatches = [];
+  entryPatches = [];
 });
 afterAll(() => server.close());
 
@@ -149,8 +159,37 @@ describe('WorldbookManagerPage', () => {
     await user.click(screen.getByRole('button', { name: 'Edit entry Archive' }));
     await user.click(screen.getByRole('button', { name: 'Save Worldbook entry' }));
 
-    await waitFor(() => expect(entryPatchCalls).toBe(1));
+    await waitFor(() => expect(entryPatchCalls).toBe(0));
     expect(detail.entries[0]).toMatchObject(commaArrays);
+  });
+
+  it('sends only changed allowlisted Worldbook and Entry fields', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<WorldbookManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit Worldbook Archive Lore' }));
+    await user.clear(screen.getByLabelText('Worldbook description'));
+    await user.type(screen.getByLabelText('Worldbook description'), 'Changed book description');
+    await user.click(screen.getByRole('button', { name: 'Save Worldbook' }));
+    await waitFor(() => expect(bookPatches).toHaveLength(1));
+    expect(bookPatches[0]!.patch).toEqual({ description: 'Changed book description' });
+
+    await user.click(screen.getByRole('button', { name: 'Edit entry Archive' }));
+    await user.clear(screen.getByLabelText('Entry content'));
+    await user.type(screen.getByLabelText('Entry content'), 'Only entry content changed');
+    await user.click(screen.getByRole('button', { name: 'Save Worldbook entry' }));
+    await waitFor(() => expect(entryPatches).toHaveLength(1));
+    expect(entryPatches[0]!.patch).toEqual({ content: 'Only entry content changed' });
+  });
+
+  it('labels the finite executable book settings without exposing raw extensions', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<WorldbookManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit Worldbook Archive Lore' }));
+
+    const settings = screen.getByRole('group', { name: 'Executable Worldbook settings' });
+    expect(settings).not.toBeNull();
+    expect(screen.getByText(/Editable executable Worldbook extensions are unavailable in this MVP/)).not.toBeNull();
+    expect(screen.queryByLabelText(/extensions JSON/i)).toBeNull();
   });
 
   it('covers the book and complete runtime entry surface without allowing source identity edits', async () => {
@@ -205,7 +244,7 @@ describe('WorldbookManagerPage', () => {
     await waitFor(() => expect(detail.entries).toHaveLength(2));
   });
 
-  it('preserves an entry draft when a revision conflict refetches the book', async () => {
+  it('freezes the Entry baseline after conflict until explicit Retry adopts the latest revision', async () => {
     const user = userEvent.setup();
     conflictOnce = true;
     renderWithApp(<WorldbookManagerPage />);
@@ -218,5 +257,33 @@ describe('WorldbookManagerPage', () => {
 
     expect((await screen.findByRole('alert')).textContent).toContain('Server revision 5');
     expect((content as HTMLTextAreaElement).value).toBe('Local Worldbook draft');
+    await user.click(screen.getByRole('button', { name: 'Save Worldbook entry' }));
+    await waitFor(() => expect(entryPatchCalls).toBe(2));
+    expect(entryPatches.map((body) => body.revision)).toEqual([0, 0]);
+    expect(detail.entries[0]!.content).toBe('Server entry content');
+
+    await user.click(screen.getByRole('button', { name: 'Retry with server revision' }));
+    await waitFor(() => expect(entryPatches.map((body) => body.revision)).toEqual([0, 0, 5]));
+    expect(detail.entries[0]!.content).toBe('Local Worldbook draft');
+  });
+
+  it('Reload replaces the Entry draft and baseline for the next ordinary Save', async () => {
+    const user = userEvent.setup();
+    conflictOnce = true;
+    renderWithApp(<WorldbookManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit Worldbook Archive Lore' }));
+    await user.click(screen.getByRole('button', { name: 'Edit entry Archive' }));
+    await user.clear(screen.getByLabelText('Entry content'));
+    await user.type(screen.getByLabelText('Entry content'), 'Discard this local draft');
+    await user.click(screen.getByRole('button', { name: 'Save Worldbook entry' }));
+    await screen.findByText(/Server revision 5/);
+
+    await user.click(screen.getByRole('button', { name: 'Reload server version' }));
+    expect((screen.getByLabelText('Entry content') as HTMLTextAreaElement).value).toBe('Server entry content');
+    await user.clear(screen.getByLabelText('Entry content'));
+    await user.type(screen.getByLabelText('Entry content'), 'Saved after entry Reload');
+    await user.click(screen.getByRole('button', { name: 'Save Worldbook entry' }));
+    await waitFor(() => expect(detail.entries[0]!.content).toBe('Saved after entry Reload'));
+    expect(entryPatches.map((body) => body.revision)).toEqual([0, 5]);
   });
 });

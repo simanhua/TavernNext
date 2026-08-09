@@ -17,6 +17,7 @@ let personas = [
 ];
 let conflictOnce = false;
 let avatarCalls = 0;
+let lastPatch: Record<string, unknown> | undefined;
 
 const server = setupServer(
   http.get('/api/personas', () => HttpResponse.json(personas)),
@@ -30,6 +31,7 @@ const server = setupServer(
   }),
   http.patch('/api/personas/:id', async ({ params, request }) => {
     const body = await request.json() as { revision: number; patch: Partial<typeof personas[number]> };
+    lastPatch = body.patch;
     if (conflictOnce) {
       conflictOnce = false;
       personas = personas.map((persona) => persona.id === params.id
@@ -67,6 +69,7 @@ afterEach(() => {
   ];
   conflictOnce = false;
   avatarCalls = 0;
+  lastPatch = undefined;
 });
 afterAll(() => server.close());
 
@@ -111,5 +114,17 @@ describe('PersonaManagerPage', () => {
 
     expect((await screen.findByRole('alert')).textContent).toContain('Server revision 3');
     expect((description as HTMLTextAreaElement).value).toBe('Local Persona draft');
+  });
+
+  it('sends only the changed allowlisted Persona field', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<PersonaManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit persona Traveler' }));
+    await user.clear(screen.getByLabelText('Description'));
+    await user.type(screen.getByLabelText('Description'), 'Changed alone');
+    await user.click(screen.getByRole('button', { name: 'Save Persona' }));
+
+    await waitFor(() => expect(lastPatch).toBeDefined());
+    expect(lastPatch).toEqual({ description: 'Changed alone' });
   });
 });

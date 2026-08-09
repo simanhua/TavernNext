@@ -8,6 +8,7 @@ import { ImportDialog } from '../imports/ImportDialog.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
+import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 import { WorldbookEntryEditor } from './WorldbookEntryEditor.js';
 
 const nullableNumber = z.string().refine((value) => value === '' || Number.isFinite(Number(value)), 'Enter a number');
@@ -35,6 +36,8 @@ function bookPatch(value: BookForm) {
     recursiveScanning: value.recursiveScanning, isGlobal: value.isGlobal,
   };
 }
+
+const bookPatchFields = ['name', 'description', 'enabled', 'scanDepth', 'tokenBudget', 'recursiveScanning', 'isGlobal'] as const;
 
 function entryName(entry: WorldbookEntryView): string {
   return entry.displayName || entry.comment || 'Untitled entry';
@@ -77,9 +80,12 @@ export function WorldbookManagerPage() {
     setPending(true);
     setError(undefined);
     try {
+      const next = bookPatch(values);
+      const patch = creating ? undefined : minimalPatch(bookPatch(bookValues(detail!)), next, bookPatchFields);
+      if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = creating
-        ? await api.createWorldbook(bookPatch(values))
-        : await api.updateWorldbook(detail!.id, revision!, bookPatch(values));
+        ? await api.createWorldbook(next)
+        : await api.updateWorldbook(detail!.id, revision!, patch!);
       setDetail(saved);
       setCreating(false);
       setConflict(undefined);
@@ -147,7 +153,6 @@ export function WorldbookManagerPage() {
   const loadLatestEntry = async (entryId: string) => {
     if (detail === undefined) return undefined;
     const latest = await api.getWorldbook(detail.id);
-    setDetail(latest);
     return latest.entries.find((entry) => entry.id === entryId);
   };
   const selectedEntry = detail?.entries.find((entry) => entry.id === editingEntryId);
@@ -173,12 +178,16 @@ export function WorldbookManagerPage() {
             <form onSubmit={form.handleSubmit((values) => void saveBook(values))}>
               <h2>{creating ? 'New Worldbook' : detail?.name}</h2>
               <CompatibilitySummary value={detail?.compatibilitySummary} />
-              <label>Worldbook name<input {...form.register('name')} /></label>
-              <label>Worldbook description<textarea {...form.register('description')} /></label>
-              <label className="checkbox-label"><input type="checkbox" {...form.register('enabled')} />Worldbook enabled</label>
-              <label>Worldbook scan depth<input type="number" {...form.register('scanDepth')} /></label>
-              <label>Worldbook token budget<input type="number" {...form.register('tokenBudget')} /></label>
-              <label className="checkbox-label"><input type="checkbox" {...form.register('recursiveScanning')} />Recursive scanning</label>
+              <fieldset aria-label="Executable Worldbook settings">
+                <legend>Executable Worldbook settings</legend>
+                <label>Worldbook name<input {...form.register('name')} /></label>
+                <label>Worldbook description<textarea {...form.register('description')} /></label>
+                <label className="checkbox-label"><input type="checkbox" {...form.register('enabled')} />Worldbook enabled</label>
+                <label>Worldbook scan depth<input type="number" {...form.register('scanDepth')} /></label>
+                <label>Worldbook token budget<input type="number" {...form.register('tokenBudget')} /></label>
+                <label className="checkbox-label"><input type="checkbox" {...form.register('recursiveScanning')} />Recursive scanning</label>
+              </fieldset>
+              <p>Editable executable Worldbook extensions are unavailable in this MVP; raw extensions remain private compatibility data.</p>
               <label className="checkbox-label"><input type="checkbox" {...form.register('isGlobal')} />Global Worldbook</label>
               {bookValidationMessages.length === 0 ? null : (
                 <div role="alert" tabIndex={-1}>

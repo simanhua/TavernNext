@@ -27,7 +27,7 @@ let chatDetail = {
       },
       { identifier: 'jailbreak', name: 'Post history', role: 'system', content: 'Stay in character', enabled: true, marker: false },
     ],
-    prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'jailbreak', enabled: true }] }],
+    prompt_order: [{ character_id: 100000 as number | string, order: [{ identifier: 'main', enabled: true }, { identifier: 'jailbreak', enabled: true }] }],
     __tavernnextPresetSource: { token: 'must-not-render' },
     provider_api_key: 'must-not-render-secret',
   },
@@ -38,13 +38,15 @@ let chatDetail = {
 let patchCalls = 0;
 let conflictOnce = false;
 let deleteCalls = 0;
+let patchBodies: Array<{ revision: number; patch: Record<string, unknown> }> = [];
 
 const server = setupServer(
   http.get('/api/presets', () => HttpResponse.json(ids)),
   http.get('/api/presets/:id', () => HttpResponse.json(chatDetail)),
   http.patch('/api/presets/:id', async ({ request }) => {
     patchCalls += 1;
-    const body = await request.json() as { revision: number; patch: { name: string; settings: typeof chatDetail.settings } };
+    const body = await request.json() as { revision: number; patch: Record<string, unknown> };
+    patchBodies.push(body);
     expect(JSON.stringify(body)).not.toContain('__tavernnextPresetSource');
     expect(JSON.stringify(body)).not.toContain('provider_api_key');
     if (conflictOnce) {
@@ -52,7 +54,11 @@ const server = setupServer(
       chatDetail = { ...chatDetail, revision: 4, name: 'Server preset name' };
       return HttpResponse.json({ error: 'conflict' }, { status: 409 });
     }
-    chatDetail = { ...chatDetail, ...body.patch, revision: body.revision + 1 };
+    if (body.revision !== chatDetail.revision) return HttpResponse.json({ error: 'conflict' }, { status: 409 });
+    const settings = body.patch.settings === undefined
+      ? chatDetail.settings
+      : { ...chatDetail.settings, ...body.patch.settings as typeof chatDetail.settings };
+    chatDetail = { ...chatDetail, ...body.patch, settings, revision: body.revision + 1 };
     return HttpResponse.json(chatDetail);
   }),
   http.delete('/api/presets/:id', () => {
@@ -82,7 +88,7 @@ afterEach(() => {
         },
         { identifier: 'jailbreak', name: 'Post history', role: 'system', content: 'Stay in character', enabled: true, marker: false },
       ],
-      prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'jailbreak', enabled: true }] }],
+      prompt_order: [{ character_id: 100000 as number | string, order: [{ identifier: 'main', enabled: true }, { identifier: 'jailbreak', enabled: true }] }],
       __tavernnextPresetSource: { token: 'must-not-render' },
       provider_api_key: 'must-not-render-secret',
     },
@@ -93,6 +99,7 @@ afterEach(() => {
   patchCalls = 0;
   conflictOnce = false;
   deleteCalls = 0;
+  patchBodies = [];
   vi.restoreAllMocks();
 });
 afterAll(() => server.close());
@@ -148,6 +155,38 @@ describe('PresetManagerPage', () => {
     expect(screen.getByRole('button', { name: 'Retry with server revision' })).not.toBeNull();
   });
 
+  it('adopts the reloaded Preset revision so the next ordinary Save succeeds', async () => {
+    const user = userEvent.setup();
+    conflictOnce = true;
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'Local stale name');
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+    await screen.findByText(/Server revision 4/);
+
+    await user.click(screen.getByRole('button', { name: 'Reload server version' }));
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Server preset name');
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'Saved after Reload');
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+    await waitFor(() => expect(chatDetail.name).toBe('Saved after Reload'));
+    expect(patchBodies.map((body) => body.revision)).toEqual([0, 4]);
+  });
+
+  it('sends a minimal Preset patch when only the name changes', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'Renamed only');
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+    await waitFor(() => expect(patchBodies).toHaveLength(1));
+    expect(patchBodies[0]!.patch).toEqual({ name: 'Renamed only' });
+  });
+
   it('preserves every group-local order and enabled flag while editing the default prompt order', async () => {
     const user = userEvent.setup();
     chatDetail.settings.prompt_order = [
@@ -156,14 +195,51 @@ describe('PresetManagerPage', () => {
     ];
     renderWithApp(<PresetManagerPage />);
     await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
-    await user.click(screen.getByRole('button', { name: 'Move prompt 1 down' }));
+    expect((screen.getByLabelText('Prompt order group 1 character ID') as HTMLInputElement).value).toBe('100000');
+    expect((screen.getByLabelText('Prompt order group 2 character ID') as HTMLInputElement).value).toBe('42');
+    await user.click(screen.getByRole('button', { name: 'Move prompt order group 2 item 1 down' }));
+    await user.click(screen.getByLabelText('Prompt order group 2 item 2 enabled'));
     await user.click(screen.getByRole('button', { name: 'Save Preset' }));
 
     await waitFor(() => expect(patchCalls).toBe(1));
     expect(chatDetail.settings.prompt_order).toEqual([
-      { character_id: 100000, order: [{ identifier: 'jailbreak', enabled: false }, { identifier: 'main', enabled: true }] },
-      { character_id: 42, order: [{ identifier: 'jailbreak', enabled: false }, { identifier: 'main', enabled: true }] },
+      { character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'jailbreak', enabled: false }] },
+      { character_id: 42, order: [{ identifier: 'main', enabled: true }, { identifier: 'jailbreak', enabled: true }] },
     ]);
+    expect(Object.keys(patchBodies[0]!.patch.settings as Record<string, unknown>)).toEqual(['prompt_order']);
+  });
+
+  it('preserves numeric-string prompt order group IDs when editing the group', async () => {
+    const user = userEvent.setup();
+    chatDetail.settings.prompt_order = [
+      { character_id: '42', order: [{ identifier: 'main', enabled: true }] },
+    ];
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    expect((screen.getByLabelText('Prompt order group 1 character ID') as HTMLInputElement).value).toBe('42');
+    await user.click(screen.getByLabelText('Prompt order group 1 item 1 enabled'));
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+    await waitFor(() => expect(patchCalls).toBe(1));
+    expect(chatDetail.settings.prompt_order).toEqual([
+      { character_id: '42', order: [{ identifier: 'main', enabled: false }] },
+    ]);
+  });
+
+  it('rejects non-record executable JSON and treats whitespace numeric values as omitted', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    fireEvent.change(screen.getByLabelText('Executable settings JSON'), { target: { value: '[]' } });
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('plain JSON object');
+    expect(patchCalls).toBe(0);
+
+    fireEvent.change(screen.getByLabelText('Executable settings JSON'), { target: { value: '{}' } });
+    fireEvent.change(screen.getByLabelText('Prompt 1 injection depth'), { target: { value: '   ' } });
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+    await waitFor(() => expect(patchCalls).toBe(1));
+    expect(chatDetail.settings.prompts[0]).not.toHaveProperty('injection_depth');
   });
 
   it('edits every recognized executable Chat prompt field with typed values', async () => {
@@ -192,6 +268,7 @@ describe('PresetManagerPage', () => {
       system_prompt: true, marker: true, injection_position: 1, injection_depth: 4, injection_order: 250,
       forbid_overrides: true, injection_trigger: ['continue'], generation_trigger: ['continue', 'regenerate'],
     });
+    expect(Object.keys(patchBodies[0]!.patch.settings as Record<string, unknown>)).toEqual(['prompts']);
   });
 
   it('announces an invalid temperature instead of silently blocking submit', async () => {

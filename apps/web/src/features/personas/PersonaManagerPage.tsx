@@ -7,6 +7,7 @@ import { ApiError, api, errorCode, type PersonaView } from '../../api/client.js'
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
+import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 
 const PersonaFormSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
@@ -45,9 +46,16 @@ export function PersonaManagerPage() {
     setPending(true);
     setError(undefined);
     try {
+      const next = { ...values, name: values.name.trim() };
+      const patch = creating ? undefined : minimalPatch(
+        { name: selected!.name, description: selected!.description, isDefault: selected!.isDefault },
+        next,
+        ['name', 'description', 'isDefault'] as const,
+      );
+      if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = creating
-        ? await api.createPersona({ name: values.name.trim(), description: values.description, isDefault: values.isDefault })
-        : await api.updatePersona(selected!.id, revision!, { ...values, name: values.name.trim() });
+        ? await api.createPersona(next)
+        : await api.updatePersona(selected!.id, revision!, patch!);
       setSelected(saved);
       setCreating(false);
       setConflict(undefined);

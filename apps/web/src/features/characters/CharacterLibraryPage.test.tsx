@@ -26,6 +26,7 @@ let detail = {
   alternateGreetings: ['Welcome.', 'You found the archive.'], tags: ['lore', 'helper'], worldbookId,
 };
 let patchCalls = 0;
+let lastPatch: Record<string, unknown> | undefined;
 let exportCalls = 0;
 let deleteCalls = 0;
 let avatarCalls = 0;
@@ -37,6 +38,7 @@ const server = setupServer(
   http.patch('/api/characters/:id', async ({ request }) => {
     patchCalls += 1;
     const body = await request.json() as { revision: number; patch: Record<string, unknown> };
+    lastPatch = body.patch;
     expect(body.patch).not.toHaveProperty('compatibility');
     expect(body.patch).not.toHaveProperty('avatarPath');
     if (conflictOnce) {
@@ -59,7 +61,8 @@ const server = setupServer(
     detail = { ...detail, revision: detail.revision + 1, avatarUrl: `/api/characters/${id}/avatar?v=1` };
     return HttpResponse.json(detail);
   }),
-  http.get('/api/characters/:id/export', () => {
+  http.get('/api/characters/:id/export', ({ request }) => {
+    expect(new URL(request.url).searchParams.get('format')).toBe('json-v3');
     exportCalls += 1;
     return new HttpResponse('{"spec":"chara_card_v3"}', {
       headers: {
@@ -82,6 +85,7 @@ afterEach(() => {
     alternateGreetings: ['Welcome.', 'You found the archive.'], tags: ['lore', 'helper'], worldbookId,
   };
   patchCalls = 0;
+  lastPatch = undefined;
   exportCalls = 0;
   deleteCalls = 0;
   avatarCalls = 0;
@@ -98,8 +102,20 @@ describe('CharacterLibraryPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Aster' }));
     await user.click(screen.getByRole('button', { name: 'Save Character' }));
 
-    await waitFor(() => expect(patchCalls).toBe(1));
+    await waitFor(() => expect(patchCalls).toBe(0));
     expect(detail.tags).toEqual(['lore, mystery', 'helper']);
+  });
+
+  it('sends only changed allowlisted Character fields and omits unchanged arrays', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<CharacterLibraryPage />);
+    await user.click(await screen.findByRole('button', { name: 'Aster' }));
+    await user.clear(screen.getByLabelText('Description'));
+    await user.type(screen.getByLabelText('Description'), 'Only this field changed');
+    await user.click(screen.getByRole('button', { name: 'Save Character' }));
+
+    await waitFor(() => expect(patchCalls).toBe(1));
+    expect(lastPatch).toEqual({ description: 'Only this field changed' });
   });
 
   it('filters the bounded Character list without losing the original results', async () => {

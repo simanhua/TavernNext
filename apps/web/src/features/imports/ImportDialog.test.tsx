@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
@@ -31,6 +31,8 @@ let commitRequests = 0;
 let commitMode: 'ok' | 'expired' = 'ok';
 let holdInspection = false;
 let releaseInspection: (() => void) | undefined;
+let holdCommit = false;
+let releaseCommit: (() => void) | undefined;
 
 const server = setupServer(
   http.post('/api/imports/inspect', async ({ request }) => {
@@ -53,6 +55,7 @@ const server = setupServer(
   http.post('/api/imports/commit', async ({ request }) => {
     commitRequests += 1;
     expect(await request.json()).toEqual({ inspectionToken: 'opaque-token' });
+    if (holdCommit) await new Promise<void>((resolve) => { releaseCommit = resolve; });
     if (commitMode === 'expired') {
       return HttpResponse.json({ error: 'inspection_token_expired' }, { status: 410 });
     }
@@ -72,6 +75,8 @@ afterEach(() => {
   commitMode = 'ok';
   holdInspection = false;
   releaseInspection = undefined;
+  holdCommit = false;
+  releaseCommit = undefined;
   server.resetHandlers();
 });
 afterAll(() => server.close());
@@ -169,5 +174,40 @@ describe('ImportDialog', () => {
     expect(inspectRequests).toBe(1);
     expect(commitRequests).toBe(1);
     expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('rejects two same-tick commit clicks synchronously', async () => {
+    const user = userEvent.setup();
+    holdCommit = true;
+    renderWithApp(<Harness />);
+    await user.click(screen.getByRole('button', { name: 'Open import' }));
+    await user.upload(screen.getByLabelText('Choose a file'), new File(['png'], 'aster.png', { type: 'image/png' }));
+    const commit = await screen.findByRole('button', { name: 'Commit import' });
+
+    act(() => {
+      commit.click();
+      commit.click();
+    });
+    await waitFor(() => expect(commitRequests).toBe(1));
+    releaseCommit?.();
+  });
+
+  it('ignores a late commit result after cancel and reopen', async () => {
+    const user = userEvent.setup();
+    const committed = vi.fn();
+    holdCommit = true;
+    renderWithApp(<Harness onCommitted={committed} />);
+    await user.click(screen.getByRole('button', { name: 'Open import' }));
+    await user.upload(screen.getByLabelText('Choose a file'), new File(['png'], 'aster.png', { type: 'image/png' }));
+    await user.click(await screen.findByRole('button', { name: 'Commit import' }));
+    await waitFor(() => expect(commitRequests).toBe(1));
+    await user.click(screen.getByRole('button', { name: 'Cancel import' }));
+    await user.click(screen.getByRole('button', { name: 'Open import' }));
+
+    releaseCommit?.();
+    await act(async () => { await Promise.resolve(); });
+    expect(committed).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Import Character' })).not.toBeNull();
+    expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

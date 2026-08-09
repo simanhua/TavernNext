@@ -64,7 +64,7 @@ async function context() {
   });
   repositories.worldbooks.create({
     id: ids.worldbook, name: 'Archive Lore', description: 'Facts', enabled: true, scanDepth: 4, tokenBudget: 512,
-    recursiveScanning: true, isGlobal: false, extensions: {},
+    recursiveScanning: true, isGlobal: false, extensions: { future_runtime_hint: 'WORLDBOOK-EXTENSION-PRIVATE' },
     compatibility: {
       sourceFormat: 'worldbook:st-native', rawPayload: { hidden: 'RAW-WORLDBOOK-SENTINEL' },
       unknownFields: { vendor: 'WORLDBOOK-SECRET' }, compatWarnings: ['future_book'], parserVersion: '1',
@@ -107,7 +107,7 @@ describe('sanitized manager APIs', () => {
     for (const forbidden of [
       'rawPayload', 'unknownFields', 'avatar-secret.png', 'RAW-CHARACTER-SENTINEL', 'CHARACTER-SECRET',
       'RAW-PERSONA-SENTINEL', 'RAW-PRESET-SENTINEL', 'PRESET-SECRET', 'PRESET-VENDOR-SECRET', 'INTERNAL-MARKER',
-      '__tavernnextPresetSource', 'RAW-WORLDBOOK-SENTINEL', 'WORLDBOOK-SECRET', 'RAW-ENTRY-SENTINEL', 'ENTRY-SECRET',
+      '__tavernnextPresetSource', 'RAW-WORLDBOOK-SENTINEL', 'WORLDBOOK-SECRET', 'WORLDBOOK-EXTENSION-PRIVATE', 'RAW-ENTRY-SENTINEL', 'ENTRY-SECRET',
     ]) expect(serialized).not.toContain(forbidden);
     expect(responses[1]!.json()).toMatchObject({
       name: 'Aster', avatarUrl: `/api/characters/${ids.character}/avatar`,
@@ -118,11 +118,12 @@ describe('sanitized manager APIs', () => {
       compatibilitySummary: { sourceFormat: 'preset:chat', warnings: ['provider_field_preserved_not_executable'] },
     });
     expect(responses[7]!.json()).toMatchObject({
-      name: 'Archive Lore', entries: [
+      name: 'Archive Lore', scanDepth: 4, tokenBudget: 512, recursiveScanning: true, entries: [
         { id: ids.entry, sourceUid: 42, sourceOrdinal: 0, compatibilitySummary: { warnings: ['future_entry'] } },
         { id: ids.entryTwo, sourceUid: 'second', sourceOrdinal: 1 },
       ],
     });
+    expect(responses[7]!.json()).not.toHaveProperty('extensions');
   });
 
   it('accepts explicit revisioned patches, rejects private or mistyped fields, and preserves state on conflicts', async () => {

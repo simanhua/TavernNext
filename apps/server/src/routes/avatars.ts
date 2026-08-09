@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {} from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
@@ -92,9 +92,35 @@ function expectedRevision(value: unknown): number | undefined {
 function managedOwnerPath(path: string, kind: AvatarKind, id: string): boolean {
   const normalized = path.replaceAll('\\', '/');
   if (normalized.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) return false;
-  if (!normalized.startsWith('assets/avatars/')) return true;
   const prefix = `assets/avatars/${kind}/${id}/`;
-  return normalized.startsWith(prefix) && !normalized.slice(prefix.length).includes('/');
+  if (!normalized.startsWith(prefix)) return false;
+  const fileName = normalized.slice(prefix.length);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif)$/i.test(fileName);
+}
+
+function sameResolvedPath(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLocaleLowerCase() === normalizedRight.toLocaleLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+async function hasOnlyDirectComponents(root: string, candidate: string): Promise<boolean> {
+  const path = relative(root, candidate);
+  if (path === '' || path.startsWith('..') || isAbsolute(path)) return false;
+  let current = root;
+  try {
+    for (const segment of path.split(sep)) {
+      current = join(current, segment);
+      const metadata = await lstat(current);
+      if (metadata.isSymbolicLink()) return false;
+      if (!sameResolvedPath(await realpath(current), current)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function append(handle: Awaited<ReturnType<typeof open>>, chunk: Buffer): Promise<void> {
@@ -128,7 +154,9 @@ async function storeUpload(
   const root = resolve(dataDir, 'assets', 'avatars', kind, id);
   await mkdir(root, { recursive: true });
   const [realDataDir, realRoot] = await Promise.all([realpath(dataDir), realpath(root)]);
-  if (!contained(realDataDir, realRoot)) throw new Error('unsafe_avatar_storage');
+  if (!contained(realDataDir, realRoot) || !sameResolvedPath(realRoot, root) || !await hasOnlyDirectComponents(resolve(dataDir), root)) {
+    throw new Error('unsafe_avatar_storage');
+  }
 
   const name = randomUUID();
   const temporaryPath = join(realRoot, `${name}.tmp`);
@@ -192,28 +220,53 @@ async function safeStoredAvatar(
   kind: AvatarKind,
   id: string,
   storedPath: string,
-): Promise<{ path: string; size: number; imageType: ImageType } | undefined> {
+): Promise<{ stream: ReturnType<Awaited<ReturnType<typeof open>>['createReadStream']>; size: number; imageType: ImageType } | undefined> {
   if (storedPath.includes('\0') || isAbsolute(storedPath) || !managedOwnerPath(storedPath, kind, id)) return undefined;
   const lexicalRoot = resolve(dataDir);
   const lexicalPath = resolve(lexicalRoot, ...storedPath.replaceAll('\\', '/').split('/'));
   if (!contained(lexicalRoot, lexicalPath)) return undefined;
   try {
-    const [realRoot, path] = await Promise.all([realpath(lexicalRoot), realpath(lexicalPath)]);
-    if (!contained(realRoot, path)) return undefined;
-    const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.size > MAX_AVATAR_BYTES) return undefined;
-    const handle = await open(path, 'r');
+    const realRoot = await realpath(lexicalRoot);
+    if (!sameResolvedPath(realRoot, lexicalRoot) || !await hasOnlyDirectComponents(lexicalRoot, lexicalPath)) return undefined;
+    const before = await lstat(lexicalPath);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_AVATAR_BYTES) return undefined;
+    const flags = constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW);
+    const handle = await open(lexicalPath, flags);
     try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || metadata.size !== before.size || metadata.dev !== before.dev || metadata.ino !== before.ino) {
+        await handle.close();
+        return undefined;
+      }
       const header = Buffer.alloc(Math.min(HEADER_BYTES, metadata.size));
       await handle.read(header, 0, header.byteLength, 0);
       const imageType = detectedImageType(header);
-      return imageType === undefined ? undefined : { path, size: metadata.size, imageType };
-    } finally {
-      await handle.close();
+      const extension = extname(lexicalPath).toLowerCase();
+      if (imageType === undefined || !imageType.acceptedExtensions.includes(extension)) {
+        await handle.close();
+        return undefined;
+      }
+      return { stream: handle.createReadStream({ autoClose: true }), size: metadata.size, imageType };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
     }
   } catch {
     return undefined;
   }
+}
+
+export async function readOwnerAvatarBytes(
+  dataDir: string,
+  kind: AvatarKind,
+  id: string,
+  storedPath: string,
+): Promise<Uint8Array | undefined> {
+  const avatar = await safeStoredAvatar(dataDir, kind, id, storedPath);
+  if (avatar === undefined) return undefined;
+  const chunks: Buffer[] = [];
+  for await (const chunk of avatar.stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return new Uint8Array(Buffer.concat(chunks));
 }
 
 async function removeReplacedManagedAvatar(
@@ -222,15 +275,15 @@ async function removeReplacedManagedAvatar(
   id: string,
   oldPath: string | undefined,
 ): Promise<void> {
-  if (oldPath === undefined || !oldPath.replaceAll('\\', '/').startsWith(`assets/avatars/${kind}/${id}/`)) return;
+  if (oldPath === undefined || !managedOwnerPath(oldPath, kind, id)) return;
   const root = resolve(dataDir);
   const lexicalPath = resolve(root, ...oldPath.replaceAll('\\', '/').split('/'));
   if (!contained(root, lexicalPath)) return;
   try {
     const [realRoot, path] = await Promise.all([realpath(root), realpath(lexicalPath)]);
-    if (!contained(realRoot, path)) return;
-    const metadata = await stat(path);
-    if (metadata.isFile()) await rm(path, { force: true });
+    if (!sameResolvedPath(realRoot, root) || !sameResolvedPath(path, lexicalPath) || !await hasOnlyDirectComponents(root, lexicalPath)) return;
+    const metadata = await lstat(path);
+    if (metadata.isFile() && !metadata.isSymbolicLink()) await rm(path, { force: true });
   } catch {
     // Replaced avatars are best-effort cleanup after the durable row was updated.
   }
@@ -252,7 +305,7 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
       .type(avatar.imageType.mediaType)
       .header('content-length', String(avatar.size))
       .header('cache-control', 'private, no-cache')
-      .send(createReadStream(avatar.path));
+      .send(avatar.stream);
   });
 
   app.put<{ Params: { id: string }; Querystring: { revision?: string } }>(route, async (request, reply) => {

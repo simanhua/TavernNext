@@ -25,8 +25,17 @@ describe('prompt preview client boundary', () => {
       totalTokens: 2,
       tokenizerDecision: { tokenizerId: 12, tokenizerName: 'Llama 3' },
       worldbook: {
-        activated: [], excluded: [], timedState: { messageIndex: 1, sticky: [], cooldown: [] },
+        activated: [], excluded: [], timedState: {
+          messageIndex: 1,
+          sticky: [{ entryKey: 'book:next-sticky', fingerprint: 'must-not-cross-ui-boundary', hmac: 'must-not-cross-ui-boundary', start: 1, end: 4, protected: true, unknown: 'must-not-cross-ui-boundary' }],
+          cooldown: [{ entryKey: 'book:next-cooldown', fingerprint: 'must-not-cross-ui-boundary', start: 4, end: 7, protected: false }],
+        },
         tokenUsage: { budget: 64, used: 0, overflowed: false }, recursionSteps: 0, warnings: [],
+      },
+      previousTimedState: {
+        messageIndex: 0,
+        sticky: [{ entryKey: 'book:previous-sticky', fingerprint: 'must-not-cross-ui-boundary', start: 0, end: 2, protected: false }],
+        cooldown: [{ entryKey: 'book:previous-cooldown', hmac: 'must-not-cross-ui-boundary', start: 2, end: 3, protected: true }],
       },
       warnings: [],
       entityRevisions: {
@@ -48,5 +57,20 @@ describe('prompt preview client boundary', () => {
     expect(preview).not.toHaveProperty('executable');
     expect(preview.entityRevisions.conversation).toEqual({ revision: 3 });
     expect(preview.messages).toEqual([{ role: 'system', content: 'Safe prompt' }]);
+    expect(preview.worldbook.timedState).toEqual({
+      messageIndex: 1,
+      stickyCount: 1,
+      cooldownCount: 1,
+      sticky: [{ entryKey: 'book:next-sticky', start: 1, end: 4, protected: true }],
+      cooldown: [{ entryKey: 'book:next-cooldown', start: 4, end: 7, protected: false }],
+    });
+    expect(preview.previousTimedState).toEqual({
+      messageIndex: 0,
+      stickyCount: 1,
+      cooldownCount: 1,
+      sticky: [{ entryKey: 'book:previous-sticky', start: 0, end: 2, protected: false }],
+      cooldown: [{ entryKey: 'book:previous-cooldown', start: 2, end: 3, protected: true }],
+    });
+    expect(JSON.stringify(preview)).not.toContain('must-not-cross-ui-boundary');
   });
 });

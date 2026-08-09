@@ -155,10 +155,19 @@ export interface ImportReceipt {
   assetPath?: string;
 }
 
+export interface PromptTimedEntryView {
+  entryKey: string;
+  start: number;
+  end: number;
+  protected: boolean;
+}
+
 export interface PromptTimedStateView {
   messageIndex: number | null;
   stickyCount: number;
   cooldownCount: number;
+  sticky: PromptTimedEntryView[];
+  cooldown: PromptTimedEntryView[];
 }
 
 export interface PromptPreviewView {
@@ -369,7 +378,21 @@ function projectTimedState(state: PromptTimedStateResponse): PromptTimedStateVie
     messageIndex: state.messageIndex,
     stickyCount: state.sticky.length,
     cooldownCount: state.cooldown.length,
+    sticky: state.sticky.flatMap(projectTimedEntry),
+    cooldown: state.cooldown.flatMap(projectTimedEntry),
   };
+}
+
+function projectTimedEntry(value: unknown): PromptTimedEntryView[] {
+  if (typeof value !== 'object' || value === null) return [];
+  const entry = value as Record<string, unknown>;
+  if (
+    typeof entry.entryKey !== 'string'
+    || typeof entry.start !== 'number'
+    || typeof entry.end !== 'number'
+    || typeof entry.protected !== 'boolean'
+  ) return [];
+  return [{ entryKey: entry.entryKey, start: entry.start, end: entry.end, protected: entry.protected }];
 }
 
 function projectPromptPreview(response: PromptPreviewResponse): PromptPreviewView {
@@ -443,13 +466,13 @@ export const api = {
   }),
   deleteCharacter: (id: string, revision: number) => request<void>(`/api/characters/${id}?revision=${revision}`, { method: 'DELETE' }),
   uploadCharacterAvatar: (id: string, revision: number, file: File) => uploadAvatar<CharacterView>('characters', id, revision, file),
-  exportCharacter: (id: string) => download(`/api/characters/${id}/export`),
+  exportCharacter: (id: string) => download(`/api/characters/${id}/export?format=json-v3`),
   listPersonas: () => request<PersonaView[]>('/api/personas'),
   getPersona: (id: string) => request<PersonaView>(`/api/personas/${id}`),
   createPersona: (input: { name: string; description: string; isDefault?: boolean }) => request<PersonaView>('/api/personas', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input, isDefault: input.isDefault ?? false }),
   }),
-  updatePersona: (id: string, revision: number, patch: Pick<PersonaView, 'name' | 'description' | 'isDefault'>) => request<PersonaView>(`/api/personas/${id}`, {
+  updatePersona: (id: string, revision: number, patch: Partial<Pick<PersonaView, 'name' | 'description' | 'isDefault'>>) => request<PersonaView>(`/api/personas/${id}`, {
     method: 'PATCH', body: JSON.stringify({ revision, patch }),
   }),
   deletePersona: (id: string, revision: number) => request<void>(`/api/personas/${id}?revision=${revision}`, { method: 'DELETE' }),
@@ -460,7 +483,7 @@ export const api = {
   createPreset: (input: { name: string; kind: PresetKind; settings: Record<string, unknown> }) => request<PresetView>('/api/presets', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
   }),
-  updatePreset: (id: string, revision: number, patch: { name: string; settings: Record<string, unknown> }) => request<PresetView>(`/api/presets/${id}`, {
+  updatePreset: (id: string, revision: number, patch: Partial<{ name: string; settings: Record<string, unknown> }>) => request<PresetView>(`/api/presets/${id}`, {
     method: 'PATCH', body: JSON.stringify({ revision, patch }),
   }),
   deletePreset: (id: string, revision: number) => request<void>(`/api/presets/${id}?revision=${revision}`, { method: 'DELETE' }),

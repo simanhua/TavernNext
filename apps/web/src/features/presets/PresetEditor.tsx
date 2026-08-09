@@ -1,11 +1,12 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useEffect, useState } from 'react';
-import { useFieldArray, useForm } from 'react-hook-form';
+import { useFieldArray, useForm, type Control, type UseFormRegister } from 'react-hook-form';
 import { z } from 'zod';
 import { ApiError, api, errorCode, type PresetKind, type PresetView } from '../../api/client.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
+import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 
 const kinds = ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'] as const;
 const ChatKeys = new Set([
@@ -45,7 +46,7 @@ const FamilyKeys: Record<Exclude<PresetKind, 'chat' | 'text'>, Set<string>> = {
 };
 const OptionalBooleanSchema = z.enum(['', 'true', 'false']);
 const OptionalNumberSchema = z.string().refine(
-  (value) => value === '' || Number.isFinite(Number(value)),
+  (value) => value.trim() === '' || Number.isFinite(Number(value)),
   'Optional numeric prompt fields must be numbers',
 );
 const OptionalStringArraySchema = z.string().refine((value) => {
@@ -105,14 +106,22 @@ const FormSchema = z.object({
   kind: z.enum(kinds),
   temperature: z.string().refine((value) => value === '' || Number.isFinite(Number(value)), 'Temperature must be a number'),
   executableSettings: z.string().refine((value) => {
-    try { return typeof JSON.parse(value) === 'object'; } catch { return false; }
-  }, 'Executable settings must be valid JSON'),
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+    } catch { return false; }
+  }, 'Executable settings must be a plain JSON object'),
   prompts: z.array(z.object({
     identifier: z.string(), name: z.string(), role: z.string(), content: z.string(), enabled: z.boolean(),
     systemPrompt: OptionalBooleanSchema, marker: OptionalBooleanSchema,
     injectionPosition: OptionalNumberSchema, injectionDepth: OptionalNumberSchema, injectionOrder: OptionalNumberSchema,
     forbidOverrides: OptionalBooleanSchema, injectionTrigger: OptionalStringArraySchema, generationTrigger: OptionalStringArraySchema,
     extras: z.record(z.string(), z.unknown()),
+  })),
+  promptOrders: z.array(z.object({
+    characterId: z.string(),
+    characterIdKind: z.enum(['absent', 'number', 'string']),
+    items: z.array(z.object({ identifier: z.string(), enabled: z.boolean() })),
   })),
 });
 type FormValues = z.infer<typeof FormSchema>;
@@ -154,7 +163,53 @@ function valuesFrom(kind: PresetKind, name: string, settingsValue: unknown): For
     temperature: typeof settings.temperature === 'number' ? String(settings.temperature) : '',
     executableSettings: JSON.stringify(advanced, null, 2),
     prompts,
+    promptOrders: Array.isArray(settings.prompt_order) ? settings.prompt_order.map((value) => {
+      const group = record(value);
+      return {
+        characterId: Object.hasOwn(group, 'character_id') ? String(group.character_id) : '',
+        characterIdKind: typeof group.character_id === 'number'
+          ? 'number' as const
+          : typeof group.character_id === 'string' ? 'string' as const : 'absent' as const,
+        items: Array.isArray(group.order) ? group.order.map((value) => {
+          const item = record(value);
+          return { identifier: String(item.identifier ?? ''), enabled: item.enabled !== false };
+        }).filter((item) => item.identifier !== '') : [],
+      };
+    }) : [],
   };
+}
+
+function PromptOrderGroupEditor({ control, register, groupIndex, onRemove, onMoveUp, onMoveDown, first, last }: {
+  control: Control<FormValues>;
+  register: UseFormRegister<FormValues>;
+  groupIndex: number;
+  onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  first: boolean;
+  last: boolean;
+}) {
+  const items = useFieldArray({ control, name: `promptOrders.${groupIndex}.items` });
+  return (
+    <fieldset aria-label={`Prompt order group ${groupIndex + 1}`}>
+      <legend>Prompt order group {groupIndex + 1}</legend>
+      <input type="hidden" {...register(`promptOrders.${groupIndex}.characterIdKind`)} />
+      <label>Prompt order group {groupIndex + 1} character ID<input {...register(`promptOrders.${groupIndex}.characterId`)} /></label>
+      {items.fields.map((item, itemIndex) => (
+        <div className="array-row" key={item.id}>
+          <label>Prompt order group {groupIndex + 1} item {itemIndex + 1} identifier<input {...register(`promptOrders.${groupIndex}.items.${itemIndex}.identifier`)} /></label>
+          <label className="checkbox-label"><input type="checkbox" {...register(`promptOrders.${groupIndex}.items.${itemIndex}.enabled`)} />Prompt order group {groupIndex + 1} item {itemIndex + 1} enabled</label>
+          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} up`} disabled={itemIndex === 0} onClick={() => items.move(itemIndex, itemIndex - 1)}>↑</button>
+          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} down`} disabled={itemIndex === items.fields.length - 1} onClick={() => items.move(itemIndex, itemIndex + 1)}>↓</button>
+          <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1} item ${itemIndex + 1}`} onClick={() => items.remove(itemIndex)}>Remove item</button>
+        </div>
+      ))}
+      <button type="button" onClick={() => items.append({ identifier: '', enabled: true })}>Add order item</button>
+      <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} up`} disabled={first} onClick={onMoveUp}>Move group up</button>
+      <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} down`} disabled={last} onClick={onMoveDown}>Move group down</button>
+      <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1}`} onClick={onRemove}>Remove group</button>
+    </fieldset>
+  );
 }
 
 export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
@@ -165,23 +220,26 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
 }) {
   const initialKind = preset?.kind ?? 'chat';
   const [baseSettings, setBaseSettings] = useState<Record<string, unknown>>(sanitizeSettings(initialKind, preset?.settings ?? defaultSettings(initialKind)));
+  const [baseline, setBaseline] = useState(preset);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState<PresetView>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const form = useForm<FormValues>({ resolver: zodResolver(FormSchema), defaultValues: valuesFrom(initialKind, preset?.name ?? '', baseSettings) });
   const prompts = useFieldArray({ control: form.control, name: 'prompts' });
+  const promptOrders = useFieldArray({ control: form.control, name: 'promptOrders' });
 
   useEffect(() => {
     const kind = preset?.kind ?? 'chat';
     const settings = sanitizeSettings(kind, preset?.settings ?? defaultSettings(kind));
     setBaseSettings(settings);
+    setBaseline(preset);
     form.reset(valuesFrom(kind, preset?.name ?? '', settings));
     setConflict(undefined);
     setError(undefined);
   }, [preset?.id, creating]);
 
-  const submit = async (values: FormValues, revision = preset?.revision) => {
+  const submit = async (values: FormValues, revision = baseline?.revision) => {
     setPending(true);
     setError(undefined);
     const advanced = sanitizeSettings(values.kind, JSON.parse(values.executableSettings));
@@ -196,38 +254,41 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
         enabled: prompt.enabled,
         ...(prompt.systemPrompt === '' ? {} : { system_prompt: prompt.systemPrompt === 'true' }),
         ...(prompt.marker === '' ? {} : { marker: prompt.marker === 'true' }),
-        ...(prompt.injectionPosition === '' ? {} : { injection_position: Number(prompt.injectionPosition) }),
-        ...(prompt.injectionDepth === '' ? {} : { injection_depth: Number(prompt.injectionDepth) }),
-        ...(prompt.injectionOrder === '' ? {} : { injection_order: Number(prompt.injectionOrder) }),
+        ...(prompt.injectionPosition.trim() === '' ? {} : { injection_position: Number(prompt.injectionPosition) }),
+        ...(prompt.injectionDepth.trim() === '' ? {} : { injection_depth: Number(prompt.injectionDepth) }),
+        ...(prompt.injectionOrder.trim() === '' ? {} : { injection_order: Number(prompt.injectionOrder) }),
         ...(prompt.forbidOverrides === '' ? {} : { forbid_overrides: prompt.forbidOverrides === 'true' }),
         ...(prompt.injectionTrigger === '' ? {} : { injection_trigger: JSON.parse(prompt.injectionTrigger) as string[] }),
         ...(prompt.generationTrigger === '' ? {} : { generation_trigger: JSON.parse(prompt.generationTrigger) as string[] }),
       }));
-      const priorOrders = Array.isArray(baseSettings.prompt_order) ? baseSettings.prompt_order : [];
       const priorPromptIds = new Set(Array.isArray(baseSettings.prompts)
         ? baseSettings.prompts.map((prompt) => String(record(prompt).identifier ?? '')).filter(Boolean)
         : []);
-      const activeIds = new Set(promptValues.map((prompt) => prompt.identifier));
-      const defaultOrderIndex = priorOrders.findIndex((groupValue) => record(groupValue).character_id === 100000);
-      let promptOrder = priorOrders.length === 0
-        ? [{ character_id: 100000, order: promptValues.map((prompt) => ({ identifier: prompt.identifier, enabled: prompt.enabled })) }]
-        : priorOrders.map((groupValue, groupIndex) => {
-          const group = record(groupValue);
-          const prior = Array.isArray(group.order) ? group.order.map((item) => {
-            const entry = record(item);
-            return { identifier: String(entry.identifier ?? ''), enabled: entry.enabled !== false };
-          }).filter((entry) => entry.identifier !== '') : [];
-          const priorEnabled = new Map(prior.map((entry) => [entry.identifier, entry.enabled]));
-          return {
-            ...(Object.hasOwn(group, 'character_id') ? { character_id: group.character_id } : {}),
-            order: groupIndex === defaultOrderIndex
-              ? promptValues.filter((prompt) => priorEnabled.has(prompt.identifier))
-                .map((prompt) => ({ identifier: prompt.identifier, enabled: priorEnabled.get(prompt.identifier)! }))
-              : prior.filter((entry) => activeIds.has(entry.identifier)),
-          };
-        });
+      const baselinePromptIds = Array.isArray(baseSettings.prompts)
+        ? baseSettings.prompts.map((prompt) => String(record(prompt).identifier ?? '')).filter(Boolean)
+        : [];
+      const currentPromptIds = promptValues.map((prompt) => prompt.identifier).filter(Boolean);
+      const definitionsReordered = baselinePromptIds.filter((id) => currentPromptIds.includes(id)).join('\0')
+        !== currentPromptIds.filter((id) => priorPromptIds.has(id)).join('\0');
+      let promptOrder = values.promptOrders.map((group) => ({
+        ...(group.characterId.trim() === '' ? {} : {
+          character_id: group.characterIdKind === 'number' && /^-?\d+$/.test(group.characterId.trim())
+            ? Number(group.characterId)
+            : group.characterId,
+        }),
+        order: group.items.filter((item) => item.identifier !== '').map((item) => ({ ...item })),
+      }));
+      if (promptOrder.length === 0) promptOrder = [{ character_id: 100000, order: [] }];
+      const defaultOrderIndex = promptOrder.findIndex((group) => group.character_id === 100000);
+      if (definitionsReordered && defaultOrderIndex >= 0) {
+        const enabled = new Map(promptOrder[defaultOrderIndex]!.order.map((item) => [item.identifier, item.enabled]));
+        promptOrder[defaultOrderIndex] = {
+          ...promptOrder[defaultOrderIndex],
+          order: currentPromptIds.filter((id) => enabled.has(id)).map((identifier) => ({ identifier, enabled: enabled.get(identifier)! })),
+        };
+      }
       const added = promptValues.filter((prompt) => !priorPromptIds.has(prompt.identifier));
-      if (priorOrders.length > 0 && added.length > 0) {
+      if (added.length > 0) {
         if (defaultOrderIndex < 0) {
           promptOrder.push({ character_id: 100000, order: added.map((prompt) => ({ identifier: prompt.identifier, enabled: prompt.enabled })) });
         } else {
@@ -237,18 +298,33 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
         }
       }
       settings = { ...advanced, prompts: promptValues, prompt_order: promptOrder };
-      if (values.temperature !== '') settings.temperature = Number(values.temperature);
+      if (values.temperature.trim() !== '') settings.temperature = Number(values.temperature);
     }
     try {
+      let patch: Partial<{ name: string; settings: Record<string, unknown> }> | undefined;
+      if (!creating && baseline !== undefined) {
+        patch = minimalPatch({ name: baseline.name }, { name: values.name.trim() }, ['name'] as const);
+        const allowedSettings = values.kind === 'chat' ? [...ChatKeys]
+          : values.kind === 'text' ? [...TextKeys]
+            : [...FamilyKeys[values.kind]];
+        const settingsPatch = minimalPatch(
+          sanitizeSettings(baseline.kind, baseline.settings),
+          settings,
+          allowedSettings,
+        );
+        if (hasPatchFields(settingsPatch)) patch.settings = settingsPatch;
+      }
+      if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = creating
         ? await api.createPreset({ name: values.name.trim(), kind: values.kind, settings })
-        : await api.updatePreset(preset!.id, revision!, { name: values.name.trim(), settings });
+        : await api.updatePreset(baseline!.id, revision!, patch!);
       setBaseSettings(sanitizeSettings(saved.kind, saved.settings));
+      setBaseline(saved);
       setConflict(undefined);
       onSaved(saved);
     } catch (cause) {
-      if (!creating && cause instanceof ApiError && cause.status === 409 && preset !== undefined) {
-        try { setConflict(await api.getPreset(preset.id)); } catch (loadError) { setError(errorCode(loadError)); }
+      if (!creating && cause instanceof ApiError && cause.status === 409 && baseline !== undefined) {
+        try { setConflict(await api.getPreset(baseline.id)); } catch (loadError) { setError(errorCode(loadError)); }
       } else setError(errorCode(cause));
     } finally {
       setPending(false);
@@ -318,6 +394,23 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
               forbidOverrides: '', injectionTrigger: '', generationTrigger: '', extras: {},
             })}>Add prompt</button>
           </fieldset>
+          <fieldset>
+            <legend>Chat prompt order groups</legend>
+            {promptOrders.fields.map((group, groupIndex) => (
+              <PromptOrderGroupEditor
+                key={group.id}
+                control={form.control}
+                register={form.register}
+                groupIndex={groupIndex}
+                first={groupIndex === 0}
+                last={groupIndex === promptOrders.fields.length - 1}
+                onMoveUp={() => promptOrders.move(groupIndex, groupIndex - 1)}
+                onMoveDown={() => promptOrders.move(groupIndex, groupIndex + 1)}
+                onRemove={() => promptOrders.remove(groupIndex)}
+              />
+            ))}
+            <button type="button" onClick={() => promptOrders.append({ characterId: '', characterIdKind: 'string', items: [] })}>Add prompt order group</button>
+          </fieldset>
         </>
       ) : null}
       <label>Executable settings JSON<textarea rows={12} {...form.register('executableSettings')} /></label>
@@ -333,7 +426,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
       {conflict === undefined ? null : (
         <ConflictBanner
           revision={conflict.revision}
-          onReload={() => { setBaseSettings(sanitizeSettings(conflict.kind, conflict.settings)); form.reset(valuesFrom(conflict.kind, conflict.name, conflict.settings)); setConflict(undefined); }}
+          onReload={() => { setBaseline(conflict); setBaseSettings(sanitizeSettings(conflict.kind, conflict.settings)); form.reset(valuesFrom(conflict.kind, conflict.name, conflict.settings)); setConflict(undefined); onSaved(conflict); }}
           onRetry={() => void form.handleSubmit((values) => submit(values, conflict.revision))()}
         />
       )}

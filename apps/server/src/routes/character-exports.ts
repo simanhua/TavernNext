@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Repositories } from '../db/repositories.js';
 import type { StoredCharacterSource } from '../services/character-import-handler.js';
 import { normalizedWorldbookFromRows } from '../services/worldbook-import-handler.js';
+import { readOwnerAvatarBytes } from './avatars.js';
 
 const defaultCardPaths = [
   fileURLToPath(new URL('../../assets/default-card.png', import.meta.url)),
@@ -95,12 +96,16 @@ export function registerCharacterExportRoutes(
         const value = asset(dataDir, stored.originalPath, stored.storedPath);
         return value === undefined ? [] : [value];
       });
-      const currentAvatar = character.avatarPath === undefined
+      const currentAvatarBytes = character.avatarPath === undefined
         ? undefined
-        : asset(dataDir, 'avatar', character.avatarPath);
-      const sourceAvatar = source?.avatar === undefined
+        : await readOwnerAvatarBytes(dataDir, 'characters', character.id, character.avatarPath);
+      const currentAvatar = currentAvatarBytes === undefined ? undefined : { path: 'avatar', bytes: currentAvatarBytes };
+      const sourceAvatarBytes = source?.avatar === undefined
         ? undefined
-        : asset(dataDir, source.avatar.originalPath, source.avatar.storedPath);
+        : await readOwnerAvatarBytes(dataDir, 'characters', character.id, source.avatar.storedPath);
+      const sourceAvatar = source?.avatar === undefined || sourceAvatarBytes === undefined
+        ? undefined
+        : { path: source.avatar.originalPath, bytes: sourceAvatarBytes };
       const avatar = currentAvatar ?? sourceAvatar;
       const sourcePng = readDataAsset(dataDir, source?.sourcePngPath);
       const unknownFields = (source?.unknownFields ?? character.compatibility?.unknownFields ?? {

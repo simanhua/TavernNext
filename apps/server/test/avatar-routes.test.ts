@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -271,6 +271,18 @@ describe('safe avatar routes', () => {
     expect(missingPut.json()).toEqual({ error: 'not_found' });
   });
 
+  it('rejects a valid image outside the exact entity-bound avatar allowlist', async () => {
+    const { app, directory, repositories } = await context();
+    const importedPath = 'assets/imports/018f0000-0000-7000-8000-000000000998/character/avatar.png';
+    await mkdir(join(directory, ...importedPath.split('/').slice(0, -1)), { recursive: true });
+    await writeFile(join(directory, ...importedPath.split('/')), png);
+    expect(repositories.characters.update(characterId, 0, { avatarPath: importedPath })).toMatchObject({ ok: true });
+
+    const response = await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not_found' });
+  });
+
   it('cleans its temporary file when a multipart stream ends prematurely', async () => {
     const { app, directory, repositories } = await context();
 
@@ -301,5 +313,43 @@ describe('safe avatar routes', () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: 'not_found' });
     expect(response.payload).not.toContain(directory);
+  });
+
+  it('rejects linked owner directories for both reads and uploads', async () => {
+    const { app, directory, repositories } = await context();
+    const personaRoot = join(directory, 'assets', 'avatars', 'personas', personaId);
+    const characterRoot = join(directory, 'assets', 'avatars', 'characters', characterId);
+    const fileName = '018f0000-0000-7000-8000-000000000997.png';
+    await mkdir(personaRoot, { recursive: true });
+    await mkdir(join(directory, 'assets', 'avatars', 'characters'), { recursive: true });
+    await writeFile(join(personaRoot, fileName), png);
+    await symlink(personaRoot, characterRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(repositories.characters.update(characterId, 0, {
+      avatarPath: `assets/avatars/characters/${characterId}/${fileName}`,
+    })).toMatchObject({ ok: true });
+
+    const read = await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` });
+    expect(read.statusCode).toBe(404);
+    const upload = await app.inject({
+      method: 'PUT', url: `/api/characters/${characterId}/avatar?revision=1`,
+      ...multipart('replacement.png', png, 'image/png'),
+    });
+    expect(upload.statusCode).toBe(500);
+    expect(upload.json()).toEqual({ error: 'avatar_storage_failed' });
+  });
+
+  it('never deletes a noncanonical legacy path while replacing an avatar', async () => {
+    const { app, directory, repositories } = await context();
+    const sentinel = join(directory, 'do-not-delete.png');
+    await writeFile(sentinel, png);
+    const unsafeOldPath = `assets/avatars/characters/${characterId}/../../../../do-not-delete.png`;
+    expect(repositories.characters.update(characterId, 0, { avatarPath: unsafeOldPath })).toMatchObject({ ok: true });
+
+    const uploaded = await app.inject({
+      method: 'PUT', url: `/api/characters/${characterId}/avatar?revision=1`,
+      ...multipart('replacement.png', png, 'image/png'),
+    });
+    expect(uploaded.statusCode).toBe(200);
+    await expect(readFile(sentinel)).resolves.toEqual(png);
   });
 });

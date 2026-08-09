@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { useState } from 'react';
-import { api, errorCode, type Conversation, type PromptPreviewView } from '../../api/client.js';
+import { api, errorCode, type Conversation, type PromptPreviewView, type PromptTimedEntryView } from '../../api/client.js';
 
 function revisionSummary(preview: PromptPreviewView): string {
   const revisions = preview.entityRevisions;
@@ -10,6 +10,21 @@ function revisionSummary(preview: PromptPreviewView): string {
 function presetRevisionSummary(preview: PromptPreviewView): string {
   const presets = preview.entityRevisions.presets;
   return presets.length === 0 ? 'Presets: none' : `Presets: ${presets.map((preset) => `${preset.kind} r${preset.revision}`).join(', ')}`;
+}
+
+function TimedEntryList({ label, entries }: { label: string; entries: PromptTimedEntryView[] }) {
+  return (
+    <>
+      <h4>{label}</h4>
+      <ul aria-label={`${label} entries`}>
+        {entries.length === 0 ? <li>None</li> : entries.map((entry) => (
+          <li key={entry.entryKey}>
+            <strong>{entry.entryKey}</strong> · start {entry.start} · end {entry.end} · protected {entry.protected ? 'yes' : 'no'}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
 }
 
 export function PromptPreviewDialog({ conversation, userText }: { conversation: Conversation; userText: string }) {
@@ -83,10 +98,14 @@ export function PromptPreviewDialog({ conversation, userText }: { conversation: 
                   <>
                     <p>Previous timed state · message {preview.previousTimedState.messageIndex ?? 'none'}</p>
                     <p>Previous: {preview.previousTimedState.stickyCount} sticky · {preview.previousTimedState.cooldownCount} cooldown</p>
+                    <TimedEntryList label="Previous sticky" entries={preview.previousTimedState.sticky} />
+                    <TimedEntryList label="Previous cooldown" entries={preview.previousTimedState.cooldown} />
                   </>
                 )}
                 <p>Next timed state · message {preview.worldbook.timedState.messageIndex ?? 'none'}</p>
                 <p>Next: {preview.worldbook.timedState.stickyCount} sticky · {preview.worldbook.timedState.cooldownCount} cooldown</p>
+                <TimedEntryList label="Next sticky" entries={preview.worldbook.timedState.sticky} />
+                <TimedEntryList label="Next cooldown" entries={preview.worldbook.timedState.cooldown} />
               </section>
               <section>
                 <h3>Warnings</h3>

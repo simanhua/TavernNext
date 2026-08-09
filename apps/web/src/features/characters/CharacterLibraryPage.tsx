@@ -8,6 +8,7 @@ import { ImportDialog } from '../imports/ImportDialog.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
+import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 
 const CharacterFormSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
@@ -108,6 +109,16 @@ function patchFromForm(value: CharacterForm) {
   };
 }
 
+const characterPatchFields = [
+  'name', 'description', 'personality', 'scenario', 'firstMessage', 'examples', 'creatorNotes', 'creator',
+  'characterVersion', 'systemPrompt', 'postHistoryInstructions', 'depthPrompt', 'alternateGreetings', 'tags',
+  'worldbookId',
+] as const;
+
+function editableCharacter(value: CharacterView) {
+  return { ...fieldsFromForm(formFromCharacter(value)), worldbookId: value.worldbookId ?? null };
+}
+
 export function CharacterLibraryPage() {
   const queryClient = useQueryClient();
   const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters });
@@ -145,9 +156,11 @@ export function CharacterLibraryPage() {
     setPending(true);
     setError(undefined);
     try {
+      const patch = creating ? undefined : minimalPatch(editableCharacter(selected!), patchFromForm(values), characterPatchFields);
+      if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = creating
         ? await api.createManagedCharacter(createFromForm(values))
-        : await api.updateCharacter(selected!.id, revision!, patchFromForm(values));
+        : await api.updateCharacter(selected!.id, revision!, patch!);
       setSelected(saved);
       setCreating(false);
       setConflict(undefined);

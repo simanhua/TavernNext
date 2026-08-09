@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeInspectedCharacter,
   diagnostic,
-  type CharacterAuxiliaryAsset,
 } from '@tavernnext/st-compat';
 import type { ImportHandler } from './import-service.js';
 
@@ -18,10 +17,6 @@ export interface StoredCharacterSource {
   auxiliaryAssets: Array<{ originalPath: string; storedPath: string }>;
 }
 
-function sameAsset(left: CharacterAuxiliaryAsset, right: CharacterAuxiliaryAsset): boolean {
-  return left.path === right.path && Buffer.from(left.bytes).equals(Buffer.from(right.bytes));
-}
-
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -31,6 +26,15 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function characterDepthPrompt(extensions: Record<string, unknown>): string {
   const depthPrompt = record(extensions.depth_prompt);
   return depthPrompt !== undefined && typeof depthPrompt.prompt === 'string' ? depthPrompt.prompt : '';
+}
+
+function avatarExtension(bytes: Uint8Array): 'png' | 'jpg' | 'gif' | 'webp' {
+  if (bytes.length >= 8 && Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
+  const signature = Buffer.from(bytes.subarray(0, 12)).toString('ascii');
+  if (signature.startsWith('GIF87a') || signature.startsWith('GIF89a')) return 'gif';
+  if (signature.startsWith('RIFF') && signature.slice(8, 12) === 'WEBP') return 'webp';
+  throw new Error('Imported Character avatar is not a supported image');
 }
 
 export function createCharacterImportHandler(): ImportHandler {
@@ -72,6 +76,7 @@ export function createCharacterImportHandler(): ImportHandler {
       );
       const character = decoded.character;
       if (character === null) throw new Error('Character Card has no normalized fields');
+      const characterId = randomUUID();
       const storedAssets = decoded.auxiliaryAssets.map((asset, index) => ({
         originalPath: asset.path,
         storedPath: context.writeAsset(`character/auxiliary/${String(index).padStart(6, '0')}.bin`, asset.bytes),
@@ -79,16 +84,10 @@ export function createCharacterImportHandler(): ImportHandler {
       const sourcePngPath = decoded.sourcePng === undefined
         ? undefined
         : context.writeAsset('character/source.png', decoded.sourcePng);
-      const existingAvatar = decoded.avatar === undefined
+      const avatarBytes = decoded.avatar?.bytes ?? decoded.sourcePng;
+      const avatarStoredPath = avatarBytes === undefined
         ? undefined
-        : decoded.auxiliaryAssets.findIndex((asset) => sameAsset(asset, decoded.avatar!));
-      const avatarStoredPath = sourcePngPath ?? (
-        decoded.avatar === undefined
-          ? undefined
-          : existingAvatar !== undefined && existingAvatar >= 0
-            ? storedAssets[existingAvatar]!.storedPath
-            : context.writeAsset('character/avatar/current.bin', decoded.avatar.bytes)
-      );
+        : context.writeEntityAvatar('characters', characterId, avatarExtension(avatarBytes), avatarBytes);
       const source: StoredCharacterSource = {
         sourceFormat: decoded.sourceFormat,
         version: decoded.version,
@@ -97,13 +96,13 @@ export function createCharacterImportHandler(): ImportHandler {
         unknownFields: structuredClone(decoded.unknownFields),
         extensions: structuredClone(character.extensions),
         ...(sourcePngPath === undefined ? {} : { sourcePngPath }),
-        ...(decoded.avatar === undefined || avatarStoredPath === undefined ? {} : {
-          avatar: { originalPath: decoded.avatar.path, storedPath: avatarStoredPath },
+        ...(avatarStoredPath === undefined ? {} : {
+          avatar: { originalPath: decoded.avatar?.path ?? context.artifact.fileName, storedPath: avatarStoredPath },
         }),
         auxiliaryAssets: storedAssets,
       };
       const value = context.repositories.characters.create({
-        id: randomUUID(),
+        id: characterId,
         name: character.name,
         description: character.description,
         personality: character.personality,

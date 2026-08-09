@@ -169,6 +169,74 @@ conversation revision, and no timed-state advancement.
 
 Task 15 ships in commit `feat: add asset managers and prompt preview`.
 
+## Fix Round 1
+
+The final review findings were reproduced and closed with an allowlist-first,
+field-level editing boundary:
+
+- Character export now requests the real `json-v3` server format. Character,
+  Persona, Preset, Worldbook, and Worldbook Entry saves compute structural
+  diffs over explicit editable field allowlists, omit unchanged arrays and
+  records, and skip empty PATCH requests. Preset settings additionally send
+  only changed executable setting keys.
+- Preset and Worldbook Entry editors keep a frozen local baseline after a 409.
+  Ordinary Save continues to use that baseline, Retry alone adopts the latest
+  server revision for the retained user delta, and Reload replaces both draft
+  and baseline so the next ordinary Save succeeds.
+- Import commit uses a synchronous ref guard plus a dialog epoch. Same-tick
+  double activation issues one request, and late success/error from a cancelled
+  or reopened dialog cannot commit UI state.
+- Imported Character avatars, including the full image bytes of standalone PNG
+  Character Cards, are copied to the same exact entity-bound
+  `assets/avatars/characters/<entity-id>/<opaque>.<type>` namespace used by
+  uploads. Reads and Character exports reject every other stored path, reject
+  linked/junction/reparse components, compare pre-open and descriptor identity,
+  and stream the already verified descriptor. Upload and import destinations
+  also reject redirected owner directories. Replacement cleanup applies the
+  same exact grammar and direct-component checks, so malformed legacy paths
+  cannot delete unrelated data-directory files.
+- Prompt Preview projects and displays only exact timed-entry
+  `entryKey/start/end/protected` values for previous/next sticky and cooldown
+  lists. Fingerprints, HMACs, and unknown timed-entry properties stay outside
+  the browser DTO.
+- Chat Presets expose all prompt-order groups and every ordered identifier and
+  enabled flag with stable add/remove/reorder controls. Typed executable JSON
+  accepts only a plain record, and whitespace-only optional numeric prompt
+  values are omitted rather than coerced to zero. Prompt-order group IDs retain
+  their original number/string type, including integer-looking strings.
+- Worldbook managers label the finite executable book settings surface
+  (`enabled`, `scanDepth`, `tokenBudget`, and `recursiveScanning`, alongside
+  normalized identity text) and explicitly state that editable executable
+  Worldbook extensions are unavailable in this MVP. Raw extension sidecars
+  remain private compatibility data and do not cross the manager boundary.
+
+Fix Round 1 strict TDD evidence:
+
+- Consolidated web RED: 5/5 files failed with 14 failed and 20 passed of 34.
+- Prompt timed-state RED: 2/2 files failed with 2 failed and 2 passed of 4.
+- Avatar/import RED: 2/2 files failed with 2 failed and 14 passed of 16.
+- Focused aggregate GREEN: 10/10 files and 61/61 tests passed.
+- Independent review found the replacement-cleanup path was initially looser
+  than the read path. Its sentinel regression failed 1 of 12 avatar tests before
+  the shared strict owner grammar made the final 18-test avatar/Character gate
+  green.
+- The final compatibility sweep added standalone PNG avatar, numeric-string
+  prompt-order ID, and explicit Worldbook capability-message regressions. All
+  three failed alongside 24 passing tests before the same 3-file gate passed
+  27/27.
+- The first parallel full run passed 652 tests but one unrelated atomic-key
+  concurrency test exceeded its 5-second timeout. That exact file immediately
+  passed 7/7 in isolation, and the stable single-worker full gate passed 50
+  files and 656 tests with 2 files/14 capability tests skipped (670 collected).
+- The read-only SillyTavern oracle gate passed with the oracle fixed at
+  `8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8`; its worktree was clean before
+  and after the run.
+- `npm run typecheck`, the production build, and `git diff --check` passed.
+  The build transformed 249 modules; its only warning remains the existing
+  advisory single-chunk size warning.
+- Independent final review re-read the stable post-fix diff and returned no
+  remaining Critical or Important findings.
+
 ## Remaining boundaries
 
 - The Vite production build reports its advisory warning because the single
@@ -180,3 +248,5 @@ Task 15 ships in commit `feat: add asset managers and prompt preview`.
 - Prompt Preview remains deliberately read-only. Generation continues through
   the approved Chat/Task 13 snapshot flow rather than accepting raw preview
   payloads from the browser.
+
+Fix Round 1 ships in commit `fix: address task 15 review findings`.

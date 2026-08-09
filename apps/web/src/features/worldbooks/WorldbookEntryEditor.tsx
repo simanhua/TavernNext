@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { ApiError, api, errorCode, type WorldbookEntryView } from '../../api/client.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
+import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 
 const numeric = z.string().refine((value) => value !== '' && Number.isFinite(Number(value)), 'Enter a number');
 const nullableNumeric = z.string().refine((value) => value === '' || Number.isFinite(Number(value)), 'Enter a number');
@@ -122,6 +123,17 @@ function payload(values: FormValues) {
   };
 }
 
+type EntryPatch = ReturnType<typeof payload>;
+const entryPatchFields = [
+  'keys', 'secondaryKeys', 'useRegex', 'selective', 'selectiveLogic', 'content', 'enabled', 'constant', 'vectorized',
+  'caseSensitive', 'matchWholeWords', 'position', 'order', 'priority', 'probability', 'useProbability', 'group',
+  'groupWeight', 'groupOverride', 'ignoreBudget', 'scanDepth', 'useGroupScoring', 'excludeRecursion', 'preventRecursion',
+  'delayUntilRecursion', 'sticky', 'cooldown', 'delay', 'depth', 'role', 'outletName', 'characterFilter',
+  'personaFilter', 'matchPersonaDescription', 'matchCharacterDescription', 'matchCharacterPersonality',
+  'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes', 'comment', 'displayName', 'addMemo', 'displayIndex',
+  'automationId', 'triggers',
+] as const satisfies readonly (keyof EntryPatch)[];
+
 export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, loadLatest }: {
   worldbookId: string;
   entry?: WorldbookEntryView;
@@ -132,27 +144,34 @@ export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, lo
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState<WorldbookEntryView>();
+  const [baseline, setBaseline] = useState(entry);
   const form = useForm<FormValues>({ resolver: zodResolver(FormSchema), defaultValues: entry === undefined ? emptyValues : valuesFrom(entry) });
   const validationMessages = Object.values(form.formState.errors).flatMap((field) => (
     typeof field?.message === 'string' ? [field.message] : []
   ));
   useEffect(() => {
     form.reset(entry === undefined ? emptyValues : valuesFrom(entry));
+    setBaseline(entry);
     setConflict(undefined);
   }, [entry?.id]);
 
-  const save = async (values: FormValues, revision = entry?.revision) => {
+  const save = async (values: FormValues, revision = baseline?.revision) => {
     setPending(true);
     setError(undefined);
     try {
-      const saved = entry === undefined
-        ? await api.createWorldbookEntry(worldbookId, payload(values))
-        : await api.updateWorldbookEntry(worldbookId, entry.id, revision!, payload(values));
+      const next = payload(values);
+      const patch = baseline === undefined ? undefined : minimalPatch(payload(valuesFrom(baseline)), next, entryPatchFields);
+      if (patch !== undefined && !hasPatchFields(patch)) return;
+      const saved = baseline === undefined
+        ? await api.createWorldbookEntry(worldbookId, next)
+        : await api.updateWorldbookEntry(worldbookId, baseline.id, revision!, patch!);
       setConflict(undefined);
+      setBaseline(saved);
+      form.reset(valuesFrom(saved));
       onSaved(saved);
     } catch (cause) {
-      if (entry !== undefined && cause instanceof ApiError && cause.status === 409) {
-        try { setConflict(await loadLatest(entry.id)); } catch (loadError) { setError(errorCode(loadError)); }
+      if (baseline !== undefined && cause instanceof ApiError && cause.status === 409) {
+        try { setConflict(await loadLatest(baseline.id)); } catch (loadError) { setError(errorCode(loadError)); }
       } else setError(errorCode(cause));
     } finally {
       setPending(false);
@@ -222,7 +241,7 @@ export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, lo
       {conflict === undefined ? null : (
         <ConflictBanner
           revision={conflict.revision}
-          onReload={() => { form.reset(valuesFrom(conflict)); setConflict(undefined); }}
+          onReload={() => { setBaseline(conflict); form.reset(valuesFrom(conflict)); setConflict(undefined); onSaved(conflict); }}
           onRetry={() => void form.handleSubmit((values) => save(values, conflict.revision))()}
         />
       )}

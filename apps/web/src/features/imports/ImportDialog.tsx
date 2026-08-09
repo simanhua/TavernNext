@@ -19,9 +19,11 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
   const [inspecting, setInspecting] = useState(false);
   const [committing, setCommitting] = useState(false);
   const inspectionEpoch = useRef(0);
+  const committingRef = useRef(false);
 
   const reset = () => {
     inspectionEpoch.current += 1;
+    committingRef.current = false;
     setPreview(undefined);
     setInspectError(undefined);
     setCommitError(undefined);
@@ -52,16 +54,24 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
     const inspected = preview;
     if (inspected === undefined) return;
     const token = inspected.inspectionToken;
-    if (token === undefined || committing || inspected.blockingErrors.length > 0 || inspected.detected.kind !== expectedKind) return;
+    if (token === undefined || committingRef.current || inspected.blockingErrors.length > 0 || inspected.detected.kind !== expectedKind) return;
+    const operation = ++inspectionEpoch.current;
+    committingRef.current = true;
     setCommitting(true);
     setCommitError(undefined);
     try {
       const receipt = await api.commitImport(token);
+      if (inspectionEpoch.current !== operation) return;
       onCommitted(receipt);
       changeOpen(false);
     } catch (error) {
+      if (inspectionEpoch.current !== operation) return;
       setCommitError(errorCode(error));
-      setCommitting(false);
+    } finally {
+      if (inspectionEpoch.current === operation) {
+        committingRef.current = false;
+        setCommitting(false);
+      }
     }
   };
   const canCommit = preview?.inspectionToken !== undefined
