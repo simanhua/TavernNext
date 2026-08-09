@@ -40,6 +40,7 @@ let detail: WorldbookView = {
 let entryPatchCalls = 0;
 let reorderCalls = 0;
 let conflictOnce = false;
+let bookDeleteConflict = false;
 let bookPatches: Array<{ revision: number; patch: Record<string, unknown> }> = [];
 let entryPatches: Array<{ revision: number; patch: Record<string, unknown> }> = [];
 
@@ -100,6 +101,9 @@ const server = setupServer(
     detail = { ...detail, entries: detail.entries.filter((entry) => entry.id !== params.entryId) };
     return new HttpResponse(null, { status: 204 });
   }),
+  http.delete('/api/worldbooks/:bookId', () => bookDeleteConflict
+    ? HttpResponse.json({ error: 'constraint_conflict' }, { status: 409 })
+    : new HttpResponse(null, { status: 204 })),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -114,6 +118,7 @@ afterEach(() => {
   entryPatchCalls = 0;
   reorderCalls = 0;
   conflictOnce = false;
+  bookDeleteConflict = false;
   bookPatches = [];
   entryPatches = [];
 });
@@ -243,6 +248,19 @@ describe('WorldbookManagerPage', () => {
     expect(await screen.findByRole('button', { name: 'Edit entry Untitled entry' })).not.toBeNull();
     await user.click(screen.getByRole('button', { name: 'Delete entry Untitled entry' }));
     await waitFor(() => expect(detail.entries).toHaveLength(2));
+  });
+
+  it('explains when external links prevent deleting a Worldbook', async () => {
+    const user = userEvent.setup();
+    bookDeleteConflict = true;
+    renderWithApp(<WorldbookManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit Worldbook Archive Lore' }));
+    await user.click(screen.getByRole('button', { name: 'Delete Worldbook' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm delete Worldbook' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'This Worldbook is linked to a Character or Conversation. Remove those links before deleting it.',
+    );
   });
 
   it('freezes the Entry baseline after conflict until explicit Retry adopts the latest revision', async () => {
