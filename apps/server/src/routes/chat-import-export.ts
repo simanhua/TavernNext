@@ -111,13 +111,36 @@ function exportDocument(repositories: Repositories, conversationId: string): { d
   return { document: { header, messages }, title: conversation.title };
 }
 
+function wellFormedUnicode(value: string): string {
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        result += value[index]! + value[index + 1]!;
+        index += 1;
+      } else {
+        result += '\ufffd';
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      result += '\ufffd';
+    } else {
+      result += value[index]!;
+    }
+  }
+  return result;
+}
+
 function safeExportName(title: string): string {
-  const base = title.replace(/[\u0000-\u001f\u007f/\\]/g, '_').slice(0, 200) || 'chat';
+  const sanitized = wellFormedUnicode(title).replace(/[\u0000-\u001f\u007f/\\]/g, '_');
+  const base = Array.from(sanitized).slice(0, 200).join('') || 'chat';
   return `${base}.jsonl`;
 }
 
 function rfc5987(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(wellFormedUnicode(value))
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
 export function registerChatImportExportRoutes(

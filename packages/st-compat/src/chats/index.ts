@@ -118,6 +118,10 @@ function inertRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? cloneRecord(value) : {};
 }
 
+function hasOwn(source: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, key);
+}
+
 function without(source: Record<string, unknown>, known: ReadonlySet<string>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(source)
@@ -225,6 +229,7 @@ function normalizeHeader(source: Record<string, unknown>): StChatHeader {
     metadata.group_id !== undefined
     || metadata.groupId !== undefined
     || metadata.group_chat === true
+    || hasOwn(metadata, 'cfg_groupchat_individual_chars')
   ) {
     fail('chat_group_not_supported', 'SillyTavern group chats are not supported.');
   }
@@ -265,6 +270,14 @@ function makeVariant(
   const reasoningDuration = rawReasoningDuration !== undefined && rawReasoningDuration >= 0
     ? rawReasoningDuration
     : undefined;
+  const swipeInfo = without(info, SWIPE_INFO_KNOWN);
+  if (sendDate === undefined && hasOwn(info, 'send_date')) swipeInfo.send_date = structuredClone(info.send_date);
+  if (generationStarted === undefined && hasOwn(info, 'gen_started')) {
+    swipeInfo.gen_started = structuredClone(info.gen_started);
+  }
+  if (generationFinished === undefined && hasOwn(info, 'gen_finished')) {
+    swipeInfo.gen_finished = structuredClone(info.gen_finished);
+  }
   return {
     ordinal,
     content,
@@ -277,15 +290,15 @@ function makeVariant(
     ...(reasoning === undefined ? {} : { reasoning }),
     ...(reasoningDuration === undefined ? {} : { reasoningDuration }),
     extra,
-    swipeInfo: without(info, SWIPE_INFO_KNOWN),
+    swipeInfo,
   };
 }
 
 function messageSwipeInfo(source: Record<string, unknown>, extra: Record<string, unknown>): Record<string, unknown> {
   return {
-    ...optionalField('send_date', timestamp(source.send_date)),
-    ...optionalField('gen_started', timestamp(source.gen_started)),
-    ...optionalField('gen_finished', timestamp(source.gen_finished)),
+    ...(hasOwn(source, 'send_date') ? { send_date: structuredClone(source.send_date) } : {}),
+    ...(hasOwn(source, 'gen_started') ? { gen_started: structuredClone(source.gen_started) } : {}),
+    ...(hasOwn(source, 'gen_finished') ? { gen_finished: structuredClone(source.gen_finished) } : {}),
     extra: cloneRecord(extra),
   };
 }
@@ -300,9 +313,6 @@ function normalizeMessage(
   const content = stringField(source.mes);
   if (content === undefined) fail('chat_message_invalid', 'Chat message is missing string field `mes`.');
   const name = stringField(source.name) ?? (role === 'user' ? header.userName : header.characterName);
-  if (role === 'assistant' && messageExtra.gen_id !== undefined) {
-    fail('chat_group_not_supported', 'SillyTavern group chats are not supported.');
-  }
 
   const hadExplicitSwipes = source.swipes !== undefined;
   let contents: string[];
@@ -345,9 +355,9 @@ function normalizeMessage(
     const activeExtra = isRecord(activeInfo.extra) ? activeInfo.extra : {};
     infos[activeVariantIndex] = {
       ...activeInfo,
-      ...optionalField('send_date', timestamp(source.send_date)),
-      ...optionalField('gen_started', timestamp(source.gen_started)),
-      ...optionalField('gen_finished', timestamp(source.gen_finished)),
+      ...(hasOwn(source, 'send_date') ? { send_date: structuredClone(source.send_date) } : {}),
+      ...(hasOwn(source, 'gen_started') ? { gen_started: structuredClone(source.gen_started) } : {}),
+      ...(hasOwn(source, 'gen_finished') ? { gen_finished: structuredClone(source.gen_finished) } : {}),
       extra: { ...cloneRecord(activeExtra), ...cloneRecord(messageExtra) },
     };
   } else {
@@ -402,9 +412,6 @@ function decodeWithWarnings(
     if (message.role === 'user' && userIdentity === undefined) userIdentity = message.name;
     if (message.role === 'assistant') {
       if (assistantIdentity === undefined) assistantIdentity = message.name;
-      else if (message.name !== assistantIdentity) {
-        fail('chat_group_not_supported', 'Mixed-character and group chats are not supported.');
-      }
     }
     variantCount += message.variants.length;
     if (variantCount > cap.maxVariants) {
@@ -471,6 +478,17 @@ function exportSwipeInfo(variant: StChatVariant): Record<string, unknown> {
   };
 }
 
+function exportVariantField(
+  variant: StChatVariant,
+  envelopeName: 'send_date' | 'gen_started' | 'gen_finished',
+  normalized: StChatTimestamp | undefined,
+): unknown {
+  if (normalized !== undefined) return normalized;
+  return hasOwn(variant.swipeInfo, envelopeName)
+    ? structuredClone(variant.swipeInfo[envelopeName])
+    : undefined;
+}
+
 function validateExportMessage(message: StChatMessage): StChatVariant {
   if (message.variants.length === 0) {
     fail('chat_export_invalid', 'A chat message must contain at least one variant.');
@@ -489,16 +507,16 @@ function exportMessage(message: StChatMessage, header: StChatHeader): Record<str
   const exportedName = message.role === 'user'
     ? header.userName
     : message.role === 'assistant'
-      ? header.characterName
+      ? message.name
       : message.name;
   const base: Record<string, unknown> = {
     ...cloneRecord(message.raw),
     name: exportedName,
     is_user: message.role === 'user',
     is_system: message.role === 'system' ? message.isSystem : false,
-    ...optionalField('send_date', active.sendDate),
-    ...optionalField('gen_started', active.generationStarted),
-    ...optionalField('gen_finished', active.generationFinished),
+    ...optionalField('send_date', exportVariantField(active, 'send_date', active.sendDate)),
+    ...optionalField('gen_started', exportVariantField(active, 'gen_started', active.generationStarted)),
+    ...optionalField('gen_finished', exportVariantField(active, 'gen_finished', active.generationFinished)),
     mes: active.content,
     extra: exportVariantExtra(active.extra, active),
   };

@@ -64,7 +64,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 7 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 8 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -233,11 +233,14 @@ describe('SQLite repositories', () => {
       id: '018f0000-0000-7000-8000-000000000067', worldbookId: book.id,
       keys: [], constant: true, content: 'low',
     });
-    const tied = '2026-08-08T00:00:00.000Z';
     database.sqlite.exec(`
-      UPDATE messages SET created_at = '${tied}' WHERE conversation_id = '${conversation.id}';
-      UPDATE message_variants SET created_at = '${tied}' WHERE message_id IN ('${highMessage.id}', '${lowMessage.id}');
-      UPDATE worldbook_entries SET created_at = '${tied}' WHERE worldbook_id = '${book.id}';
+      UPDATE messages SET created_at = '2026-08-08T00:00:00.000Z' WHERE conversation_id = '${conversation.id}';
+      UPDATE message_variants SET created_at = CASE id
+        WHEN '${highVariant.id}' THEN '2026-08-08T00:00:00.000Z'
+        WHEN '${lowMessageVariant.id}' THEN '2026-08-08T00:00:01.000Z'
+        ELSE '2026-08-08T00:00:02.000Z'
+      END WHERE message_id IN ('${highMessage.id}', '${lowMessage.id}');
+      UPDATE worldbook_entries SET created_at = '2026-08-08T00:00:00.000Z' WHERE worldbook_id = '${book.id}';
     `);
     migrateDatabase(database);
     expect(database.sqlite.prepare('SELECT ordinal FROM message_variants WHERE id = ?').get(highVariant.id))
@@ -256,13 +259,13 @@ describe('SQLite repositories', () => {
       'EXPLAIN QUERY PLAN SELECT payload FROM messages WHERE conversation_id = ? ORDER BY created_at, id LIMIT 2049',
     ).all(conversation.id) as Array<{ detail: string }>;
     const variantPlan = database.sqlite.prepare(
-      'EXPLAIN QUERY PLAN SELECT payload FROM message_variants WHERE message_id = ? ORDER BY created_at, id LIMIT 4097',
+      'EXPLAIN QUERY PLAN SELECT payload FROM message_variants WHERE message_id = ? ORDER BY ordinal, created_at, id LIMIT 4097',
     ).all(highMessage.id) as Array<{ detail: string }>;
     const entryPlan = database.sqlite.prepare(
       'EXPLAIN QUERY PLAN SELECT payload FROM worldbook_entries WHERE worldbook_id = ? ORDER BY created_at, id LIMIT 4097',
     ).all(book.id) as Array<{ detail: string }>;
     expect(messagePlan.some(({ detail }) => detail.includes('messages_conversation_created_id_idx'))).toBe(true);
-    expect(variantPlan.some(({ detail }) => detail.includes('message_variants_message_created_id_idx'))).toBe(true);
+    expect(variantPlan.some(({ detail }) => detail.includes('message_variants_message_ordinal_created_id_idx'))).toBe(true);
     expect(messagePlan.some(({ detail }) => detail.includes('USE TEMP B-TREE'))).toBe(false);
     expect(variantPlan.some(({ detail }) => detail.includes('USE TEMP B-TREE'))).toBe(false);
     expect(entryPlan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_created_id_idx'))).toBe(true);
@@ -469,7 +472,7 @@ describe('SQLite repositories', () => {
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 4096, maxResponseTokens: 512,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 7 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 8 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

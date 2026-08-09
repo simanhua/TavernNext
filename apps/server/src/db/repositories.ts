@@ -357,7 +357,7 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
       return decode(database.orm.select({ payload: messageVariants.payload })
         .from(messageVariants)
         .where(eq(messageVariants.messageId, messageId))
-        .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+        .orderBy(asc(messageVariants.ordinal), asc(messageVariants.createdAt), asc(messageVariants.id))
         .limit(MAX_VARIANTS_PER_RELATION + 1)
         .all());
     },
@@ -377,7 +377,7 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
         const related = database.orm.select({ payload: messageVariants.payload })
           .from(messageVariants)
           .where(eq(messageVariants.messageId, parent.id))
-          .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+          .orderBy(asc(messageVariants.ordinal), asc(messageVariants.createdAt), asc(messageVariants.id))
           .limit(remaining)
           .all();
         rows.push(...related);

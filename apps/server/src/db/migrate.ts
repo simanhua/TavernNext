@@ -1,6 +1,6 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
@@ -31,6 +31,7 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
   CREATE INDEX IF NOT EXISTS messages_active_variant_id_idx ON messages(active_variant_id);
   CREATE INDEX IF NOT EXISTS message_variants_message_created_id_idx ON message_variants(message_id, created_at, id);
+  CREATE INDEX IF NOT EXISTS message_variants_message_ordinal_created_id_idx ON message_variants(message_id, ordinal, created_at, id);
   CREATE INDEX IF NOT EXISTS message_variants_message_id_idx ON message_variants(message_id);
   CREATE INDEX IF NOT EXISTS generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
   CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);

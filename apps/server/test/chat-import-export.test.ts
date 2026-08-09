@@ -56,7 +56,7 @@ async function context() {
 
 describe('ST chat import/export API', () => {
   it('inspects without mutation, atomically commits one Conversation with ordered variants, and exports it', async () => {
-    const { app, repositories } = await context();
+    const { app, database, repositories } = await context();
     const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'chats', 'swipes.jsonl'));
     const inspect = await app.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('swipes.jsonl', bytes) });
     expect(inspect.statusCode).toBe(200);
@@ -81,6 +81,15 @@ describe('ST chat import/export API', () => {
     const conversationId = committed.json().entityId as string;
     const messages = repositories.messages.listByConversationId(conversationId);
     expect(messages.map((message) => message.role)).toEqual(['user', 'assistant']);
+    database.sqlite.exec(`
+      UPDATE message_variants
+      SET created_at = CASE ordinal
+        WHEN 0 THEN '2026-08-09T00:00:03.000Z'
+        WHEN 1 THEN '2026-08-09T00:00:01.000Z'
+        ELSE '2026-08-09T00:00:02.000Z'
+      END
+      WHERE message_id = '${messages[1]!.id}';
+    `);
     const variants = repositories.messageVariants.listByMessageId(messages[1]!.id);
     expect(variants.map((variant) => ({ ordinal: variant.ordinal, content: variant.content }))).toEqual([
       { ordinal: 0, content: 'The first door opens.' },
@@ -88,6 +97,9 @@ describe('ST chat import/export API', () => {
       { ordinal: 2, content: 'The third door opens.' },
     ]);
     expect(messages[1]!.activeVariantId).toBe(variants[1]!.id);
+
+    const detail = await app.inject({ method: 'GET', url: `/api/conversations/${conversationId}/messages` });
+    expect(detail.json().messages[1].variants.map((variant: { ordinal: number }) => variant.ordinal)).toEqual([0, 1, 2]);
 
     const exported = await app.inject({ method: 'GET', url: `/api/conversations/${conversationId}/export?format=st-jsonl` });
     expect(exported.statusCode).toBe(200);
@@ -206,6 +218,12 @@ describe('ST chat import/export API', () => {
       JSON.stringify({ user_name: 'unused', character_name: 'unused', chat_metadata: {} }),
       JSON.stringify({
         name: 'Aster', is_user: false, is_system: false, mes: 'Metadata',
+        send_date: null, gen_started: null, gen_finished: null,
+        swipes: ['Metadata'], swipe_id: 0,
+        swipe_info: [{
+          send_date: null, gen_started: null, gen_finished: null,
+          extra: { token_count: -1, reasoning_duration: null, future: 'kept' },
+        }],
         extra: { token_count: -1, reasoning_duration: null, future: 'kept' },
       }),
       JSON.stringify({
@@ -224,6 +242,8 @@ describe('ST chat import/export API', () => {
       method: 'GET', url: `/api/conversations/${committed.json().entityId}/export?format=st-jsonl`,
     })).payload.trim().split('\n').map((line) => JSON.parse(line));
     expect(exported[1].extra).toEqual({ token_count: -1, reasoning_duration: null, future: 'kept' });
+    expect(exported[1]).toMatchObject({ send_date: null, gen_started: null, gen_finished: null });
+    expect(exported[1].swipe_info[0]).toMatchObject({ send_date: null, gen_started: null, gen_finished: null });
     expect(exported[2].extra).toEqual({ reasoning_duration: -2, future: 'also-kept' });
   });
 
@@ -265,9 +285,11 @@ describe('ST chat import/export API', () => {
   it('rejects mixed/group chat during inspect and creates no partial entities', async () => {
     const { app, repositories } = await context();
     const bytes = encoder.encode([
-      JSON.stringify({ user_name: 'Traveler', character_name: 'Aster', chat_metadata: {} }),
+      JSON.stringify({
+        user_name: 'unused', character_name: 'unused',
+        chat_metadata: { cfg_groupchat_individual_chars: true },
+      }),
       JSON.stringify({ name: 'Aster', is_user: false, mes: 'A', extra: {} }),
-      JSON.stringify({ name: 'Borin', is_user: false, mes: 'B', extra: { gen_id: 2 } }),
     ].join('\n'));
     const response = await app.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('group.jsonl', bytes) });
     expect(response.statusCode).toBe(422);
@@ -304,18 +326,34 @@ describe('ST chat import/export API', () => {
     expect(repositories.importArtifacts.list()).toEqual([]);
   });
 
-  it('uses RFC 5987 headers without CRLF/path injection', async () => {
+  it('uses Unicode-scalar-safe RFC 5987 headers without CRLF/path injection', async () => {
     const { app, repositories } = await context();
-    const conversation = repositories.conversations.create({
-      id: '018f2000-0000-7000-8000-000000000190',
-      characterId: ids.character,
-      personaId: ids.persona,
-      title: 'bad\r\n名字/..',
-    });
-    const response = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/export?format=st-jsonl` });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers['content-disposition']).not.toContain('\r');
-    expect(response.headers['content-disposition']).not.toContain('\n');
-    expect(response.headers['content-disposition']).toContain("filename*=UTF-8''bad__%E5%90%8D%E5%AD%97_...jsonl");
+    const cases = [
+      {
+        id: '018f2000-0000-7000-8000-000000000190',
+        title: `${'a'.repeat(199)}😀`,
+        encoded: `${'a'.repeat(199)}%F0%9F%98%80.jsonl`,
+      },
+      {
+        id: '018f2000-0000-7000-8000-000000000191',
+        title: 'bad\ud800name',
+        encoded: 'bad%EF%BF%BDname.jsonl',
+      },
+      {
+        id: '018f2000-0000-7000-8000-000000000192',
+        title: '雪\r\n/猫\\x',
+        encoded: '%E9%9B%AA___%E7%8C%AB_x.jsonl',
+      },
+    ];
+    for (const item of cases) {
+      const conversation = repositories.conversations.create({
+        id: item.id, characterId: ids.character, personaId: ids.persona, title: item.title,
+      });
+      const response = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/export?format=st-jsonl` });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-disposition']).not.toContain('\r');
+      expect(response.headers['content-disposition']).not.toContain('\n');
+      expect(response.headers['content-disposition']).toContain(`filename*=UTF-8''${item.encoded}`);
+    }
   });
 });

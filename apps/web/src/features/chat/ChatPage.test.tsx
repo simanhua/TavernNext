@@ -71,6 +71,7 @@ type MessageView = {
     createdAt: string;
     updatedAt: string;
     messageId: string;
+    ordinal?: number;
     content: string;
     status: 'completed' | 'aborted';
     finishReason?: string;
@@ -298,12 +299,12 @@ describe('ChatPage', () => {
       conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
       variants: [
         {
-          id: ids.assistantVariant, revision: 0, createdAt: now, updatedAt: now,
-          messageId: ids.assistantMessage, content: 'First answer', status: 'completed', finishReason: 'stop',
+          id: ids.assistantSibling, revision: 0, createdAt: now, updatedAt: now,
+          messageId: ids.assistantMessage, ordinal: 1, content: 'Second answer', status: 'completed', finishReason: 'stop',
         },
         {
-          id: ids.assistantSibling, revision: 0, createdAt: now, updatedAt: now,
-          messageId: ids.assistantMessage, content: 'Second answer', status: 'completed', finishReason: 'stop',
+          id: ids.assistantVariant, revision: 0, createdAt: now, updatedAt: now,
+          messageId: ids.assistantMessage, ordinal: 0, content: 'First answer', status: 'completed', finishReason: 'stop',
         },
       ],
     }];

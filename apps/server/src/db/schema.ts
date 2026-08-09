@@ -76,6 +76,7 @@ export const messageVariants = sqliteTable('message_variants', {
 }, (table) => [
   index('message_variants_message_id_idx').on(table.messageId),
   index('message_variants_message_created_id_idx').on(table.messageId, table.createdAt, table.id),
+  index('message_variants_message_ordinal_created_id_idx').on(table.messageId, table.ordinal, table.createdAt, table.id),
 ]);
 export const messages = sqliteTable('messages', {
   ...entityColumns,

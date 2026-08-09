@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ import {
 
 const fixture = (name: string) => readFile(join(process.cwd(), 'tests', 'fixtures', 'chats', name));
 const encoder = new TextEncoder();
+const oracleRoot = process.env.TAVERNNEXT_ST_ORACLE_ROOT;
 
 function errorCode(run: () => unknown): string {
   try {
@@ -54,6 +56,50 @@ describe('SillyTavern solo-chat JSONL', () => {
       { role: 'assistant', name: 'Aster' },
       { role: 'assistant', name: 'Aster' },
     ]);
+  });
+
+  it('accepts ST solo /sendas and quiet/comment shapes without inferring a group from names or gen_id', () => {
+    const bytes = encoder.encode([
+      JSON.stringify({ user_name: 'unused', character_name: 'unused', chat_metadata: { tainted: true } }),
+      JSON.stringify({ name: 'Aster', is_user: false, is_system: false, mes: 'Normal reply', extra: {} }),
+      JSON.stringify({
+        name: 'Chloe', is_user: false, is_system: false, mes: 'Sent as Chloe',
+        original_avatar: 'Chloe.png', force_avatar: '/thumbnail?file=Chloe.png',
+        extra: { gen_id: 1720000000000, api: 'manual', model: 'slash command' },
+        swipes: ['Sent as Chloe'], swipe_id: 0,
+        swipe_info: [{ gen_started: null, gen_finished: null, extra: { gen_id: 1720000000000, api: 'manual', model: 'slash command' } }],
+      }),
+      JSON.stringify({
+        name: 'Aster', is_user: false, is_system: false, is_name: true, mes: 'Quiet response',
+        extra: { type: 'comment', gen_id: 1720000000001, api: 'manual', model: 'slash command' },
+      }),
+      JSON.stringify({
+        name: 'Note', is_user: false, is_system: true, mes: 'Comment',
+        extra: { type: 'comment', gen_id: 1720000000002, api: 'manual', model: 'slash command' },
+      }),
+    ].join('\n'));
+
+    const chat = decodeStChatJsonl(bytes);
+    expect(chat.header.characterName).toBe('Aster');
+    expect(chat.messages.map(({ role, name }) => ({ role, name }))).toEqual([
+      { role: 'assistant', name: 'Aster' },
+      { role: 'assistant', name: 'Chloe' },
+      { role: 'assistant', name: 'Aster' },
+      { role: 'system', name: 'Note' },
+    ]);
+    const exported = new TextDecoder().decode(exportStChatJsonl(chat).bytes).trim().split('\n').map((line) => JSON.parse(line));
+    expect(exported.slice(1).map((line) => line.name)).toEqual(['Aster', 'Chloe', 'Aster', 'Note']);
+    expect(exported[2]).toMatchObject({ extra: { gen_id: 1720000000000 }, swipe_info: [{ gen_started: null, gen_finished: null }] });
+  });
+
+  it.runIf(oracleRoot !== undefined)('keeps the synthetic /sendas fixture derived from the hash-pinned ST source shape', async () => {
+    const source = await readFile(join(oracleRoot!, 'public', 'scripts', 'slash-commands.js'), 'utf8');
+    const start = source.indexOf('export async function sendMessageAs(args, text) {');
+    const end = source.indexOf('\nexport async function sendNarratorMessage', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(createHash('sha256').update(source.slice(start, end)).digest('hex'))
+      .toBe('af5641e902cc0c59d656a3286a2fdc9349046c83f2d673ee7c7501052bc6fd40');
   });
 
   it('keeps aligned swipe metadata, reasoning, timing, token, model, and API fields', async () => {
@@ -173,30 +219,32 @@ describe('SillyTavern solo-chat JSONL', () => {
     expect(errorCode(() => decodeStChatJsonl(bytes as Uint8Array))).toBe(code);
   });
 
-  it('rejects mixed-character/group chat without partially returning messages', () => {
+  it('rejects an explicit pinned group-only chat_metadata marker without parsing messages as evidence', () => {
     const bytes = encoder.encode([
-      JSON.stringify({ user_name: 'Traveler', character_name: 'Aster', chat_metadata: {} }),
-      JSON.stringify({ name: 'Aster', is_user: false, is_system: false, mes: 'A', extra: {} }),
-      JSON.stringify({ name: 'Borin', is_user: false, is_system: false, mes: 'B', extra: { gen_id: 2 } }),
+      JSON.stringify({
+        user_name: 'unused', character_name: 'unused',
+        chat_metadata: { cfg_groupchat_individual_chars: true },
+      }),
+      JSON.stringify({ name: 'Traveler', is_user: true, is_system: false, mes: 'Hello', extra: {} }),
     ].join('\n'));
     expect(errorCode(() => decodeStChatJsonl(bytes))).toBe('chat_group_not_supported');
   });
 
-  it('still rejects mixed assistant identities when the pinned header uses unused sentinels', () => {
+  it('accepts ambiguous mixed assistant identities when no explicit group marker exists', () => {
     const bytes = encoder.encode([
       JSON.stringify({ user_name: 'unused', character_name: 'unused', chat_metadata: {} }),
       JSON.stringify({ name: 'Aster', is_user: false, is_system: false, mes: 'A', extra: {} }),
       JSON.stringify({ name: 'Borin', is_user: false, is_system: false, mes: 'B', extra: {} }),
     ].join('\n'));
-    expect(errorCode(() => decodeStChatJsonl(bytes))).toBe('chat_group_not_supported');
+    expect(decodeStChatJsonl(bytes).messages.map(({ name }) => name)).toEqual(['Aster', 'Borin']);
   });
 
-  it('rejects a one-member pinned ST group marked by assistant gen_id metadata', () => {
+  it('does not classify a one-member assistant gen_id record as group evidence', () => {
     const bytes = encoder.encode([
       JSON.stringify({ user_name: 'unused', character_name: 'unused', chat_metadata: {} }),
-      JSON.stringify({ name: 'Aster', is_user: false, is_system: false, mes: 'Group greeting', extra: { gen_id: 42 } }),
+      JSON.stringify({ name: 'Aster', is_user: false, is_system: false, mes: 'Manual greeting', extra: { gen_id: 42 } }),
     ].join('\n'));
-    expect(errorCode(() => decodeStChatJsonl(bytes))).toBe('chat_group_not_supported');
+    expect(decodeStChatJsonl(bytes).messages[0]).toMatchObject({ name: 'Aster', extra: { gen_id: 42 } });
   });
 
   it('backfills legacy swipe_info like ST while keeping active metadata index-local', () => {
@@ -280,6 +328,39 @@ describe('SillyTavern solo-chat JSONL', () => {
     const lines = new TextDecoder().decode(exportStChatJsonl(chat).bytes).trim().split('\n').map((line) => JSON.parse(line));
     expect(lines[1].extra).toEqual({ token_count: -1, reasoning_duration: null, future: 'kept' });
     expect(lines[2].extra).toEqual({ reasoning_duration: -2, future: 'also-kept' });
+  });
+
+  it('round-trips null and recognized-but-unpromotable aligned swipe_info values while typed edits win', () => {
+    const bytes = encoder.encode([
+      JSON.stringify({ user_name: 'U', character_name: 'C', chat_metadata: {} }),
+      JSON.stringify({
+        name: 'C', is_user: false, is_system: false, mes: 'B',
+        send_date: null, gen_started: null, gen_finished: null,
+        swipes: ['A', 'B'], swipe_id: 1,
+        swipe_info: [
+          { send_date: false, gen_started: null, gen_finished: { legacy: true }, extra: {} },
+          { send_date: null, gen_started: null, gen_finished: null, extra: {} },
+        ],
+        extra: {},
+      }),
+    ].join('\n'));
+
+    const chat = decodeStChatJsonl(bytes);
+    expect(chat.messages[0]!.variants.map(({ swipeInfo }) => swipeInfo)).toEqual([
+      { send_date: false, gen_started: null, gen_finished: { legacy: true } },
+      { send_date: null, gen_started: null, gen_finished: null },
+    ]);
+    const roundTrip = JSON.parse(new TextDecoder().decode(exportStChatJsonl(chat).bytes).trim().split('\n')[1]!);
+    expect(roundTrip).toMatchObject({ send_date: null, gen_started: null, gen_finished: null });
+    expect(roundTrip.swipe_info).toEqual([
+      { send_date: false, gen_started: null, gen_finished: { legacy: true }, extra: {} },
+      { send_date: null, gen_started: null, gen_finished: null, extra: {} },
+    ]);
+
+    chat.messages[0]!.variants[1]!.generationStarted = 'edited-start';
+    const edited = JSON.parse(new TextDecoder().decode(exportStChatJsonl(chat).bytes).trim().split('\n')[1]!);
+    expect(edited.gen_started).toBe('edited-start');
+    expect(edited.swipe_info[1].gen_started).toBe('edited-start');
   });
 
   it('rejects active indexes outside the swipe array', () => {

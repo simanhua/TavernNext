@@ -10,9 +10,12 @@ interface SwipeControlsProps {
 
 export function SwipeControls({ message, selectionDisabled, generationDisabled, onSelect, onGenerate }: SwipeControlsProps) {
   if (message.role !== 'assistant' || message.variants.length === 0) return null;
-  const activeIndex = Math.max(0, message.variants.findIndex((variant) => variant.id === message.activeVariantId));
-  const previous = message.variants[activeIndex - 1];
-  const next = message.variants[activeIndex + 1];
+  const variants = [...message.variants].sort((left, right) => left.ordinal - right.ordinal
+    || left.createdAt.localeCompare(right.createdAt)
+    || left.id.localeCompare(right.id));
+  const activeIndex = Math.max(0, variants.findIndex((variant) => variant.id === message.activeVariantId));
+  const previous = variants[activeIndex - 1];
+  const next = variants[activeIndex + 1];
   return (
     <div className="swipe-controls" aria-label="Response variants">
       <button
@@ -21,7 +24,7 @@ export function SwipeControls({ message, selectionDisabled, generationDisabled, 
         disabled={selectionDisabled || previous === undefined}
         onClick={() => previous !== undefined && onSelect(previous.id)}
       >←</button>
-      <span aria-live="polite">{activeIndex + 1} / {message.variants.length}</span>
+      <span aria-live="polite">{activeIndex + 1} / {variants.length}</span>
       <button
         type="button"
         aria-label="Next variant"
