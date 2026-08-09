@@ -7,6 +7,8 @@ import {
   ORACLE_BUDGET_ACCUMULATOR_FIXTURE,
   ORACLE_BUDGET_FIXTURE,
   ORACLE_GROUP_ORDER_FIXTURE,
+  ORACLE_KELVIN_FOLD_FIXTURE,
+  ORACLE_LONG_S_FOLD_FIXTURE,
   ORACLE_MATCH_FIXTURE,
   ORACLE_TIMED_FIXTURE,
   type OracleEntryFixture,
@@ -158,6 +160,17 @@ describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 Worldbook
       activated: oracle.groups.activeMultiGroup.activated,
       excluded: oracle.groups.activeMultiGroup.excluded,
     });
+
+    const kelvin = evaluateWorldbooks(evaluationInput([bookFrom(ORACLE_KELVIN_FOLD_FIXTURE)], {
+      scanSources: { messages: ['\u212a'], additional: [], trigger: 'normal' },
+      tokenBudget: 64,
+    }));
+    const longS = evaluateWorldbooks(evaluationInput([bookFrom(ORACLE_LONG_S_FOLD_FIXTURE)], {
+      scanSources: { messages: ['\u017f'], additional: [], trigger: 'normal' },
+      tokenBudget: 64,
+    }));
+    expect(projection(kelvin)).toEqual(oracle.regexFolding.kelvin);
+    expect(projection(longS)).toEqual(oracle.regexFolding.longS);
 
     expect(budgetProjection(4)).toEqual(oracle.budget.fits);
     expect(budgetProjection(3)).toEqual(oracle.budget.boundary);

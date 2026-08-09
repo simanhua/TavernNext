@@ -63,6 +63,16 @@ export const ORACLE_BUDGET_ACCUMULATOR_FIXTURE: readonly OracleEntryFixture[] = 
   { uid: 'ignored-b', content: 'B', order: 100, constant: true, ignoreBudget: true },
 ];
 
+export const ORACLE_KELVIN_FOLD_FIXTURE: readonly OracleEntryFixture[] = [
+  { uid: 'legacy-k', keys: ['/^\\x01k$/i'], content: 'LEGACY_K', order: 200 },
+  { uid: 'unicode-k', keys: ['/^\\x01k$/iu'], content: 'UNICODE_K', order: 100 },
+];
+
+export const ORACLE_LONG_S_FOLD_FIXTURE: readonly OracleEntryFixture[] = [
+  { uid: 'legacy-s', keys: ['/^\\x01s$/i'], content: 'LEGACY_S', order: 200 },
+  { uid: 'unicode-s', keys: ['/^\\x01s$/iu'], content: 'UNICODE_S', order: 100 },
+];
+
 export interface OracleProjection {
   activated: Array<{ uid: string; content: string; order: number }>;
   excluded: Array<{ uid: string; reason: string }>;
@@ -92,6 +102,10 @@ export interface WorldbookOracle {
   groups: {
     firstOccurrence: OracleProjection;
     activeMultiGroup: OracleProjection;
+  };
+  regexFolding: {
+    kelvin: OracleProjection;
+    longS: OracleProjection;
   };
   budget: {
     fits: OracleBudgetProjection;
@@ -491,6 +505,34 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
     tokenInputs,
   });
 
+  currentEntries = ORACLE_KELVIN_FOLD_FIXTURE.map(upstreamEntry);
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  const kelvin = await runOracleCase({
+    checkWorldInfo,
+    fixtures: ORACLE_KELVIN_FOLD_FIXTURE,
+    state: currentState,
+    chatLength: 1,
+    chat: ['\u212a'],
+    lines,
+    tokenInputs,
+    knownExcludedReason: 'primary_key_miss',
+  });
+
+  currentEntries = ORACLE_LONG_S_FOLD_FIXTURE.map(upstreamEntry);
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  const longS = await runOracleCase({
+    checkWorldInfo,
+    fixtures: ORACLE_LONG_S_FOLD_FIXTURE,
+    state: currentState,
+    chatLength: 1,
+    chat: ['\u017f'],
+    lines,
+    tokenInputs,
+    knownExcludedReason: 'primary_key_miss',
+  });
+
   currentEntries = ORACLE_BUDGET_FIXTURE.map(upstreamEntry);
   currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
   random = seededRandom(1);
@@ -533,6 +575,7 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
     matching,
     timed: { started, held, cooling },
     groups: { firstOccurrence, activeMultiGroup },
+    regexFolding: { kelvin, longS },
     budget: { fits, boundary, rejectedThenIgnored },
   };
 }

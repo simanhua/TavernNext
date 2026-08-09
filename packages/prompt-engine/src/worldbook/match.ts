@@ -52,37 +52,230 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-const SURROGATE_TOKEN_BASE = 0xf0000;
+// Plane 15 is reserved from assigned characters (private-use code points plus
+// two terminal noncharacters), so none of these 65,536 runes case-fold. Original
+// supplementary input cannot collide because non-u matching first decomposes it
+// into its two UTF-16 surrogate code units.
+const LEGACY_CODE_UNIT_TOKEN_BASE = 0xf0000;
+const MAX_LEGACY_CLASS_RANGE_WORK = 65_536;
 
-function utf16CodeUnitText(value: string): string {
+/**
+ * ECMAScript's legacy (non-u) IgnoreCase Canonicalize operation works on one
+ * UTF-16 code unit at a time. In particular, it keeps multi-code-unit uppercase
+ * mappings and non-ASCII-to-ASCII mappings unchanged. RE2's case folding is
+ * Unicode-aware, so those two rules must be enforced before RE2 sees input.
+ */
+function canonicalizeLegacyCodeUnit(codeUnit: number): number {
+  const value = String.fromCharCode(codeUnit);
+  const uppercase = value.toUpperCase();
+  if (uppercase.length !== 1) return codeUnit;
+  const canonical = uppercase.charCodeAt(0);
+  if (codeUnit >= 0x80 && canonical < 0x80) return codeUnit;
+  return canonical;
+}
+
+function legacyCodeUnitToken(codeUnit: number): string {
+  return String.fromCodePoint(LEGACY_CODE_UNIT_TOKEN_BASE + codeUnit);
+}
+
+function legacyCodeUnitTokenEscape(codeUnit: number): string {
+  return `\\x{${(LEGACY_CODE_UNIT_TOKEN_BASE + codeUnit).toString(16)}}`;
+}
+
+interface LegacyClassAtom {
+  codeUnit?: number;
+  source: string;
+  nextIndex: number;
+}
+
+function readLegacyClassAtom(value: string, index: number): LegacyClassAtom | undefined {
+  const current = value[index];
+  if (current === undefined || current === ']') return undefined;
+  if (current !== '\\') {
+    return { codeUnit: current.charCodeAt(0), source: current, nextIndex: index + 1 };
+  }
+  const escaped = value[index + 1];
+  if (escaped === undefined) return undefined;
+  const unicodeEscape = /^\\u([0-9a-fA-F]{4})/.exec(value.slice(index));
+  if (unicodeEscape !== null) {
+    return {
+      codeUnit: Number.parseInt(unicodeEscape[1]!, 16),
+      source: unicodeEscape[0],
+      nextIndex: index + unicodeEscape[0].length,
+    };
+  }
+  const byteEscape = /^\\x([0-9a-fA-F]{2})/.exec(value.slice(index));
+  if (byteEscape !== null) {
+    return {
+      codeUnit: Number.parseInt(byteEscape[1]!, 16),
+      source: byteEscape[0],
+      nextIndex: index + byteEscape[0].length,
+    };
+  }
+  if ('dDsSwW'.includes(escaped)) {
+    return { source: `\\${escaped}`, nextIndex: index + 2 };
+  }
+  const control = value[index + 2];
+  if (escaped === 'c' && control !== undefined && /[A-Za-z]/.test(control)) {
+    return {
+      codeUnit: control.toUpperCase().charCodeAt(0) % 32,
+      source: value.slice(index, index + 3),
+      nextIndex: index + 3,
+    };
+  }
+  const simpleEscapes: Readonly<Record<string, number>> = {
+    b: 0x08,
+    f: 0x0c,
+    n: 0x0a,
+    r: 0x0d,
+    t: 0x09,
+    v: 0x0b,
+  };
+  const simple = simpleEscapes[escaped];
+  if (simple !== undefined) return { codeUnit: simple, source: `\\${escaped}`, nextIndex: index + 2 };
+  if (escaped === '0') {
+    if (/[0-9]/.test(value[index + 2] ?? '')) return undefined;
+    return { codeUnit: 0, source: '\\0', nextIndex: index + 2 };
+  }
+  return { codeUnit: escaped.charCodeAt(0), source: `\\${escaped}`, nextIndex: index + 2 };
+}
+
+function encodedLegacyCodeUnit(codeUnit: number): number {
+  return codeUnit < 0x80 ? codeUnit : LEGACY_CODE_UNIT_TOKEN_BASE + codeUnit;
+}
+
+function renderEncodedRange(first: number, last: number): string {
+  const start = `\\x{${encodedLegacyCodeUnit(first).toString(16)}}`;
+  if (first === last) return start;
+  return `${start}-\\x{${encodedLegacyCodeUnit(last).toString(16)}}`;
+}
+
+function renderLegacyClassSet(set: Uint8Array): string {
+  let rendered = '';
+  const appendRuns = (first: number, last: number): void => {
+    for (let index = first; index <= last;) {
+      if (set[index] === 0) {
+        index += 1;
+        continue;
+      }
+      let end = index;
+      while (end < last && set[end + 1] === 1) end += 1;
+      rendered += renderEncodedRange(index, end);
+      index = end + 1;
+    }
+  };
+  // Encoding jumps between ASCII and non-ASCII, so a range cannot cross 0x7f.
+  appendRuns(0, 0x7f);
+  appendRuns(0x80, 0xffff);
+  return rendered;
+}
+
+function transformLegacyCharacterClass(
+  value: string,
+  openIndex: number,
+  budget: { rangeWork: number },
+): { source: string; endIndex: number } | undefined {
+  let index = openIndex + 1;
+  let negated = false;
+  if (value[index] === '^') {
+    negated = true;
+    index += 1;
+  }
+  const set = new Uint8Array(65_536);
+  const opaque: string[] = [];
+  while (index < value.length && value[index] !== ']') {
+    const first = readLegacyClassAtom(value, index);
+    if (first === undefined) return undefined;
+    if (value[first.nextIndex] === '-' && value[first.nextIndex + 1] !== ']') {
+      const last = readLegacyClassAtom(value, first.nextIndex + 1);
+      if (last === undefined || first.codeUnit === undefined || last.codeUnit === undefined) return undefined;
+      if (last.codeUnit < first.codeUnit) return undefined;
+      const rangeWork = last.codeUnit - first.codeUnit + 1;
+      if (rangeWork > MAX_LEGACY_CLASS_RANGE_WORK - budget.rangeWork) return undefined;
+      budget.rangeWork += rangeWork;
+      for (let codeUnit = first.codeUnit; codeUnit <= last.codeUnit; codeUnit += 1) {
+        set[canonicalizeLegacyCodeUnit(codeUnit)] = 1;
+      }
+      index = last.nextIndex;
+      continue;
+    }
+    if (first.codeUnit === undefined) opaque.push(first.source);
+    else set[canonicalizeLegacyCodeUnit(first.codeUnit)] = 1;
+    index = first.nextIndex;
+  }
+  if (value[index] !== ']') return undefined;
+  const contents = `${renderLegacyClassSet(set)}${opaque.join('')}`;
+  if (contents === '') {
+    return {
+      source: negated ? '[\\s\\S]' : '[^\\s\\S]',
+      endIndex: index,
+    };
+  }
+  return { source: `[${negated ? '^' : ''}${contents}]`, endIndex: index };
+}
+
+function utf16CodeUnitText(value: string, ignoreCase: boolean): string {
   let transformed = '';
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
-    transformed += codeUnit >= 0xd800 && codeUnit <= 0xdfff
-      ? String.fromCodePoint(SURROGATE_TOKEN_BASE + codeUnit - 0xd800)
-      : value[index];
+    if (ignoreCase && codeUnit >= 0x80) {
+      transformed += legacyCodeUnitToken(canonicalizeLegacyCodeUnit(codeUnit));
+    } else if (codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
+      transformed += legacyCodeUnitToken(codeUnit);
+    } else {
+      transformed += value[index];
+    }
   }
   return transformed;
 }
 
-function utf16CodeUnitPattern(value: string): string {
+function utf16CodeUnitPattern(value: string, ignoreCase: boolean): string | undefined {
   let transformed = '';
+  const budget = { rangeWork: 0 };
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
-      transformed += `\\x{${(SURROGATE_TOKEN_BASE + codeUnit - 0xd800).toString(16)}}`;
+    if (ignoreCase && value[index] === '[') {
+      const characterClass = transformLegacyCharacterClass(value, index, budget);
+      if (characterClass === undefined) return undefined;
+      transformed += characterClass.source;
+      index = characterClass.endIndex;
       continue;
     }
-    if (value[index] === '\\' && value[index + 1] === 'u') {
+    if (ignoreCase && codeUnit >= 0x80) {
+      transformed += legacyCodeUnitTokenEscape(canonicalizeLegacyCodeUnit(codeUnit));
+      continue;
+    }
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
+      transformed += legacyCodeUnitTokenEscape(codeUnit);
+      continue;
+    }
+    if (value[index] === '\\') {
       const escapedCodeUnit = /^\\u([0-9a-fA-F]{4})/.exec(value.slice(index));
       if (escapedCodeUnit !== null) {
         const escapedValue = Number.parseInt(escapedCodeUnit[1]!, 16);
-        if (escapedValue >= 0xd800 && escapedValue <= 0xdfff) {
-          transformed += `\\x{${(SURROGATE_TOKEN_BASE + escapedValue - 0xd800).toString(16)}}`;
+        if ((ignoreCase && escapedValue >= 0x80)
+          || (escapedValue >= 0xd800 && escapedValue <= 0xdfff)) {
+          const canonical = ignoreCase ? canonicalizeLegacyCodeUnit(escapedValue) : escapedValue;
+          transformed += legacyCodeUnitTokenEscape(canonical);
           index += 5;
           continue;
         }
       }
+      const escapedByte = /^\\x([0-9a-fA-F]{2})/.exec(value.slice(index));
+      if (ignoreCase && escapedByte !== null) {
+        const escapedValue = Number.parseInt(escapedByte[1]!, 16);
+        if (escapedValue >= 0x80) {
+          transformed += legacyCodeUnitTokenEscape(canonicalizeLegacyCodeUnit(escapedValue));
+          index += 3;
+          continue;
+        }
+      }
+      transformed += value[index];
+      if (value[index + 1] !== undefined) {
+        transformed += value[index + 1];
+        index += 1;
+      }
+      continue;
     }
     transformed += value[index];
   }
@@ -115,23 +308,26 @@ function parseDelimitedRegex(value: string, cache: Map<string, ParsedDelimitedRe
   }
   if (flags.includes('v')) return finish({ kind: 'unsafe' });
   const unicode = flags.includes('u');
+  const ignoreCase = flags.includes('i');
   if (hasUnsupportedRegexSyntax(nativeRegex.source, unicode)) return finish({ kind: 'unsafe' });
   try {
     let re2Flags = 0;
     if (flags.includes('i')) re2Flags |= RE2JS.CASE_INSENSITIVE;
     if (flags.includes('m')) re2Flags |= RE2JS.MULTILINE;
     if (flags.includes('s')) re2Flags |= RE2JS.DOTALL;
+    const legacyPattern = unicode ? undefined : utf16CodeUnitPattern(nativeRegex.source, ignoreCase);
+    if (!unicode && legacyPattern === undefined) return finish({ kind: 'unsafe' });
     const safePattern = unicode
       ? RE2JS.translateRegExp(nativeRegex)
-      : RE2JS.translateRegExp(utf16CodeUnitPattern(nativeRegex.source));
+      : RE2JS.translateRegExp(legacyPattern!);
     const regex = RE2JS.compile(safePattern, re2Flags);
     if (regex.programSize() > MAX_WORLDBOOK_REGEX_PROGRAM_SIZE) return finish({ kind: 'unsafe' });
     const sticky = flags.includes('y');
     return finish({
       kind: 'regex',
       test: sticky
-        ? (text) => regex.matcher(unicode ? text : utf16CodeUnitText(text)).lookingAt()
-        : (text) => regex.test(unicode ? text : utf16CodeUnitText(text)),
+        ? (text) => regex.matcher(unicode ? text : utf16CodeUnitText(text, ignoreCase)).lookingAt()
+        : (text) => regex.test(unicode ? text : utf16CodeUnitText(text, ignoreCase)),
     });
   } catch {
     return finish({ kind: 'invalid' });

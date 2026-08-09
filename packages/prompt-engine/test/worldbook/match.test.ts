@@ -217,6 +217,60 @@ describe('Worldbook keyword matching', () => {
     expect(excludedReason(result, 'utf16')).toBe('primary_key_miss');
   });
 
+  it.each([
+    { label: 'Kelvin sign', pattern: '^\\x01k$', input: '\u212a', legacy: false, unicode: true },
+    { label: 'long s', pattern: '^\\x01s$', input: '\u017f', legacy: false, unicode: true },
+    { label: 'sharp s', pattern: '^\\x01ß$', input: '\u1e9e', legacy: false, unicode: true },
+    { label: 'Greek theta symbol', pattern: '^\\x01θ$', input: '\u03f4', legacy: false, unicode: true },
+    { label: 'Ohm sign', pattern: '^\\x01ω$', input: '\u2126', legacy: false, unicode: true },
+    { label: 'Angstrom sign', pattern: '^\\x01å$', input: '\u212b', legacy: false, unicode: true },
+    { label: 'dotless i', pattern: '^\\x01i$', input: '\u0131', legacy: false, unicode: false },
+    { label: 'ASCII class', pattern: '^\\x01[k]$', input: '\u212a', legacy: false, unicode: true },
+    { label: 'mixed canonical range', pattern: '^\\x01[À-ö]$', input: '×', legacy: true, unicode: true },
+    { label: 'ASCII case pair', pattern: '^\\x01k$', input: 'K', legacy: true, unicode: true },
+    { label: 'Latin accent', pattern: '^\\x01é$', input: 'É', legacy: true, unicode: true },
+    { label: 'hex-escaped Latin accent', pattern: '^\\x01\\xE9$', input: 'É', legacy: true, unicode: true },
+    { label: 'Unicode-escaped Latin accent', pattern: '^\\x01\\u00E9$', input: 'É', legacy: true, unicode: true },
+    { label: 'Greek final sigma', pattern: '^\\x01σ$', input: 'ς', legacy: true, unicode: true },
+  ])('implements complete ECMAScript legacy non-u folding for $label', ({ pattern, input, legacy, unicode }) => {
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('legacy-case-fold', [
+        worldbookEntry('legacy', { keys: [`/${pattern}/i`] }),
+        worldbookEntry('unicode', { keys: [`/${pattern}/iu`], sourceOrdinal: 1 }),
+      ]),
+    ], { scanSources: { messages: [input], additional: [], trigger: 'normal' } }));
+
+    expect(activatedUids(result).includes('legacy')).toBe(legacy);
+    expect(activatedUids(result).includes('unicode')).toBe(unicode);
+  });
+
+  it('keeps the internal UTF-16 alphabet outside Unicode case-folding orbits', () => {
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('legacy-token-alphabet', [
+        // With an internal base of U+10000 these become the case-paired
+        // Deseret runes U+10400 and U+10428 even though the source Cyrillic
+        // code units are unrelated under both JavaScript modes.
+        worldbookEntry('legacy', { keys: ['/^\\x01\\u0400$/i'] }),
+        worldbookEntry('unicode', { keys: ['/^\\x01\\u0400$/iu'], sourceOrdinal: 1 }),
+      ]),
+    ], { scanSources: { messages: ['\u0428'], additional: [], trigger: 'normal' } }));
+
+    expect(activatedUids(result)).toEqual([]);
+  });
+
+  it('bounds cumulative legacy character-class canonicalization work', () => {
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('legacy-class-cap', [
+        worldbookEntry('oversized', { keys: ['/[\\u0000-\\uffff][\\u0000-\\uffff]/i'] }),
+        worldbookEntry('valid', { keys: ['/safe/i'], sourceOrdinal: 1 }),
+      ]),
+    ], { scanSources: { messages: ['safe'], additional: [], trigger: 'normal' } }));
+
+    expect(activatedUids(result)).toEqual(['valid']);
+    expect(excludedReason(result, 'oversized')).toBe('unsafe_regex');
+    expect(result.warnings.map((warning) => warning.code)).toContain('unsafe_regex');
+  });
+
   it('compiles each slash-delimited regex once per evaluation', () => {
     const compile = vi.spyOn(RE2JS, 'compile');
     try {
