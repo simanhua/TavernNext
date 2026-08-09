@@ -43,6 +43,13 @@ function entryName(entry: WorldbookEntryView): string {
   return entry.displayName || entry.comment || 'Untitled entry';
 }
 
+function worldbookError(cause: unknown): string {
+  const code = errorCode(cause);
+  return code === 'constraint_conflict'
+    ? 'This Worldbook is linked to a Character or Conversation. Remove those links before deleting it.'
+    : code;
+}
+
 export function WorldbookManagerPage() {
   const queryClient = useQueryClient();
   const books = useQuery({ queryKey: ['worldbooks'], queryFn: api.listWorldbooks });
@@ -137,7 +144,8 @@ export function WorldbookManagerPage() {
       setDeleteOpen(false);
       await refreshList();
     } catch (cause) {
-      setError(errorCode(cause));
+      setDeleteOpen(false);
+      setError(worldbookError(cause));
     } finally {
       setPending(false);
     }

@@ -86,6 +86,13 @@ function revisionFrom(value: unknown): number | undefined {
   return undefined;
 }
 
+class WorldbookDeleteResultError extends Error {
+  constructor(readonly reason: 'not_found' | 'conflict') {
+    super(reason);
+    this.name = 'WorldbookDeleteResultError';
+  }
+}
+
 export function registerWorldbookRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
@@ -145,10 +152,19 @@ export function registerWorldbookRoutes(
       const revision = revisionFrom(request.query.revision ?? bodyRevision);
       if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
       try {
-        const result = repositories.worldbooks.delete(request.params.id, revision);
-        if (result.ok) return reply.status(204).send();
-        return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
-      } catch {
+        database.transaction(() => {
+          if (repositories.worldbooks.hasExternalReferences(request.params.id)) {
+            throw new Error('constraint_conflict');
+          }
+          repositories.worldbookEntries.deleteByWorldbookId(request.params.id);
+          const deletion = repositories.worldbooks.delete(request.params.id, revision);
+          if (!deletion.ok) throw new WorldbookDeleteResultError(deletion.reason);
+        });
+        return reply.status(204).send();
+      } catch (error) {
+        if (error instanceof WorldbookDeleteResultError) {
+          return reply.status(error.reason === 'not_found' ? 404 : 409).send({ error: error.reason });
+        }
         return reply.status(409).send({ error: 'constraint_conflict' });
       }
     },

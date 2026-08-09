@@ -16,6 +16,7 @@ const ids = {
   worldbook: '018f0000-0000-7000-8000-000000000955',
   entry: '018f0000-0000-7000-8000-000000000956',
   entryTwo: '018f0000-0000-7000-8000-000000000957',
+  conversation: '018f0000-0000-7000-8000-000000000959',
 };
 const directories: string[] = [];
 const apps: Array<ReturnType<typeof createApp>> = [];
@@ -293,5 +294,52 @@ describe('sanitized manager APIs', () => {
     expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook).map((entry) => [entry.id, entry.order])).toEqual([
       [ids.entry, 20], [ids.entryTwo, 10],
     ]);
+  });
+
+  it('deletes owned entries atomically while preserving revision and external-reference conflicts', async () => {
+    const { app, repositories } = await context();
+
+    const externallyLinked = await app.inject({
+      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=0`,
+    });
+    expect(externallyLinked.statusCode).toBe(409);
+    expect(externallyLinked.json()).toEqual({ error: 'constraint_conflict' });
+    expect(repositories.worldbooks.get(ids.worldbook)).toBeDefined();
+    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook)).toHaveLength(2);
+
+    const character = repositories.characters.get(ids.character)!;
+    const unlinked = repositories.characters.update(character.id, character.revision, { worldbookId: undefined });
+    expect(unlinked.ok).toBe(true);
+
+    repositories.conversations.create({
+      id: ids.conversation,
+      characterId: ids.character,
+      personaId: ids.persona,
+      title: 'Linked conversation',
+      worldbookIds: [ids.worldbook],
+    });
+    const conversationLinked = await app.inject({
+      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=0`,
+    });
+    expect(conversationLinked.statusCode).toBe(409);
+    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook)).toHaveLength(2);
+    expect(repositories.conversations.delete(ids.conversation, 0).ok).toBe(true);
+
+    const stale = await app.inject({
+      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=99`,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toEqual({ error: 'conflict' });
+    expect(repositories.worldbooks.get(ids.worldbook)).toBeDefined();
+    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook)).toHaveLength(2);
+
+    const response = await app.inject({
+      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=0`,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(repositories.worldbooks.get(ids.worldbook)).toBeUndefined();
+    expect(repositories.worldbookEntries.get(ids.entry)).toBeUndefined();
+    expect(repositories.worldbookEntries.get(ids.entryTwo)).toBeUndefined();
   });
 });
