@@ -1,10 +1,13 @@
 import { appendFileSync } from 'node:fs';
-import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { encodeCharacterPng } from '@tavernnext/st-compat';
+import encodePngChunks from 'png-chunks-encode';
+import extractPngChunks from 'png-chunks-extract';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -24,6 +27,34 @@ const png = Buffer.from(
 const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0xff, 0xd9]);
 const webp = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+
+function pngWithoutIdat(): Buffer {
+  return Buffer.from(encodePngChunks(extractPngChunks(png).filter((chunk) => chunk.name !== 'IDAT')));
+}
+
+function pngWithInvalidCrc(): Buffer {
+  const bytes = Buffer.from(png);
+  const idat = bytes.indexOf(Buffer.from('IDAT'));
+  bytes[idat + 4] ^= 0xff;
+  return bytes;
+}
+
+function pngWithAdversarialDimensions(): Buffer {
+  const chunks = extractPngChunks(png).map((chunk) => ({ name: chunk.name, data: Uint8Array.from(chunk.data) }));
+  const ihdr = chunks.find((chunk) => chunk.name === 'IHDR')!;
+  Buffer.from(ihdr.data.buffer, ihdr.data.byteOffset, ihdr.data.byteLength).writeUInt32BE(0x7fff_ffff, 0);
+  return Buffer.from(encodePngChunks(chunks));
+}
+
+function pngWithTallRaster(): Buffer {
+  const height = 1_100_000;
+  const chunks = extractPngChunks(png).map((chunk) => ({ name: chunk.name, data: Uint8Array.from(chunk.data) }));
+  const ihdr = chunks.find((chunk) => chunk.name === 'IHDR')!;
+  Buffer.from(ihdr.data.buffer, ihdr.data.byteOffset, ihdr.data.byteLength).writeUInt32BE(height, 4);
+  const idat = chunks.find((chunk) => chunk.name === 'IDAT')!;
+  idat.data = deflateSync(Buffer.alloc(height * 3));
+  return Buffer.from(encodePngChunks(chunks));
+}
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -154,6 +185,50 @@ describe('safe avatar routes', () => {
     expect(downloaded.rawPayload).not.toEqual(card);
     expect(downloaded.rawPayload.includes(Buffer.from('ccv3'))).toBe(false);
     expect(downloaded.rawPayload.includes(Buffer.from('chara'))).toBe(false);
+  });
+
+  it('rejects structurally invalid PNG uploads without accumulating database contexts', async () => {
+    const { app, database, repositories } = await context();
+    for (const [caseName, bytes] of [
+      ['missing IDAT', pngWithoutIdat()],
+      ['invalid CRC', pngWithInvalidCrc()],
+      ['truncated stream', png.subarray(0, -5)],
+      ['adversarial decoded dimensions', pngWithAdversarialDimensions()],
+      ['adversarial tall raster', pngWithTallRaster()],
+    ] as const) {
+      const uploaded = await app.inject({
+        method: 'PUT', url: `/api/characters/${characterId}/avatar?revision=0`,
+        ...multipart('invalid.png', bytes, 'image/png'),
+      });
+      expect(uploaded.statusCode, caseName).toBe(415);
+      expect(uploaded.json(), caseName).toEqual({ error: 'invalid_avatar_content' });
+      expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get(), caseName).toEqual({ count: 0 });
+    }
+    const storedPath = `assets/avatars/characters/${characterId}/018f0000-0000-7000-8000-000000000993.png`;
+    repositories.avatarAssets.put({
+      path: storedPath, kind: 'characters', ownerId: characterId, mediaType: 'image/png', bytes: pngWithoutIdat(),
+    });
+    expect(repositories.characters.update(characterId, 0, { avatarPath: storedPath })).toMatchObject({ ok: true });
+    expect((await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` })).statusCode).toBe(404);
+  });
+
+  it('rejects a real hard-linked legacy avatar alias when the platform supports hard links', async (testContext) => {
+    const { app, directory, repositories } = await context();
+    const fileName = '018f0000-0000-7000-8000-000000000992.png';
+    const ownerRoot = join(directory, 'assets', 'avatars', 'characters', characterId);
+    const source = join(directory, 'outside-owner.png');
+    const alias = join(ownerRoot, fileName);
+    await mkdir(ownerRoot, { recursive: true });
+    await writeFile(source, png);
+    try {
+      await link(source, alias);
+    } catch {
+      testContext.skip();
+      return;
+    }
+    const storedPath = `assets/avatars/characters/${characterId}/${fileName}`;
+    expect(repositories.characters.update(characterId, 0, { avatarPath: storedPath })).toMatchObject({ ok: true });
+    expect((await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` })).statusCode).toBe(404);
   });
 
   it('bounds a legacy descriptor read to the verified file snapshot when the file grows after its first chunk', async () => {

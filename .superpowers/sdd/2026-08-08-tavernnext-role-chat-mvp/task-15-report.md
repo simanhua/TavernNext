@@ -309,3 +309,57 @@ Fix Round 2 strict TDD/review evidence:
   finding closed and returned no remaining Critical or Important findings.
 
 Fix Round 2 ships in commit `fix: close task 15 second review`.
+
+## Fix Round 3
+
+Round 3 removes the ambiguity between a valid nullable Preset value and an
+executable-setting deletion. The browser now sends changed setting values and
+an independent, schema-bounded `deleteSettingKeys` list. The server canonicalizes
+Text-preset aliases before collision checks, so alias-equivalent edits and
+deletions cannot bypass one another. A legitimate `json_schema: null` remains
+data, while missing, repeated-null, and other semantic no-ops are rejected
+without a revision bump.
+
+Legacy filesystem avatars now reject files whose pre-open or opened-descriptor
+link count is not exactly one. This closes hard-link owner aliasing while
+retaining the prior direct-component, no-reparse, descriptor-identity, bounded
+read, and exact owner-path checks. The capability-sensitive regression creates
+a real hard link when the platform permits it and otherwise skips explicitly.
+
+PNG avatars now pass a complete bounded structural and decoded-pixel
+validation before they can become public upload/import bytes or be served from
+database/legacy storage. Validation covers chunk order and CRCs, IHDR color and
+bit-depth combinations, palette requirements, complete zlib decoding, filter
+bytes, Adam7/non-interlaced scanline reconstruction, indexed palette bounds,
+and an exact terminal IEND. Compressed/decoded size, dimensions, pixels, and
+scanline counts are capped before expensive row processing. Public PNG copies
+remain metadata-stripped, while private Character Card provenance retains the
+original container for compatible export.
+
+Fix Round 3 strict TDD and review evidence:
+
+- Consolidated pre-production RED was recorded across four focused files: 8
+  expected failures, 18 passes, and 27 skips. It covered nullable Preset data,
+  explicit deletion, hard-link fallback confinement, missing-IDAT/oversized
+  PNGs, malformed database reads, and standalone Character Card import.
+- The reviewer-follow-up RED ran 2 focused files with 2 failures and 22 skips:
+  `temp` versus `temperature` bypassed the edit/delete collision, and a
+  tall-skinny compressed PNG bypassed bounded row-work expectations. After
+  canonical alias-family checks and pre-inflate dimension/pixel/scanline caps,
+  the same gate passed both tests.
+- Final affected verification passed 4/4 files and 49/49 tests.
+- Final stable single-worker normal suite passed 50 files with 2 conditional
+  files skipped. Vitest collection listed 674 runnable test cases.
+- Final read-only SillyTavern oracle suite passed 52/52 files, with 808 tests
+  passed and 5 skipped (813 collected). The oracle remained clean at
+  `8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8` before and after verification.
+- `npm run typecheck`, `npm run build`, and `git diff --check` passed. Vite
+  transformed 249 modules and emitted 530.52 kB JavaScript, 11.75 kB CSS, and
+  0.40 kB HTML. Its only warning is the existing advisory chunk-size warning;
+  all 14 ignored build-output directories were explicitly dry-run checked and
+  then removed.
+- Independent final review first found the alias-family collision and
+  tall-skinny PNG work-amplification cases. After their RED/GREEN closure, its
+  stable re-review returned 0 Critical and 0 Important findings.
+
+Fix Round 3 ships in commit `fix: close task 15 third review`.

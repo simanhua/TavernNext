@@ -10,6 +10,8 @@ const MAX_MANAGER_ROWS = 512;
 const markerKey = '__tavernnextPresetSource';
 const SettingsSchema = z.record(z.string(), z.unknown());
 const SettingsPatchSchema = SettingsSchema.refine((settings) => Object.keys(settings).length > 0);
+const DeleteSettingKeysSchema = z.array(z.string().min(1)).min(1).max(128)
+  .refine((keys) => new Set(keys).size === keys.length);
 const CreateSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
@@ -18,7 +20,11 @@ const CreateSchema = z.object({
 }).strict();
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
-  patch: z.object({ name: z.string().min(1).optional(), settings: SettingsPatchSchema.optional() })
+  patch: z.object({
+    name: z.string().min(1).optional(),
+    settings: SettingsPatchSchema.optional(),
+    deleteSettingKeys: DeleteSettingKeysSchema.optional(),
+  })
     .strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
 
@@ -95,6 +101,14 @@ function validatedSettings(kind: z.infer<typeof PresetKindSchema>, settings: Rec
   return executablePresetFields(kind, validatePresetFamily(kind, settings)).settings;
 }
 
+function canonicalSettingKey(kind: z.infer<typeof PresetKindSchema>, key: string): string {
+  if (kind !== 'text') return key;
+  for (const [canonical, aliases] of Object.entries(textSettingAliases)) {
+    if ((aliases as readonly string[]).includes(key)) return canonical;
+  }
+  return key;
+}
+
 function revisionFrom(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
   if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
@@ -136,18 +150,23 @@ export function registerPresetRoutes(app: FastifyInstance, repositories: Reposit
     try {
       const patch: { name?: string; settings?: Record<string, unknown> } = {};
       if (parsed.data.patch.name !== undefined && parsed.data.patch.name !== current.name) patch.name = parsed.data.patch.name;
-      if (parsed.data.patch.settings !== undefined) {
+      if (parsed.data.patch.settings !== undefined || parsed.data.patch.deleteSettingKeys !== undefined) {
         const safeCurrent = safePresetSettings(current);
         const candidate = { ...safeCurrent };
         const deleted = new Set<string>();
-        for (const [key, value] of Object.entries(parsed.data.patch.settings)) {
-          if (value === null) {
-            if (!Object.hasOwn(safeCurrent, key)) return reply.status(400).send({ error: 'invalid_request' });
-            delete candidate[key];
-            if (current.kind === 'text' && Object.hasOwn(textSettingAliases, key)) {
-              for (const alias of textSettingAliases[key as keyof typeof textSettingAliases]) deleted.add(alias);
-            } else deleted.add(key);
-          } else candidate[key] = value;
+        const edited = parsed.data.patch.settings ?? {};
+        const deleteKeys = parsed.data.patch.deleteSettingKeys ?? [];
+        const canonicalDeletes = new Set(deleteKeys.map((key) => canonicalSettingKey(current.kind, key)));
+        if (Object.keys(edited).some((key) => canonicalDeletes.has(canonicalSettingKey(current.kind, key)))) {
+          return reply.status(400).send({ error: 'invalid_request' });
+        }
+        for (const [key, value] of Object.entries(edited)) candidate[key] = value;
+        for (const key of deleteKeys) {
+          if (!Object.hasOwn(safeCurrent, key)) return reply.status(400).send({ error: 'invalid_request' });
+          delete candidate[key];
+          if (current.kind === 'text' && Object.hasOwn(textSettingAliases, key)) {
+            for (const alias of textSettingAliases[key as keyof typeof textSettingAliases]) deleted.add(alias);
+          } else deleted.add(key);
         }
         const safeEdited = validatedSettings(current.kind, candidate);
         if (deleted.size > 0 || !isDeepStrictEqual(safeEdited, safeCurrent)) {

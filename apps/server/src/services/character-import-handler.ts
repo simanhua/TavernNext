@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeInspectedCharacter,
   diagnostic,
-  stripPngTextMetadata,
 } from '@tavernnext/st-compat';
 import type { ImportHandler } from './import-service.js';
+import { sanitizePublicPng, validatePngRaster } from './avatar-png.js';
 
 export interface StoredCharacterSource {
   sourceFormat: string;
@@ -39,7 +39,7 @@ function avatarExtension(bytes: Uint8Array): 'png' | 'jpg' | 'gif' | 'webp' {
 }
 
 function publicAvatarBytes(bytes: Uint8Array): Uint8Array {
-  return avatarExtension(bytes) === 'png' ? stripPngTextMetadata(bytes) : bytes;
+  return avatarExtension(bytes) === 'png' ? sanitizePublicPng(bytes) : bytes;
 }
 
 export function createCharacterImportHandler(): ImportHandler {
@@ -54,6 +54,8 @@ export function createCharacterImportHandler(): ImportHandler {
           undefined,
           context.preview.detected.container,
         );
+        const avatarBytes = decoded.avatar?.bytes ?? decoded.sourcePng;
+        if (avatarBytes !== undefined && avatarExtension(avatarBytes) === 'png') validatePngRaster(avatarBytes);
         return {
           normalizedPreview: decoded.character,
           warnings: [],

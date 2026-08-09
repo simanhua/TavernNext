@@ -3,8 +3,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync } from 'fflate';
+import encodePngChunks from 'png-chunks-encode';
+import extractPngChunks from 'png-chunks-extract';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
+import { encodeCharacterPng } from '@tavernnext/st-compat';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -172,6 +175,22 @@ describe('typed Character import and export API', () => {
 
     expect(committed.statusCode).toBe(500);
     expect(committed.json()).toEqual({ error: 'import_commit_failed' });
+    expect(repositories.characters.list()).toEqual([]);
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
+  });
+
+  it('rejects a standalone Character Card whose PNG has metadata but no decodable raster', async () => {
+    const { app, database, repositories } = await context();
+    const card = JSON.parse(await readFile(join(fixtureRoot, 'v3.json'), 'utf8')) as Record<string, unknown>;
+    const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    const characterCard = Buffer.from(encodeCharacterPng(validPng, card, card));
+    const noRaster = Buffer.from(encodePngChunks(extractPngChunks(characterCard).filter((chunk) => chunk.name !== 'IDAT')));
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('no-raster.png', noRaster, 'image/png'),
+    });
+
+    expect(inspected.statusCode).toBe(422);
+    expect(inspected.json()).not.toHaveProperty('inspectionToken');
     expect(repositories.characters.list()).toEqual([]);
     expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
   });

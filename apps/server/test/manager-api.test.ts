@@ -126,6 +126,46 @@ describe('sanitized manager APIs', () => {
     expect(responses[7]!.json()).not.toHaveProperty('extensions');
   });
 
+  it('preserves a legitimate nullable Text setting and rejects a colliding deletion request', async () => {
+    const { app, repositories } = await context();
+    const textPresetId = '018f0000-0000-7000-8000-000000000958';
+    repositories.presets.create({
+      id: textPresetId,
+      name: 'Legacy Text',
+      kind: 'text',
+      settings: { temp: 0.6, json_schema: { type: 'object' } },
+    });
+
+    const legitimateNull = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 0, patch: { settings: { json_schema: null } } },
+    });
+    expect(legitimateNull.statusCode).toBe(200);
+    expect(legitimateNull.json().settings).toHaveProperty('json_schema', null);
+    expect(repositories.presets.get(textPresetId)?.settings).toHaveProperty('json_schema', null);
+
+    const unchangedNull = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 1, patch: { settings: { json_schema: null } } },
+    });
+    expect(unchangedNull.statusCode).toBe(400);
+    expect(repositories.presets.get(textPresetId)?.revision).toBe(1);
+
+    const aliasCollision = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 1, patch: { settings: { temp: 0.8 }, deleteSettingKeys: ['temperature'] } },
+    });
+    expect(aliasCollision.statusCode).toBe(400);
+    expect(repositories.presets.get(textPresetId)?.revision).toBe(1);
+
+    const collidingDelete = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 1, patch: { settings: { json_schema: null }, deleteSettingKeys: ['json_schema'] } },
+    });
+    expect(collidingDelete.statusCode).toBe(400);
+    expect(repositories.presets.get(textPresetId)?.revision).toBe(1);
+  });
+
   it('accepts explicit revisioned patches, rejects private or mistyped fields, and preserves state on conflicts', async () => {
     const { app, repositories } = await context();
     const invalidCharacter = await app.inject({
@@ -165,14 +205,14 @@ describe('sanitized manager APIs', () => {
 
     const clearedPreset = await app.inject({
       method: 'PATCH', url: `/api/presets/${ids.preset}`,
-      payload: { revision: 0, patch: { settings: { temperature: null } } },
+      payload: { revision: 0, patch: { deleteSettingKeys: ['temperature'] } },
     });
     expect(clearedPreset.statusCode).toBe(200);
     expect(repositories.presets.get(ids.preset)?.settings).not.toHaveProperty('temperature');
 
     const unsafeClear = await app.inject({
       method: 'PATCH', url: `/api/presets/${ids.preset}`,
-      payload: { revision: 1, patch: { settings: { provider_api_key: null } } },
+      payload: { revision: 1, patch: { deleteSettingKeys: ['provider_api_key'] } },
     });
     expect(unsafeClear.statusCode).toBe(400);
 
@@ -191,14 +231,33 @@ describe('sanitized manager APIs', () => {
     expect(repositories.presets.get(ids.preset)?.revision).toBe(1);
 
     const textPresetId = '018f0000-0000-7000-8000-000000000958';
-    repositories.presets.create({ id: textPresetId, name: 'Legacy Text', kind: 'text', settings: { temp: 0.6 } });
+    repositories.presets.create({
+      id: textPresetId,
+      name: 'Legacy Text',
+      kind: 'text',
+      settings: { temp: 0.6, json_schema: { type: 'object' } },
+    });
+    const legitimateNull = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 0, patch: { settings: { json_schema: null } } },
+    });
+    expect(legitimateNull.statusCode).toBe(200);
+    expect(legitimateNull.json().settings).toHaveProperty('json_schema', null);
+    expect(repositories.presets.get(textPresetId)?.settings).toHaveProperty('json_schema', null);
     const clearedAlias = await app.inject({
       method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 0, patch: { settings: { temperature: null } } },
+      payload: { revision: 1, patch: { deleteSettingKeys: ['temperature'] } },
     });
     expect(clearedAlias.statusCode).toBe(200);
     expect(clearedAlias.json().settings).not.toHaveProperty('temperature');
     expect(repositories.presets.get(textPresetId)?.settings).not.toHaveProperty('temp');
+
+    const collidingDelete = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 2, patch: { settings: { json_schema: null }, deleteSettingKeys: ['json_schema'] } },
+    });
+    expect(collidingDelete.statusCode).toBe(400);
+    expect(repositories.presets.get(textPresetId)?.revision).toBe(2);
 
     const invalidEntry = await app.inject({
       method: 'PATCH', url: `/api/worldbooks/${ids.worldbook}/entries/${ids.entry}`,

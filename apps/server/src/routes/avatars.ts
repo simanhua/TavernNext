@@ -3,11 +3,11 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {} from '@fastify/multipart';
-import { stripPngTextMetadata } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import type { Repositories } from '../db/repositories.js';
 import type { TavernDatabase } from '../db/client.js';
 import { MAX_AVATAR_BYTES } from '../services/avatar-assets.js';
+import { sanitizePublicPng, validatePngRaster } from '../services/avatar-png.js';
 import { characterDetail, personaDetail } from './manager-dtos.js';
 
 const HEADER_BYTES = 16;
@@ -184,12 +184,13 @@ async function safeStoredAvatar(
     const realRoot = await realpath(lexicalRoot);
     if (!sameResolvedPath(realRoot, lexicalRoot) || !await hasOnlyDirectComponents(lexicalRoot, lexicalPath)) return undefined;
     const before = await lstat(lexicalPath);
-    if (!before.isFile() || before.isSymbolicLink() || before.size > maxAvatarBytes) return undefined;
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maxAvatarBytes) return undefined;
     const flags = constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW);
     const handle = await open(lexicalPath, flags);
     try {
       const metadata = await handle.stat();
-      if (!metadata.isFile() || metadata.size !== before.size || metadata.dev !== before.dev || metadata.ino !== before.ino) {
+      if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size !== before.size
+        || metadata.dev !== before.dev || metadata.ino !== before.ino) {
         await handle.close();
         return undefined;
       }
@@ -247,15 +248,18 @@ export async function readOwnerAvatarBytes(
     if (stored.bytes.byteLength > MAX_AVATAR_BYTES) return undefined;
     const detected = detectedImageType(stored.bytes);
     const extension = extname(stored.path).toLowerCase();
-    return detected !== undefined
-      && detected.mediaType === stored.mediaType
-      && detected.acceptedExtensions.includes(extension)
-      ? Uint8Array.from(stored.bytes)
-      : undefined;
+    if (detected === undefined || detected.mediaType !== stored.mediaType || !detected.acceptedExtensions.includes(extension)) return undefined;
+    if (detected.mediaType === 'image/png') {
+      try { validatePngRaster(stored.bytes); } catch { return undefined; }
+    }
+    return Uint8Array.from(stored.bytes);
   }
   const avatar = await safeStoredAvatar(dataDir, kind, id, storedPath);
   if (avatar === undefined) return undefined;
   const bytes = await collectStoredAvatar(avatar, storedPath);
+  if (bytes !== undefined && avatar.imageType.mediaType === 'image/png') {
+    try { validatePngRaster(bytes); } catch { return undefined; }
+  }
   return bytes === undefined ? undefined : Uint8Array.from(bytes);
 }
 
@@ -289,11 +293,17 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
         if (detected === undefined || detected.mediaType !== stored.mediaType || !detected.acceptedExtensions.includes(extension)) {
           return reply.code(404).send({ error: 'not_found' });
         }
+        let publicBytes = Buffer.from(stored.bytes);
+        if (detected.mediaType === 'image/png') {
+          try { publicBytes = Buffer.from(sanitizePublicPng(publicBytes)); } catch {
+            return reply.code(404).send({ error: 'not_found' });
+          }
+        }
         return reply
           .type(stored.mediaType)
-          .header('content-length', String(stored.bytes.byteLength))
+          .header('content-length', String(publicBytes.byteLength))
           .header('cache-control', 'private, no-cache')
-          .send(Buffer.from(stored.bytes));
+          .send(publicBytes);
       }
     }
     const avatar = await safeStoredAvatar(dataDir, kind, owner.id, owner.avatarPath, maxAvatarBytes);
@@ -303,7 +313,7 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
     let publicBytes = verifiedBytes;
     if (avatar.imageType.mediaType === 'image/png') {
       try {
-        publicBytes = Buffer.from(stripPngTextMetadata(publicBytes));
+        publicBytes = Buffer.from(sanitizePublicPng(publicBytes));
       } catch {
         return reply.code(404).send({ error: 'not_found' });
       }
@@ -357,7 +367,7 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
     let publicBytes = stored.bytes;
     if (declared.mediaType === 'image/png') {
       try {
-        publicBytes = Buffer.from(stripPngTextMetadata(stored.bytes));
+        publicBytes = Buffer.from(sanitizePublicPng(stored.bytes));
       } catch {
         return reply.code(415).send({ error: 'invalid_avatar_content' });
       }

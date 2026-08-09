@@ -300,7 +300,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
       if (values.temperature.trim() !== '') settings.temperature = Number(values.temperature);
     }
     try {
-      let patch: Partial<{ name: string; settings: Record<string, unknown> }> | undefined;
+      let patch: Partial<{ name: string; settings: Record<string, unknown>; deleteSettingKeys: string[] }> | undefined;
       if (!creating && baseline !== undefined) {
         patch = minimalPatch({ name: baseline.name }, { name: values.name.trim() }, ['name'] as const);
         const allowedSettings = values.kind === 'chat' ? [...ChatKeys]
@@ -311,7 +311,8 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
           settings,
           allowedSettings,
         );
-        if (hasPatchFields(settingsPatch)) patch.settings = settingsPatch;
+        if (hasPatchFields(settingsPatch.values)) patch.settings = settingsPatch.values;
+        if (settingsPatch.deletedKeys.length > 0) patch.deleteSettingKeys = settingsPatch.deletedKeys;
       }
       if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = creating

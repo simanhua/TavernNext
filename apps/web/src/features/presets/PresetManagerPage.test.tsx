@@ -59,10 +59,10 @@ const server = setupServer(
     const settings = structuredClone(chatDetail.settings) as Record<string, unknown>;
     if (body.patch.settings !== undefined) {
       for (const [key, value] of Object.entries(body.patch.settings as Record<string, unknown>)) {
-        if (value === null) delete settings[key];
-        else settings[key] = value;
+        settings[key] = value;
       }
     }
+    for (const key of (body.patch.deleteSettingKeys as string[] | undefined) ?? []) delete settings[key];
     chatDetail = { ...chatDetail, ...body.patch, settings: settings as typeof chatDetail.settings, revision: body.revision + 1 };
     return HttpResponse.json(chatDetail);
   }),
@@ -242,8 +242,28 @@ describe('PresetManagerPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save Preset' }));
 
     await waitFor(() => expect(patchCalls).toBe(1));
-    expect((patchBodies[0]!.patch.settings as Record<string, unknown>).send_if_empty).toBeNull();
+    expect(patchBodies[0]!.patch).not.toHaveProperty('settings');
+    expect(patchBodies[0]!.patch.deleteSettingKeys).toEqual(['send_if_empty']);
     expect(chatDetail.settings).not.toHaveProperty('send_if_empty');
+  });
+
+  it('preserves a legitimate Text json_schema null instead of treating it as deletion', async () => {
+    const user = userEvent.setup();
+    chatDetail = {
+      ...chatDetail,
+      name: 'Text preset',
+      kind: 'text' as typeof chatDetail.kind,
+      settings: { json_schema: { type: 'object' } } as unknown as typeof chatDetail.settings,
+    };
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    fireEvent.change(screen.getByLabelText('Executable settings JSON'), { target: { value: '{"json_schema":null}' } });
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+    await waitFor(() => expect(patchCalls).toBe(1));
+    expect(patchBodies[0]!.patch.settings).toEqual({ json_schema: null });
+    expect(patchBodies[0]!.patch).not.toHaveProperty('deleteSettingKeys');
+    expect(chatDetail.settings).toHaveProperty('json_schema', null);
   });
 
   it('preserves an already-empty prompt order without issuing a patch', async () => {

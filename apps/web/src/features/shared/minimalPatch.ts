@@ -45,11 +45,13 @@ export function minimalRecordPatch(
   baseline: Record<string, unknown>,
   next: Record<string, unknown>,
   allowlist: readonly string[],
-): Record<string, unknown> {
-  const patch: Record<string, unknown> = {};
+): { values: Record<string, unknown>; deletedKeys: string[] } {
+  const values: Record<string, unknown> = {};
+  const deletedKeys: string[] = [];
   for (const key of allowlist) {
     if (structurallyEqual(baseline[key], next[key])) continue;
-    patch[key] = Object.hasOwn(next, key) ? cloneAllowedValue(next[key]) : null;
+    if (Object.hasOwn(next, key)) values[key] = cloneAllowedValue(next[key]);
+    else deletedKeys.push(key);
   }
-  return patch;
+  return { values, deletedKeys };
 }

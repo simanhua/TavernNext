@@ -483,7 +483,7 @@ export const api = {
   createPreset: (input: { name: string; kind: PresetKind; settings: Record<string, unknown> }) => request<PresetView>('/api/presets', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
   }),
-  updatePreset: (id: string, revision: number, patch: Partial<{ name: string; settings: Record<string, unknown> }>) => request<PresetView>(`/api/presets/${id}`, {
+  updatePreset: (id: string, revision: number, patch: Partial<{ name: string; settings: Record<string, unknown>; deleteSettingKeys: string[] }>) => request<PresetView>(`/api/presets/${id}`, {
     method: 'PATCH', body: JSON.stringify({ revision, patch }),
   }),
   deletePreset: (id: string, revision: number) => request<void>(`/api/presets/${id}?revision=${revision}`, { method: 'DELETE' }),
