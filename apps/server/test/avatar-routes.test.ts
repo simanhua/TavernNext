@@ -56,6 +56,19 @@ function pngWithTallRaster(): Buffer {
   return Buffer.from(encodePngChunks(chunks));
 }
 
+function pngIdatBytes(): Buffer {
+  const idat = extractPngChunks(png).find((chunk) => chunk.name === 'IDAT');
+  if (idat === undefined) throw new Error('PNG fixture has no IDAT');
+  return Buffer.from(idat.data);
+}
+
+function pngWithIdatParts(parts: readonly Uint8Array[]): Buffer {
+  const chunks = extractPngChunks(png).flatMap((chunk) => chunk.name === 'IDAT'
+    ? parts.map((data) => ({ name: 'IDAT', data: Uint8Array.from(data) }))
+    : [{ name: chunk.name, data: Uint8Array.from(chunk.data) }]);
+  return Buffer.from(encodePngChunks(chunks));
+}
+
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -189,7 +202,12 @@ describe('safe avatar routes', () => {
 
   it('rejects structurally invalid PNG uploads without accumulating database contexts', async () => {
     const { app, database, repositories } = await context();
+    const compressed = pngIdatBytes();
     for (const [caseName, bytes] of [
+      ['zlib stream with trailing bytes', pngWithIdatParts([Buffer.concat([compressed, Buffer.from('deadbeef', 'hex')])])],
+      ['additional zlib member', pngWithIdatParts([Buffer.concat([compressed, deflateSync(Buffer.alloc(0))])])],
+      ['truncated zlib payload', pngWithIdatParts([compressed.subarray(0, -1)])],
+      ['decoded raster beyond expected bound', pngWithIdatParts([deflateSync(Buffer.alloc(1024 * 1024))])],
       ['missing IDAT', pngWithoutIdat()],
       ['invalid CRC', pngWithInvalidCrc()],
       ['truncated stream', png.subarray(0, -5)],

@@ -177,12 +177,20 @@ export function validatePngRaster(input: Uint8Array): void {
     if (width !== 0 && height !== 0) expected += height * (1 + Math.ceil(width * bitsPerPixel / 8));
     if (!Number.isSafeInteger(expected) || expected > MAX_DECODED_BYTES || scanlines > MAX_SCANLINES) fail();
   }
-  let decoded: Buffer;
+  const compressedBytes = Buffer.concat(compressed);
+  let inflateResult: unknown;
   try {
-    decoded = inflateSync(Buffer.concat(compressed), { maxOutputLength: expected + 1 });
+    inflateResult = inflateSync(compressedBytes, { info: true, maxOutputLength: expected + 1 });
   } catch {
     fail();
   }
+  if (inflateResult === null || typeof inflateResult !== 'object') fail();
+  const { buffer, engine } = inflateResult as { buffer?: unknown; engine?: unknown };
+  if (!Buffer.isBuffer(buffer) || engine === null || typeof engine !== 'object') fail();
+  const { bytesWritten } = engine as { bytesWritten?: unknown };
+  if (typeof bytesWritten !== 'number' || !Number.isSafeInteger(bytesWritten)
+    || bytesWritten !== compressedBytes.byteLength) fail();
+  const decoded = buffer;
   if (decoded.byteLength !== expected) fail();
   let decodedOffset = 0;
   for (const [width, height] of dimensions) {

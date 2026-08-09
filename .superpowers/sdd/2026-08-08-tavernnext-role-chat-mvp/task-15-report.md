@@ -363,3 +363,52 @@ Fix Round 3 strict TDD and review evidence:
   stable re-review returned 0 Critical and 0 Important findings.
 
 Fix Round 3 ships in commit `fix: close task 15 third review`.
+
+## Fix Round 4
+
+Round 4 closes the final ambiguity between a complete PNG zlib stream and a
+valid stream followed by unconsumed bytes. PNG validation now requests Node's
+synchronous inflate engine information, fails closed unless the result exposes
+a Buffer and a safe integer consumed-input count, and requires that count to
+equal the complete concatenated IDAT length. The existing exact decoded-raster
+length and `maxOutputLength` bounds remain in force. Consecutive IDAT chunks
+still form one valid stream, while arbitrary tails and additional zlib members
+are rejected before metadata stripping, persistence, import, or public serving.
+
+Fix Round 4 strict TDD and verification evidence:
+
+- A Node 22.2 runtime characterization reproduced the defect before production
+  changes: both an 11-byte valid stream plus `DEADBEEF` (15 input bytes) and the
+  same stream plus a second zlib member (22 input bytes) decoded successfully,
+  while `engine.bytesWritten` reported only the 11 consumed bytes.
+- The direct sanitizer RED ran 5 tests with 2 expected failures and 3 passes:
+  the recomputed-CRC trailing-byte and second-member PNGs were accepted. The
+  route RED ran with 1 failure and 19 passes, returning 200 instead of the
+  stable 415 `invalid_avatar_content` response for the trailing-byte upload.
+- The first focused GREEN passed the validator and avatar-route files with
+  25/25 tests. Coverage includes a valid stream split over consecutive IDATs,
+  `DEADBEEF` trailing bytes, an additional zlib member, an internally truncated
+  stream, bounded overlong decoded output, stable media errors, and no asset-row
+  mutation.
+- The final affected gate passed 5/5 files and 54/54 tests, including Character
+  import, the prior Preset/null/alias behavior, and the existing avatar safety
+  suite.
+- `npm run typecheck` passed. The controlled single-worker normal suite passed
+  51 files with 2 oracle-conditional files skipped; 678 tests passed and 14
+  capability/oracle tests skipped (692 collected).
+- The pinned read-only SillyTavern 1.18.0 oracle suite passed 53/53 files; 813
+  tests passed and 5 platform/capability tests skipped (818 collected). The
+  oracle remained clean at `8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8`
+  before and after the run.
+- The source-only production build began with all 14 output targets absent,
+  passed TypeScript plus a 249-module Vite build, and emitted the unchanged
+  530.52 kB JavaScript, 11.75 kB CSS, and 0.40 kB HTML. Its only warning is the
+  existing advisory chunk-size warning; all generated outputs were removed.
+- `git diff --check` passed and no build output remained in the worktree.
+- Independent final read-only review verified Node 22 consumed-input semantics,
+  recomputed adversarial IDAT CRCs, multi-IDAT acceptance, the runtime type
+  boundary, bounded decompression, and every upload/import/serve call path. It
+  returned 0 Critical, 0 Important, and 0 Minor findings with a ready-to-commit
+  verdict.
+
+Fix Round 4 ships in commit `fix: close task 15 fourth review`.
