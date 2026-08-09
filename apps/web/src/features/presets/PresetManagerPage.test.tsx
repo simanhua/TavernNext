@@ -19,6 +19,7 @@ let chatDetail = {
   ...ids[0], createdAt: now, updatedAt: now,
   settings: {
     temperature: 0.7,
+    send_if_empty: 'Keep this fallback',
     prompts: [
       {
         identifier: 'main', name: 'Main', role: 'system', content: 'Main prompt', enabled: true,
@@ -55,10 +56,14 @@ const server = setupServer(
       return HttpResponse.json({ error: 'conflict' }, { status: 409 });
     }
     if (body.revision !== chatDetail.revision) return HttpResponse.json({ error: 'conflict' }, { status: 409 });
-    const settings = body.patch.settings === undefined
-      ? chatDetail.settings
-      : { ...chatDetail.settings, ...body.patch.settings as typeof chatDetail.settings };
-    chatDetail = { ...chatDetail, ...body.patch, settings, revision: body.revision + 1 };
+    const settings = structuredClone(chatDetail.settings) as Record<string, unknown>;
+    if (body.patch.settings !== undefined) {
+      for (const [key, value] of Object.entries(body.patch.settings as Record<string, unknown>)) {
+        if (value === null) delete settings[key];
+        else settings[key] = value;
+      }
+    }
+    chatDetail = { ...chatDetail, ...body.patch, settings: settings as typeof chatDetail.settings, revision: body.revision + 1 };
     return HttpResponse.json(chatDetail);
   }),
   http.delete('/api/presets/:id', () => {
@@ -80,6 +85,7 @@ afterEach(() => {
     ...ids[0], createdAt: now, updatedAt: now,
     settings: {
       temperature: 0.7,
+      send_if_empty: 'Keep this fallback',
       prompts: [
         {
           identifier: 'main', name: 'Main', role: 'system', content: 'Main prompt', enabled: true,
@@ -224,6 +230,45 @@ describe('PresetManagerPage', () => {
     expect(chatDetail.settings.prompt_order).toEqual([
       { character_id: '42', order: [{ identifier: 'main', enabled: false }] },
     ]);
+  });
+
+  it('uses an explicit tombstone when clearing one executable setting', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    const editor = screen.getByLabelText('Executable settings JSON');
+    expect((editor as HTMLTextAreaElement).value).toContain('send_if_empty');
+    fireEvent.change(editor, { target: { value: '{}' } });
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+    await waitFor(() => expect(patchCalls).toBe(1));
+    expect((patchBodies[0]!.patch.settings as Record<string, unknown>).send_if_empty).toBeNull();
+    expect(chatDetail.settings).not.toHaveProperty('send_if_empty');
+  });
+
+  it('preserves an already-empty prompt order without issuing a patch', async () => {
+    const user = userEvent.setup();
+    chatDetail.settings.prompt_order = [];
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+    await waitFor(() => expect(patchCalls).toBe(0));
+    expect(chatDetail.settings.prompt_order).toEqual([]);
+  });
+
+  it('allows removing the final prompt order group', async () => {
+    const user = userEvent.setup();
+    chatDetail.settings.prompt_order = [
+      { character_id: 100000, order: [{ identifier: 'main', enabled: true }] },
+    ];
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+    await user.click(screen.getByRole('button', { name: 'Remove prompt order group 1' }));
+    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+    await waitFor(() => expect(patchCalls).toBe(1));
+    expect(chatDetail.settings.prompt_order).toEqual([]);
+    expect(patchBodies[0]!.patch.settings).toMatchObject({ prompt_order: [] });
   });
 
   it('rejects non-record executable JSON and treats whitespace numeric values as omitted', async () => {

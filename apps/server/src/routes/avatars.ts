@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
+import { lstat, open, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {} from '@fastify/multipart';
+import { stripPngTextMetadata } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import type { Repositories } from '../db/repositories.js';
+import type { TavernDatabase } from '../db/client.js';
+import { MAX_AVATAR_BYTES } from '../services/avatar-assets.js';
 import { characterDetail, personaDetail } from './manager-dtos.js';
 
-const MAX_AVATAR_BYTES = 8 * 1024 * 1024;
 const HEADER_BYTES = 16;
 
 interface AvatarEntity {
@@ -50,10 +52,6 @@ const imageTypes: readonly ImageType[] = [
 function contained(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-
-function portablePath(root: string, path: string): string {
-  return relative(root, path).split(sep).join('/');
 }
 
 function declaredImageType(fileName: string, mediaType: string): ImageType | undefined {
@@ -123,19 +121,6 @@ async function hasOnlyDirectComponents(root: string, candidate: string): Promise
   }
 }
 
-async function append(handle: Awaited<ReturnType<typeof open>>, chunk: Buffer): Promise<void> {
-  let offset = 0;
-  while (offset < chunk.byteLength) {
-    const result = await handle.write(chunk, offset, chunk.byteLength - offset, null);
-    offset += result.bytesWritten;
-  }
-}
-
-interface StoredUpload {
-  finalPath: string;
-  storedPath: string;
-}
-
 class AvatarUploadStreamError extends Error {
   constructor() {
     super('invalid_multipart_upload');
@@ -143,29 +128,15 @@ class AvatarUploadStreamError extends Error {
   }
 }
 
-async function storeUpload(
-  dataDir: string,
-  kind: AvatarKind,
-  id: string,
-  extension: string,
+async function readUpload(
   stream: AsyncIterable<Buffer>,
-): Promise<{ upload?: StoredUpload; header: Buffer; tooLarge: boolean }> {
-  await mkdir(dataDir, { recursive: true });
-  const root = resolve(dataDir, 'assets', 'avatars', kind, id);
-  await mkdir(root, { recursive: true });
-  const [realDataDir, realRoot] = await Promise.all([realpath(dataDir), realpath(root)]);
-  if (!contained(realDataDir, realRoot) || !sameResolvedPath(realRoot, root) || !await hasOnlyDirectComponents(resolve(dataDir), root)) {
-    throw new Error('unsafe_avatar_storage');
-  }
-
-  const name = randomUUID();
-  const temporaryPath = join(realRoot, `${name}.tmp`);
-  const finalPath = join(realRoot, `${name}.${extension}`);
+  maxAvatarBytes: number,
+): Promise<{ bytes?: Buffer; header: Buffer; tooLarge: boolean }> {
   const headerChunks: Buffer[] = [];
+  const chunks: Buffer[] = [];
   let headerLength = 0;
   let total = 0;
   let tooLarge = false;
-  const handle = await open(temporaryPath, 'wx', 0o600);
   try {
     const iterator = stream[Symbol.asyncIterator]();
     while (true) {
@@ -184,35 +155,18 @@ async function storeUpload(
         headerChunks.push(prefix);
         headerLength += prefix.byteLength;
       }
-      if (total > MAX_AVATAR_BYTES) {
+      if (total > maxAvatarBytes) {
         tooLarge = true;
         continue;
       }
-      await append(handle, chunk);
+      chunks.push(chunk);
     }
   } catch (error) {
-    await handle.close().catch(() => undefined);
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
-  try {
-    await handle.close();
-  } catch (error) {
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
   }
 
   const header = Buffer.concat(headerChunks);
-  if (tooLarge) {
-    await rm(temporaryPath, { force: true });
-    return { header, tooLarge: true };
-  }
-  await rename(temporaryPath, finalPath);
-  return {
-    upload: { finalPath, storedPath: portablePath(realDataDir, finalPath) },
-    header,
-    tooLarge: false,
-  };
+  return tooLarge ? { header, tooLarge: true } : { bytes: Buffer.concat(chunks), header, tooLarge: false };
 }
 
 async function safeStoredAvatar(
@@ -220,6 +174,7 @@ async function safeStoredAvatar(
   kind: AvatarKind,
   id: string,
   storedPath: string,
+  maxAvatarBytes = MAX_AVATAR_BYTES,
 ): Promise<{ stream: ReturnType<Awaited<ReturnType<typeof open>>['createReadStream']>; size: number; imageType: ImageType } | undefined> {
   if (storedPath.includes('\0') || isAbsolute(storedPath) || !managedOwnerPath(storedPath, kind, id)) return undefined;
   const lexicalRoot = resolve(dataDir);
@@ -229,7 +184,7 @@ async function safeStoredAvatar(
     const realRoot = await realpath(lexicalRoot);
     if (!sameResolvedPath(realRoot, lexicalRoot) || !await hasOnlyDirectComponents(lexicalRoot, lexicalPath)) return undefined;
     const before = await lstat(lexicalPath);
-    if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_AVATAR_BYTES) return undefined;
+    if (!before.isFile() || before.isSymbolicLink() || before.size > maxAvatarBytes) return undefined;
     const flags = constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW);
     const handle = await open(lexicalPath, flags);
     try {
@@ -246,7 +201,7 @@ async function safeStoredAvatar(
         await handle.close();
         return undefined;
       }
-      return { stream: handle.createReadStream({ autoClose: true }), size: metadata.size, imageType };
+      return { stream: handle.createReadStream({ autoClose: true, start: 0, end: metadata.size - 1 }), size: metadata.size, imageType };
     } catch (error) {
       await handle.close().catch(() => undefined);
       throw error;
@@ -256,56 +211,108 @@ async function safeStoredAvatar(
   }
 }
 
+async function collectStoredAvatar(
+  avatar: NonNullable<Awaited<ReturnType<typeof safeStoredAvatar>>>,
+  storedPath: string,
+  afterFirstChunk?: () => void,
+): Promise<Buffer | undefined> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of avatar.stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.byteLength;
+    if (total > avatar.size) return undefined;
+    chunks.push(bytes);
+    if (chunks.length === 1) afterFirstChunk?.();
+  }
+  if (total !== avatar.size) return undefined;
+  const bytes = Buffer.concat(chunks, total);
+  const detected = detectedImageType(bytes);
+  const extension = extname(storedPath).toLowerCase();
+  return detected?.mediaType === avatar.imageType.mediaType && detected.acceptedExtensions.includes(extension)
+    ? bytes
+    : undefined;
+}
+
 export async function readOwnerAvatarBytes(
+  repositories: Repositories,
   dataDir: string,
   kind: AvatarKind,
   id: string,
   storedPath: string,
 ): Promise<Uint8Array | undefined> {
+  if (!managedOwnerPath(storedPath, kind, id)) return undefined;
+  const stored = repositories.avatarAssets.getOwned(storedPath, kind, id);
+  if (stored !== undefined) {
+    if (stored.bytes.byteLength > MAX_AVATAR_BYTES) return undefined;
+    const detected = detectedImageType(stored.bytes);
+    const extension = extname(stored.path).toLowerCase();
+    return detected !== undefined
+      && detected.mediaType === stored.mediaType
+      && detected.acceptedExtensions.includes(extension)
+      ? Uint8Array.from(stored.bytes)
+      : undefined;
+  }
   const avatar = await safeStoredAvatar(dataDir, kind, id, storedPath);
   if (avatar === undefined) return undefined;
-  const chunks: Buffer[] = [];
-  for await (const chunk of avatar.stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return new Uint8Array(Buffer.concat(chunks));
+  const bytes = await collectStoredAvatar(avatar, storedPath);
+  return bytes === undefined ? undefined : Uint8Array.from(bytes);
 }
 
-async function removeReplacedManagedAvatar(
-  dataDir: string,
-  kind: AvatarKind,
-  id: string,
-  oldPath: string | undefined,
-): Promise<void> {
-  if (oldPath === undefined || !managedOwnerPath(oldPath, kind, id)) return;
-  const root = resolve(dataDir);
-  const lexicalPath = resolve(root, ...oldPath.replaceAll('\\', '/').split('/'));
-  if (!contained(root, lexicalPath)) return;
-  try {
-    const [realRoot, path] = await Promise.all([realpath(root), realpath(lexicalPath)]);
-    if (!sameResolvedPath(realRoot, root) || !sameResolvedPath(path, lexicalPath) || !await hasOnlyDirectComponents(root, lexicalPath)) return;
-    const metadata = await lstat(path);
-    if (metadata.isFile() && !metadata.isSymbolicLink()) await rm(path, { force: true });
-  } catch {
-    // Replaced avatars are best-effort cleanup after the durable row was updated.
+class AvatarUpdateTransactionError extends Error {
+  constructor(readonly failure: AvatarUpdateFailure) {
+    super(failure.reason);
   }
 }
 
 function registerOwnerAvatarRoutes<T extends AvatarEntity>(
   app: FastifyInstance,
+  database: TavernDatabase,
+  repositories: Repositories,
   dataDir: string,
   kind: AvatarKind,
   adapter: AvatarAdapter<T>,
+  beforeCommit?: () => void,
+  maxAvatarBytes = MAX_AVATAR_BYTES,
+  legacyAfterFirstChunk?: () => void,
 ): void {
   const route = `/api/${kind}/:id/avatar`;
   app.get<{ Params: { id: string } }>(route, async (request, reply) => {
     const owner = adapter.get(request.params.id);
     if (owner?.avatarPath === undefined) return reply.code(404).send({ error: 'not_found' });
-    const avatar = await safeStoredAvatar(dataDir, kind, owner.id, owner.avatarPath);
+    if (managedOwnerPath(owner.avatarPath, kind, owner.id)) {
+      const stored = repositories.avatarAssets.getOwned(owner.avatarPath, kind, owner.id);
+      if (stored !== undefined) {
+        if (stored.bytes.byteLength > maxAvatarBytes) return reply.code(404).send({ error: 'not_found' });
+        const detected = detectedImageType(stored.bytes);
+        const extension = extname(stored.path).toLowerCase();
+        if (detected === undefined || detected.mediaType !== stored.mediaType || !detected.acceptedExtensions.includes(extension)) {
+          return reply.code(404).send({ error: 'not_found' });
+        }
+        return reply
+          .type(stored.mediaType)
+          .header('content-length', String(stored.bytes.byteLength))
+          .header('cache-control', 'private, no-cache')
+          .send(Buffer.from(stored.bytes));
+      }
+    }
+    const avatar = await safeStoredAvatar(dataDir, kind, owner.id, owner.avatarPath, maxAvatarBytes);
     if (avatar === undefined) return reply.code(404).send({ error: 'not_found' });
+    const verifiedBytes = await collectStoredAvatar(avatar, owner.avatarPath, legacyAfterFirstChunk);
+    if (verifiedBytes === undefined) return reply.code(404).send({ error: 'not_found' });
+    let publicBytes = verifiedBytes;
+    if (avatar.imageType.mediaType === 'image/png') {
+      try {
+        publicBytes = Buffer.from(stripPngTextMetadata(publicBytes));
+      } catch {
+        return reply.code(404).send({ error: 'not_found' });
+      }
+    }
     return reply
       .type(avatar.imageType.mediaType)
-      .header('content-length', String(avatar.size))
+      .header('content-length', String(publicBytes.byteLength))
       .header('cache-control', 'private, no-cache')
-      .send(avatar.stream);
+      .send(publicBytes);
   });
 
   app.put<{ Params: { id: string }; Querystring: { revision?: string } }>(route, async (request, reply) => {
@@ -318,7 +325,7 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
 
     let file;
     try {
-      file = await request.file({ limits: { fileSize: MAX_AVATAR_BYTES + 1 }, throwFileSizeLimit: false });
+      file = await request.file({ limits: { fileSize: maxAvatarBytes + 1 }, throwFileSizeLimit: false });
     } catch {
       return reply.code(415).send({ error: 'invalid_multipart_upload' });
     }
@@ -331,9 +338,9 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
       return reply.code(415).send({ error: 'unsupported_avatar_media' });
     }
 
-    let stored: Awaited<ReturnType<typeof storeUpload>>;
+    let stored: Awaited<ReturnType<typeof readUpload>>;
     try {
-      stored = await storeUpload(dataDir, kind, owner.id, declared.extension, file.file);
+      stored = await readUpload(file.file, maxAvatarBytes);
     } catch (error) {
       if (error instanceof AvatarUploadStreamError) {
         return reply.code(415).send({ error: 'invalid_multipart_upload' });
@@ -341,40 +348,68 @@ function registerOwnerAvatarRoutes<T extends AvatarEntity>(
       return reply.code(500).send({ error: 'avatar_storage_failed' });
     }
     if (stored.tooLarge || file.file.truncated) {
-      if (stored.upload !== undefined) await rm(stored.upload.finalPath, { force: true });
       return reply.code(422).send({ error: 'avatar_too_large' });
     }
     const detected = detectedImageType(stored.header);
-    if (stored.upload === undefined || detected?.mediaType !== declared.mediaType) {
-      if (stored.upload !== undefined) await rm(stored.upload.finalPath, { force: true });
+    if (stored.bytes === undefined || detected?.mediaType !== declared.mediaType) {
       return reply.code(415).send({ error: 'invalid_avatar_content' });
     }
+    let publicBytes = stored.bytes;
+    if (declared.mediaType === 'image/png') {
+      try {
+        publicBytes = Buffer.from(stripPngTextMetadata(stored.bytes));
+      } catch {
+        return reply.code(415).send({ error: 'invalid_avatar_content' });
+      }
+    }
 
-    let updated: AvatarUpdateResult<T> | AvatarUpdateFailure;
+    const storedPath = `assets/avatars/${kind}/${owner.id}/${randomUUID()}.${declared.extension}`;
+    let updated: AvatarUpdateResult<T>;
     try {
-      updated = adapter.updateAvatar(owner.id, revision, stored.upload.storedPath);
-    } catch {
-      await rm(stored.upload.finalPath, { force: true }).catch(() => undefined);
+      beforeCommit?.();
+      updated = database.transaction(() => {
+        repositories.avatarAssets.put({
+          path: storedPath,
+          kind,
+          ownerId: owner.id,
+          mediaType: declared.mediaType,
+          bytes: Uint8Array.from(publicBytes),
+        });
+        const result = adapter.updateAvatar(owner.id, revision, storedPath);
+        if (!result.ok) throw new AvatarUpdateTransactionError(result);
+        if (owner.avatarPath !== undefined) repositories.avatarAssets.deleteOwned(owner.avatarPath, kind, owner.id);
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof AvatarUpdateTransactionError) {
+        return reply.code(error.failure.reason === 'not_found' ? 404 : 409).send({ error: error.failure.reason });
+      }
       return reply.code(500).send({ error: 'avatar_storage_failed' });
     }
-    if (!updated.ok) {
-      await rm(stored.upload.finalPath, { force: true });
-      return reply.code(updated.reason === 'not_found' ? 404 : 409).send({ error: updated.reason });
-    }
-    await removeReplacedManagedAvatar(dataDir, kind, owner.id, owner.avatarPath);
     return reply.send(adapter.serialize(updated.value));
   });
 }
 
-export function registerAvatarRoutes(app: FastifyInstance, repositories: Repositories, dataDir: string): void {
-  registerOwnerAvatarRoutes(app, dataDir, 'characters', {
+export function registerAvatarRoutes(
+  app: FastifyInstance,
+  database: TavernDatabase,
+  repositories: Repositories,
+  dataDir: string,
+  beforeCommit?: () => void,
+  maxAvatarBytes = MAX_AVATAR_BYTES,
+  legacyAfterFirstChunk?: () => void,
+): void {
+  if (!Number.isSafeInteger(maxAvatarBytes) || maxAvatarBytes <= 0) {
+    throw new Error('Invalid avatar byte limit');
+  }
+  registerOwnerAvatarRoutes(app, database, repositories, dataDir, 'characters', {
     get: repositories.characters.get,
     updateAvatar: (id, revision, avatarPath) => repositories.characters.update(id, revision, { avatarPath }),
     serialize: characterDetail,
-  });
-  registerOwnerAvatarRoutes(app, dataDir, 'personas', {
+  }, beforeCommit, maxAvatarBytes, legacyAfterFirstChunk);
+  registerOwnerAvatarRoutes(app, database, repositories, dataDir, 'personas', {
     get: repositories.personas.get,
     updateAvatar: (id, revision, avatarPath) => repositories.personas.update(id, revision, { avatarPath }),
     serialize: personaDetail,
-  });
+  }, beforeCommit, maxAvatarBytes, legacyAfterFirstChunk);
 }

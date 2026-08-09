@@ -1,6 +1,6 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 9;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
@@ -16,6 +16,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS avatar_assets (path TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('characters', 'personas')), owner_id TEXT NOT NULL, media_type TEXT NOT NULL, bytes BLOB NOT NULL);
 `;
 
 const indexes = `
@@ -35,6 +36,7 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS message_variants_message_id_idx ON message_variants(message_id);
   CREATE INDEX IF NOT EXISTS generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
   CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);
+  CREATE INDEX IF NOT EXISTS avatar_assets_owner_idx ON avatar_assets(kind, owner_id);
 `;
 
 function columnNames(database: TavernDatabase, table: string): string[] {

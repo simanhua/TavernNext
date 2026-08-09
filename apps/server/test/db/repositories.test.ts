@@ -52,7 +52,7 @@ describe('SQLite repositories', () => {
       'characters', 'personas', 'worldbooks', 'worldbook_entries', 'presets',
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
-      'conversation_worldbooks', 'worldbook_runtime_states',
+      'conversation_worldbooks', 'worldbook_runtime_states', 'avatar_assets',
     ]));
   });
 
@@ -64,8 +64,23 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 8 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 9 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
+  });
+
+  it('stores and deletes avatar bytes only through an exact entity-bound key', async () => {
+    const { repositories } = await createTestRepositories();
+    const path = 'assets/avatars/characters/018f0000-0000-7000-8000-000000000010/018f0000-0000-7000-8000-000000000011.png';
+    const bytes = Uint8Array.from([137, 80, 78, 71]);
+
+    repositories.avatarAssets.put({ path, kind: 'characters', ownerId: '018f0000-0000-7000-8000-000000000010', mediaType: 'image/png', bytes });
+    expect(repositories.avatarAssets.getOwned(path, 'characters', '018f0000-0000-7000-8000-000000000010')).toEqual({
+      path, kind: 'characters', ownerId: '018f0000-0000-7000-8000-000000000010', mediaType: 'image/png', bytes,
+    });
+    expect(repositories.avatarAssets.getOwned(path, 'personas', '018f0000-0000-7000-8000-000000000010')).toBeUndefined();
+    expect(repositories.avatarAssets.deleteOwned(path, 'characters', '018f0000-0000-7000-8000-000000000099')).toBe(false);
+    expect(repositories.avatarAssets.deleteOwned(path, 'characters', '018f0000-0000-7000-8000-000000000010')).toBe(true);
+    expect(repositories.avatarAssets.getOwned(path, 'characters', '018f0000-0000-7000-8000-000000000010')).toBeUndefined();
   });
 
   it('preserves character compatibility metadata through a create and get cycle', async () => {
@@ -472,7 +487,7 @@ describe('SQLite repositories', () => {
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 4096, maxResponseTokens: 512,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 8 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 9 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

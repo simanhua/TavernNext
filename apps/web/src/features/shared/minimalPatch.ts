@@ -40,3 +40,16 @@ export function minimalPatch<T extends object, K extends keyof T>(
 export function hasPatchFields(value: object): boolean {
   return Object.keys(value).length > 0;
 }
+
+export function minimalRecordPatch(
+  baseline: Record<string, unknown>,
+  next: Record<string, unknown>,
+  allowlist: readonly string[],
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const key of allowlist) {
+    if (structurallyEqual(baseline[key], next[key])) continue;
+    patch[key] = Object.hasOwn(next, key) ? cloneAllowedValue(next[key]) : null;
+  }
+  return patch;
+}

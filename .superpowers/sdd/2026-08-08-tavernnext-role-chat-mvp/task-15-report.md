@@ -250,3 +250,62 @@ Fix Round 1 strict TDD evidence:
   payloads from the browser.
 
 Fix Round 1 ships in commit `fix: address task 15 review findings`.
+
+## Fix Round 2
+
+Round 2 replaced mutable avatar filesystem writes with an owner-bound,
+transactional SQLite asset boundary. New upload/import avatars use the exact
+logical namespace `assets/avatars/<kind>/<owner-id>/<opaque-id>.<type>` while
+their bytes, media type, kind, and owner identity are committed atomically in
+`avatar_assets`. Public PNG bytes are metadata-stripped; original Character
+Card containers remain available only through private import provenance and
+explicit export reconstruction. The existing filesystem namespace is a
+read-only compatibility fallback: every component is direct/no-link, the open
+descriptor identity matches the verified file, reads are bounded to the
+verified `stat()` size, exact-length checked, and image type/extension
+revalidated before use.
+
+Additional correctness closures:
+
+- Uploaded, imported, stored-database, and legacy-fallback avatars share the
+  production 8 MiB ceiling. Tests inject a smaller boundary to exercise both
+  database and import rejection without allocating oversized sql.js blobs.
+- Successful Character and Persona deletion atomically removes every exact
+  owner asset; stale-revision/conflicting deletion preserves both owner and
+  bytes.
+- Preset executable clears use explicit `null` tombstones. Text-preset clears
+  remove the complete canonical alias family, while empty settings, same-name,
+  and other semantic no-op PATCH requests are rejected without revision
+  changes.
+- Chat `prompt_order` preserves a genuine empty array, permits removal of the
+  final group, and no longer manufactures a default group on ordinary saves.
+- The Worldbook compatibility notice explicitly states that preserved
+  extensions are inert and are not executed.
+
+Fix Round 2 strict TDD/review evidence:
+
+- Initial consolidated RED: 13 suites ran; 12 failed, with 12 failed and 50
+  passed tests. This covered PNG public canonicalization, avatar confinement,
+  Preset clears/no-op behavior, empty prompt order, and compatibility wording.
+- First reviewer-follow-up RED: 3 files ran with 4 failed and 25 passed of 29;
+  the failures reproduced legacy PNG exposure, owner-delete blob leakage, and
+  both empty-settings and unchanged-name Preset no-ops. The same 29 tests then
+  passed.
+- Final descriptor-growth race RED: the avatar suite had 1 failure and 17
+  passes; a first-chunk append produced 262144 bytes from a 131072-byte verified
+  snapshot. The bounded descriptor and exact-length/type revalidation change
+  made the suite pass 18/18.
+- Final affected gate: 6/6 files and 70/70 tests passed.
+- Final single-worker normal suite: 50 files passed and 2 conditional files
+  skipped; 668 tests passed and 14 skipped (682 collected).
+- Final read-only SillyTavern oracle suite: 52/52 files passed; 803 tests passed
+  and 5 skipped (808 collected). The oracle remained clean at
+  `8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8` before and after verification.
+- `npm run typecheck`, `npm run build`, and `git diff --check` passed. Vite
+  transformed 249 modules and emitted 530.41 kB JavaScript, 11.75 kB CSS, and
+  0.40 kB HTML; all generated build files were cleaned afterward. The only
+  build warning is the existing advisory chunk-size warning.
+- Independent final read-only review confirmed every Round 2 and follow-up
+  finding closed and returned no remaining Critical or Important findings.
+
+Fix Round 2 ships in commit `fix: close task 15 second review`.

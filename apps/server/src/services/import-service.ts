@@ -6,7 +6,6 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeSync,
@@ -23,6 +22,7 @@ import {
 } from '@tavernnext/st-compat';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
+import { MAX_AVATAR_BYTES } from './avatar-assets.js';
 
 export const INSPECTION_TOKEN_TTL_MS = 15 * 60 * 1000;
 export const DEFAULT_IMPORT_STAGING_LIMITS = Object.freeze({
@@ -33,22 +33,6 @@ export const DEFAULT_IMPORT_STAGING_LIMITS = Object.freeze({
 const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 1000;
 const MAX_CLEANUP_RETRIES = 3;
 const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function assertDirectManagedDirectory(dataDir: string, directory: string): void {
-  const relativePath = relative(resolve(dataDir), resolve(directory));
-  if (relativePath === '' || relativePath.startsWith('..') || isAbsolute(relativePath)) throw new Error('Unsafe managed asset directory');
-  let current = resolve(dataDir);
-  for (const segment of relativePath.split(sep)) {
-    current = join(current, segment);
-    const metadata = lstatSync(current);
-    if (metadata.isSymbolicLink()) throw new Error('Managed asset directory cannot contain links');
-    const actual = resolve(realpathSync(current));
-    const expected = resolve(current);
-    if (process.platform === 'win32' ? actual.toLowerCase() !== expected.toLowerCase() : actual !== expected) {
-      throw new Error('Managed asset directory cannot contain reparse points');
-    }
-  }
-}
 
 export interface ImportHandlerInspection {
   normalizedPreview: unknown;
@@ -100,6 +84,7 @@ export interface ImportServiceOptions {
   removeStage?: (path: string) => void;
   cleanupIntervalMs?: number;
   limits?: ImportStagingLimits;
+  avatarMaxBytes?: number;
 }
 
 export interface StagedImportPreview extends ImportPreview {
@@ -252,6 +237,10 @@ export interface ImportInspectionLease {
 }
 
 export function createImportService(options: ImportServiceOptions): ImportService {
+  const avatarMaxBytes = options.avatarMaxBytes ?? MAX_AVATAR_BYTES;
+  if (!Number.isSafeInteger(avatarMaxBytes) || avatarMaxBytes <= 0) {
+    throw new Error('Invalid avatar byte limit');
+  }
   const clock = options.clock ?? Date.now;
   const moveAssets = options.moveAssets ?? renameSync;
   const removeStagePath = options.removeStage ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
@@ -521,10 +510,8 @@ export function createImportService(options: ImportServiceOptions): ImportServic
 
       const artifactId = randomUUID();
       const temporaryAssets = join(stage.path, 'assets.tmp');
-      const temporaryManagedAssets = join(stage.path, 'managed-assets.tmp');
       const finalAssets = join(assetRoot, artifactId);
       let assetsMoved = false;
-      const movedManagedAssets: string[] = [];
       let result: ImportCommitResult = {};
       try {
         const originalBytes = new Uint8Array(readFileSync(join(stage.path, 'original.bin')));
@@ -538,7 +525,6 @@ export function createImportService(options: ImportServiceOptions): ImportServic
             writeFileSync(target.absolute, contents, { flag: 'wx', mode: 0o600 });
             return ['assets', 'imports', artifactId, ...target.portable.split('/')].join('/');
           };
-          const managedAssets: Array<{ source: string; destination: string }> = [];
           const writeEntityAvatar = (
             kind: 'characters' | 'personas',
             entityId: string,
@@ -546,14 +532,12 @@ export function createImportService(options: ImportServiceOptions): ImportServic
             contents: Uint8Array,
           ) => {
             if (!uuidDirectory.test(entityId)) throw new Error('Invalid avatar entity identifier');
+            if (contents.byteLength > avatarMaxBytes) throw new Error('Imported avatar exceeds size limit');
             const fileName = `${randomUUID()}.${extension}`;
-            const requestedPath = [kind, entityId, fileName].join('/');
-            const staged = safeAssetPath(temporaryManagedAssets, requestedPath);
-            mkdirSync(dirname(staged.absolute), { recursive: true, mode: 0o700 });
-            writeFileSync(staged.absolute, contents, { flag: 'wx', mode: 0o600 });
-            const destination = join(options.dataDir, 'assets', 'avatars', kind, entityId, fileName);
-            managedAssets.push({ source: staged.absolute, destination });
-            return ['assets', 'avatars', kind, entityId, fileName].join('/');
+            const path = ['assets', 'avatars', kind, entityId, fileName].join('/');
+            const mediaType = extension === 'jpg' ? 'image/jpeg' : `image/${extension}`;
+            options.repositories.avatarAssets.put({ path, kind, ownerId: entityId, mediaType, bytes: Uint8Array.from(contents) });
+            return path;
           };
           result = stage.handler?.commit({
             artifact,
@@ -585,16 +569,9 @@ export function createImportService(options: ImportServiceOptions): ImportServic
           // Moving before the transaction callback returns lets a move failure roll back rows.
           moveAssets(temporaryAssets, finalAssets);
           assetsMoved = true;
-          for (const managed of managedAssets) {
-            mkdirSync(dirname(managed.destination), { recursive: true, mode: 0o700 });
-            assertDirectManagedDirectory(options.dataDir, dirname(managed.destination));
-            renameSync(managed.source, managed.destination);
-            movedManagedAssets.push(managed.destination);
-          }
         });
       } catch (error) {
         if (assetsMoved) rmSync(finalAssets, { recursive: true, force: true });
-        for (const path of movedManagedAssets) rmSync(path, { force: true });
         attemptCleanup({ path: stage.path, stage });
         throw new ImportCommitError(error);
       }

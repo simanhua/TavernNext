@@ -163,6 +163,43 @@ describe('sanitized manager APIs', () => {
     expect(invalidPreset.statusCode).toBe(400);
     expect(repositories.presets.get(ids.preset)?.settings.temperature).toBe(0.7);
 
+    const clearedPreset = await app.inject({
+      method: 'PATCH', url: `/api/presets/${ids.preset}`,
+      payload: { revision: 0, patch: { settings: { temperature: null } } },
+    });
+    expect(clearedPreset.statusCode).toBe(200);
+    expect(repositories.presets.get(ids.preset)?.settings).not.toHaveProperty('temperature');
+
+    const unsafeClear = await app.inject({
+      method: 'PATCH', url: `/api/presets/${ids.preset}`,
+      payload: { revision: 1, patch: { settings: { provider_api_key: null } } },
+    });
+    expect(unsafeClear.statusCode).toBe(400);
+
+    const emptySettings = await app.inject({
+      method: 'PATCH', url: `/api/presets/${ids.preset}`,
+      payload: { revision: 1, patch: { settings: {} } },
+    });
+    expect(emptySettings.statusCode).toBe(400);
+    expect(repositories.presets.get(ids.preset)?.revision).toBe(1);
+
+    const unchangedName = await app.inject({
+      method: 'PATCH', url: `/api/presets/${ids.preset}`,
+      payload: { revision: 1, patch: { name: 'Role Chat' } },
+    });
+    expect(unchangedName.statusCode).toBe(400);
+    expect(repositories.presets.get(ids.preset)?.revision).toBe(1);
+
+    const textPresetId = '018f0000-0000-7000-8000-000000000958';
+    repositories.presets.create({ id: textPresetId, name: 'Legacy Text', kind: 'text', settings: { temp: 0.6 } });
+    const clearedAlias = await app.inject({
+      method: 'PATCH', url: `/api/presets/${textPresetId}`,
+      payload: { revision: 0, patch: { settings: { temperature: null } } },
+    });
+    expect(clearedAlias.statusCode).toBe(200);
+    expect(clearedAlias.json().settings).not.toHaveProperty('temperature');
+    expect(repositories.presets.get(textPresetId)?.settings).not.toHaveProperty('temp');
+
     const invalidEntry = await app.inject({
       method: 'PATCH', url: `/api/worldbooks/${ids.worldbook}/entries/${ids.entry}`,
       payload: { revision: 0, patch: { content: 'Allowed', sourceUid: 'forged', sourceOrdinal: 99 } },

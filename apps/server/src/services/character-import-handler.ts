@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeInspectedCharacter,
   diagnostic,
+  stripPngTextMetadata,
 } from '@tavernnext/st-compat';
 import type { ImportHandler } from './import-service.js';
 
@@ -35,6 +36,10 @@ function avatarExtension(bytes: Uint8Array): 'png' | 'jpg' | 'gif' | 'webp' {
   if (signature.startsWith('GIF87a') || signature.startsWith('GIF89a')) return 'gif';
   if (signature.startsWith('RIFF') && signature.slice(8, 12) === 'WEBP') return 'webp';
   throw new Error('Imported Character avatar is not a supported image');
+}
+
+function publicAvatarBytes(bytes: Uint8Array): Uint8Array {
+  return avatarExtension(bytes) === 'png' ? stripPngTextMetadata(bytes) : bytes;
 }
 
 export function createCharacterImportHandler(): ImportHandler {
@@ -85,9 +90,10 @@ export function createCharacterImportHandler(): ImportHandler {
         ? undefined
         : context.writeAsset('character/source.png', decoded.sourcePng);
       const avatarBytes = decoded.avatar?.bytes ?? decoded.sourcePng;
-      const avatarStoredPath = avatarBytes === undefined
+      const sanitizedAvatarBytes = avatarBytes === undefined ? undefined : publicAvatarBytes(avatarBytes);
+      const avatarStoredPath = sanitizedAvatarBytes === undefined
         ? undefined
-        : context.writeEntityAvatar('characters', characterId, avatarExtension(avatarBytes), avatarBytes);
+        : context.writeEntityAvatar('characters', characterId, avatarExtension(sanitizedAvatarBytes), sanitizedAvatarBytes);
       const source: StoredCharacterSource = {
         sourceFormat: decoded.sourceFormat,
         version: decoded.version,

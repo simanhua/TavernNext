@@ -1,5 +1,6 @@
+import { isDeepStrictEqual } from 'node:util';
 import { PresetKindSchema } from '@tavernnext/domain';
-import { executablePresetFields, validatePresetFamily } from '@tavernnext/st-compat';
+import { executablePresetFields, textSettingAliases, validatePresetFamily } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Repositories } from '../db/repositories.js';
@@ -8,6 +9,7 @@ import { presetDetail, presetSummary, safePresetSettings } from './manager-dtos.
 const MAX_MANAGER_ROWS = 512;
 const markerKey = '__tavernnextPresetSource';
 const SettingsSchema = z.record(z.string(), z.unknown());
+const SettingsPatchSchema = SettingsSchema.refine((settings) => Object.keys(settings).length > 0);
 const CreateSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
@@ -16,7 +18,7 @@ const CreateSchema = z.object({
 }).strict();
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
-  patch: z.object({ name: z.string().min(1).optional(), settings: SettingsSchema.optional() })
+  patch: z.object({ name: z.string().min(1).optional(), settings: SettingsPatchSchema.optional() })
     .strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
 
@@ -70,8 +72,10 @@ function mergeSettings(
   current: Record<string, unknown>,
   edited: Record<string, unknown>,
   kind: z.infer<typeof PresetKindSchema>,
+  deleted: ReadonlySet<string> = new Set(),
 ): Record<string, unknown> {
   const merged = structuredClone(current);
+  for (const key of deleted) delete merged[key];
   for (const [key, value] of Object.entries(edited)) merged[key] = structuredClone(value);
   if (kind === 'chat' && Object.hasOwn(edited, 'prompts')) {
     merged.prompts = preserveMarkers(current.prompts, edited.prompts, ['identifier']);
@@ -131,12 +135,27 @@ export function registerPresetRoutes(app: FastifyInstance, repositories: Reposit
     if (current.revision !== parsed.data.revision) return reply.status(409).send({ error: 'conflict' });
     try {
       const patch: { name?: string; settings?: Record<string, unknown> } = {};
-      if (parsed.data.patch.name !== undefined) patch.name = parsed.data.patch.name;
+      if (parsed.data.patch.name !== undefined && parsed.data.patch.name !== current.name) patch.name = parsed.data.patch.name;
       if (parsed.data.patch.settings !== undefined) {
         const safeCurrent = safePresetSettings(current);
-        const safeEdited = validatedSettings(current.kind, { ...safeCurrent, ...parsed.data.patch.settings });
-        patch.settings = mergeSettings(current.settings, safeEdited, current.kind);
+        const candidate = { ...safeCurrent };
+        const deleted = new Set<string>();
+        for (const [key, value] of Object.entries(parsed.data.patch.settings)) {
+          if (value === null) {
+            if (!Object.hasOwn(safeCurrent, key)) return reply.status(400).send({ error: 'invalid_request' });
+            delete candidate[key];
+            if (current.kind === 'text' && Object.hasOwn(textSettingAliases, key)) {
+              for (const alias of textSettingAliases[key as keyof typeof textSettingAliases]) deleted.add(alias);
+            } else deleted.add(key);
+          } else candidate[key] = value;
+        }
+        const safeEdited = validatedSettings(current.kind, candidate);
+        if (deleted.size > 0 || !isDeepStrictEqual(safeEdited, safeCurrent)) {
+          const merged = mergeSettings(current.settings, safeEdited, current.kind, deleted);
+          if (!isDeepStrictEqual(merged, current.settings)) patch.settings = merged;
+        }
       }
+      if (Object.keys(patch).length === 0) return reply.status(400).send({ error: 'invalid_request' });
       const result = repositories.presets.update(current.id, parsed.data.revision, patch);
       if (result.ok) return reply.send(presetDetail(result.value));
       return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });

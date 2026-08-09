@@ -189,6 +189,7 @@ describe('WorldbookManagerPage', () => {
     const settings = screen.getByRole('group', { name: 'Executable Worldbook settings' });
     expect(settings).not.toBeNull();
     expect(screen.getByText(/Editable executable Worldbook extensions are unavailable in this MVP/)).not.toBeNull();
+    expect(screen.getByText(/Preserved compatibility extensions are inert and are not executed/)).not.toBeNull();
     expect(screen.queryByLabelText(/extensions JSON/i)).toBeNull();
   });
 

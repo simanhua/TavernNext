@@ -72,3 +72,13 @@ export function encodeCharacterPng(basePng: Uint8Array, v2: unknown, v3: unknown
   );
   return encodePngChunks(chunks);
 }
+
+/** Remove text-bearing PNG chunks before an imported card image is exposed as a public avatar. */
+export function stripPngTextMetadata(bytes: Uint8Array): Uint8Array {
+  const textChunks = new Set(['tEXt', 'zTXt', 'iTXt']);
+  try {
+    return encodePngChunks(extractPngChunks(bytes).filter((chunk) => !textChunks.has(chunk.name)));
+  } catch {
+    throw new CharacterCodecError(diagnostic('corrupt_png', 'PNG chunks are corrupt.'));
+  }
+}

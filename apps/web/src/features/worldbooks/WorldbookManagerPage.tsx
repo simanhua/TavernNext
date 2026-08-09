@@ -187,7 +187,7 @@ export function WorldbookManagerPage() {
                 <label>Worldbook token budget<input type="number" {...form.register('tokenBudget')} /></label>
                 <label className="checkbox-label"><input type="checkbox" {...form.register('recursiveScanning')} />Recursive scanning</label>
               </fieldset>
-              <p>Editable executable Worldbook extensions are unavailable in this MVP; raw extensions remain private compatibility data.</p>
+              <p>Editable executable Worldbook extensions are unavailable in this MVP. Preserved compatibility extensions are inert and are not executed.</p>
               <label className="checkbox-label"><input type="checkbox" {...form.register('isGlobal')} />Global Worldbook</label>
               {bookValidationMessages.length === 0 ? null : (
                 <div role="alert" tabIndex={-1}>

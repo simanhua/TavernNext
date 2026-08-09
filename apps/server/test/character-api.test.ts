@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,7 +38,7 @@ async function context(options: Partial<NonNullable<Parameters<typeof createApp>
   });
   apps.push(app);
   await app.ready();
-  return { app, directory, repositories };
+  return { app, database, directory, repositories };
 }
 
 function multipart(fileName: string, bytes: Uint8Array, mediaType = 'application/json') {
@@ -119,7 +119,7 @@ describe('typed Character import and export API', () => {
   });
 
   it('rolls back the native Character and ImportArtifact when the final asset move fails', async () => {
-    const { app, repositories } = await context({
+    const { app, database, repositories } = await context({
       importMoveAssets: () => { throw new Error('injected Character asset move failure'); },
     });
     const { committed } = await inspectAndCommit(app);
@@ -128,6 +128,52 @@ describe('typed Character import and export API', () => {
     expect(committed.json()).toEqual({ error: 'import_commit_failed' });
     expect(repositories.characters.list()).toEqual([]);
     expect(repositories.importArtifacts.list()).toEqual([]);
+  });
+
+  it('rolls back an imported avatar blob when the provenance asset move fails', async () => {
+    const { app, database, repositories } = await context({
+      importMoveAssets: () => { throw new Error('injected Character asset move failure'); },
+    });
+    const card = JSON.parse(await readFile(join(fixtureRoot, 'v3.json'), 'utf8')) as Record<string, unknown>;
+    const archive = zipSync({
+      'card.json': encoder.encode(JSON.stringify(card)),
+      'assets/avatar.gif': Uint8Array.from(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64')),
+    });
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('avatar.charx', archive, 'application/zip'),
+    });
+    expect(inspected.statusCode).toBe(200);
+
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+
+    expect(committed.statusCode).toBe(500);
+    expect(committed.json()).toEqual({ error: 'import_commit_failed' });
+    expect(repositories.characters.list()).toEqual([]);
+    expect(repositories.importArtifacts.list()).toEqual([]);
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
+  });
+
+  it('rejects an imported avatar over its configured limit without persisting its owner or blob', async () => {
+    const { app, database, repositories } = await context({ avatarMaxBytes: 64 });
+    const card = JSON.parse(await readFile(join(fixtureRoot, 'v3.json'), 'utf8')) as Record<string, unknown>;
+    const oversizedAvatar = new Uint8Array(65);
+    oversizedAvatar.set(Buffer.from('GIF89a'));
+    const archive = zipSync({ 'card.json': encoder.encode(JSON.stringify(card)), 'assets/avatar.gif': oversizedAvatar });
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('oversized-avatar.charx', archive, 'application/zip'),
+    });
+    expect(inspected.statusCode).toBe(200);
+
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+
+    expect(committed.statusCode).toBe(500);
+    expect(committed.json()).toEqual({ error: 'import_commit_failed' });
+    expect(repositories.characters.list()).toEqual([]);
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
   });
 
   it('exports edited deterministic V2/V3 JSON and PNG with safe filenames and exact content types', async () => {
@@ -166,7 +212,7 @@ describe('typed Character import and export API', () => {
   });
 
   it('uses a newly persisted current avatar ahead of the stale CharX source avatar', async () => {
-    const { app, directory, repositories } = await context();
+    const { app, repositories } = await context();
     const card = JSON.parse(await readFile(join(fixtureRoot, 'v3.json'), 'utf8')) as Record<string, unknown>;
     const sourceAvatar = Uint8Array.from(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64'));
     const archive = zipSync({
@@ -190,9 +236,16 @@ describe('typed Character import and export API', () => {
     expect(importedAvatar.rawPayload).toEqual(Buffer.from(sourceAvatar));
 
     const currentAvatarPath = `assets/avatars/characters/${id}/018f0000-0000-7000-8000-000000000999.png`;
-    await writeFile(join(directory, ...currentAvatarPath.split('/')), await sharp({
+    const currentAvatarBytes = await sharp({
       create: { width: 2, height: 3, channels: 4, background: '#123456' },
-    }).png().toBuffer());
+    }).png().toBuffer();
+    repositories.avatarAssets.put({
+      path: currentAvatarPath,
+      kind: 'characters',
+      ownerId: id,
+      mediaType: 'image/png',
+      bytes: currentAvatarBytes,
+    });
     expect(repositories.characters.update(id, 0, { avatarPath: currentAvatarPath })).toMatchObject({ ok: true });
 
     const exported = await app.inject({ method: 'GET', url: `/api/characters/${id}/export?format=png` });
@@ -203,7 +256,7 @@ describe('typed Character import and export API', () => {
   });
 
   it('copies a standalone PNG Character Card into its entity-bound avatar directory', async () => {
-    const { app, directory, repositories } = await context();
+    const { app, repositories } = await context();
     const { committed: sourceCommit } = await inspectAndCommit(app);
     const sourceId = sourceCommit.json().entityId as string;
     const sourceCard = await app.inject({ method: 'GET', url: `/api/characters/${sourceId}/export?format=png` });
@@ -221,10 +274,12 @@ describe('typed Character import and export API', () => {
     const row = repositories.characters.get(importedId)!;
 
     expect(row.avatarPath).toMatch(new RegExp(`^assets/avatars/characters/${importedId}/[0-9a-f-]+\\.png$`));
-    expect(await readFile(join(directory, ...row.avatarPath!.split('/')))).toEqual(sourceCard.rawPayload);
     const avatar = await app.inject({ method: 'GET', url: `/api/characters/${importedId}/avatar` });
     expect(avatar.statusCode).toBe(200);
-    expect(avatar.rawPayload).toEqual(sourceCard.rawPayload);
+    expect(avatar.rawPayload).not.toEqual(sourceCard.rawPayload);
+    expect(avatar.rawPayload.includes(Buffer.from('ccv3'))).toBe(false);
+    expect(avatar.rawPayload.includes(Buffer.from('chara'))).toBe(false);
+    expect(Uint8Array.from(avatar.rawPayload.subarray(0, 8))).toEqual(Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]));
   });
 
   it('serves Unicode filenames over a real HTTP listener with an ASCII fallback and RFC 5987 filename', async () => {

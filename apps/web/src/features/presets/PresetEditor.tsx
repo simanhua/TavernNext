@@ -6,7 +6,7 @@ import { ApiError, api, errorCode, type PresetKind, type PresetView } from '../.
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
-import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
+import { hasPatchFields, minimalPatch, minimalRecordPatch } from '../shared/minimalPatch.js';
 
 const kinds = ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'] as const;
 const ChatKeys = new Set([
@@ -278,7 +278,6 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
         }),
         order: group.items.filter((item) => item.identifier !== '').map((item) => ({ ...item })),
       }));
-      if (promptOrder.length === 0) promptOrder = [{ character_id: 100000, order: [] }];
       const defaultOrderIndex = promptOrder.findIndex((group) => group.character_id === 100000);
       if (definitionsReordered && defaultOrderIndex >= 0) {
         const enabled = new Map(promptOrder[defaultOrderIndex]!.order.map((item) => [item.identifier, item.enabled]));
@@ -307,7 +306,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
         const allowedSettings = values.kind === 'chat' ? [...ChatKeys]
           : values.kind === 'text' ? [...TextKeys]
             : [...FamilyKeys[values.kind]];
-        const settingsPatch = minimalPatch(
+        const settingsPatch = minimalRecordPatch(
           sanitizeSettings(baseline.kind, baseline.settings),
           settings,
           allowedSettings,

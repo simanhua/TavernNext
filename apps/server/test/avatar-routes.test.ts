@@ -1,8 +1,10 @@
+import { appendFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { encodeCharacterPng } from '@tavernnext/st-compat';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -28,7 +30,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-async function context() {
+async function context(options: Partial<NonNullable<Parameters<typeof createApp>[0]>> = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'tavernnext-avatar-routes-'));
   directories.push(directory);
   const database = createDatabase(join(directory, 'test.sqlite'));
@@ -51,13 +53,14 @@ async function context() {
     isDefault: true,
   });
   const app = createApp({
+    ...options,
     database,
     snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
     config: { host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'test.sqlite') },
   });
   apps.push(app);
   await app.ready();
-  return { app, directory, repositories };
+  return { app, database, directory, repositories };
 }
 
 function multipart(fileName: string, bytes: Uint8Array, mediaType: string) {
@@ -103,10 +106,10 @@ describe('safe avatar routes', () => {
     expect(stored?.avatarPath).toMatch(
       new RegExp(`^assets/avatars/characters/${characterId}/[0-9a-f-]+\\.png$`),
     );
-    const storedPath = resolve(directory, ...(stored?.avatarPath?.split('/') ?? []));
-    await expect(readFile(storedPath)).resolves.toEqual(png);
-    await expect(readdir(join(directory, 'assets', 'avatars', 'characters', characterId)))
-      .resolves.toEqual([expect.stringMatching(/^[0-9a-f-]+\.png$/)]);
+    expect(repositories.avatarAssets.getOwned(stored!.avatarPath!, 'characters', characterId)).toMatchObject({
+      mediaType: 'image/png', bytes: Uint8Array.from(png),
+    });
+    await expect(readFile(resolve(directory, ...(stored?.avatarPath?.split('/') ?? [])))).rejects.toThrow();
 
     const downloaded = await app.inject({
       method: 'GET',
@@ -115,6 +118,64 @@ describe('safe avatar routes', () => {
     expect(downloaded.statusCode).toBe(200);
     expect(downloaded.headers['content-type']).toBe('image/png');
     expect(downloaded.rawPayload).toEqual(png);
+  });
+
+  it('strips Character Card text chunks from a PNG uploaded as a public avatar', async () => {
+    const { app } = await context();
+    const card = Buffer.from(encodeCharacterPng(png, { name: 'Private V2' }, { name: 'Private V3' }));
+
+    const uploaded = await app.inject({
+      method: 'PUT',
+      url: `/api/characters/${characterId}/avatar?revision=0`,
+      ...multipart('card.png', card, 'image/png'),
+    });
+    expect(uploaded.statusCode).toBe(200);
+
+    const downloaded = await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` });
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.rawPayload).not.toEqual(card);
+    expect(downloaded.rawPayload.includes(Buffer.from('ccv3'))).toBe(false);
+    expect(downloaded.rawPayload.includes(Buffer.from('chara'))).toBe(false);
+  });
+
+  it('strips Character Card text chunks from a descriptor-verified legacy PNG response', async () => {
+    const { app, directory, repositories } = await context();
+    const fileName = '018f0000-0000-7000-8000-000000000996.png';
+    const storedPath = `assets/avatars/characters/${characterId}/${fileName}`;
+    const ownerRoot = join(directory, 'assets', 'avatars', 'characters', characterId);
+    const card = Buffer.from(encodeCharacterPng(png, { name: 'Private V2' }, { name: 'Private V3' }));
+    await mkdir(ownerRoot, { recursive: true });
+    await writeFile(join(ownerRoot, fileName), card);
+    expect(repositories.characters.update(characterId, 0, { avatarPath: storedPath })).toMatchObject({ ok: true });
+
+    const downloaded = await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` });
+
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.rawPayload).not.toEqual(card);
+    expect(downloaded.rawPayload.includes(Buffer.from('ccv3'))).toBe(false);
+    expect(downloaded.rawPayload.includes(Buffer.from('chara'))).toBe(false);
+  });
+
+  it('bounds a legacy descriptor read to the verified file snapshot when the file grows after its first chunk', async () => {
+    let appendAfterFirstChunk: () => void = () => undefined;
+    const { app, directory, repositories } = await context({
+      avatarLegacyAfterFirstChunk: () => appendAfterFirstChunk(),
+    });
+    const fileName = '018f0000-0000-7000-8000-000000000994.gif';
+    const storedPath = `assets/avatars/characters/${characterId}/${fileName}`;
+    const ownerRoot = join(directory, 'assets', 'avatars', 'characters', characterId);
+    const absolutePath = join(ownerRoot, fileName);
+    const verifiedBytes = Buffer.alloc(128 * 1024, 0x20);
+    gif.copy(verifiedBytes, 0, 0, 6);
+    await mkdir(ownerRoot, { recursive: true });
+    await writeFile(absolutePath, verifiedBytes);
+    appendAfterFirstChunk = () => appendFileSync(absolutePath, Buffer.alloc(128 * 1024, 0x41));
+    expect(repositories.characters.update(characterId, 0, { avatarPath: storedPath })).toMatchObject({ ok: true });
+
+    const downloaded = await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` });
+
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.rawPayload).toEqual(verifiedBytes);
   });
 
   it('stores and round-trips a Persona GIF without crossing entity ownership', async () => {
@@ -171,7 +232,7 @@ describe('safe avatar routes', () => {
   });
 
   it('rejects stale revisions without replacing the current avatar or leaving files behind', async () => {
-    const { app, directory, repositories } = await context();
+    const { app, database, directory, repositories } = await context();
     const first = await app.inject({
       method: 'PUT',
       url: `/api/characters/${characterId}/avatar?revision=0`,
@@ -179,8 +240,7 @@ describe('safe avatar routes', () => {
     });
     expect(first.statusCode).toBe(200);
     const before = repositories.characters.get(characterId);
-    const avatarDirectory = join(directory, 'assets', 'avatars', 'characters', characterId);
-    const filesBefore = await readdir(avatarDirectory);
+    const beforeAsset = repositories.avatarAssets.getOwned(before!.avatarPath!, 'characters', characterId);
 
     const stale = await app.inject({
       method: 'PUT',
@@ -191,12 +251,34 @@ describe('safe avatar routes', () => {
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toEqual({ error: 'conflict' });
     expect(repositories.characters.get(characterId)).toEqual(before);
-    expect(await readdir(avatarDirectory)).toEqual(filesBefore);
+    expect(repositories.avatarAssets.getOwned(before!.avatarPath!, 'characters', characterId)).toEqual(beforeAsset);
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 1 });
     expect(stale.payload).not.toContain(directory);
   });
 
+  it('rolls back the avatar blob when the owner revision changes after upload validation', async () => {
+    let advanceRevision = () => undefined;
+    const { app, database, repositories } = await context({
+      avatarBeforeCommit: () => advanceRevision(),
+    });
+    advanceRevision = () => {
+      expect(repositories.characters.update(characterId, 0, { description: 'Concurrent edit' })).toMatchObject({ ok: true });
+    };
+
+    const failed = await app.inject({
+      method: 'PUT',
+      url: `/api/characters/${characterId}/avatar?revision=0`,
+      ...multipart('portrait.png', png, 'image/png'),
+    });
+    expect(failed.statusCode).toBe(409);
+    expect(failed.json()).toEqual({ error: 'conflict' });
+    expect(repositories.characters.get(characterId)).toMatchObject({ revision: 1, description: 'Concurrent edit' });
+    expect(repositories.characters.get(characterId)).not.toHaveProperty('avatarPath');
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
+  });
+
   it('rejects invalid query, media metadata, magic, and uploads over eight MiB without mutation', async () => {
-    const { app, directory, repositories } = await context();
+    const { app, database, directory, repositories } = await context();
     const invalidRevision = await app.inject({
       method: 'PUT',
       url: `/api/characters/${characterId}/avatar?revision=../0`,
@@ -235,13 +317,40 @@ describe('safe avatar routes', () => {
 
     expect(repositories.characters.get(characterId)).toMatchObject({ revision: 0 });
     expect(repositories.characters.get(characterId)).not.toHaveProperty('avatarPath');
-    const avatarRoot = join(directory, 'assets', 'avatars');
-    await expect(readdir(avatarRoot, { recursive: true })).resolves.not.toEqual(
-      expect.arrayContaining([expect.stringMatching(/\.(png|jpg|jpeg|gif|webp)$/)]),
-    );
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
     for (const response of [invalidRevision, wrongMedia, wrongMagic, unsupported, oversized]) {
       expect(response.payload).not.toContain(directory);
     }
+  });
+
+  it('refuses an oversized owner-bound database avatar instead of serving it', async () => {
+    const { app, repositories } = await context({ avatarMaxBytes: 64 });
+    const storedPath = `assets/avatars/characters/${characterId}/018f0000-0000-7000-8000-000000000995.gif`;
+    const oversized = Buffer.alloc(65);
+    gif.copy(oversized, 0, 0, 6);
+    repositories.avatarAssets.put({ path: storedPath, kind: 'characters', ownerId: characterId, mediaType: 'image/gif', bytes: oversized });
+    expect(repositories.characters.update(characterId, 0, { avatarPath: storedPath })).toMatchObject({ ok: true });
+
+    const response = await app.inject({ method: 'GET', url: `/api/characters/${characterId}/avatar` });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('deletes only the exact owned avatar blob after a successful owner delete', async () => {
+    const { app, database, repositories } = await context();
+    expect((await app.inject({
+      method: 'PUT', url: `/api/characters/${characterId}/avatar?revision=0`,
+      ...multipart('portrait.png', png, 'image/png'),
+    })).statusCode).toBe(200);
+    const storedPath = repositories.characters.get(characterId)!.avatarPath!;
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/characters/${characterId}?revision=0` })).statusCode).toBe(409);
+    expect(repositories.avatarAssets.getOwned(storedPath, 'characters', characterId)).toBeDefined();
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/characters/${characterId}?revision=1` })).statusCode).toBe(204);
+    expect(repositories.avatarAssets.getOwned(storedPath, 'characters', characterId)).toBeUndefined();
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
   });
 
   it('returns only a generic 404 for missing owners and unsafe stored paths', async () => {
@@ -284,7 +393,7 @@ describe('safe avatar routes', () => {
   });
 
   it('cleans its temporary file when a multipart stream ends prematurely', async () => {
-    const { app, directory, repositories } = await context();
+    const { app, database, directory, repositories } = await context();
 
     const malformed = await app.inject({
       method: 'PUT',
@@ -295,8 +404,7 @@ describe('safe avatar routes', () => {
     expect(malformed.statusCode).toBe(415);
     expect(malformed.json()).toEqual({ error: 'invalid_multipart_upload' });
     expect(repositories.characters.get(characterId)).toMatchObject({ revision: 0 });
-    const ownerRoot = join(directory, 'assets', 'avatars', 'characters', characterId);
-    await expect(readdir(ownerRoot)).resolves.toEqual([]);
+    expect(database.sqlite.prepare('SELECT COUNT(*) AS count FROM avatar_assets').get()).toEqual({ count: 0 });
     expect(malformed.payload).not.toContain(directory);
   });
 
@@ -315,7 +423,7 @@ describe('safe avatar routes', () => {
     expect(response.payload).not.toContain(directory);
   });
 
-  it('rejects linked owner directories for both reads and uploads', async () => {
+  it('keeps uploaded blobs out of linked avatar directories while rejecting legacy linked reads', async () => {
     const { app, directory, repositories } = await context();
     const personaRoot = join(directory, 'assets', 'avatars', 'personas', personaId);
     const characterRoot = join(directory, 'assets', 'avatars', 'characters', characterId);
@@ -334,8 +442,10 @@ describe('safe avatar routes', () => {
       method: 'PUT', url: `/api/characters/${characterId}/avatar?revision=1`,
       ...multipart('replacement.png', png, 'image/png'),
     });
-    expect(upload.statusCode).toBe(500);
-    expect(upload.json()).toEqual({ error: 'avatar_storage_failed' });
+    expect(upload.statusCode).toBe(200);
+    expect(await readdir(personaRoot)).toEqual([fileName]);
+    const stored = repositories.characters.get(characterId)!;
+    expect(repositories.avatarAssets.getOwned(stored.avatarPath!, 'characters', characterId)?.bytes).toEqual(Uint8Array.from(png));
   });
 
   it('never deletes a noncanonical legacy path while replacing an avatar', async () => {

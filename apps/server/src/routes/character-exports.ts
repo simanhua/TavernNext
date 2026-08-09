@@ -98,11 +98,11 @@ export function registerCharacterExportRoutes(
       });
       const currentAvatarBytes = character.avatarPath === undefined
         ? undefined
-        : await readOwnerAvatarBytes(dataDir, 'characters', character.id, character.avatarPath);
+        : await readOwnerAvatarBytes(repositories, dataDir, 'characters', character.id, character.avatarPath);
       const currentAvatar = currentAvatarBytes === undefined ? undefined : { path: 'avatar', bytes: currentAvatarBytes };
       const sourceAvatarBytes = source?.avatar === undefined
         ? undefined
-        : await readOwnerAvatarBytes(dataDir, 'characters', character.id, source.avatar.storedPath);
+        : await readOwnerAvatarBytes(repositories, dataDir, 'characters', character.id, source.avatar.storedPath);
       const sourceAvatar = source?.avatar === undefined || sourceAvatarBytes === undefined
         ? undefined
         : { path: source.avatar.originalPath, bytes: sourceAvatarBytes };

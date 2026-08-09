@@ -1,6 +1,7 @@
 import { CharacterSchema } from '@tavernnext/domain';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { characterDetail, characterSummary } from './manager-dtos.js';
 
@@ -34,7 +35,7 @@ function revisionFrom(value: unknown): number | undefined {
   return undefined;
 }
 
-export function registerCharacterRoutes(app: FastifyInstance, repositories: Repositories): void {
+export function registerCharacterRoutes(app: FastifyInstance, database: TavernDatabase, repositories: Repositories): void {
   app.get('/api/characters', async (_request, reply) => {
     const rows = repositories.characters.list(MAX_MANAGER_ROWS + 1);
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
@@ -77,7 +78,11 @@ export function registerCharacterRoutes(app: FastifyInstance, repositories: Repo
       const revision = revisionFrom(request.query.revision ?? bodyRevision);
       if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
       try {
-        const result = repositories.characters.delete(request.params.id, revision);
+        const result = database.transaction(() => {
+          const deletion = repositories.characters.delete(request.params.id, revision);
+          if (deletion.ok) repositories.avatarAssets.deleteByOwner('characters', request.params.id);
+          return deletion;
+        });
         if (result.ok) return reply.status(204).send();
         return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
       } catch {

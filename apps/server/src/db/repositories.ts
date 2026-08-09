@@ -125,6 +125,23 @@ export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRun
   getByConversationId(conversationId: string): WorldbookRuntimeState | undefined;
 }
 
+export type AvatarAssetKind = 'characters' | 'personas';
+
+export interface AvatarAsset {
+  path: string;
+  kind: AvatarAssetKind;
+  ownerId: string;
+  mediaType: string;
+  bytes: Uint8Array;
+}
+
+export interface AvatarAssetRepository {
+  getOwned(path: string, kind: AvatarAssetKind, ownerId: string): AvatarAsset | undefined;
+  put(value: AvatarAsset): void;
+  deleteOwned(path: string, kind: AvatarAssetKind, ownerId: string): boolean;
+  deleteByOwner(kind: AvatarAssetKind, ownerId: string): number;
+}
+
 export interface MessageRepository extends Repository<Message> {
   listByConversationId(conversationId: string): Message[];
 }
@@ -282,6 +299,39 @@ function createPersonaRepository(database: TavernDatabase): Repository<Persona> 
         if (result.ok && current.isDefault) promoteOldest(id);
         return result;
       });
+    },
+  };
+}
+
+function createAvatarAssetRepository(database: TavernDatabase): AvatarAssetRepository {
+  return {
+    getOwned(path, kind, ownerId) {
+      const row = database.sqlite.prepare(
+        'SELECT path, kind, owner_id, media_type, bytes FROM avatar_assets WHERE path = ? AND kind = ? AND owner_id = ?',
+      ).get(path, kind, ownerId);
+      if (row === undefined || !(row.bytes instanceof Uint8Array)) return undefined;
+      return {
+        path: String(row.path),
+        kind: String(row.kind) as AvatarAssetKind,
+        ownerId: String(row.owner_id),
+        mediaType: String(row.media_type),
+        bytes: Uint8Array.from(row.bytes),
+      };
+    },
+    put(value) {
+      database.sqlite.prepare(
+        'INSERT INTO avatar_assets (path, kind, owner_id, media_type, bytes) VALUES (?, ?, ?, ?, ?)',
+      ).run(value.path, value.kind, value.ownerId, value.mediaType, value.bytes);
+    },
+    deleteOwned(path, kind, ownerId) {
+      return database.sqlite.prepare(
+        'DELETE FROM avatar_assets WHERE path = ? AND kind = ? AND owner_id = ?',
+      ).run(path, kind, ownerId).changes === 1;
+    },
+    deleteByOwner(kind, ownerId) {
+      return database.sqlite.prepare(
+        'DELETE FROM avatar_assets WHERE kind = ? AND owner_id = ?',
+      ).run(kind, ownerId).changes;
     },
   };
 }
@@ -541,6 +591,7 @@ export interface Repositories {
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
+  avatarAssets: AvatarAssetRepository;
 }
 
 export interface CreateRepositoriesOptions {
@@ -571,5 +622,6 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
+    avatarAssets: createAvatarAssetRepository(database),
   };
 }

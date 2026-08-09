@@ -12,6 +12,7 @@ import {
   type CharacterImportPreview,
 } from './normalize.js';
 import { decodeCharacterPng } from './png-codec.js';
+export { encodeCharacterPng, stripPngTextMetadata } from './png-codec.js';
 import { decodeCharacterYaml } from './yaml-codec.js';
 
 export interface InspectCharacterOptions extends InspectionOptions {

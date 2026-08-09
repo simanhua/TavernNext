@@ -44,6 +44,9 @@ export interface CreateAppOptions {
   importRemoveStage?: (path: string) => void;
   importCleanupIntervalMs?: number;
   importLimits?: ImportStagingLimits;
+  avatarBeforeCommit?: () => void;
+  avatarLegacyAfterFirstChunk?: () => void;
+  avatarMaxBytes?: number;
   snapshotIntegrityKey?: Uint8Array;
 }
 
@@ -80,6 +83,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     ...(options.importRemoveStage === undefined ? {} : { removeStage: options.importRemoveStage }),
     ...(options.importCleanupIntervalMs === undefined ? {} : { cleanupIntervalMs: options.importCleanupIntervalMs }),
     ...(options.importLimits === undefined ? {} : { limits: options.importLimits }),
+    ...(options.avatarMaxBytes === undefined ? {} : { avatarMaxBytes: options.avatarMaxBytes }),
   });
   const providerSecrets: Record<string, { providerId: string; baseUrl: string; value: string }> = {
     ...(options.providerSecrets ?? loadProviderSecrets()),
@@ -129,14 +133,22 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   app.get('/api/health', async () => ({ status: 'ok', app: 'TavernNext' }));
   registerImportRoutes(app, imports);
   registerChatImportExportRoutes(app, imports, repositories);
-  registerCharacterRoutes(app, repositories);
-  registerAvatarRoutes(app, repositories, config.dataDir);
+  registerCharacterRoutes(app, database, repositories);
+  registerAvatarRoutes(
+    app,
+    database,
+    repositories,
+    config.dataDir,
+    options.avatarBeforeCommit,
+    options.avatarMaxBytes,
+    options.avatarLegacyAfterFirstChunk,
+  );
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
   registerPresetRoutes(app, repositories);
   registerWorldbookRoutes(app, database, repositories);
   registerWorldbookExportRoutes(app, repositories);
-  registerPersonaRoutes(app, repositories);
+  registerPersonaRoutes(app, database, repositories);
   registerProviderRoutes(app, repositories, {
     has(profile) {
       return profile.secretRef !== undefined
