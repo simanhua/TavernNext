@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "title": "Synthetic introduction",
+  "formattingInstructions": "Document {character} with {user}.",
+  "exampleMessages": [
+    {
+      "characterID": "synthetic-aster",
+      "text": "#{character}: This example is synthetic."
+    }
+  ],
+  "firstMessages": [
+    {
+      "characterID": "synthetic-aster",
+      "text": "#{character}: The BYAF manifest is open."
+    }
+  ],
+  "narrative": "A synthetic BYAF archive is being inspected.",
+  "scenarioUnknown": "preserved"
+}

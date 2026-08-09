@@ -1,0 +1,18 @@
+{
+  "name": "@tavernnext/prompt-engine",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tavernnext/domain": "*",
+    "@tavernnext/st-compat": "*",
+    "re2js": "^2.8.6"
+  },
+  "devDependencies": {
+    "@tavernnext/tokenizer-engine": "*"
+  }
+}

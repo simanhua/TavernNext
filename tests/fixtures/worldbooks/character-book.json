@@ -1,0 +1,117 @@
+{
+  "name": "Synthetic Character Book",
+  "description": "A Character Card V2/V3 embedded lorebook envelope.",
+  "scan_depth": 9,
+  "token_budget": 1234,
+  "recursive_scanning": true,
+  "extensions": {
+    "book_unknown": "keep-character-book",
+    "nested": {
+      "value": 1
+    }
+  },
+  "character_book_unknown": {
+    "preserve": true
+  },
+  "entries": [
+    {
+      "id": 42,
+      "keys": [
+        "character",
+        "/book/i"
+      ],
+      "secondary_keys": [
+        "secondary"
+      ],
+      "comment": "Character Book numeric UID",
+      "name": "Character Book display name",
+      "content": "Synthetic Character Book content.",
+      "constant": false,
+      "selective": true,
+      "insertion_order": 222,
+      "priority": 333,
+      "enabled": true,
+      "position": "before_char",
+      "use_regex": false,
+      "case_sensitive": false,
+      "extensions": {
+        "position": 4,
+        "exclude_recursion": true,
+        "prevent_recursion": true,
+        "delay_until_recursion": 3,
+        "display_index": 12,
+        "probability": 81,
+        "useProbability": true,
+        "depth": 7,
+        "selectiveLogic": 1,
+        "outlet_name": "character-book-outlet",
+        "group": "character-book-group",
+        "group_override": true,
+        "group_weight": 88,
+        "scan_depth": 6,
+        "case_sensitive": true,
+        "match_whole_words": true,
+        "use_group_scoring": true,
+        "automation_id": "character-book-automation",
+        "role": 1,
+        "vectorized": true,
+        "sticky": 2,
+        "cooldown": 3,
+        "delay": 4,
+        "match_persona_description": true,
+        "match_character_description": true,
+        "match_character_personality": true,
+        "match_character_depth_prompt": true,
+        "match_scenario": true,
+        "match_creator_notes": true,
+        "triggers": [
+          "normal"
+        ],
+        "ignore_budget": true,
+        "character_filter": {
+          "isExclude": false,
+          "names": [
+            "linked-character.png"
+          ],
+          "tags": [
+            "linked-character-tag"
+          ]
+        },
+        "persona_filter": {
+          "isExclude": true,
+          "names": [
+            "Excluded Persona"
+          ],
+          "tags": []
+        },
+        "entry_unknown": {
+          "keep": "character-book-extension"
+        }
+      },
+      "entry_extra": "keep-character-book-entry"
+    },
+    {
+      "id": "string-uid",
+      "keys": [
+        "string identity"
+      ],
+      "content": "Synthetic string UID content.",
+      "extensions": {
+        "entry_unknown": "string-entry"
+      },
+      "enabled": false,
+      "insertion_order": 21
+    },
+    {
+      "keys": [
+        "missing identity"
+      ],
+      "content": "This entry intentionally has no source UID.",
+      "extensions": {
+        "missing_uid_extension": true
+      },
+      "enabled": true,
+      "insertion_order": 20
+    }
+  ]
+}

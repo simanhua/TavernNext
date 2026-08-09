@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "outDir": "./.tsbuild",
+    "tsBuildInfoFile": "./.tsbuild/tsconfig.tsbuildinfo",
+    "types": ["vite/client"]
+  },
+  "references": [
+    { "path": "../../packages/domain" }
+  ],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+}

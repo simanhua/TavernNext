@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Generic open book and lantern Character placeholder">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111a33"/>
+      <stop offset="1" stop-color="#293349"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffd788" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#ffd788" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="48" fill="url(#background)"/>
+  <circle cx="256" cy="216" r="150" fill="url(#glow)"/>
+  <path d="M82 318c55-24 111-17 174 22v92c-61-35-117-44-174-20z" fill="#ead9ae"/>
+  <path d="M430 318c-55-24-111-17-174 22v92c61-35 117-44 174-20z" fill="#f6e8bf"/>
+  <path d="M256 340v92" stroke="#a48a61" stroke-width="8" stroke-linecap="round"/>
+  <path d="M118 340c42-10 79-3 112 17M394 340c-42-10-79-3-112 17" fill="none" stroke="#c4ab7d" stroke-width="7" stroke-linecap="round"/>
+  <path d="M222 118h68l12 34v91l-15 25h-62l-15-25v-91z" fill="#293142" stroke="#d5b26e" stroke-width="9"/>
+  <rect x="226" y="151" width="60" height="87" rx="15" fill="#ffd071"/>
+  <path d="M238 151c0-28 36-28 36 0M228 112h56" fill="none" stroke="#d5b26e" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="256" cy="197" r="18" fill="#fff4bf"/>
+</svg>

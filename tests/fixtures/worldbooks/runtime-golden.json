@@ -1,0 +1,68 @@
+{
+  "provenance": {
+    "origin": "Original synthetic TavernNext fixture; no upstream content copied.",
+    "baseline": "SillyTavern 1.18.0 world-info behavior, hand-derived.",
+    "purpose": "Complete deterministic activation, exclusion, state, ordering, and token ledger."
+  },
+  "expected": {
+    "activated": [
+      {
+        "entryKey": "v2|golden-book|string:dragon@1#id:entry-dragon",
+        "bookId": "golden-book",
+        "bookName": "golden-book",
+        "sourceUid": "dragon",
+        "sourceOrdinal": 1,
+        "content": "DRAGON",
+        "position": 0,
+        "depth": 4,
+        "role": 0,
+        "outletName": "",
+        "order": 20,
+        "priority": null,
+        "ignoreBudget": false,
+        "activation": "keyword",
+        "activationStep": 0,
+        "tokenUsageAfter": 7
+      },
+      {
+        "entryKey": "v2|golden-book|string:constant@0#id:entry-constant",
+        "bookId": "golden-book",
+        "bookName": "golden-book",
+        "sourceUid": "constant",
+        "sourceOrdinal": 0,
+        "content": "CONST",
+        "position": 0,
+        "depth": 4,
+        "role": 0,
+        "outletName": "",
+        "order": 10,
+        "priority": null,
+        "ignoreBudget": false,
+        "activation": "constant",
+        "activationStep": 0,
+        "tokenUsageAfter": 13
+      }
+    ],
+    "excluded": [
+      {
+        "entryKey": "v2|golden-book|string:missing@2#id:entry-missing",
+        "bookId": "golden-book",
+        "sourceUid": "missing",
+        "sourceOrdinal": 2,
+        "reason": "primary_key_miss"
+      }
+    ],
+    "timedState": {
+      "messageIndex": 4,
+      "sticky": [],
+      "cooldown": []
+    },
+    "tokenUsage": {
+      "budget": 64,
+      "used": 13,
+      "overflowed": false
+    },
+    "recursionSteps": 1,
+    "warnings": []
+  }
+}

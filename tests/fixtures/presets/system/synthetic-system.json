@@ -1,0 +1,6 @@
+{
+  "name": "Synthetic System",
+  "content": "Write only synthetic notes.",
+  "post_history": "After the chat, add a concise archive note.",
+  "system_unknown": { "kept": true }
+}

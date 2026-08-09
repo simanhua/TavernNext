@@ -1,0 +1,15 @@
+{
+  "name": "@tavernnext/tokenizer-engine",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agnai/sentencepiece-js": "^1.1.1",
+    "@agnai/web-tokenizers": "^0.1.3",
+    "tiktoken": "^1.0.22"
+  }
+}

@@ -1,0 +1,128 @@
+[
+  {
+    "caseName": "english",
+    "tokenizerId": 1,
+    "model": "gpt2",
+    "input": "Hello, adventurer! The tavern is open.",
+    "encodedIds": [15496, 11, 40994, 0, 383, 42488, 318, 1280, 13],
+    "decodedText": "Hello, adventurer! The tavern is open.",
+    "count": 9
+  },
+  {
+    "caseName": "chinese",
+    "tokenizerId": 1,
+    "model": "gpt2",
+    "input": "你好，欢迎来到酒馆。",
+    "encodedIds": [19526, 254, 25001, 121, 171, 120, 234, 162, 105, 95, 32573, 236, 30266, 98, 26344, 108, 165, 227, 240, 165, 99, 228, 16764],
+    "decodedText": "你好，欢迎来到酒馆。",
+    "count": 23
+  },
+  {
+    "caseName": "emoji",
+    "tokenizerId": 1,
+    "model": "gpt2",
+    "input": "A dragon appears 🐉✨",
+    "encodedIds": [32, 10441, 3568, 12520, 238, 231, 26486, 101],
+    "decodedText": "A dragon appears 🐉✨",
+    "count": 8
+  },
+  {
+    "caseName": "roleplay-markup",
+    "tokenizerId": 1,
+    "model": "gpt2",
+    "input": "*She smiles.* \"Welcome,\" {{user}}.",
+    "encodedIds": [9, 3347, 21845, 15885, 366, 14618, 553, 22935, 7220, 11709, 13],
+    "decodedText": "*She smiles.* \"Welcome,\" {{user}}.",
+    "count": 11
+  },
+  {
+    "caseName": "leading-spaces",
+    "tokenizerId": 1,
+    "model": "gpt2",
+    "input": "   indented dialogue",
+    "encodedIds": [220, 220, 773, 4714, 10721],
+    "decodedText": "   indented dialogue",
+    "count": 5
+  },
+  {
+    "caseName": "newline-heavy",
+    "tokenizerId": 1,
+    "model": "gpt2",
+    "input": "System:\n\nUser: Hello\n\nAssistant:",
+    "encodedIds": [11964, 25, 198, 198, 12982, 25, 18435, 198, 198, 48902, 25],
+    "decodedText": "System:\n\nUser: Hello\n\nAssistant:",
+    "count": 11
+  },
+  {
+    "caseName": "llama-english",
+    "tokenizerId": 3,
+    "input": "Hello, adventurer!",
+    "encodedIds": [15043, 29892, 17623, 9945, 29991],
+    "decodedText": "Hello,adventurer!",
+    "count": 5
+  },
+  {
+    "caseName": "nerdstash-roleplay",
+    "tokenizerId": 4,
+    "input": "*She smiles.* {{user}}",
+    "encodedIds": [49399, 1947, 17565, 27345, 43145, 14034, 2542],
+    "decodedText": "*She smiles.* {{user}}",
+    "count": 7
+  },
+  {
+    "caseName": "nerdstash-v2-leading",
+    "tokenizerId": 5,
+    "input": "   indented dialogue",
+    "encodedIds": [14, 958, 7292, 16831],
+    "decodedText": "   indented dialogue",
+    "count": 4
+  },
+  {
+    "caseName": "mistral-newlines",
+    "tokenizerId": 7,
+    "input": "System:\n\nUser: Hello",
+    "encodedIds": [2135, 28747, 13, 13, 730, 28747, 22557],
+    "decodedText": "System:\n\nUser:Hello",
+    "count": 7
+  },
+  {
+    "caseName": "yi-chinese",
+    "tokenizerId": 8,
+    "input": "你好，欢迎来到酒馆。",
+    "encodedIds": [25902, 101, 9034, 8099, 60357, 60627, 102],
+    "decodedText": "你好，欢迎来到酒馆。",
+    "count": 7
+  },
+  {
+    "caseName": "claude-leading",
+    "tokenizerId": 11,
+    "input": "   indented dialogue",
+    "encodedIds": [261, 60400, 28954],
+    "decodedText": "   indented dialogue",
+    "count": 3
+  },
+  {
+    "caseName": "llama3-emoji",
+    "tokenizerId": 12,
+    "input": "A dragon appears 🐉✨",
+    "encodedIds": [32, 26161, 8111, 11410, 238, 231, 38798, 101],
+    "decodedText": "A dragon appears 🐉✨",
+    "count": 8
+  },
+  {
+    "caseName": "gemma-chinese",
+    "tokenizerId": 13,
+    "input": "你好，欢迎来到酒馆。",
+    "encodedIds": [87139, 235365, 51924, 62046, 236408, 237463, 235362],
+    "decodedText": "你好，欢迎来到酒馆。",
+    "count": 7
+  },
+  {
+    "caseName": "jamba-roleplay",
+    "tokenizerId": 14,
+    "input": "*She smiles.* \"Welcome.\"",
+    "encodedIds": [62998, 5318, 26937, 11468, 1988, 15699, 6605],
+    "decodedText": "*She smiles.* \"Welcome.\"",
+    "count": 7
+  }
+]

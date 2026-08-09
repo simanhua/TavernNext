@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/domain" },
+    { "path": "./packages/st-compat" },
+    { "path": "./packages/provider-openai-compatible" },
+    { "path": "./packages/tokenizer-engine" },
+    { "path": "./packages/prompt-engine" },
+    { "path": "./apps/server" },
+    { "path": "./apps/web" }
+  ]
+}

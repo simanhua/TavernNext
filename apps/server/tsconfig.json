@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "./dist",
+    "tsBuildInfoFile": "./.tsbuild/tsconfig.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/st-compat" },
+    { "path": "../../packages/provider-openai-compatible" },
+    { "path": "../../packages/tokenizer-engine" },
+    { "path": "../../packages/prompt-engine" }
+  ],
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

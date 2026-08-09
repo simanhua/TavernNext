@@ -1,0 +1,98 @@
+{
+  "name": "All Fields 世界書",
+  "description": "Synthetic coverage for every SillyTavern 1.18 Worldbook runtime field.",
+  "scan_depth": 12,
+  "token_budget": 2048,
+  "recursive_scanning": true,
+  "extensions": {
+    "book_extension": {
+      "keep": "all-fields"
+    }
+  },
+  "book_unknown": {
+    "preserve": true
+  },
+  "entries": {
+    "native-key-7": {
+      "uid": 7,
+      "key": [
+        "alpha",
+        "/βeta/iu"
+      ],
+      "keysecondary": [
+        "gamma",
+        "delta"
+      ],
+      "comment": "All runtime fields",
+      "displayName": "Explicit display name",
+      "content": "Synthetic all-field lore content.",
+      "constant": true,
+      "vectorized": true,
+      "selective": true,
+      "selectiveLogic": 3,
+      "addMemo": true,
+      "order": 321,
+      "priority": 654,
+      "position": 4,
+      "disable": false,
+      "ignoreBudget": true,
+      "excludeRecursion": true,
+      "preventRecursion": true,
+      "matchPersonaDescription": true,
+      "matchCharacterDescription": true,
+      "matchCharacterPersonality": true,
+      "matchCharacterDepthPrompt": true,
+      "matchScenario": true,
+      "matchCreatorNotes": true,
+      "delayUntilRecursion": 2,
+      "probability": 73,
+      "useProbability": true,
+      "depth": 6,
+      "outletName": "synthetic-outlet",
+      "group": "synthetic-group",
+      "groupOverride": true,
+      "groupWeight": 144,
+      "scanDepth": 8,
+      "caseSensitive": true,
+      "matchWholeWords": false,
+      "useGroupScoring": true,
+      "automationId": "automation-fixture",
+      "role": 2,
+      "sticky": 3,
+      "cooldown": 4,
+      "delay": 5,
+      "characterFilter": {
+        "isExclude": true,
+        "names": [
+          "hero.png"
+        ],
+        "tags": [
+          "character-tag"
+        ]
+      },
+      "personaFilter": {
+        "isExclude": false,
+        "names": [
+          "Archivist Persona"
+        ],
+        "tags": [
+          "persona-tag"
+        ]
+      },
+      "triggers": [
+        "normal",
+        "continue"
+      ],
+      "displayIndex": 42,
+      "useRegex": true,
+      "extensions": {
+        "entry_extension": {
+          "keep": "all-fields-entry"
+        }
+      },
+      "entry_unknown": {
+        "preserve": true
+      }
+    }
+  }
+}

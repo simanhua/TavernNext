@@ -1,0 +1,24 @@
+{
+  "kind": "memory",
+  "name": "Synthetic Agnai Memory",
+  "description": "A synthetic Agnai memory book.",
+  "agnai_book_unknown": {
+    "preserve": true
+  },
+  "entries": [
+    {
+      "id": "agnai-entry-id",
+      "name": "Agnai display",
+      "keywords": [
+        "agnai",
+        "memory"
+      ],
+      "entry": "Synthetic Agnai memory content.",
+      "enabled": true,
+      "weight": 64,
+      "agnai_entry_unknown": {
+        "preserve": true
+      }
+    }
+  ]
+}

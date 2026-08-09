@@ -1,0 +1,64 @@
+{
+  "name": "Native Synthetic Lore",
+  "description": "A native SillyTavern-shaped synthetic Worldbook.",
+  "scan_depth": 5,
+  "token_budget": 777,
+  "recursive_scanning": false,
+  "extensions": {
+    "native_book_extension": {
+      "keep": true
+    }
+  },
+  "native_book_unknown": "preserved",
+  "entries": {
+    "alpha-source-key": {
+      "uid": "alpha-uid",
+      "key": [
+        "archive"
+      ],
+      "keysecondary": [
+        "index"
+      ],
+      "comment": "Alpha display",
+      "content": "Native synthetic alpha content.",
+      "constant": false,
+      "selective": true,
+      "selectiveLogic": 0,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "role": 0,
+      "extensions": {
+        "native_entry_extension": "alpha"
+      },
+      "native_entry_unknown": {
+        "keep": "alpha"
+      }
+    },
+    "9": {
+      "uid": 9,
+      "key": [
+        "ledger"
+      ],
+      "keysecondary": [],
+      "comment": "Numeric UID",
+      "content": "Native synthetic numeric content.",
+      "constant": true,
+      "selective": false,
+      "selectiveLogic": 0,
+      "order": 90,
+      "position": 1,
+      "disable": true,
+      "probability": 55,
+      "useProbability": true,
+      "depth": 4,
+      "role": 0,
+      "extensions": {
+        "native_entry_extension": "numeric"
+      }
+    }
+  }
+}

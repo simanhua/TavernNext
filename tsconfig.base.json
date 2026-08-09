@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "paths": {
+      "@tavernnext/domain": ["./packages/domain/src/index.ts"],
+      "@tavernnext/st-compat": ["./packages/st-compat/src/index.ts"],
+      "@tavernnext/provider-openai-compatible": ["./packages/provider-openai-compatible/src/index.ts"],
+      "@tavernnext/tokenizer-engine": ["./packages/tokenizer-engine/src/index.ts"],
+      "@tavernnext/prompt-engine": ["./packages/prompt-engine/src/index.ts"]
+    },
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "tavernnext",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev -w @tavernnext/server\" \"npm:dev -w @tavernnext/web\"",
+    "build": "tsc -b && npm run build -w @tavernnext/web",
+    "test": "vitest run --no-file-parallelism --maxWorkers 1",
+    "typecheck": "tsc -b",
+    "setup:e2e": "playwright install chromium",
+    "test:e2e": "npm run setup:e2e && playwright test",
+    "verify:compat": "node scripts/verify-st-oracle.mjs",
+    "smoke:local": "tsx --tsconfig apps/server/tsconfig.json scripts/smoke-local.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run verify:compat && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^3.2.7",
+    "concurrently": "^10.0.4",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
+  }
+}

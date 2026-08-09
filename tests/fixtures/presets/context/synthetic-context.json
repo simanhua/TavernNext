@@ -1,0 +1,12 @@
+{
+  "name": "Synthetic Context",
+  "story_string": "{{description}}\n{{personality}}\n{{scenario}}",
+  "story_string_position": 1,
+  "story_string_depth": 3,
+  "story_string_role": 0,
+  "example_separator": "<EXAMPLE>",
+  "chat_start": "<CHAT>",
+  "use_stop_strings": true,
+  "names_as_stop_strings": false,
+  "context_unknown": { "retain": { "empty": "" } }
+}

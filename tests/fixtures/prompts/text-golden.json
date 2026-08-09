@@ -1,0 +1,21 @@
+{
+  "fixtureVersion": 1,
+  "provenance": {
+    "kind": "synthetic",
+    "baseline": "SillyTavern 1.18.0",
+    "notes": "Original TavernNext values. Story/context/instruct concatenation and stop ordering were hand-derived from the read-only oracle text prompt pipeline; no oracle source or preset content is copied."
+  },
+  "expected": {
+    "text": "<SYS>\n<STORY>\nCard for Aster (Base Aster)\nGuide for You\nCalm\nLibrary\nTraveler\n</STORY>\n</SYS>\n<EXAMPLE>\n<U You>\nYou: Demo question</U>\n<A Aster>\nAster: Demo answer</A>\n<CHAT>\n<U You>\nYou: Old</U>\n<A Aster>\nAster: Mid</A>\n<U You>\nYou: New</U>\n<LU System>\nAfter You (Base post)</U>\n<LA Aster>\nAster:",
+    "stop": [
+      "\nYou:",
+      "\n<STOP>",
+      "\n<A Aster>",
+      "\n<U You>",
+      "\n<LA Aster>",
+      "\n<S System>",
+      "\n<CHAT>",
+      "\n<EXAMPLE>"
+    ]
+  }
+}

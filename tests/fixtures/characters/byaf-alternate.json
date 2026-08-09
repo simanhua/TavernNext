@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "title": "Synthetic alternate",
+  "formattingInstructions": "",
+  "exampleMessages": [],
+  "firstMessages": [
+    {
+      "characterID": "synthetic-aster",
+      "text": "#{character}: Choose another synthetic scenario."
+    }
+  ],
+  "narrative": "",
+  "alternateUnknown": "preserved"
+}

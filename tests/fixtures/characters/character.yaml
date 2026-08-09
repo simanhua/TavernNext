@@ -1,0 +1,24 @@
+spec: chara_card_v2
+spec_version: "2.0"
+data:
+  name: YAML Aster
+  description: A synthetic YAML archivist.
+  personality: Structured
+  scenario: Reading a handwritten manifest.
+  first_mes: YAML parsed successfully.
+  mes_example: "<START>\n{{char}}: Indentation matters."
+  creator_notes: YAML creator note
+  system_prompt: Preserve YAML-compatible values.
+  post_history_instructions: Keep unknown YAML fields.
+  alternate_greetings:
+    - Another document is ready.
+  tags:
+    - synthetic
+    - yaml
+  creator: TavernNext tests
+  character_version: yaml-test
+  extensions:
+    yaml_extension: true
+  yaml_unknown:
+    keep: yaml
+top_yaml_unknown: preserved

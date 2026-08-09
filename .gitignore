@@ -6,5 +6,7 @@ coverage/
 playwright-report/
 test-results/
 .env
+.tavernnext/
 *.log
+.tsbuild/
 

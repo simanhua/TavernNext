@@ -1,0 +1,26 @@
+{
+  "fixtureVersion": 1,
+  "provenance": {
+    "kind": "synthetic",
+    "baseline": "SillyTavern 1.18.0",
+    "notes": "Original TavernNext values. Ordering and example-message framing were hand-derived from the read-only oracle PromptManager/openai prompt pipeline; no oracle source or preset content is copied."
+  },
+  "expected": {
+    "messages": [
+      { "role": "system", "content": "MAIN Aster/You" },
+      { "role": "system", "content": "Guide for You" },
+      { "role": "system", "content": "Traveler" },
+      { "role": "system", "content": "Calm" },
+      { "role": "system", "content": "Library" },
+      { "role": "user", "content": "User rule" },
+      { "role": "system", "content": "[Example Chat]" },
+      { "role": "system", "content": "Hello", "name": "example_user" },
+      { "role": "system", "content": "Welcome", "name": "example_assistant" },
+      { "role": "system", "content": "[Start a new Chat]" },
+      { "role": "user", "content": "Question" },
+      { "role": "assistant", "content": "Answer" },
+      { "role": "system", "content": "Stay kind." }
+    ],
+    "stop": ["END"]
+  }
+}
