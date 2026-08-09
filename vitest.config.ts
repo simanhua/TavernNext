@@ -3,7 +3,7 @@ import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, '**/.tsbuild/**'],
+    exclude: [...configDefaults.exclude, '**/.tsbuild/**', 'tests/e2e/**'],
   },
   resolve: {
     alias: {
