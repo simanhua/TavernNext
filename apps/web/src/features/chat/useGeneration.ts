@@ -1,16 +1,28 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Conversation } from '../../api/client.js';
+import type { Conversation, MessageView } from '../../api/client.js';
 import { api } from '../../api/client.js';
 import { readGenerationEvents } from '../../api/generation-stream.js';
 
 type GenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
+type NonNormalMode = 'swipe' | 'regenerate' | 'continue';
+
+export type GenerationStartInput =
+  | { mode: 'normal'; userText: string }
+  | { mode: NonNormalMode; target: MessageView; baseContent: string };
+
+export interface ActiveGenerationTarget {
+  mode: NonNormalMode;
+  messageId: string;
+  baseContent: string;
+}
 
 export function useGeneration() {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<GenerationStatus>('idle');
   const [streamedText, setStreamedText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [target, setTarget] = useState<ActiveGenerationTarget | null>(null);
   const generationId = useRef<string | null>(null);
   const stopRequested = useRef(false);
   const activeRequest = useRef<AbortController | null>(null);
@@ -34,7 +46,7 @@ export function useGeneration() {
     ]);
   }, [queryClient]);
 
-  const start = useCallback(async (conversation: Conversation, userText: string) => {
+  const start = useCallback(async (conversation: Conversation, input: GenerationStartInput) => {
     if (active.current) return;
     active.current = true;
     const controller = new AbortController();
@@ -42,10 +54,17 @@ export function useGeneration() {
     setStatus('starting');
     setStreamedText('');
     setError(null);
+    setTarget(input.mode === 'normal' ? null : {
+      mode: input.mode,
+      messageId: input.target.id,
+      baseContent: input.baseContent,
+    });
     generationId.current = null;
     stopRequested.current = false;
     try {
-      const response = await api.startGeneration(conversation, userText, controller.signal);
+      const response = await api.startGeneration(conversation, input.mode === 'normal'
+        ? { mode: 'normal', userText: input.userText }
+        : { mode: input.mode }, controller.signal);
       let terminal = false;
       for await (const event of readGenerationEvents(response, controller.signal)) {
         if (!mounted.current) return;
@@ -60,6 +79,7 @@ export function useGeneration() {
           await refreshAuthoritativeState(conversation.id);
           if (!mounted.current) return;
           setStreamedText('');
+          setTarget(null);
           setStatus('idle');
           active.current = false;
           activeRequest.current = null;
@@ -73,6 +93,7 @@ export function useGeneration() {
       await refreshAuthoritativeState(conversation.id).catch(() => undefined);
       if (!mounted.current) return;
       setStreamedText('');
+      setTarget(null);
       setStatus('idle');
       active.current = false;
       activeRequest.current = null;
@@ -97,6 +118,7 @@ export function useGeneration() {
   return {
     status,
     streamedText,
+    target,
     error,
     isActive: status !== 'idle',
     canStop: (status === 'streaming' || status === 'stopping') && generationId.current !== null,

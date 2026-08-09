@@ -1,4 +1,4 @@
-import type { Character, Conversation, Message, MessageVariant, Persona, PresetKind } from '@tavernnext/domain';
+import type { Character, Conversation, GenerationMode, Message, MessageVariant, Persona, PresetKind } from '@tavernnext/domain';
 
 export type { Character, Conversation, Message, MessageVariant, Persona };
 
@@ -112,11 +112,18 @@ export const api = {
     method: 'PATCH', body: JSON.stringify({ revision: message.revision, patch: { content } }),
   }),
   deleteMessage: (message: Message) => request<void>(`/api/messages/${message.id}?revision=${message.revision}`, { method: 'DELETE' }),
-  startGeneration: async (conversation: Conversation, userText: string, signal?: AbortSignal) => {
+  switchActiveVariant: (message: Message, variantId: string) => request<Message>(`/api/messages/${message.id}/active-variant`, {
+    method: 'PUT', body: JSON.stringify({ revision: message.revision, variantId }),
+  }),
+  startGeneration: async (
+    conversation: Conversation,
+    input: { mode: GenerationMode; userText?: string },
+    signal?: AbortSignal,
+  ) => {
     const response = await fetch(`/api/conversations/${conversation.id}/generations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ conversationRevision: conversation.revision, mode: 'normal', userText }),
+      body: JSON.stringify({ conversationRevision: conversation.revision, ...input }),
       signal,
     });
     if (!response.ok) {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { GenerationMode, MessageVariant, ProviderProfile } from '@tavernnext/domain';
+import type { GenerationMode, Message, MessageVariant, ProviderProfile } from '@tavernnext/domain';
 import type {
   ChatRequest,
   OpenAICompatibleClient,
@@ -69,6 +69,7 @@ type PreparedGeneration =
 export interface GenerationService {
   start(input: GenerationInput): Promise<StartGenerationResult>;
   cancel(generationId: string): boolean;
+  isConversationActive(conversationId: string): boolean;
 }
 
 function safeFailureCode(error: unknown): string {
@@ -119,25 +120,41 @@ export function createGenerationService(options: {
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
-  async function* providerEvents(
+  function providerEvents(
     prepared: PreparedGeneration,
     signal: AbortSignal,
   ): AsyncIterable<ProviderEvent> {
     const client = providerClientFactory(prepared.provider);
-    if (prepared.kind === 'chat') yield* client.streamChat(prepared.request, signal);
-    else yield* client.streamText(prepared.request, signal);
+    return prepared.kind === 'chat'
+      ? client.streamChat(prepared.request, signal)
+      : client.streamText(prepared.request, signal);
   }
 
   async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<GenerationEvent> {
     const { controller } = active;
+    const mode = prepared.payload.input.mode;
+    const siblingMode = mode === 'swipe' || mode === 'regenerate';
+    let targetMessage: Message | undefined;
     let variant: MessageVariant | undefined;
-    let content = '';
-    let persistedContent = '';
+    let initializationError: unknown;
+    if (mode !== 'normal') {
+      targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
+      variant = repositories.messageVariants.get(prepared.payload.input.targetVariantId!);
+      if (targetMessage === undefined || variant === undefined
+        || variant.messageId !== targetMessage.id || targetMessage.activeVariantId !== variant.id) {
+        initializationError = new PromptSnapshotError('snapshot_stale');
+      }
+      if (siblingMode) variant = undefined;
+    }
+    let content = mode === 'continue' ? variant?.content ?? '' : '';
+    let persistedContent = content;
+    let hasDelta = false;
     let finishReason = 'stop';
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
     let flushTimer: ReturnType<typeof setInterval> | undefined;
     let timerError: unknown;
+    let providerIterator: AsyncIterator<ProviderEvent> | undefined;
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
@@ -145,30 +162,55 @@ export function createGenerationService(options: {
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
         status,
-        ...(status === 'completed' ? { finishReason } : {}),
+        finishReason: status === 'completed' ? finishReason : undefined,
+        ...(mode === 'continue' && hasDelta ? {
+          continuationBoundaries: [
+            ...variant.continuationBoundaries,
+            ...(variant.continuationBoundaries.at(-1) === prepared.payload.input.continuationByteBoundary
+              ? []
+              : [prepared.payload.input.continuationByteBoundary!]),
+          ],
+        } : {}),
       });
       if (!updated.ok) throw new Error(`Unable to flush generation variant: ${updated.reason}`);
       variant = updated.value;
       persistedContent = content;
     };
 
-    const createAssistant = () => {
+    const beginPersistence = () => {
       database.transaction(() => {
-        const message = repositories.messages.create({
-          id: randomUUID(),
-          conversationId: prepared.conversationId,
-          role: 'assistant',
-          content: '',
-          activeVariantId: null,
-        });
-        variant = repositories.messageVariants.create({
-          id: randomUUID(),
-          messageId: message.id,
-          content,
-          status: 'streaming',
-        });
-        const linked = repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id });
-        if (!linked.ok) throw new Error(`Unable to link generation variant: ${linked.reason}`);
+        if (mode === 'normal') {
+          const message = repositories.messages.create({
+            id: randomUUID(),
+            conversationId: prepared.conversationId,
+            role: 'assistant',
+            content: '',
+            activeVariantId: null,
+          });
+          variant = repositories.messageVariants.create({
+            id: randomUUID(),
+            messageId: message.id,
+            ordinal: 0,
+            content,
+            status: 'streaming',
+            continuationBoundaries: [],
+          });
+          const linked = repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id });
+          if (!linked.ok) throw new Error(`Unable to link generation variant: ${linked.reason}`);
+        } else if (siblingMode) {
+          const siblings = repositories.messageVariants.listByMessageId(targetMessage!.id);
+          const ordinal = siblings.reduce((maximum, sibling) => Math.max(maximum, sibling.ordinal), -1) + 1;
+          variant = repositories.messageVariants.create({
+            id: randomUUID(),
+            messageId: targetMessage!.id,
+            ordinal,
+            content,
+            status: 'streaming',
+            continuationBoundaries: [],
+          });
+        } else {
+          flush();
+        }
       });
       persistedContent = content;
       flushTimer = setInterval(() => {
@@ -181,15 +223,30 @@ export function createGenerationService(options: {
       }, 250);
     };
 
+    const selectSibling = () => {
+      if (!siblingMode || variant === undefined || targetMessage === undefined) return;
+      const linked = repositories.messages.update(targetMessage.id, targetMessage.revision, {
+        activeVariantId: variant.id,
+      });
+      if (!linked.ok) throw new Error(`Unable to select generation variant: ${linked.reason}`);
+      targetMessage = linked.value;
+    };
+
     try {
       yield { type: 'started', generationId: prepared.generationId };
-      for await (const event of providerEvents(prepared, controller.signal)) {
+      if (initializationError !== undefined) throw initializationError;
+      providerIterator = providerEvents(prepared, controller.signal)[Symbol.asyncIterator]();
+      for (;;) {
         if (timerError !== undefined) throw timerError;
         if (controller.signal.aborted) throw new ProviderError('aborted');
+        const next = await providerIterator.next();
+        if (next.done) break;
+        const event = next.value;
         if (event.type === 'delta') {
           if (event.text === '') continue;
           content += event.text;
-          if (variant === undefined) createAssistant();
+          hasDelta = true;
+          if (variant === undefined || (mode === 'continue' && flushTimer === undefined)) beginPersistence();
           else if (content.length - persistedContent.length >= 256) flush();
           yield { type: 'delta', text: event.text };
           continue;
@@ -218,25 +275,32 @@ export function createGenerationService(options: {
         failureCode = safeFailureCode(error);
       }
     } finally {
+      if (providerIterator?.return !== undefined) {
+        try {
+          await providerIterator.return();
+        } catch {
+          // Closing the provider transport must not replace the generation's primary outcome.
+        }
+      }
       if (flushTimer !== undefined) clearInterval(flushTimer);
       if (outcome === 'aborted') controller.abort();
       try {
-        if (outcome === 'completed') {
-          database.transaction(() => {
-            if (variant !== undefined) flush('completed');
-            promptSnapshots.commitTimedState(prepared.payload);
-          });
-        } else if (variant !== undefined) {
-          flush(outcome);
-        }
+        database.transaction(() => {
+          if (variant !== undefined && hasDelta) flush(outcome);
+          if (hasDelta) selectSibling();
+          if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
+        });
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (variant !== undefined) {
+          if (variant !== undefined && hasDelta) {
             variant = repositories.messageVariants.get(variant.id);
             if (variant !== undefined && variant.status !== 'failed') {
-              database.transaction(() => flush('failed'));
+              database.transaction(() => {
+                flush('failed');
+                selectSibling();
+              });
             }
           }
         } catch {
@@ -283,10 +347,10 @@ export function createGenerationService(options: {
 
   return {
     async start(input) {
-      if (input.mode !== 'normal') return { ok: false, reason: 'unsupported_mode' };
-      if (typeof input.userText !== 'string' || input.userText.trim() === '') {
+      if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
         return { ok: false, reason: 'invalid_user_text' };
       }
+      if (input.mode !== 'normal' && input.userText !== undefined) return { ok: false, reason: 'invalid_user_text' };
       if (activeByConversation.has(input.conversationId)) return { ok: false, reason: 'generation_active' };
       const generationId = input.snapshotId ?? randomUUID();
       if (activeById.has(generationId)) return { ok: false, reason: 'generation_active' };
@@ -333,6 +397,9 @@ export function createGenerationService(options: {
       active.controller.abort();
       if (active.state === 'reserved') active.cleanup();
       return true;
+    },
+    isConversationActive(conversationId) {
+      return activeByConversation.has(conversationId);
     },
   };
 }

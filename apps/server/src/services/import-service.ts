@@ -48,6 +48,7 @@ export interface ImportCommitContext {
   artifact: SourceArtifact;
   preview: ImportPreview;
   repositories: Repositories;
+  commitOptions?: unknown;
   /** Writes one task-owned asset and returns its data-directory-relative final path. */
   writeAsset(relativePath: string, bytes: Uint8Array): string;
 }
@@ -221,7 +222,7 @@ function digestMatches(bytes: Uint8Array, expectedHex: string): boolean {
 export interface ImportService {
   acquireInspection(): ImportInspectionLease;
   inspect(artifact: SourceArtifact): Promise<ImportPreview | StagedImportPreview>;
-  commit(inspectionToken: string): ImportCommitReceipt;
+  commit(inspectionToken: string, commitOptions?: unknown): ImportCommitReceipt;
   close(): void;
 }
 
@@ -475,7 +476,7 @@ export function createImportService(options: ImportServiceOptions): ImportServic
       }
     },
 
-    commit(inspectionToken) {
+    commit(inspectionToken, commitOptions) {
       const now = clock();
       purgeDue(now);
       const expiredUntil = expired.get(inspectionToken);
@@ -516,7 +517,13 @@ export function createImportService(options: ImportServiceOptions): ImportServic
             writeFileSync(target.absolute, contents, { flag: 'wx', mode: 0o600 });
             return ['assets', 'imports', artifactId, ...target.portable.split('/')].join('/');
           };
-          result = stage.handler?.commit({ artifact, preview: immutableClone(stage.preview), repositories: options.repositories, writeAsset }) ?? {};
+          result = stage.handler?.commit({
+            artifact,
+            preview: immutableClone(stage.preview),
+            repositories: options.repositories,
+            writeAsset,
+            ...(commitOptions === undefined ? {} : { commitOptions: immutableClone(commitOptions) }),
+          }) ?? {};
           options.repositories.importArtifacts.create({
             id: artifactId,
             kind: stage.preview.detected.kind === 'unknown' ? stage.preview.detected.container : stage.preview.detected.kind,

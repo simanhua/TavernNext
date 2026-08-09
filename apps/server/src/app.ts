@@ -19,12 +19,14 @@ import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
+import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
+import { createChatImportHandler } from './services/chat-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 import { injectedSnapshotIntegrityKey, loadSnapshotIntegrityKey } from './snapshot-integrity-key.js';
 
@@ -69,6 +71,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       createCharacterImportHandler(),
       createPresetImportHandler(),
       createWorldbookImportHandler(),
+      createChatImportHandler(),
     ],
     ...(options.importClock === undefined ? {} : { clock: options.importClock }),
     ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
@@ -123,6 +126,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   });
   app.get('/api/health', async () => ({ status: 'ok', app: 'TavernNext' }));
   registerImportRoutes(app, imports);
+  registerChatImportExportRoutes(app, imports, repositories);
   registerCharacterRoutes(app, repositories);
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
@@ -143,8 +147,8 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       delete providerSecrets[secretRef];
     },
   });
-  registerConversationRoutes(app, repositories);
-  registerMessageRoutes(app, repositories);
+  registerConversationRoutes(app, repositories, generations);
+  registerMessageRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationRoutes(app, generations);
 

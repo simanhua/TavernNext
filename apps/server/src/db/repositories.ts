@@ -92,7 +92,7 @@ type DefaultedField =
   | 'characterFilter' | 'personaFilter' | 'matchPersonaDescription' | 'matchCharacterDescription'
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
-  | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens';
+  | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -343,6 +343,7 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
     toRow: (value: MessageVariant) => ({
       ...baseRow(value),
       messageId: value.messageId,
+      ordinal: value.ordinal,
       status: value.status,
     }),
   });

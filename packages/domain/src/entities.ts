@@ -149,10 +149,19 @@ export const MessageSchema = MutableEntitySchema.extend({
 export const MessageVariantStatusSchema = z.enum(['streaming', 'completed', 'aborted', 'failed']);
 export const MessageVariantSchema = MutableEntitySchema.extend({
   messageId: DomainIdSchema,
+  ordinal: z.number().int().nonnegative().default(0),
   content: z.string(),
   status: MessageVariantStatusSchema,
   finishReason: z.string().optional(),
   reasoning: z.string().optional(),
+  continuationBoundaries: z.array(z.number().int().nonnegative()).default([]),
+  sendDate: z.union([z.string(), z.number().finite()]).optional(),
+  generationStarted: z.union([z.string(), z.number().finite()]).optional(),
+  generationFinished: z.union([z.string(), z.number().finite()]).optional(),
+  api: z.string().optional(),
+  model: z.string().optional(),
+  tokenCount: z.number().finite().nonnegative().optional(),
+  reasoningDuration: z.number().finite().nonnegative().optional(),
 }).extend(WithCompatibilitySchema.shape);
 
 export const ProviderProfileSchema = MutableEntitySchema.extend({

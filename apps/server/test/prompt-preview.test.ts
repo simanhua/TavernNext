@@ -31,7 +31,7 @@ describe('full prompt preview', () => {
     const second = secondResponse.json();
     expect(first).toMatchObject({
       snapshotId: expect.any(String),
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'chat',
       messages: expect.any(Array),
       stop: expect.any(Array),

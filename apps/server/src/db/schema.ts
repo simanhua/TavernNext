@@ -71,6 +71,7 @@ export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
 export const messageVariants = sqliteTable('message_variants', {
   ...entityColumns,
   messageId: text('message_id').notNull(),
+  ordinal: integer('ordinal').notNull(),
   status: text('status').notNull(),
 }, (table) => [
   index('message_variants_message_id_idx').on(table.messageId),

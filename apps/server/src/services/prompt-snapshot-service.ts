@@ -6,6 +6,7 @@ import {
   type Conversation,
   type GenerationMode,
   type Message,
+  type MessageVariant,
   type Persona,
   type Preset,
   type ProviderProfile,
@@ -42,11 +43,16 @@ import {
   type TokenizerSelectionInput,
 } from '@tavernnext/tokenizer-engine';
 import type { TavernDatabase } from '../db/client.js';
-import { RelationshipLimitError, type Repositories } from '../db/repositories.js';
+import {
+  MAX_MESSAGES_PER_CONVERSATION,
+  MAX_VARIANTS_PER_RELATION,
+  RelationshipLimitError,
+  type Repositories,
+} from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 2 as const;
-const EXECUTABLE_AUDIT_SCHEMA_VERSION = 2 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 3 as const;
+const EXECUTABLE_AUDIT_SCHEMA_VERSION = 3 as const;
 
 export interface ServerTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
@@ -61,6 +67,9 @@ export interface PromptSnapshotInput {
   userText?: string;
   seed?: string | number;
   messageIndex?: number;
+  targetMessageId?: string;
+  targetVariantId?: string;
+  continuationByteBoundary?: number;
 }
 
 export interface RevisionRef {
@@ -97,9 +106,12 @@ export interface SnapshotInputPayload {
   conversationId: string;
   conversationRevision: number;
   mode: GenerationMode;
-  userText: string;
+  userText: string | null;
   seed: string | number;
   messageIndex: number;
+  targetMessageId: string | null;
+  targetVariantId: string | null;
+  continuationByteBoundary: number | null;
 }
 
 export interface PromptSnapshotPayload {
@@ -130,6 +142,7 @@ export interface PromptSnapshotPreview extends PromptSnapshotPayload {
 
 export type PromptSnapshotErrorCode =
   | 'invalid_user_text'
+  | 'invalid_target'
   | 'unsupported_mode'
   | 'not_found'
   | 'provider_not_configured'
@@ -154,7 +167,7 @@ export class PromptSnapshotError extends Error {
 }
 
 export function promptSnapshotErrorStatus(code: PromptSnapshotErrorCode): 400 | 404 | 409 | 422 {
-  if (code === 'invalid_user_text' || code === 'unsupported_mode') return 400;
+  if (code === 'invalid_user_text' || code === 'invalid_target' || code === 'unsupported_mode') return 400;
   if (code === 'not_found') return 404;
   if (code === 'revision_conflict' || code === 'snapshot_stale'
     || code === 'snapshot_mismatch' || code === 'snapshot_invalid' || code === 'snapshot_unsupported') return 409;
@@ -382,10 +395,17 @@ function historyRows(repositories: Repositories, conversationId: string): {
   history: LoadedAggregate['history'];
   manifest: MessageRevisionRef[];
   compatibilityWarnings: PromptWarning[];
+  messages: Message[];
+  variants: Map<string, MessageVariant>;
 } {
   const variantRows = boundedRelation(() => repositories.messageVariants.listByConversationId(conversationId));
   const variants = new Map(variantRows.map((variant) => [variant.id, variant]));
   const messages = boundedRelation(() => repositories.messages.listByConversationId(conversationId));
+  for (const message of messages) {
+    if (message.activeVariantId === null) continue;
+    const variant = variants.get(message.activeVariantId);
+    if (variant === undefined || variant.messageId !== message.id) throw new PromptSnapshotError('invalid_target');
+  }
   return {
     history: messages.map((message) => {
       const variant = message.activeVariantId === null ? undefined : variants.get(message.activeVariantId);
@@ -410,6 +430,8 @@ function historyRows(repositories: Repositories, conversationId: string): {
         code: 'compatibility_warning', message: warning, source: `variant:${variant.id}`,
       } as PromptWarning))),
     ],
+    messages,
+    variants,
   };
 }
 
@@ -455,10 +477,10 @@ function runtimeStateFor(repositories: Repositories, conversationId: string): Wo
 }
 
 function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): LoadedAggregate {
-  if (input.mode !== 'normal') throw new PromptSnapshotError('unsupported_mode');
-  if (typeof input.userText !== 'string' || input.userText.trim() === '') {
+  if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
     throw new PromptSnapshotError('invalid_user_text');
   }
+  if (input.mode !== 'normal' && input.userText !== undefined) throw new PromptSnapshotError('invalid_user_text');
   const conversation = repositories.conversations.get(input.conversationId);
   if (conversation === undefined) throw new PromptSnapshotError('not_found');
   if (conversation.revision !== input.conversationRevision) throw new PromptSnapshotError('revision_conflict');
@@ -511,6 +533,32 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
 
   const history = historyRows(repositories, conversation.id);
   compatibilityWarnings.push(...history.compatibilityWarnings);
+  const targetMessage = input.mode === 'normal' ? undefined : history.messages.at(-1);
+  if (input.mode !== 'normal' && (targetMessage === undefined || targetMessage.role !== 'assistant'
+    || targetMessage.activeVariantId === null)) throw new PromptSnapshotError('invalid_target');
+  const targetVariant = targetMessage?.activeVariantId === null || targetMessage?.activeVariantId === undefined
+    ? undefined
+    : history.variants.get(targetMessage.activeVariantId);
+  if (input.mode !== 'normal' && (targetVariant === undefined || targetVariant.messageId !== targetMessage?.id)) {
+    throw new PromptSnapshotError('invalid_target');
+  }
+  const requiredMessageHeadroom = input.mode === 'normal' ? 2 : 0;
+  const requiredVariantHeadroom = input.mode === 'continue' ? 0 : 1;
+  if (history.messages.length + requiredMessageHeadroom > MAX_MESSAGES_PER_CONVERSATION
+    || history.variants.size + requiredVariantHeadroom > MAX_VARIANTS_PER_RELATION) {
+    throw new PromptSnapshotError('aggregate_limit');
+  }
+  if (input.targetMessageId !== undefined && input.targetMessageId !== targetMessage?.id) {
+    throw new PromptSnapshotError('invalid_target');
+  }
+  if (input.targetVariantId !== undefined && input.targetVariantId !== targetVariant?.id) {
+    throw new PromptSnapshotError('invalid_target');
+  }
+  const continuationByteBoundary = input.mode === 'continue'
+    ? Buffer.byteLength(targetVariant!.content, 'utf8')
+    : null;
+  if (input.continuationByteBoundary !== undefined
+    && input.continuationByteBoundary !== continuationByteBoundary) throw new PromptSnapshotError('invalid_target');
   const runtimeState = runtimeStateFor(repositories, conversation.id);
   const seed = input.seed ?? `${conversation.id}:${conversation.revision}`;
   const messageIndex = input.messageIndex ?? history.history.length;
@@ -518,9 +566,12 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     conversationId: conversation.id,
     conversationRevision: conversation.revision,
     mode: input.mode,
-    userText: input.userText,
+    userText: input.mode === 'normal' ? input.userText! : null,
     seed,
     messageIndex,
+    targetMessageId: targetMessage?.id ?? null,
+    targetVariantId: targetVariant?.id ?? null,
+    continuationByteBoundary,
   };
   const globalWorldbooks = globalBooks.map(ref);
   const manifest: PromptEntityRevisionManifest = {
@@ -546,7 +597,9 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     persona: deepJson(persona),
     provider: deepJson(provider),
     presets: deepJson(presets),
-    history: deepJson(history.history),
+    history: deepJson(input.mode === 'swipe' || input.mode === 'regenerate'
+      ? history.history.slice(0, -1)
+      : history.history),
     books: deepJson(books),
     previousTimedState: WorldbookTimedStateSchema.parse(
       deepJson(runtimeState?.timedState ?? EMPTY_WORLDBOOK_TIMED_STATE),
@@ -836,11 +889,13 @@ async function compileAggregate(
     throw new PromptSnapshotError('tokenizer_error');
   }
   if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
-  const history = [...aggregate.history, {
-    id: `proposed:${canonicalHash(aggregate.input)}`,
-    role: 'user',
-    content: aggregate.input.userText,
-  }];
+  const history = aggregate.input.mode === 'normal'
+    ? [...aggregate.history, {
+      id: `proposed:${canonicalHash(aggregate.input)}`,
+      role: 'user',
+      content: aggregate.input.userText!,
+    }]
+    : [...aggregate.history];
   const books: WorldbookRuntimeBook[] = aggregate.books.map((book) => ({ id: book.id, book: book.book }));
   const bookBudgets = aggregate.books.map((book) => book.book.tokenBudget)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
@@ -1045,16 +1100,26 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
 }
 
 function isInput(value: unknown): value is SnapshotInputPayload {
-  return record(value)
-    && typeof value.conversationId === 'string'
-    && nonNegativeInteger(value.conversationRevision)
-    && value.mode === 'normal'
-    && typeof value.userText === 'string'
-    && (typeof value.seed === 'string' || finiteNumber(value.seed))
-    && nonNegativeInteger(value.messageIndex)
-    && hasOnlyKeys(value, [
+  if (!record(value)) return false;
+  if (typeof value.conversationId !== 'string'
+    || !nonNegativeInteger(value.conversationRevision)
+    || !['normal', 'swipe', 'regenerate', 'continue'].includes(String(value.mode))
+    || !(typeof value.seed === 'string' || finiteNumber(value.seed))
+    || !nonNegativeInteger(value.messageIndex)
+    || !hasOnlyKeys(value, [
       'conversationId', 'conversationRevision', 'mode', 'userText', 'seed', 'messageIndex',
-    ]);
+      'targetMessageId', 'targetVariantId', 'continuationByteBoundary',
+    ])) return false;
+  if (value.mode === 'normal') {
+    return typeof value.userText === 'string' && value.userText.trim() !== ''
+      && value.targetMessageId === null && value.targetVariantId === null
+      && value.continuationByteBoundary === null;
+  }
+  if (value.userText !== null || typeof value.targetMessageId !== 'string'
+    || typeof value.targetVariantId !== 'string') return false;
+  return value.mode === 'continue'
+    ? nonNegativeInteger(value.continuationByteBoundary)
+    : value.continuationByteBoundary === null;
 }
 
 function nullableFinite(value: unknown): boolean {
@@ -1402,8 +1467,12 @@ function executableBindingsMatch(value: PromptSnapshotPayload): boolean {
   })))) {
     return false;
   }
+  const auditedInput = record(audit.input) ? audit.input : undefined;
+  const expectedHistoryIds = auditedInput?.mode === 'swipe' || auditedInput?.mode === 'regenerate'
+    ? manifest.messages.filter(({ id }) => id !== auditedInput.targetMessageId).map(({ id }) => id)
+    : manifest.messages.map(({ id }) => id);
   if (!Array.isArray(audit.history)
-    || !sameCanonical(audit.history.map((message) => record(message) ? message.id : undefined), manifest.messages.map(({ id }) => id))) {
+    || !sameCanonical(audit.history.map((message) => record(message) ? message.id : undefined), expectedHistoryIds)) {
     return false;
   }
   const provider = audit.provider;
@@ -1452,7 +1521,11 @@ function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapsh
   if (payload.input.conversationId !== input.conversationId
     || payload.input.conversationRevision !== input.conversationRevision
     || payload.input.mode !== input.mode
-    || payload.input.userText !== input.userText
+    || payload.input.userText !== (input.userText ?? null)
+    || (input.targetMessageId !== undefined && payload.input.targetMessageId !== input.targetMessageId)
+    || (input.targetVariantId !== undefined && payload.input.targetVariantId !== input.targetVariantId)
+    || (input.continuationByteBoundary !== undefined
+      && payload.input.continuationByteBoundary !== input.continuationByteBoundary)
     || (input.seed !== undefined && !sameCanonical(payload.input.seed, input.seed))
     || (input.messageIndex !== undefined && payload.input.messageIndex !== input.messageIndex)) {
     throw new PromptSnapshotError('snapshot_mismatch');
@@ -1466,19 +1539,21 @@ function acceptUserTurn(
   revalidateManifest(repositories, payload.entityRevisions);
   const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
   if (provider === undefined) stale();
-  repositories.messages.create({
-    id: randomUUID(),
-    conversationId: payload.input.conversationId,
-    role: 'user',
-    content: payload.input.userText,
-    activeVariantId: null,
-  });
-  const revision = repositories.conversations.update(
-    payload.input.conversationId,
-    payload.input.conversationRevision,
-    {},
-  );
-  if (!revision.ok) stale();
+  if (payload.input.mode === 'normal') {
+    repositories.messages.create({
+      id: randomUUID(),
+      conversationId: payload.input.conversationId,
+      role: 'user',
+      content: payload.input.userText!,
+      activeVariantId: null,
+    });
+    const revision = repositories.conversations.update(
+      payload.input.conversationId,
+      payload.input.conversationRevision,
+      {},
+    );
+    if (!revision.ok) stale();
+  }
   return provider;
 }
 
@@ -1552,6 +1627,7 @@ export function createPromptSnapshotService(options: {
       });
     },
     commitTimedState(payload) {
+      if (payload.input.mode !== 'normal') return;
       database.transaction(() => {
         const expected = payload.entityRevisions.runtimeState;
         const current = runtimeStateFor(repositories, payload.input.conversationId);

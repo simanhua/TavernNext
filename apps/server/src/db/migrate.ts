@@ -1,6 +1,6 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
@@ -11,7 +11,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, character_id TEXT NOT NULL REFERENCES characters(id), persona_id TEXT NOT NULL REFERENCES personas(id), provider_id TEXT REFERENCES provider_profiles(id), preset_id TEXT REFERENCES presets(id), context_preset_id TEXT REFERENCES presets(id), instruct_preset_id TEXT REFERENCES presets(id), system_preset_id TEXT REFERENCES presets(id), title TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS conversation_worldbooks (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id), PRIMARY KEY (conversation_id, worldbook_id));
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, active_variant_id TEXT REFERENCES message_variants(id), role TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, status TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
@@ -98,6 +98,37 @@ function addPromptSnapshotColumns(database: TavernDatabase): void {
       context_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.contextPresetId') ELSE NULL END,
       instruct_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.instructPresetId') ELSE NULL END,
       system_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.systemPresetId') ELSE NULL END;
+  `);
+}
+
+function addVariantColumns(database: TavernDatabase): void {
+  const hadOrdinal = columnNames(database, 'message_variants').includes('ordinal');
+  addColumn(database, 'message_variants', 'ordinal', 'INTEGER NOT NULL DEFAULT 0');
+  if (!hadOrdinal) {
+    database.sqlite.exec(`
+      UPDATE message_variants
+      SET ordinal = CASE
+        WHEN json_valid(payload)
+          AND json_type(payload, '$.ordinal') = 'integer'
+          AND json_extract(payload, '$.ordinal') >= 0
+          THEN json_extract(payload, '$.ordinal')
+        ELSE (
+          SELECT COUNT(*)
+          FROM message_variants AS earlier
+          WHERE earlier.message_id = message_variants.message_id
+            AND (earlier.created_at < message_variants.created_at
+              OR (earlier.created_at = message_variants.created_at AND earlier.id < message_variants.id))
+        )
+      END;
+    `);
+  }
+  database.sqlite.exec(`
+    UPDATE message_variants
+    SET payload = json_set(payload, '$.ordinal', ordinal)
+    WHERE json_valid(payload) AND json_type(payload, '$.ordinal') IS NULL;
+    UPDATE message_variants
+    SET payload = json_set(payload, '$.continuationBoundaries', json('[]'))
+    WHERE json_valid(payload) AND json_type(payload, '$.continuationBoundaries') IS NULL;
   `);
 }
 
@@ -193,6 +224,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
 
       addPromptSnapshotColumns(database);
+      addVariantColumns(database);
       backfillCharacterDepthPrompt(database);
       backfillConversationWorldbooks(database);
       database.sqlite.exec(indexes);

@@ -20,6 +20,8 @@ const ids = {
   userMessage: '018f0000-0000-7000-8000-000000000105',
   assistantMessage: '018f0000-0000-7000-8000-000000000106',
   assistantVariant: '018f0000-0000-7000-8000-000000000107',
+  assistantSibling: '018f0000-0000-7000-8000-000000000110',
+  generatedVariant: '018f0000-0000-7000-8000-000000000111',
   provider: '018f0000-0000-7000-8000-000000000108',
   chatPreset: '018f0000-0000-7000-8000-000000000109',
 };
@@ -87,6 +89,8 @@ let generationNetworkFailure = false;
 let messagePatchConflict = false;
 let messageDeleteFailure = false;
 let conversationConfigurationPatches = 0;
+let requestedGenerationModes: string[] = [];
+let activeVariantSwitches: string[] = [];
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
 const encoder = new TextEncoder();
 const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -141,22 +145,55 @@ const server = setupServer(
     if (generationNetworkFailure) return HttpResponse.error();
     generationCount += 1;
     const body = await request.json() as Record<string, unknown>;
-    expect(body).toMatchObject({ conversationRevision, mode: 'normal' });
-    const userText = String(body.userText);
+    const mode = String(body.mode);
+    requestedGenerationModes.push(mode);
+    expect(body).toMatchObject({ conversationRevision, mode });
     request.signal.addEventListener('abort', () => { abortedRequests += 1; }, { once: true });
-    conversationRevision += 1;
-    messages.push({
-      id: generationCount === 1 ? ids.userMessage : `018f0000-0000-7000-8000-00000000030${generationCount}`,
-      revision: 0, createdAt: now, updatedAt: now, conversationId: ids.conversation,
-      role: 'user', content: userText, activeVariantId: null, variants: [],
-    });
+    if (mode === 'normal') {
+      conversationRevision += 1;
+      messages.push({
+        id: generationCount === 1 ? ids.userMessage : `018f0000-0000-7000-8000-00000000030${generationCount}`,
+        revision: 0, createdAt: now, updatedAt: now, conversationId: ids.conversation,
+        role: 'user', content: String(body.userText), activeVariantId: null, variants: [],
+      });
+    }
+
+    const delta = mode === 'regenerate'
+      ? 'Third answer'
+      : mode === 'continue'
+        ? ' continued'
+        : generationCount === 1 && !holdFirstGeneration
+          ? 'Hello'
+          : 'Partial answer';
+    const commitNonNormal = () => {
+      const assistant = messages.find((message) => message.id === ids.assistantMessage)!;
+      if (mode === 'regenerate') {
+        assistant.variants.push({
+          id: ids.generatedVariant, revision: 1, createdAt: now, updatedAt: now,
+          messageId: assistant.id, content: delta, status: 'completed', finishReason: 'stop',
+        });
+        assistant.activeVariantId = ids.generatedVariant;
+        assistant.revision += 1;
+      } else if (mode === 'continue') {
+        const active = assistant.variants.find((variant) => variant.id === assistant.activeVariantId)!;
+        active.content += delta;
+        active.revision += 1;
+      }
+    };
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(frame('started', { generationId: `generation-${generationCount}` }));
-        if (generationCount === 1 && !holdFirstGeneration) {
-          controller.enqueue(frame('delta', { text: 'Hel' }));
-          controller.enqueue(frame('delta', { text: 'lo' }));
+        const completesImmediately = !holdFirstGeneration && (mode !== 'normal' || generationCount === 1);
+        if (completesImmediately) {
+          if (mode === 'normal') {
+            controller.enqueue(frame('delta', { text: 'Hel' }));
+            controller.enqueue(frame('delta', { text: 'lo' }));
+          } else {
+            controller.enqueue(frame('delta', { text: delta }));
+            commitNonNormal();
+          }
+          if (mode === 'normal') {
           messages.push({
             id: ids.assistantMessage, revision: 1, createdAt: now, updatedAt: now,
             conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
@@ -165,16 +202,28 @@ const server = setupServer(
               messageId: ids.assistantMessage, content: 'Hello', status: 'completed', finishReason: 'stop',
             }],
           });
+          }
           controller.enqueue(frame('usage', { inputTokens: 4, outputTokens: 1 }));
           controller.enqueue(frame('completed', { finishReason: 'stop' }));
           controller.close();
         } else {
-          controller.enqueue(frame('delta', { text: 'Partial answer' }));
+          controller.enqueue(frame('delta', { text: delta }));
           activeStream = controller;
         }
       },
     });
     return new HttpResponse(stream, { headers: { 'content-type': 'text/event-stream' } });
+  }),
+  http.put('/api/messages/:id/active-variant', async ({ params, request }) => {
+    const body = await request.json() as { revision: number; variantId: string };
+    const target = messages.find((message) => message.id === params.id)!;
+    const variant = target.variants.find((candidate) => candidate.id === body.variantId);
+    if (variant === undefined) return HttpResponse.json({ error: 'variant_ownership_conflict' }, { status: 409 });
+    if (target.revision !== body.revision) return HttpResponse.json({ error: 'conflict' }, { status: 409 });
+    activeVariantSwitches.push(body.variantId);
+    target.activeVariantId = body.variantId;
+    target.revision += 1;
+    return HttpResponse.json(target);
   }),
   http.delete('/api/generations/:id', () => {
     stopRequests += 1;
@@ -222,8 +271,10 @@ afterEach(() => {
   messagePatchConflict = false;
   messageDeleteFailure = false;
   conversationConfigurationPatches = 0;
+  requestedGenerationModes = [];
+  activeVariantSwitches = [];
   activeStream = undefined;
-  useChatUi.setState({ activeConversationId: null, draft: '', selectedVariantId: null });
+  useChatUi.setState({ activeConversationId: null, draft: '' });
 });
 afterAll(() => server.close());
 
@@ -239,6 +290,104 @@ function renderChatPage() {
 }
 
 describe('ChatPage', () => {
+  it('persists per-message Swipe selection and exposes Regenerate and Continue without a user turn', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    messages = [{
+      id: ids.assistantMessage, revision: 0, createdAt: now, updatedAt: now,
+      conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
+      variants: [
+        {
+          id: ids.assistantVariant, revision: 0, createdAt: now, updatedAt: now,
+          messageId: ids.assistantMessage, content: 'First answer', status: 'completed', finishReason: 'stop',
+        },
+        {
+          id: ids.assistantSibling, revision: 0, createdAt: now, updatedAt: now,
+          messageId: ids.assistantMessage, content: 'Second answer', status: 'completed', finishReason: 'stop',
+        },
+      ],
+    }];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    expect(await screen.findByText('First answer')).not.toBeNull();
+    expect(screen.getByText('1 / 2')).not.toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Next variant' }));
+    expect(await screen.findByText('Second answer')).not.toBeNull();
+    expect(activeVariantSwitches).toEqual([ids.assistantSibling]);
+    expect(generationCount).toBe(0);
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate response' }));
+    expect(await screen.findByText('Third answer')).not.toBeNull();
+    expect(requestedGenerationModes).toEqual(['regenerate']);
+    expect(messages).toHaveLength(1);
+
+    await user.click(screen.getByRole('button', { name: 'Continue response' }));
+    expect(await screen.findByText('Third answer continued')).not.toBeNull();
+    expect(requestedGenerationModes).toEqual(['regenerate', 'continue']);
+    expect(messages).toHaveLength(1);
+    expect(conversationRevision).toBe(0);
+  });
+
+  it('persists selected configuration before non-normal generation on an imported conversation', async () => {
+    const user = userEvent.setup();
+    const imported = { ...conversation, providerId: undefined, presetId: undefined };
+    conversations = [imported];
+    messages = [{
+      id: ids.assistantMessage, revision: 0, createdAt: now, updatedAt: now,
+      conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
+      variants: [{
+        id: ids.assistantVariant, revision: 0, createdAt: now, updatedAt: now,
+        messageId: ids.assistantMessage, content: 'Imported answer', status: 'completed', finishReason: 'stop',
+      }, {
+        id: ids.assistantSibling, revision: 0, createdAt: now, updatedAt: now,
+        messageId: ids.assistantMessage, content: 'Second imported answer', status: 'completed', finishReason: 'stop',
+      }],
+    }];
+    useChatUi.setState({ activeConversationId: imported.id, draft: '' });
+    renderChatPage();
+
+    const regenerate = await screen.findByRole('button', { name: 'Regenerate response' });
+    expect((regenerate as HTMLButtonElement).disabled).toBe(true);
+    const next = screen.getByRole('button', { name: 'Next variant' });
+    expect((next as HTMLButtonElement).disabled).toBe(false);
+    await user.click(next);
+    expect(await screen.findByText('Second imported answer')).not.toBeNull();
+    expect(activeVariantSwitches).toEqual([ids.assistantSibling]);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
+    expect((regenerate as HTMLButtonElement).disabled).toBe(false);
+    await user.click(regenerate);
+
+    await waitFor(() => expect(conversationConfigurationPatches).toBe(1));
+    expect(await screen.findByText('Third answer')).not.toBeNull();
+    expect(requestedGenerationModes).toEqual(['regenerate']);
+    expect(conversationRevision).toBe(1);
+  });
+
+  it('hides assistant generation controls when the persisted tail message is not that assistant', async () => {
+    conversations = [conversation];
+    messages = [{
+      id: ids.assistantMessage, revision: 0, createdAt: now, updatedAt: now,
+      conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
+      variants: [{
+        id: ids.assistantVariant, revision: 0, createdAt: now, updatedAt: now,
+        messageId: ids.assistantMessage, content: 'Earlier answer', status: 'completed', finishReason: 'stop',
+      }],
+    }, {
+      id: ids.userMessage, revision: 0, createdAt: now, updatedAt: now,
+      conversationId: ids.conversation, role: 'user', content: 'Accepted user tail', activeVariantId: null, variants: [],
+    }];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    expect(await screen.findByText('Earlier answer')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Previous variant' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next variant' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Regenerate response' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Continue response' })).toBeNull();
+  });
+
   it('creates, streams, stops, edits, deletes, and switches persisted chats', async () => {
     const user = userEvent.setup();
     renderChatPage();
@@ -292,7 +441,7 @@ describe('ChatPage', () => {
       presetId: undefined,
     };
     conversations = [migrated];
-    useChatUi.setState({ activeConversationId: migrated.id, draft: '', selectedVariantId: null });
+    useChatUi.setState({ activeConversationId: migrated.id, draft: '' });
     renderChatPage();
 
     const composer = await screen.findByRole('textbox', { name: 'Message' });
@@ -310,7 +459,7 @@ describe('ChatPage', () => {
     const user = userEvent.setup();
     conversations = [conversation];
     holdFirstGeneration = true;
-    useChatUi.setState({ activeConversationId: conversation.id, draft: '', selectedVariantId: null });
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
@@ -364,7 +513,7 @@ describe('ChatPage', () => {
     const user = userEvent.setup();
     conversations = [conversation];
     generationNetworkFailure = true;
-    useChatUi.setState({ activeConversationId: conversation.id, draft: '', selectedVariantId: null });
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
     renderChatPage();
     await screen.findByRole('heading', { name: 'Aster chat' });
     const composer = screen.getByRole('textbox', { name: 'Message' });
@@ -380,7 +529,7 @@ describe('ChatPage', () => {
       id: ids.userMessage, revision: 0, createdAt: now, updatedAt: now,
       conversationId: ids.conversation, role: 'user', content: 'Editable', activeVariantId: null, variants: [],
     }];
-    useChatUi.setState({ activeConversationId: conversation.id, draft: '', selectedVariantId: null });
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
     messagePatchConflict = true;
     messageDeleteFailure = true;
     renderChatPage();

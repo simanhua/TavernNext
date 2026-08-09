@@ -64,7 +64,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 6 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 7 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -214,7 +214,7 @@ describe('SQLite repositories', () => {
       role: 'user', content: 'low', activeVariantId: null,
     });
     const highVariant = repositories.messageVariants.create({
-      id: '018f0000-0000-7000-8000-000000000068', messageId: highMessage.id, content: 'high', status: 'completed',
+      id: '018f0000-0000-7000-8000-000000000068', messageId: highMessage.id, content: 'high', status: 'completed', ordinal: 7,
     });
     const lowVariant = repositories.messageVariants.create({
       id: '018f0000-0000-7000-8000-000000000065', messageId: highMessage.id, content: 'low', status: 'completed',
@@ -239,6 +239,9 @@ describe('SQLite repositories', () => {
       UPDATE message_variants SET created_at = '${tied}' WHERE message_id IN ('${highMessage.id}', '${lowMessage.id}');
       UPDATE worldbook_entries SET created_at = '${tied}' WHERE worldbook_id = '${book.id}';
     `);
+    migrateDatabase(database);
+    expect(database.sqlite.prepare('SELECT ordinal FROM message_variants WHERE id = ?').get(highVariant.id))
+      .toEqual({ ordinal: 7 });
 
     expect(repositories.messages.listByConversationId(conversation.id).map((row) => row.id))
       .toEqual([lowMessage.id, highMessage.id]);
@@ -460,11 +463,13 @@ describe('SQLite repositories', () => {
     ]));
     expect(database.sqlite.prepare('PRAGMA table_info(generation_snapshots)').all().map((column) => column.name))
       .toContain('integrity_tag');
+    expect(database.sqlite.prepare('PRAGMA table_info(message_variants)').all().map((column) => column.name))
+      .toContain('ordinal');
     expect(repositories.worldbooks.get(ids.worldbook)).toMatchObject({ isGlobal: false });
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 4096, maxResponseTokens: 512,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 6 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 7 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

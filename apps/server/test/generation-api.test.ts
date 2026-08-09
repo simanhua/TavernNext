@@ -243,7 +243,7 @@ describe('generation API', () => {
         conversationId: ids.conversation,
         conversationRevision: 0,
         payload: expect.objectContaining({
-          schemaVersion: 2,
+          schemaVersion: 3,
           input: expect.objectContaining({ conversationId: ids.conversation, conversationRevision: 0 }),
           compiledRequest: requests[0],
         }),
@@ -282,7 +282,7 @@ describe('generation API', () => {
     expect(repositories.generationSnapshots.list()).toHaveLength(beforeStale.snapshots);
   });
 
-  it('rejects unsupported or invalid requests and cleans up reservations before iteration', async () => {
+  it('rejects invalid targets or requests and cleans up reservations before iteration', async () => {
     let providerCalls = 0;
     const client = mockClient(async function* () {
       providerCalls += 1;
@@ -291,13 +291,13 @@ describe('generation API', () => {
     const { app, database, repositories } = await createTestContext(client);
     seed(repositories);
 
-    const unsupported = await app.inject({
+    const invalidTarget = await app.inject({
       method: 'POST',
       url: `/api/conversations/${ids.conversation}/generations`,
       payload: { conversationRevision: 0, mode: 'regenerate' },
     });
-    expect(unsupported.statusCode).toBe(400);
-    expect(unsupported.json()).toEqual({ error: 'unsupported_mode' });
+    expect(invalidTarget.statusCode).toBe(400);
+    expect(invalidTarget.json()).toEqual({ error: 'invalid_target' });
 
     for (const userText of [undefined, '', '   ', '\t\n']) {
       const response = await app.inject({

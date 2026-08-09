@@ -62,6 +62,32 @@ export function ChatPage() {
   );
   const configurationReady = selectedProvider !== undefined && primaryPresetValid && textCompanionsValid;
 
+  const selectedConfiguration = () => ({
+    providerId,
+    presetId,
+    ...(selectedProvider?.apiMode !== 'text' ? {} : {
+      contextPresetId,
+      instructPresetId,
+      systemPresetId,
+    }),
+  });
+
+  const ensureConfigured = async (target: Conversation): Promise<Conversation> => {
+    if (!configurationReady) throw new Error('configuration_not_ready');
+    const configuration = selectedConfiguration();
+    const listed = conversations.data?.find((conversation) => conversation.id === target.id) ?? target;
+    const differs = listed.providerId !== configuration.providerId
+      || listed.presetId !== configuration.presetId
+      || (selectedProvider?.apiMode === 'text' && (
+        listed.contextPresetId !== contextPresetId
+        || listed.instructPresetId !== instructPresetId
+        || listed.systemPresetId !== systemPresetId
+      ));
+    return differs
+      ? configureConversation.mutateAsync({ conversation: target, patch: configuration })
+      : target;
+  };
+
   useEffect(() => {
     const active = conversations.data?.find((conversation) => conversation.id === activeConversationId);
     if (active !== undefined) {
@@ -95,15 +121,7 @@ export function ChatPage() {
     if (text === '' || generation.isActive) return;
     let target: Conversation | undefined = detail.data?.conversation;
     try {
-      const configuration = {
-        providerId,
-        presetId,
-        ...(selectedProvider?.apiMode !== 'text' ? {} : {
-          contextPresetId,
-          instructPresetId,
-          systemPresetId,
-        }),
-      };
+      const configuration = selectedConfiguration();
       if (target === undefined) {
         const character = characters.data?.find((candidate) => candidate.id === characterId);
         target = await createConversation.mutateAsync({
@@ -113,18 +131,10 @@ export function ChatPage() {
           ...configuration,
         });
       } else {
-        const listed = conversations.data?.find((conversation) => conversation.id === target?.id) ?? target;
-        const differs = listed.providerId !== configuration.providerId
-          || listed.presetId !== configuration.presetId
-          || (selectedProvider?.apiMode === 'text' && (
-            listed.contextPresetId !== contextPresetId
-            || listed.instructPresetId !== instructPresetId
-            || listed.systemPresetId !== systemPresetId
-          ));
-        if (differs) target = await configureConversation.mutateAsync({ conversation: target, patch: configuration });
+        target = await ensureConfigured(target);
       }
       setDraft('');
-      await generation.start(target, text);
+      await generation.start(target, { mode: 'normal', userText: text });
     } catch {
       // Mutation state owns accessible feedback; keep the draft for retry.
     }
@@ -247,7 +257,21 @@ export function ChatPage() {
           conversationId={activeConversationId}
           messages={detail.data?.messages ?? []}
           streamedText={generation.streamedText}
-          controlsDisabled={generation.isActive}
+          generationTarget={generation.target}
+          controlsDisabled={generation.isActive || configureConversation.isPending}
+          generationDisabled={generation.isActive || configureConversation.isPending || !configurationReady}
+          onGenerate={(mode, message, baseContent) => {
+            const target = detail.data?.conversation;
+            if (target === undefined || generation.isActive) return;
+            void (async () => {
+              try {
+                const configured = await ensureConfigured(target);
+                await generation.start(configured, { mode, target: message, baseContent });
+              } catch {
+                // Mutation state owns accessible configuration feedback.
+              }
+            })();
+          }}
         />
         {generation.error ? <p role="alert">Generation error: {generation.error}</p> : null}
         {characters.isLoading || personas.isLoading || providers.isLoading || presets.isLoading ? (
