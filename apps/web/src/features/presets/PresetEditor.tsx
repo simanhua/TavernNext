@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect, useState } from 'react';
-import { useFieldArray, useForm, type Control, type UseFormRegister } from 'react-hook-form';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from 'react-hook-form';
 import { z } from 'zod';
 import { ApiError, api, errorCode, type PresetKind, type PresetView } from '../../api/client.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
@@ -126,6 +126,26 @@ const FormSchema = z.object({
 });
 type FormValues = z.infer<typeof FormSchema>;
 
+function ExpandableCard({ children, initialOpen = false, summary, testId }: {
+  children: ReactNode;
+  initialOpen?: boolean;
+  summary: ReactNode;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(initialOpen);
+  return (
+    <details
+      className="preset-card"
+      data-testid={testId}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="preset-card-summary">{summary}</summary>
+      <div className="preset-card-body">{children}</div>
+    </details>
+  );
+}
+
 function optionalBoolean(value: unknown): '' | 'true' | 'false' {
   return typeof value === 'boolean' ? String(value) as 'true' | 'false' : '';
 }
@@ -190,25 +210,43 @@ function PromptOrderGroupEditor({ control, register, groupIndex, onRemove, onMov
   last: boolean;
 }) {
   const items = useFieldArray({ control, name: `promptOrders.${groupIndex}.items` });
+  const group = useWatch({ control, name: `promptOrders.${groupIndex}` });
+  const groupName = group?.characterId.trim() || 'Default group';
   return (
-    <fieldset aria-label={`Prompt order group ${groupIndex + 1}`}>
-      <legend>Prompt order group {groupIndex + 1}</legend>
-      <input type="hidden" {...register(`promptOrders.${groupIndex}.characterIdKind`)} />
-      <label>Prompt order group {groupIndex + 1} character ID<input {...register(`promptOrders.${groupIndex}.characterId`)} /></label>
-      {items.fields.map((item, itemIndex) => (
-        <div className="array-row" key={item.id}>
-          <label>Prompt order group {groupIndex + 1} item {itemIndex + 1} identifier<input {...register(`promptOrders.${groupIndex}.items.${itemIndex}.identifier`)} /></label>
-          <label className="checkbox-label"><input type="checkbox" {...register(`promptOrders.${groupIndex}.items.${itemIndex}.enabled`)} />Prompt order group {groupIndex + 1} item {itemIndex + 1} enabled</label>
-          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} up`} disabled={itemIndex === 0} onClick={() => items.move(itemIndex, itemIndex - 1)}>↑</button>
-          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} down`} disabled={itemIndex === items.fields.length - 1} onClick={() => items.move(itemIndex, itemIndex + 1)}>↓</button>
-          <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1} item ${itemIndex + 1}`} onClick={() => items.remove(itemIndex)}>Remove item</button>
+    <ExpandableCard
+      testId="prompt-order-card"
+      summary={(
+        <>
+          <span className="preset-card-title">Order group {groupIndex + 1} · {groupName}</span>
+          <span className="preset-card-meta">{items.fields.length} {items.fields.length === 1 ? 'item' : 'items'}</span>
+        </>
+      )}
+    >
+      <fieldset className="preset-card-fieldset" aria-label={`Prompt order group ${groupIndex + 1}`}>
+        <legend className="visually-hidden">Prompt order group {groupIndex + 1}</legend>
+        <input type="hidden" {...register(`promptOrders.${groupIndex}.characterIdKind`)} />
+        <label>Prompt order group {groupIndex + 1} character ID<input {...register(`promptOrders.${groupIndex}.characterId`)} /></label>
+        <div className="preset-order-items">
+          {items.fields.map((item, itemIndex) => (
+            <div className="preset-order-item" key={item.id}>
+              <label>Prompt order group {groupIndex + 1} item {itemIndex + 1} identifier<input {...register(`promptOrders.${groupIndex}.items.${itemIndex}.identifier`)} /></label>
+              <label className="checkbox-label"><input type="checkbox" {...register(`promptOrders.${groupIndex}.items.${itemIndex}.enabled`)} />Prompt order group {groupIndex + 1} item {itemIndex + 1} enabled</label>
+              <div className="preset-order-item-actions">
+                <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} up`} disabled={itemIndex === 0} onClick={() => items.move(itemIndex, itemIndex - 1)}>↑</button>
+                <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} down`} disabled={itemIndex === items.fields.length - 1} onClick={() => items.move(itemIndex, itemIndex + 1)}>↓</button>
+                <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1} item ${itemIndex + 1}`} onClick={() => items.remove(itemIndex)}>Remove</button>
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
-      <button type="button" onClick={() => items.append({ identifier: '', enabled: true })}>Add order item</button>
-      <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} up`} disabled={first} onClick={onMoveUp}>Move group up</button>
-      <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} down`} disabled={last} onClick={onMoveDown}>Move group down</button>
-      <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1}`} onClick={onRemove}>Remove group</button>
-    </fieldset>
+        <div className="preset-card-actions">
+          <button type="button" onClick={() => items.append({ identifier: '', enabled: true })}>Add order item</button>
+          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} up`} disabled={first} onClick={onMoveUp}>↑ Move group up</button>
+          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} down`} disabled={last} onClick={onMoveDown}>↓ Move group down</button>
+          <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1}`} onClick={onRemove}>Remove group</button>
+        </div>
+      </fieldset>
+    </ExpandableCard>
   );
 }
 
@@ -344,6 +382,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
     }
   };
   const currentKind = form.watch('kind');
+  const watchedPrompts = form.watch('prompts');
   const promptValidationMessages = Array.isArray(form.formState.errors.prompts)
     ? form.formState.errors.prompts.flatMap((promptErrors) => promptErrors === undefined ? [] : [
       promptErrors.systemPrompt?.message,
@@ -358,7 +397,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
     : [];
 
   return (
-    <form onSubmit={form.handleSubmit((values) => void submit(values))}>
+    <form className="preset-editor" onSubmit={form.handleSubmit((values) => void submit(values))}>
       <h2>{creating ? 'New Preset' : preset?.name}</h2>
       <CompatibilitySummary value={preset?.compatibilitySummary} />
       <label>Name<input {...form.register('name')} /></label>
@@ -366,27 +405,47 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
       {currentKind === 'chat' ? (
         <>
           <label>Temperature<input inputMode="decimal" {...form.register('temperature')} /></label>
-          <fieldset>
+          <fieldset className="preset-section">
             <legend>Chat prompts</legend>
             {prompts.fields.map((field, index) => (
-              <div className="array-row" key={field.id}>
-                <label>Prompt {index + 1} identifier<input {...form.register(`prompts.${index}.identifier`)} /></label>
-                <label>Prompt {index + 1} name<input {...form.register(`prompts.${index}.name`)} /></label>
-                <label>Prompt {index + 1} role<input {...form.register(`prompts.${index}.role`)} /></label>
-                <label>Prompt {index + 1} content<textarea {...form.register(`prompts.${index}.content`)} /></label>
-                <label className="checkbox-label"><input type="checkbox" {...form.register(`prompts.${index}.enabled`)} />Prompt {index + 1} enabled</label>
-                <label>Prompt {index + 1} system prompt<select {...form.register(`prompts.${index}.systemPrompt`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
-                <label>Prompt {index + 1} marker<select {...form.register(`prompts.${index}.marker`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
-                <label>Prompt {index + 1} injection position<input inputMode="numeric" {...form.register(`prompts.${index}.injectionPosition`)} /></label>
-                <label>Prompt {index + 1} injection depth<input inputMode="numeric" {...form.register(`prompts.${index}.injectionDepth`)} /></label>
-                <label>Prompt {index + 1} injection order<input inputMode="numeric" {...form.register(`prompts.${index}.injectionOrder`)} /></label>
-                <label>Prompt {index + 1} forbid overrides<select {...form.register(`prompts.${index}.forbidOverrides`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
-                <label>Prompt {index + 1} injection triggers<input {...form.register(`prompts.${index}.injectionTrigger`)} /></label>
-                <label>Prompt {index + 1} generation triggers<input {...form.register(`prompts.${index}.generationTrigger`)} /></label>
-                <button type="button" aria-label={`Move prompt ${index + 1} up`} disabled={index === 0} onClick={() => prompts.move(index, index - 1)}>↑</button>
-                <button type="button" aria-label={`Move prompt ${index + 1} down`} disabled={index === prompts.fields.length - 1} onClick={() => prompts.move(index, index + 1)}>↓</button>
-                <button type="button" onClick={() => prompts.remove(index)}>Remove prompt</button>
-              </div>
+              <ExpandableCard
+                key={field.id}
+                initialOpen={index === 0}
+                testId="prompt-card"
+                summary={(
+                  <>
+                    <span className="preset-card-title">
+                      Prompt {index + 1} · {watchedPrompts[index]?.name || watchedPrompts[index]?.identifier || 'Untitled'}
+                    </span>
+                    <span className="preset-card-meta">
+                      {watchedPrompts[index]?.role || 'system'} · {watchedPrompts[index]?.enabled === false ? 'Disabled' : 'Enabled'}
+                    </span>
+                  </>
+                )}
+              >
+                <div className="preset-card-grid preset-card-grid-basic">
+                  <label>Prompt {index + 1} identifier<input {...form.register(`prompts.${index}.identifier`)} /></label>
+                  <label>Prompt {index + 1} name<input {...form.register(`prompts.${index}.name`)} /></label>
+                  <label>Prompt {index + 1} role<input {...form.register(`prompts.${index}.role`)} /></label>
+                  <label className="checkbox-label preset-card-toggle"><input type="checkbox" {...form.register(`prompts.${index}.enabled`)} />Prompt {index + 1} enabled</label>
+                </div>
+                <label className="preset-card-content">Prompt {index + 1} content<textarea {...form.register(`prompts.${index}.content`)} /></label>
+                <div className="preset-card-grid preset-card-grid-advanced">
+                  <label>Prompt {index + 1} system prompt<select {...form.register(`prompts.${index}.systemPrompt`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
+                  <label>Prompt {index + 1} marker<select {...form.register(`prompts.${index}.marker`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
+                  <label>Prompt {index + 1} injection position<input inputMode="numeric" {...form.register(`prompts.${index}.injectionPosition`)} /></label>
+                  <label>Prompt {index + 1} injection depth<input inputMode="numeric" {...form.register(`prompts.${index}.injectionDepth`)} /></label>
+                  <label>Prompt {index + 1} injection order<input inputMode="numeric" {...form.register(`prompts.${index}.injectionOrder`)} /></label>
+                  <label>Prompt {index + 1} forbid overrides<select {...form.register(`prompts.${index}.forbidOverrides`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
+                  <label>Prompt {index + 1} injection triggers<input {...form.register(`prompts.${index}.injectionTrigger`)} /></label>
+                  <label>Prompt {index + 1} generation triggers<input {...form.register(`prompts.${index}.generationTrigger`)} /></label>
+                </div>
+                <div className="preset-card-actions">
+                  <button type="button" aria-label={`Move prompt ${index + 1} up`} disabled={index === 0} onClick={() => prompts.move(index, index - 1)}>↑ Move up</button>
+                  <button type="button" aria-label={`Move prompt ${index + 1} down`} disabled={index === prompts.fields.length - 1} onClick={() => prompts.move(index, index + 1)}>↓ Move down</button>
+                  <button type="button" onClick={() => prompts.remove(index)}>Remove prompt</button>
+                </div>
+              </ExpandableCard>
             ))}
             <button type="button" onClick={() => prompts.append({
               identifier: crypto.randomUUID(), name: '', role: 'system', content: '', enabled: true,
@@ -394,7 +453,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
               forbidOverrides: '', injectionTrigger: '', generationTrigger: '', extras: {},
             })}>Add prompt</button>
           </fieldset>
-          <fieldset>
+          <fieldset className="preset-section">
             <legend>Chat prompt order groups</legend>
             {promptOrders.fields.map((group, groupIndex) => (
               <PromptOrderGroupEditor
@@ -413,7 +472,17 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
           </fieldset>
         </>
       ) : null}
-      <label>Executable settings JSON<textarea rows={12} {...form.register('executableSettings')} /></label>
+      <ExpandableCard
+        testId="advanced-settings"
+        summary={(
+          <>
+            <span className="preset-card-title">Advanced executable settings JSON</span>
+            <span className="preset-card-meta">Optional</span>
+          </>
+        )}
+      >
+        <label>Executable settings JSON<textarea rows={12} {...form.register('executableSettings')} /></label>
+      </ExpandableCard>
       {form.formState.errors.name ? <p role="alert">{form.formState.errors.name.message}</p> : null}
       {form.formState.errors.temperature ? <p role="alert">{form.formState.errors.temperature.message}</p> : null}
       {form.formState.errors.executableSettings ? <p role="alert">{form.formState.errors.executableSettings.message}</p> : null}

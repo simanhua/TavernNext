@@ -96,6 +96,20 @@ input, select, textarea { width: 100%; border: 1px solid #5c5145; border-radius:
   padding: .85rem 1rem;
   background: #28221c;
 }
+.compatibility-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .45rem .75rem;
+  overflow-wrap: anywhere;
+}
+.compatibility-summary > span {
+  border-radius: 999px;
+  padding: .18rem .5rem;
+  background: #1e1a17;
+  color: #d9c9b5;
+  font-size: .82rem;
+}
 .compatibility-summary h3, .import-preview h3 { margin-top: 0; }
 .conflict-banner { border-color: #c77362; background: #3a2521; }
 .conflict-banner p { margin-top: 0; }
@@ -110,6 +124,127 @@ input, select, textarea { width: 100%; border: 1px solid #5c5145; border-radius:
 }
 .entry-list { display: grid; gap: .5rem; padding-top: .5rem; border-top: 1px solid #3b342d; }
 .worldbook-entry-editor { padding-top: 1rem; border-top: 1px solid #3b342d; }
+.manager-editor > .preset-editor { width: min(1120px, 100%); }
+.preset-section {
+  display: grid;
+  gap: .75rem;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.preset-section > legend {
+  margin-bottom: .15rem;
+  padding: 0;
+  color: #e7b47f;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.preset-card {
+  min-width: 0;
+  overflow: clip;
+  border: 1px solid #4b4137;
+  border-radius: .8rem;
+  background: #211d19;
+  box-shadow: 0 .25rem 1rem rgb(0 0 0 / 12%);
+}
+.preset-card-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .75rem;
+  min-width: 0;
+  padding: .9rem 1rem;
+  color: #f5eadc;
+  background: #2b251f;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.preset-card-summary::-webkit-details-marker { display: none; }
+.preset-card-summary::before {
+  content: "›";
+  color: #f3a95f;
+  font-size: 1.35rem;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+.preset-card[open] > .preset-card-summary::before { transform: rotate(90deg); }
+.preset-card[open] > .preset-card-summary { border-bottom: 1px solid #4b4137; background: #302820; }
+.preset-card-summary:hover { background: #342b23; }
+.preset-card-summary:focus-visible { outline: 3px solid #f3a95f; outline-offset: -3px; }
+.preset-card-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-card-meta {
+  border: 1px solid #695948;
+  border-radius: 999px;
+  padding: .22rem .55rem;
+  color: #d9c9b5;
+  background: #201b17;
+  font-size: .78rem;
+  white-space: nowrap;
+}
+.preset-card-body { display: grid; gap: 1rem; min-width: 0; padding: 1rem; }
+.preset-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  gap: .85rem;
+  min-width: 0;
+}
+.preset-card-grid-advanced {
+  border-top: 1px solid #3b342d;
+  padding-top: 1rem;
+}
+.preset-card-content { min-width: 0; }
+.preset-card-content textarea { min-height: 12rem; }
+.preset-card-toggle {
+  align-self: end;
+  min-height: 2.8rem;
+  border: 1px solid #4b4137;
+  border-radius: .55rem;
+  padding: .65rem .75rem;
+  background: #26211c;
+}
+.preset-card-actions, .preset-order-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+}
+.preset-card-actions {
+  justify-content: flex-end;
+  border-top: 1px solid #3b342d;
+  padding-top: .85rem;
+}
+.preset-card-fieldset { display: grid; gap: 1rem; min-width: 0; margin: 0; border: 0; padding: 0; }
+.preset-order-items { display: grid; gap: .65rem; }
+.preset-order-item {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto auto;
+  align-items: end;
+  gap: .65rem;
+  min-width: 0;
+  border: 1px solid #413930;
+  border-radius: .65rem;
+  padding: .75rem;
+  background: #26211c;
+}
+.preset-card[data-testid="advanced-settings"] textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
 .dialog-overlay { position: fixed; inset: 0; z-index: 100; background: rgb(0 0 0 / 72%); }
 .dialog-content {
   position: fixed;
@@ -157,4 +292,8 @@ input, select, textarea { width: 100%; border: 1px solid #5c5145; border-radius:
   .manager-list { max-height: 16rem; }
   .manager-editor { padding: 1rem; }
   .app-nav { gap: .75rem; white-space: nowrap; }
+  .preset-card-summary { grid-template-columns: auto minmax(0, 1fr); }
+  .preset-card-meta { grid-column: 2; justify-self: start; }
+  .preset-card-grid, .preset-order-item { grid-template-columns: 1fr; }
+  .preset-order-item-actions, .preset-card-actions { justify-content: flex-start; }
 }
