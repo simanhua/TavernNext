@@ -5,6 +5,7 @@ export interface ServerConfig {
   port: number;
   dataDir: string;
   databasePath: string;
+  sensitiveHeaders?: readonly string[];
 }
 
 export interface BoundProviderSecret {
@@ -15,6 +16,19 @@ export interface BoundProviderSecret {
 
 export type ProviderSecretMap = Readonly<Record<string, BoundProviderSecret>>;
 
+function sensitiveHeadersFrom(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === '') return [];
+  const headers: string[] = [];
+  for (const candidate of value.split(',')) {
+    const header = candidate.trim().toLowerCase();
+    if (header === '' || !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(header)) {
+      throw new Error('Invalid TAVERNNEXT_SENSITIVE_HEADERS');
+    }
+    if (!headers.includes(header)) headers.push(header);
+  }
+  return headers;
+}
+
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): ServerConfig {
   const dataDir = resolve(environment.TAVERNNEXT_DATA_DIR ?? join(process.cwd(), '.tavernnext'));
   return {
@@ -22,6 +36,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
     port: Number(environment.TAVERNNEXT_PORT ?? 4312),
     dataDir,
     databasePath: resolve(environment.TAVERNNEXT_DATABASE_PATH ?? join(dataDir, 'tavernnext.sqlite')),
+    sensitiveHeaders: sensitiveHeadersFrom(environment.TAVERNNEXT_SENSITIVE_HEADERS),
   };
 }
 

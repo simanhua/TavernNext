@@ -10,6 +10,7 @@ import {
   rmSync,
   writeSync,
   writeFileSync,
+  type Stats,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
@@ -221,6 +222,10 @@ function digestMatches(bytes: Uint8Array, expectedHex: string): boolean {
   const actual = createHash('sha256').update(bytes).digest();
   const expected = Buffer.from(expectedHex, 'hex');
   return expected.byteLength === actual.byteLength && timingSafeEqual(actual, expected);
+}
+
+function sameFile(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 export interface ImportService {
@@ -511,13 +516,14 @@ export function createImportService(options: ImportServiceOptions): ImportServic
       const artifactId = randomUUID();
       const temporaryAssets = join(stage.path, 'assets.tmp');
       const finalAssets = join(assetRoot, artifactId);
-      let assetsMoved = false;
+      let temporaryAssetsIdentity: Stats | undefined;
       let result: ImportCommitResult = {};
       try {
         const originalBytes = new Uint8Array(readFileSync(join(stage.path, 'original.bin')));
         if (!digestMatches(originalBytes, stage.preview.source.sha256)) throw new Error('Staged import source digest mismatch');
         const artifact: SourceArtifact = { ...stage.artifact, bytes: originalBytes.slice() };
         mkdirSync(temporaryAssets, { mode: 0o700 });
+        temporaryAssetsIdentity = lstatSync(temporaryAssets);
         options.database.transaction(() => {
           const writeAsset = (requestedPath: string, contents: Uint8Array) => {
             const target = safeAssetPath(temporaryAssets, requestedPath);
@@ -568,10 +574,27 @@ export function createImportService(options: ImportServiceOptions): ImportServic
           });
           // Moving before the transaction callback returns lets a move failure roll back rows.
           moveAssets(temporaryAssets, finalAssets);
-          assetsMoved = true;
         });
       } catch (error) {
-        if (assetsMoved) rmSync(finalAssets, { recursive: true, force: true });
+        // A move can publish the destination and then report failure. Remove it
+        // only when it is still the exact directory created by this attempt;
+        // a colliding destination belongs to somebody else.
+        try {
+          const destinationIdentity = lstatSync(finalAssets);
+          if (
+            temporaryAssetsIdentity !== undefined
+            && destinationIdentity.isDirectory()
+            && !destinationIdentity.isSymbolicLink()
+            && sameFile(temporaryAssetsIdentity, destinationIdentity)
+          ) {
+            rmSync(finalAssets, { recursive: true, force: false });
+          }
+        } catch (cleanupError) {
+          if (typeof cleanupError !== 'object' || cleanupError === null || !('code' in cleanupError) || Reflect.get(cleanupError, 'code') !== 'ENOENT') {
+            // Cleanup is retried through the stage path below; never replace the
+            // original commit error with filesystem detail.
+          }
+        }
         attemptCleanup({ path: stage.path, stage });
         throw new ImportCommitError(error);
       }

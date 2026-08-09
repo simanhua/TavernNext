@@ -76,6 +76,7 @@ export class SqliteConnection {
 }
 
 export interface TavernDatabase {
+  readonly path: string;
   readonly sqlite: SqliteConnection;
   readonly orm: SQLJsDatabase<typeof schema>;
   persist(): void;
@@ -137,6 +138,7 @@ export function createDatabase(path: string): TavernDatabase {
   state.rootOrm = createOrm();
   const sqlite = new SqliteConnection(() => state.raw, markDirty);
   const database: TavernDatabase = {
+    path,
     sqlite,
     get orm() {
       return state.activeOrm ?? state.rootOrm;

@@ -1,6 +1,24 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 9;
+
+export function readSchemaVersion(database: TavernDatabase): number | null {
+  try {
+    const table = database.sqlite.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tavernnext_schema_version'",
+    ).get();
+    if (table === undefined) return null;
+    const row = database.sqlite.prepare('SELECT version FROM tavernnext_schema_version LIMIT 1').get();
+    if (row === undefined || typeof row.version !== 'number' || !Number.isSafeInteger(row.version) || row.version < 0) {
+      return null;
+    }
+    return row.version;
+  } catch {
+    // Unknown or malformed legacy metadata must not bypass backup and the
+    // guarded migration path. The migration itself remains authoritative.
+    return null;
+  }
+}
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
