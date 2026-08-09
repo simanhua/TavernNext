@@ -13,11 +13,11 @@ describe('Worldbook timed state transitions', () => {
     expect(started.timedState).toEqual({
       messageIndex: 10,
       sticky: [{
-        entryKey: 'timed|string:clock@0', fingerprint: expect.any(String),
+        entryKey: 'v2|timed|string:clock@0#id:entry-clock', fingerprint: expect.any(String),
         start: 10, end: 12, protected: false,
       }],
       cooldown: [{
-        entryKey: 'timed|string:clock@0', fingerprint: expect.any(String),
+        entryKey: 'v2|timed|string:clock@0#id:entry-clock', fingerprint: expect.any(String),
         start: 10, end: 12, protected: false,
       }],
     });
@@ -39,7 +39,7 @@ describe('Worldbook timed state transitions', () => {
       messageIndex: 12,
       sticky: [],
       cooldown: [{
-        entryKey: 'timed|string:clock@0', fingerprint: expect.any(String),
+        entryKey: 'v2|timed|string:clock@0#id:entry-clock', fingerprint: expect.any(String),
         start: 12, end: 14, protected: true,
       }],
     });
@@ -49,6 +49,48 @@ describe('Worldbook timed state transitions', () => {
       previousTimedState: cooling.timedState,
     }));
     expect(restarted.activated.map((entry) => entry.activation)).toEqual(['constant']);
+  });
+
+  it('keeps a sticky identity stable when a colliding UID/ordinal entry is added and removed', () => {
+    const original = worldbookEntry('same', {
+      id: 'stable-alpha',
+      sourceOrdinal: 8,
+      constant: true,
+      sticky: 5,
+      content: 'alpha',
+    });
+    const duplicate = worldbookEntry('same', {
+      id: 'stable-beta',
+      sourceOrdinal: 8,
+      constant: true,
+      content: 'beta',
+    });
+    const started = evaluateWorldbooks(evaluationInput([
+      runtimeBook('identity-cardinality', [original]),
+    ], { messageIndex: 10 }));
+    const originalKey = started.activated[0]!.entryKey;
+
+    const added = evaluateWorldbooks(evaluationInput([
+      runtimeBook('identity-cardinality', [original, duplicate]),
+    ], {
+      messageIndex: 11,
+      previousTimedState: started.timedState,
+    }));
+    expect(added.activated.find((entry) => entry.content === 'alpha')).toMatchObject({
+      entryKey: originalKey,
+      activation: 'sticky',
+    });
+    expect(added.warnings.map((warning) => warning.code)).not.toContain('timed_entry_missing');
+
+    const removed = evaluateWorldbooks(evaluationInput([
+      runtimeBook('identity-cardinality', [original]),
+    ], {
+      messageIndex: 12,
+      previousTimedState: added.timedState,
+    }));
+    expect(removed.activated).toHaveLength(1);
+    expect(removed.activated[0]).toMatchObject({ entryKey: originalKey, activation: 'sticky' });
+    expect(removed.warnings.map((warning) => warning.code)).not.toContain('timed_entry_missing');
   });
 
   it('applies delay using the supplied message index with exact boundary behavior', () => {
@@ -84,7 +126,7 @@ describe('Worldbook timed state transitions', () => {
       messageIndex: 4,
       sticky: [
         { entryKey: 'missing|string:x@0', fingerprint: 'old', start: 1, end: 9, protected: false },
-        { entryKey: 'state|string:valid@0', fingerprint: 'stale', start: 1, end: 9, protected: false },
+        { entryKey: 'v2|state|string:valid@0#id:entry-valid', fingerprint: 'stale', start: 1, end: 9, protected: false },
       ],
       cooldown: [],
     } as const;

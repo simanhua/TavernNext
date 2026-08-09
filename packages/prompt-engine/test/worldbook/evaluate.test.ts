@@ -106,7 +106,7 @@ describe('Worldbook recursion and budgeting', () => {
     ])], { tokenBudget: 4, tokenizer }));
     expect(fits.activated.map((entry) => entry.sourceUid)).toEqual(['fits']);
     expect(fits.tokenUsage).toEqual({ budget: 4, used: 3, overflowed: false });
-    expect(tokenizerInputs).toEqual(['AB\n']);
+    expect(tokenizerInputs).toEqual(['', 'AB\n']);
 
     tokenizerInputs.splice(0);
     const trailingBoundary = evaluateWorldbooks(evaluationInput([runtimeBook('trailing-boundary', [
@@ -115,7 +115,7 @@ describe('Worldbook recursion and budgeting', () => {
     expect(trailingBoundary.activated).toEqual([]);
     expect(trailingBoundary.excluded[0]?.reason).toBe('budget');
     expect(trailingBoundary.tokenUsage).toEqual({ budget: 3, used: 0, overflowed: true });
-    expect(tokenizerInputs).toEqual(['AB\n']);
+    expect(tokenizerInputs).toEqual(['', 'AB\n']);
 
     const exact = evaluateWorldbooks(evaluationInput([runtimeBook('exact', [
       worldbookEntry('exact', { constant: true, content: 'AB' }),
@@ -129,7 +129,7 @@ describe('Worldbook recursion and budgeting', () => {
       worldbookEntry('ignored', { constant: true, content: 'B', ignoreBudget: true, sourceOrdinal: 1 }),
     ])], { tokenBudget: 0, tokenizer }));
     expect(zero.activated.map((entry) => entry.sourceUid)).toEqual(['ignored']);
-    expect(zero.tokenUsage).toEqual({ budget: 0, used: 2, overflowed: true });
+    expect(zero.tokenUsage).toEqual({ budget: 0, used: 0, overflowed: true });
 
     const combined = evaluateWorldbooks(evaluationInput([runtimeBook('combined', [
       worldbookEntry('a', { constant: true, content: 'A', order: 2 }),
@@ -140,6 +140,37 @@ describe('Worldbook recursion and budgeting', () => {
     }));
     expect(combined.activated.map((entry) => entry.sourceUid)).toEqual(['a', 'b']);
     expect(combined.tokenUsage.used).toBe(1);
+  });
+
+  it('retains rejected text in the ST accumulator and never tokenizes ignoreBudget entries', () => {
+    const tokenizerInputs: string[] = [];
+    const result = evaluateWorldbooks(evaluationInput([runtimeBook('upstream-accumulator', [
+      worldbookEntry('normal-a', { constant: true, content: 'A', order: 2 }),
+      worldbookEntry('ignored-b', {
+        constant: true,
+        content: 'B',
+        ignoreBudget: true,
+        order: 1,
+        sourceOrdinal: 1,
+      }),
+    ])], {
+      tokenBudget: 2,
+      tokenizer: {
+        countText(text) {
+          tokenizerInputs.push(text);
+          if (text.includes('B')) throw new Error('ignoreBudget content reached the tokenizer');
+          return text.length;
+        },
+      },
+    }));
+
+    expect(tokenizerInputs).toEqual(['', 'A\n']);
+    expect(result.activated.map((entry) => entry.sourceUid)).toEqual(['ignored-b']);
+    expect(result.excluded.map((entry) => [entry.sourceUid, entry.reason])).toEqual([
+      ['normal-a', 'budget'],
+    ]);
+    expect(result.tokenUsage).toEqual({ budget: 2, used: 0, overflowed: true });
+    expect(result.activated[0]?.tokenUsageAfter).toBe(0);
   });
 
   it('allocates sticky entries before newly matched entries when the strict budget fits only one', () => {

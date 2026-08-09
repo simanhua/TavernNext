@@ -2,6 +2,7 @@ import { RE2JS } from 're2js';
 import type { NormalizedWorldbookEntry } from '@tavernnext/st-compat';
 import {
   MAX_WORLDBOOK_MATCH_OPERATIONS,
+  MAX_WORLDBOOK_MATCH_WORK_CHARACTERS,
   MAX_WORLDBOOK_REGEX_CHARACTERS,
   MAX_WORLDBOOK_REGEX_PROGRAM_SIZE,
   type PreparedWorldbookEntry,
@@ -16,6 +17,8 @@ const JOINER = `\n${MATCHER}`;
 
 export interface MatchOperationBudget {
   count: number;
+  workCharacters: number;
+  regexCache: Map<string, ParsedDelimitedRegex>;
 }
 
 export interface EntryMatchResult {
@@ -32,6 +35,12 @@ interface KeyMatchResult {
   issue?: 'invalid_regex' | 'unsafe_regex';
 }
 
+type ParsedDelimitedRegex =
+  | { kind: 'literal' }
+  | { kind: 'invalid' }
+  | { kind: 'unsafe' }
+  | { kind: 'regex'; test: (value: string) => boolean };
+
 export class MatchOperationLimitError extends Error {
   constructor() {
     super('Worldbook keyword matching exceeded the safe operation limit.');
@@ -43,50 +52,106 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function parseDelimitedRegex(value: string):
-  | { kind: 'literal' }
-  | { kind: 'invalid' }
-  | { kind: 'unsafe' }
-  | { kind: 'regex'; test: (value: string) => boolean } {
-  if (!value.startsWith('/')) return { kind: 'literal' };
-  const match = /^\/([\s\S]+?)\/([gimsuy]*)$/.exec(value);
-  if (match === null) return { kind: 'invalid' };
+const SURROGATE_TOKEN_BASE = 0xf0000;
+
+function utf16CodeUnitText(value: string): string {
+  let transformed = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    transformed += codeUnit >= 0xd800 && codeUnit <= 0xdfff
+      ? String.fromCodePoint(SURROGATE_TOKEN_BASE + codeUnit - 0xd800)
+      : value[index];
+  }
+  return transformed;
+}
+
+function utf16CodeUnitPattern(value: string): string {
+  let transformed = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
+      transformed += `\\x{${(SURROGATE_TOKEN_BASE + codeUnit - 0xd800).toString(16)}}`;
+      continue;
+    }
+    if (value[index] === '\\' && value[index + 1] === 'u') {
+      const escapedCodeUnit = /^\\u([0-9a-fA-F]{4})/.exec(value.slice(index));
+      if (escapedCodeUnit !== null) {
+        const escapedValue = Number.parseInt(escapedCodeUnit[1]!, 16);
+        if (escapedValue >= 0xd800 && escapedValue <= 0xdfff) {
+          transformed += `\\x{${(SURROGATE_TOKEN_BASE + escapedValue - 0xd800).toString(16)}}`;
+          index += 5;
+          continue;
+        }
+      }
+    }
+    transformed += value[index];
+  }
+  return transformed;
+}
+
+function parseDelimitedRegex(value: string, cache: Map<string, ParsedDelimitedRegex>): ParsedDelimitedRegex {
+  const cached = cache.get(value);
+  if (cached !== undefined) return cached;
+  const finish = (parsed: ParsedDelimitedRegex): ParsedDelimitedRegex => {
+    cache.set(value, parsed);
+    return parsed;
+  };
+  if (!value.startsWith('/')) return finish({ kind: 'literal' });
+  const match = /^\/([\s\S]+?)\/([dgimsvuy]*)$/.exec(value);
+  if (match === null) return finish({ kind: 'invalid' });
   const pattern = match[1]!;
   const flags = match[2]!;
   if (pattern.length > MAX_WORLDBOOK_REGEX_CHARACTERS || /(^|[^\\])\//.test(pattern)) {
-    return { kind: 'invalid' };
+    return finish({ kind: 'invalid' });
   }
-  if (new Set(flags).size !== flags.length) return { kind: 'invalid' };
+  if (new Set(flags).size !== flags.length) return finish({ kind: 'invalid' });
   const unescapedPattern = pattern.replaceAll('\\/', '/');
-  if (hasUnsupportedRegexSyntax(unescapedPattern)) return { kind: 'unsafe' };
+  let nativeRegex: RegExp;
+  try {
+    // Syntax validation only. User expressions are never executed by native RegExp.
+    nativeRegex = new RegExp(unescapedPattern, flags);
+  } catch {
+    return finish({ kind: 'invalid' });
+  }
+  if (flags.includes('v')) return finish({ kind: 'unsafe' });
+  const unicode = flags.includes('u');
+  if (hasUnsupportedRegexSyntax(nativeRegex.source, unicode)) return finish({ kind: 'unsafe' });
   try {
     let re2Flags = 0;
     if (flags.includes('i')) re2Flags |= RE2JS.CASE_INSENSITIVE;
     if (flags.includes('m')) re2Flags |= RE2JS.MULTILINE;
     if (flags.includes('s')) re2Flags |= RE2JS.DOTALL;
-    const regex = RE2JS.compile(RE2JS.translateRegExp(unescapedPattern), re2Flags);
-    if (regex.programSize() > MAX_WORLDBOOK_REGEX_PROGRAM_SIZE) return { kind: 'unsafe' };
+    const safePattern = unicode
+      ? RE2JS.translateRegExp(nativeRegex)
+      : RE2JS.translateRegExp(utf16CodeUnitPattern(nativeRegex.source));
+    const regex = RE2JS.compile(safePattern, re2Flags);
+    if (regex.programSize() > MAX_WORLDBOOK_REGEX_PROGRAM_SIZE) return finish({ kind: 'unsafe' });
     const sticky = flags.includes('y');
-    return {
+    return finish({
       kind: 'regex',
       test: sticky
-        ? (text) => regex.matcher(text).lookingAt()
-        : (text) => regex.test(text),
-    };
+        ? (text) => regex.matcher(unicode ? text : utf16CodeUnitText(text)).lookingAt()
+        : (text) => regex.test(unicode ? text : utf16CodeUnitText(text)),
+    });
   } catch {
-    return { kind: 'invalid' };
+    return finish({ kind: 'invalid' });
   }
 }
 
 /**
- * Reject JavaScript constructs outside RE2's linear-time language. This scans
- * syntax only; user patterns are never compiled or executed by native RegExp.
+ * Reject JavaScript constructs outside RE2's linear-time language. Native
+ * RegExp is used only for bounded syntax compilation; it never sees scan text.
  */
-function hasUnsupportedRegexSyntax(pattern: string): boolean {
+function hasUnsupportedRegexSyntax(pattern: string, unicode: boolean): boolean {
   for (let index = 0; index < pattern.length; index += 1) {
     if (pattern[index] === '\\') {
       const escaped = pattern[index + 1];
-      if ((escaped !== undefined && escaped >= '1' && escaped <= '9') || escaped === 'k') return true;
+      if ((escaped !== undefined && escaped >= '1' && escaped <= '9')
+        || escaped === 'k'
+        || escaped === 'Q'
+        || escaped === 'E'
+        || (!unicode && (escaped === 'p' || escaped === 'P') && pattern[index + 2] === '{')
+        || (!unicode && escaped === 'u' && pattern[index + 2] === '{')) return true;
       index += 1;
       continue;
     }
@@ -108,10 +173,17 @@ function matchKey(
   operations.count += 1;
   if (operations.count > MAX_WORLDBOOK_MATCH_OPERATIONS) throw new MatchOperationLimitError();
 
+  const caseSensitive = entry.caseSensitive ?? settings.caseSensitive ?? false;
+  const workMultiplier = !entry.useRegex && !caseSensitive ? 2 : 1;
+  const work = workMultiplier * (haystack.length + rawNeedle.length);
+  if (work > MAX_WORLDBOOK_MATCH_WORK_CHARACTERS - operations.workCharacters) {
+    throw new MatchOperationLimitError();
+  }
+  operations.workCharacters += work;
   const needle = rawNeedle.trim();
   if (needle === '') return { matched: false };
   if (entry.useRegex) {
-    const parsed = parseDelimitedRegex(needle);
+    const parsed = parseDelimitedRegex(needle, operations.regexCache);
     if (parsed.kind === 'invalid') return { matched: false, issue: 'invalid_regex' };
     if (parsed.kind === 'unsafe') return { matched: false, issue: 'unsafe_regex' };
     if (parsed.kind === 'regex') {
@@ -119,7 +191,6 @@ function matchKey(
     }
   }
 
-  const caseSensitive = entry.caseSensitive ?? settings.caseSensitive ?? false;
   const transformedHaystack = caseSensitive ? haystack : haystack.toLowerCase();
   const transformedNeedle = caseSensitive ? needle : needle.toLowerCase();
   const wholeWords = entry.matchWholeWords ?? settings.matchWholeWords ?? false;

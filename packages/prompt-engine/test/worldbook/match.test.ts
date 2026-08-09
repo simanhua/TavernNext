@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { RE2JS } from 're2js';
 import { evaluateWorldbooks } from '../../src/index.js';
 import { evaluationInput, runtimeBook, worldbookEntry } from './fixtures.js';
 
@@ -175,6 +176,103 @@ describe('Worldbook keyword matching', () => {
       expect(excludedReason(result, 'adversarial')).toBe('primary_key_miss');
     } finally {
       nativeTest.mockRestore();
+    }
+  });
+
+  it('accepts only JavaScript regex syntax before compiling the safe RE2 subset', () => {
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('regex-dialect', [
+        worldbookEntry('re2-inline-flags', { keys: ['/(?i)a/'] }),
+        worldbookEntry('re2-quote', { keys: ['/\\Qsafe\\E/'], sourceOrdinal: 1 }),
+        worldbookEntry('valid', { keys: ['/safe/'], sourceOrdinal: 2 }),
+        worldbookEntry('has-indices', { keys: ['/safe/d'], sourceOrdinal: 3 }),
+        worldbookEntry('unicode-sets', { keys: ['/[a&&a]/v'], sourceOrdinal: 4 }),
+      ]),
+    ], { scanSources: { messages: ['safe a'], additional: [], trigger: 'normal' } }));
+
+    expect(new Set(activatedUids(result))).toEqual(new Set(['valid', 'has-indices']));
+    expect(excludedReason(result, 're2-inline-flags')).toBe('invalid_regex');
+    expect(excludedReason(result, 're2-quote')).toBe('unsafe_regex');
+    expect(excludedReason(result, 'unicode-sets')).toBe('unsafe_regex');
+    expect(result.warnings.map((warning) => warning.code)).toEqual([
+      'invalid_regex', 'unsafe_regex', 'unsafe_regex',
+    ]);
+  });
+
+  it('preserves native UTF-16 dot semantics without u and code-point semantics with u', () => {
+    const emoji = String.fromCodePoint(0x1f600);
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('regex-unicode', [
+        worldbookEntry('utf16', { keys: ['/^\\x01.$/'] }),
+        worldbookEntry('unicode', { keys: ['/^\\x01.$/u'], sourceOrdinal: 1 }),
+        worldbookEntry('two-code-units', { keys: ['/^\\x01..$/'], sourceOrdinal: 2 }),
+        worldbookEntry('raw-astral', { keys: [`/${emoji}/`], sourceOrdinal: 3 }),
+        worldbookEntry('escaped-surrogates', { keys: ['/\\uD83D\\uDE00/'], sourceOrdinal: 4 }),
+      ]),
+    ], { scanSources: { messages: [emoji], additional: [], trigger: 'normal' } }));
+
+    expect(new Set(activatedUids(result))).toEqual(new Set([
+      'unicode', 'two-code-units', 'raw-astral', 'escaped-surrogates',
+    ]));
+    expect(excludedReason(result, 'utf16')).toBe('primary_key_miss');
+  });
+
+  it('compiles each slash-delimited regex once per evaluation', () => {
+    const compile = vi.spyOn(RE2JS, 'compile');
+    try {
+      const input = evaluationInput([
+        runtimeBook('regex-cache', [
+          worldbookEntry('first', { keys: ['/shared/'] }),
+          worldbookEntry('second', { keys: ['/shared/'], sourceOrdinal: 1 }),
+        ]),
+      ], { scanSources: { messages: ['shared'], additional: [], trigger: 'normal' } });
+
+      expect(activatedUids(evaluateWorldbooks(input))).toEqual(['first', 'second']);
+      expect(compile.mock.calls.filter(([pattern]) => pattern === 'shared')).toHaveLength(1);
+
+      evaluateWorldbooks(input);
+      expect(compile.mock.calls.filter(([pattern]) => pattern === 'shared')).toHaveLength(2);
+    } finally {
+      compile.mockRestore();
+    }
+  });
+
+  it('caps cumulative character matching work before scanning every maximum-sized haystack', () => {
+    const hugeMessage = 'x'.repeat(2 * 1024 * 1024 - 128);
+    const entries = Array.from({ length: 12 }, (_, index) => worldbookEntry(`miss-${index}`, {
+      keys: [`needle-${index}`],
+      caseSensitive: true,
+      sourceOrdinal: index,
+    }));
+    const originalIncludes = String.prototype.includes;
+    let hugeScans = 0;
+    const includes = vi.spyOn(String.prototype, 'includes').mockImplementation(function boundedIncludes(
+      this: string,
+      searchString: string,
+      position?: number,
+    ) {
+      if (this.length >= hugeMessage.length && searchString.startsWith('needle-')) hugeScans += 1;
+      return originalIncludes.call(this, searchString, position);
+    });
+    try {
+      const result = evaluateWorldbooks(evaluationInput([
+        runtimeBook('work-cap', entries),
+      ], { scanSources: { messages: [hugeMessage], additional: [], trigger: 'normal' } }));
+
+      expect(result.activated).toEqual([]);
+      expect(result.warnings.map((warning) => warning.code)).toContain('match_operation_limit');
+      expect(hugeScans).toBeLessThanOrEqual(4);
+
+      const blankKeyResult = evaluateWorldbooks(evaluationInput([
+        runtimeBook('blank-key-work-cap', Array.from({ length: 12 }, (_, index) => worldbookEntry(`blank-${index}`, {
+          keys: [' '.repeat(4_096)],
+          caseSensitive: true,
+          sourceOrdinal: index,
+        }))),
+      ], { scanSources: { messages: [hugeMessage], additional: [], trigger: 'normal' } }));
+      expect(blankKeyResult.warnings.map((warning) => warning.code)).toContain('match_operation_limit');
+    } finally {
+      includes.mockRestore();
     }
   });
 });

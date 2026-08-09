@@ -18,9 +18,9 @@ function exactCount(tokenizer: WorldbookTokenCounter, text: string): number {
 }
 
 /**
- * Counts the exact joined candidate after every addition. The strict `<`
- * boundary intentionally matches SillyTavern 1.18 World Info rather than the
- * inclusive Chat prompt allocator.
+ * Mirrors ST's accumulator calls: tokenize the empty baseline once, append a
+ * trailing newline before each decision, and never tokenize an ignoreBudget
+ * candidate. The strict `<` boundary differs from the Chat prompt allocator.
  */
 export function allocateWorldbookBudget(input: {
   candidates: readonly MatchedWorldbookEntry[];
@@ -30,26 +30,37 @@ export function allocateWorldbookBudget(input: {
 }): WorldbookBudgetResult {
   const selected: MatchedWorldbookEntry[] = [];
   const tokenUsageAfter = new Map<string, number>();
+  let newContent = '';
   let used = 0;
+  let baselineTokens = 0;
   let overflowed = false;
+  let remainingIgnoreBudget = input.candidates.filter((candidate) => candidate.prepared.entry.ignoreBudget).length;
   try {
-    for (const candidate of input.candidates) {
+    baselineTokens = exactCount(input.tokenizer, '');
+    used = baselineTokens;
+    for (let index = 0; index < input.candidates.length; index += 1) {
+      const candidate = input.candidates[index]!;
+      if (candidate.prepared.entry.ignoreBudget) remainingIgnoreBudget -= 1;
       if (overflowed && !candidate.prepared.entry.ignoreBudget) {
         input.exclude(candidate, 'budget');
+        if (remainingIgnoreBudget === 0) {
+          for (const remainder of input.candidates.slice(index + 1)) input.exclude(remainder, 'budget');
+          break;
+        }
         continue;
       }
-      const text = [...selected, candidate]
-        .map((value) => `${value.prepared.entry.content}\n`)
-        .join('');
-      const candidateTokens = exactCount(input.tokenizer, text);
-      if (!candidate.prepared.entry.ignoreBudget && candidateTokens >= input.budget) {
-        overflowed = true;
-        input.exclude(candidate, 'budget');
-        continue;
+      newContent += `${candidate.prepared.entry.content}\n`;
+      if (!candidate.prepared.entry.ignoreBudget) {
+        const candidateTokens = baselineTokens + exactCount(input.tokenizer, newContent);
+        if (candidateTokens >= input.budget) {
+          overflowed = true;
+          input.exclude(candidate, 'budget');
+          continue;
+        }
+        used = candidateTokens;
       }
       selected.push(candidate);
-      used = candidateTokens;
-      tokenUsageAfter.set(candidate.prepared.entryKey, candidateTokens);
+      tokenUsageAfter.set(candidate.prepared.entryKey, used);
     }
   } catch {
     for (const candidate of input.candidates) input.exclude(candidate, 'tokenizer_error');

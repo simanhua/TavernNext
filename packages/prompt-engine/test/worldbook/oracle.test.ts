@@ -4,6 +4,7 @@ import { evaluationInput, runtimeBook, worldbookEntry } from './fixtures.js';
 import {
   loadSillyTavern118WorldbookOracle,
   ORACLE_ACTIVE_MULTI_GROUP_FIXTURE,
+  ORACLE_BUDGET_ACCUMULATOR_FIXTURE,
   ORACLE_BUDGET_FIXTURE,
   ORACLE_GROUP_ORDER_FIXTURE,
   ORACLE_MATCH_FIXTURE,
@@ -25,6 +26,7 @@ function bookFrom(fixtures: readonly OracleEntryFixture[]) {
     group: fixture.group ?? '',
     groupWeight: fixture.groupWeight ?? 100,
     groupOverride: fixture.groupOverride ?? false,
+    ignoreBudget: fixture.ignoreBudget ?? false,
     useProbability: fixture.useProbability ?? false,
     probability: fixture.probability ?? 100,
     triggers: fixture.triggers ?? [],
@@ -50,6 +52,24 @@ function budgetProjection(budget: number) {
     tokenBudget: budget,
     tokenizer: { countText: (text) => {
       tokenizerInputs.push(text);
+      return text.length;
+    } },
+  }));
+  return {
+    activated: result.activated.map((entry) => String(entry.sourceUid)),
+    excluded: result.excluded.filter((entry) => entry.reason === 'budget').map((entry) => String(entry.sourceUid)),
+    tokenizerInputs,
+    tokenUsage: result.tokenUsage,
+  };
+}
+
+function rejectedThenIgnoredBudgetProjection() {
+  const tokenizerInputs: string[] = [];
+  const result = evaluateWorldbooks(evaluationInput([bookFrom(ORACLE_BUDGET_ACCUMULATOR_FIXTURE)], {
+    tokenBudget: 2,
+    tokenizer: { countText: (text) => {
+      tokenizerInputs.push(text);
+      if (text.includes('B')) throw new Error('ignoreBudget content reached the tokenizer');
       return text.length;
     } },
   }));
@@ -141,5 +161,6 @@ describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 Worldbook
 
     expect(budgetProjection(4)).toEqual(oracle.budget.fits);
     expect(budgetProjection(3)).toEqual(oracle.budget.boundary);
+    expect(rejectedThenIgnoredBudgetProjection()).toEqual(oracle.budget.rejectedThenIgnored);
   });
 });

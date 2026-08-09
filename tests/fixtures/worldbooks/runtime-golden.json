@@ -7,7 +7,7 @@
   "expected": {
     "activated": [
       {
-        "entryKey": "golden-book|string:dragon@1",
+        "entryKey": "v2|golden-book|string:dragon@1#id:entry-dragon",
         "bookId": "golden-book",
         "bookName": "golden-book",
         "sourceUid": "dragon",
@@ -25,7 +25,7 @@
         "tokenUsageAfter": 7
       },
       {
-        "entryKey": "golden-book|string:constant@0",
+        "entryKey": "v2|golden-book|string:constant@0#id:entry-constant",
         "bookId": "golden-book",
         "bookName": "golden-book",
         "sourceUid": "constant",
@@ -45,7 +45,7 @@
     ],
     "excluded": [
       {
-        "entryKey": "golden-book|string:missing@2",
+        "entryKey": "v2|golden-book|string:missing@2#id:entry-missing",
         "bookId": "golden-book",
         "sourceUid": "missing",
         "sourceOrdinal": 2,

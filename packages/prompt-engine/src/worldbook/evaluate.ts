@@ -289,10 +289,8 @@ function preflightBookEnvelopes(booksValue: unknown): {
 
 function collectRawEntries(envelopes: readonly RawBookEnvelope[]): RawEntryReference[] {
   const seeds: Array<Omit<RawEntryReference, 'entryKey' | 'duplicateIdentity'> & {
-    baseKey: string;
-    stableId: string;
+    stableKey: string;
   }> = [];
-  const baseCounts = new Map<string, number>();
   for (const envelope of envelopes) {
     for (let entryIndex = 0; entryIndex < envelope.entries.length; entryIndex += 1) {
       const rawEntry = envelope.entries[entryIndex];
@@ -303,10 +301,8 @@ function collectRawEntries(envelopes: readonly RawBookEnvelope[]): RawEntryRefer
         : entryIndex;
       const baseKey = `${envelope.encodedBookId}|${uidIdentity(sourceUid)}@${sourceOrdinal}`;
       const stableId = encodeIdentityComponent(typeof source.id === 'string' ? source.id : `invalid-${entryIndex}`);
-      baseCounts.set(baseKey, (baseCounts.get(baseKey) ?? 0) + 1);
       seeds.push({
-        baseKey,
-        stableId,
+        stableKey: `v2|${baseKey}#id:${stableId}`,
         bookId: envelope.bookId,
         bookIndex: envelope.bookIndex,
         entryIndex,
@@ -317,15 +313,12 @@ function collectRawEntries(envelopes: readonly RawBookEnvelope[]): RawEntryRefer
       });
     }
   }
-  const keys = seeds.map((seed) => baseCounts.get(seed.baseKey) === 1
-    ? seed.baseKey
-    : `${seed.baseKey}#id:${seed.stableId}`);
   const keyCounts = new Map<string, number>();
-  for (const key of keys) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
-  return seeds.map(({ baseKey: _baseKey, stableId: _stableId, ...seed }, index) => ({
+  for (const seed of seeds) keyCounts.set(seed.stableKey, (keyCounts.get(seed.stableKey) ?? 0) + 1);
+  return seeds.map(({ stableKey, ...seed }) => ({
     ...seed,
-    entryKey: keys[index]!,
-    duplicateIdentity: (keyCounts.get(keys[index]!) ?? 0) > 1,
+    entryKey: stableKey,
+    duplicateIdentity: (keyCounts.get(stableKey) ?? 0) > 1,
   }));
 }
 
@@ -628,7 +621,11 @@ export function evaluateWorldbooks(input: WorldbookEvaluationInput): WorldbookEv
     warn: collector.warn,
   });
   const random = createWorldbookRandom(input.seed);
-  const operations: MatchOperationBudget = { count: 0 };
+  const operations: MatchOperationBudget = {
+    count: 0,
+    workCharacters: 0,
+    regexCache: new Map(),
+  };
   const selected = new Map<string, MatchedWorldbookEntry>();
   const probabilityFailed = new Set<string>();
   const recursionText: string[] = [];

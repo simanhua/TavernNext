@@ -16,6 +16,7 @@ export interface OracleEntryFixture {
   group?: string;
   groupWeight?: number;
   groupOverride?: boolean;
+  ignoreBudget?: boolean;
   preventRecursion?: boolean;
   useProbability?: boolean;
   probability?: number;
@@ -57,6 +58,11 @@ export const ORACLE_BUDGET_FIXTURE: readonly OracleEntryFixture[] = [
   { uid: 'boundary', content: 'AB', order: 100, constant: true },
 ];
 
+export const ORACLE_BUDGET_ACCUMULATOR_FIXTURE: readonly OracleEntryFixture[] = [
+  { uid: 'normal-a', content: 'A', order: 200, constant: true },
+  { uid: 'ignored-b', content: 'B', order: 100, constant: true, ignoreBudget: true },
+];
+
 export interface OracleProjection {
   activated: Array<{ uid: string; content: string; order: number }>;
   excluded: Array<{ uid: string; reason: string }>;
@@ -90,6 +96,7 @@ export interface WorldbookOracle {
   budget: {
     fits: OracleBudgetProjection;
     boundary: OracleBudgetProjection;
+    rejectedThenIgnored: OracleBudgetProjection;
   };
 }
 
@@ -205,7 +212,7 @@ function upstreamEntry(fixture: OracleEntryFixture, index: number): UpstreamEntr
     groupWeight: fixture.groupWeight ?? 100,
     groupOverride: fixture.groupOverride ?? false,
     useGroupScoring: false,
-    ignoreBudget: false,
+    ignoreBudget: fixture.ignoreBudget ?? false,
     scanDepth: null,
     caseSensitive: false,
     matchWholeWords: false,
@@ -301,14 +308,16 @@ async function runOracleCase(input: {
 
 async function runBudgetOracleCase(input: {
   checkWorldInfo: (...args: unknown[]) => Promise<{ allActivatedEntries: Set<UpstreamEntry> }>;
+  fixtures: readonly OracleEntryFixture[];
   state: UpstreamState;
   lines: string[];
   tokenInputs: string[];
   budget: number;
+  used: number;
 }): Promise<OracleBudgetProjection> {
   const projected = await runOracleCase({
     checkWorldInfo: input.checkWorldInfo,
-    fixtures: ORACLE_BUDGET_FIXTURE,
+    fixtures: input.fixtures,
     state: input.state,
     chatLength: 0,
     chat: [],
@@ -318,7 +327,7 @@ async function runBudgetOracleCase(input: {
     knownExcludedReason: 'budget',
   });
   const activated = projected.activated.map((entry) => entry.uid);
-  const excluded = ORACLE_BUDGET_FIXTURE
+  const excluded = input.fixtures
     .filter((entry) => !activated.includes(entry.uid))
     .map((entry) => entry.uid);
   return {
@@ -327,7 +336,7 @@ async function runBudgetOracleCase(input: {
     tokenizerInputs: [...input.tokenInputs],
     tokenUsage: {
       budget: input.budget,
-      used: activated.length === 0 ? 0 : (input.tokenInputs.at(-1)?.length ?? 0),
+      used: input.used,
       overflowed: excluded.length > 0,
     },
   };
@@ -375,6 +384,7 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
   const fixtures = ORACLE_MATCH_FIXTURE;
   let currentEntries = fixtures.map(upstreamEntry);
   let currentState: UpstreamState = { timedWorldInfo: { sticky: {}, cooldown: {} } };
+  let tokenCounter = (text: string): number => text.length;
   const lines: string[] = [];
   const tokenInputs: string[] = [];
   const capturedConsole = {
@@ -414,8 +424,8 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
     getExtensionPromptByName: async () => '',
     getSortedEntries: async () => structuredClone(currentEntries),
     getTokenCountAsync: async (text: string) => {
-      if (text.endsWith('\n')) tokenInputs.push(text);
-      return text.length;
+      tokenInputs.push(text);
+      return tokenCounter(text);
     },
     substituteParams: (value: string) => value,
     getCharaFilename: () => 'Aster.png',
@@ -485,12 +495,29 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
   currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
   random = seededRandom(1);
   const fits = await runBudgetOracleCase({
-    checkWorldInfo, state: currentState, lines, tokenInputs, budget: 4,
+    checkWorldInfo, fixtures: ORACLE_BUDGET_FIXTURE, state: currentState, lines, tokenInputs, budget: 4, used: 3,
   });
   currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
   random = seededRandom(1);
   const boundary = await runBudgetOracleCase({
-    checkWorldInfo, state: currentState, lines, tokenInputs, budget: 3,
+    checkWorldInfo, fixtures: ORACLE_BUDGET_FIXTURE, state: currentState, lines, tokenInputs, budget: 3, used: 0,
+  });
+
+  currentEntries = ORACLE_BUDGET_ACCUMULATOR_FIXTURE.map(upstreamEntry);
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  tokenCounter = (text) => {
+    if (text.includes('B')) throw new Error('ignoreBudget content reached the upstream tokenizer');
+    return text.length;
+  };
+  const rejectedThenIgnored = await runBudgetOracleCase({
+    checkWorldInfo,
+    fixtures: ORACLE_BUDGET_ACCUMULATOR_FIXTURE,
+    state: currentState,
+    lines,
+    tokenInputs,
+    budget: 2,
+    used: 0,
   });
 
   return {
@@ -506,6 +533,6 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
     matching,
     timed: { started, held, cooling },
     groups: { firstOccurrence, activeMultiGroup },
-    budget: { fits, boundary },
+    budget: { fits, boundary, rejectedThenIgnored },
   };
 }

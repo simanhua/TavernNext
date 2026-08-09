@@ -19,6 +19,8 @@ export const MAX_WORLDBOOK_IDENTITY_CHARACTERS = 4_096;
 export const MAX_WORLDBOOK_CONTENT_CHARACTERS = 1024 * 1024;
 export const MAX_WORLDBOOK_TOTAL_ENTRY_CHARACTERS = 8 * 1024 * 1024;
 export const MAX_WORLDBOOK_MATCH_OPERATIONS = 100_000;
+/** Aggregate UTF-16 characters inspected by keyword matchers in one evaluation. */
+export const MAX_WORLDBOOK_MATCH_WORK_CHARACTERS = 8 * 1024 * 1024;
 export const MAX_WORLDBOOK_RECURSION_STEPS = 64;
 export const MAX_WORLDBOOK_TIMED_EFFECTS = 8_192;
 export const MAX_WORLDBOOK_WARNINGS = 256;
@@ -75,7 +77,7 @@ export interface WorldbookEvaluationSettings {
 }
 
 export interface WorldbookTokenCounter {
-  /** Must be synchronous so evaluation remains one pure state transition. */
+  /** Called for the empty baseline, then the full accumulator after each non-ignored entry. */
   countText(text: string): number;
 }
 
@@ -164,7 +166,7 @@ export interface ActivatedWorldbookEntry {
   ignoreBudget: boolean;
   activation: WorldbookActivationKind;
   activationStep: number;
-  /** Exact token count of all retained Worldbook text after this entry. */
+  /** Last exact budgeted accumulator count; ignoreBudget entries do not invoke the tokenizer. */
   tokenUsageAfter: number;
 }
 
