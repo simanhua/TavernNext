@@ -28,6 +28,7 @@ export const CharacterSchema = MutableEntitySchema.extend({
   creatorNotes: z.string().default(''),
   creator: z.string().default(''),
   characterVersion: z.string().default(''),
+  depthPrompt: z.string().default(''),
   alternateGreetings: z.array(z.string()),
   tags: z.array(z.string()),
   extensions: z.record(z.string(), z.unknown()).default({}),
@@ -131,6 +132,10 @@ export const ConversationSchema = MutableEntitySchema.extend({
   worldbookIds: z.array(DomainIdSchema).default([]),
   maxPromptTokens: z.number().int().nonnegative().default(4096),
   maxResponseTokens: z.number().int().nonnegative().default(512),
+  authorNote: z.string().default(''),
+  authorNotePosition: z.number().int().min(0).max(2).default(1),
+  authorNoteDepth: z.number().int().nonnegative().default(4),
+  authorNoteRole: z.number().int().min(0).max(2).default(0),
 }).extend(WithCompatibilitySchema.shape);
 
 export const MessageRoleSchema = z.enum(['system', 'user', 'assistant']);
@@ -182,6 +187,7 @@ export type Character = z.infer<typeof CharacterSchema>;
 export type Persona = z.infer<typeof PersonaSchema>;
 export type Worldbook = z.infer<typeof WorldbookSchema>;
 export type WorldbookEntry = z.infer<typeof WorldbookEntrySchema>;
+export type PresetKind = z.infer<typeof PresetKindSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Message = z.infer<typeof MessageSchema>;

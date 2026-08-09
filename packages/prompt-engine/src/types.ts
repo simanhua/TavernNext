@@ -71,7 +71,10 @@ export interface WorldInfoCompilerPlacements {
   examplesAfter: readonly WorldInfoPlacementContent[];
   authorNote: {
     before: readonly WorldInfoPlacementContent[];
+    content: string;
     after: readonly WorldInfoPlacementContent[];
+    /** SillyTavern extension prompt position: 0=in prompt, 1=in chat, 2=before prompt. */
+    position: 0 | 1 | 2;
     depth: number;
     role: PromptRole;
   };

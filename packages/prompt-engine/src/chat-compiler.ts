@@ -118,7 +118,12 @@ function formatWorldInfo(value: string, format: string): string {
 }
 
 function placementText(values: readonly { content: string }[]): string {
-  return values.map(({ content }) => content.trim()).filter(Boolean).join('\n');
+  return values.map(({ content }) => content).filter((content) => content !== '').join('\n');
+}
+
+function authorNoteText(authorNote: NonNullable<CompileChatPromptInput['worldInfoPlacements']>['authorNote']): string {
+  return `${placementText(authorNote.before)}\n${authorNote.content}\n${placementText(authorNote.after)}`
+    .replace(/(^\n)|(\n$)/g, '');
 }
 
 function placementOutlets(
@@ -296,13 +301,18 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       fixedReason === undefined && prompt?.marker === true
       && ['charDescription', 'charPersonality', 'scenario'].includes(prompt.identifier)
     ));
+    const configuredAuthorNote = authorNoteText(placements.authorNote);
+    const hasRelativeMain = executions.some(({ prompt, fixedReason }) => (
+      fixedReason === undefined && prompt?.identifier === 'main' && prompt.injection_position !== 1
+    ));
     const missingTarget = (
       (placements.beforeCharacter !== '' && !hasMarker('worldInfoBefore') && !hasCharacterTarget)
       || (placements.afterCharacter !== '' && !hasMarker('worldInfoAfter') && !hasCharacterTarget)
       || ([...placements.examplesBefore, ...placements.examplesAfter].some(({ content }) => content !== '')
         && !hasMarker('dialogueExamples'))
-      || ([...placements.authorNote.before, ...placements.authorNote.after, ...placements.atDepth]
-        .some(({ content }) => content !== '') && !hasMarker('chatHistory'))
+      || (placements.atDepth.some(({ content }) => content !== '') && !hasMarker('chatHistory'))
+      || (configuredAuthorNote !== '' && placements.authorNote.position === 1 && !hasMarker('chatHistory'))
+      || (configuredAuthorNote !== '' && placements.authorNote.position !== 1 && !hasRelativeMain)
     );
     if (missingTarget) {
       return compilationFailure({
@@ -339,8 +349,8 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     });
   }
   if (placements !== undefined) {
-    const authorNote = placementText([...placements.authorNote.before, ...placements.authorNote.after]);
-    if (authorNote !== '') {
+    const authorNote = authorNoteText(placements.authorNote);
+    if (authorNote !== '' && placements.authorNote.position === 1) {
       absolutePrompts.push({
         source: [...placements.authorNote.before, ...placements.authorNote.after].map(({ source }) => source).join('+'),
         role: placements.authorNote.role,
@@ -374,6 +384,15 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
   const firstCharacterTarget = characterTargetIndexes[0];
   const afterCharacterTarget = characterTargetIndexes.at(-1);
   for (const [executionIndex, execution] of executions.entries()) {
+    const relativeAuthorNote = placements === undefined ? '' : authorNoteText(placements.authorNote);
+    if (placements !== undefined && execution.fixedReason === undefined
+      && execution.prompt?.identifier === 'main' && placements.authorNote.position === 2
+      && relativeAuthorNote !== '') {
+      add(
+        [...placements.authorNote.before.map(({ source }) => source), 'author-note', ...placements.authorNote.after.map(({ source }) => source)].join('+'),
+        [{ role: placements.authorNote.role, content: expand(relativeAuthorNote, 'worldbook:author-note') }],
+      );
+    }
     if (placements !== undefined && !explicitBeforeTarget && executionIndex === firstCharacterTarget) {
       const content = expand(
         formatWorldInfo(placements.beforeCharacter, stringSetting(settings, 'wi_format')),
@@ -457,7 +476,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
         case 'dialogueExamples': {
           const heading = expandEnabled(stringSetting(settings, 'new_example_chat_prompt'), 'chat:new-example');
           const sources = [
-            ...(placements?.examplesBefore ?? []),
+            ...[...(placements?.examplesBefore ?? [])].reverse(),
             { source: 'marker:dialogueExamples', content: input.character.examples },
             ...(placements?.examplesAfter ?? []),
           ];
@@ -521,6 +540,14 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     const content = contentFor(prompt);
     const expanded = expandEnabled(content, source, { original: prompt.content ?? '' });
     add(source, expanded === '' ? [] : [{ role: promptRole, content: expanded }], 'immutable', fixedReason);
+    if (placements !== undefined && fixedReason === undefined
+      && prompt.identifier === 'main' && placements.authorNote.position === 0
+      && relativeAuthorNote !== '') {
+      add(
+        [...placements.authorNote.before.map(({ source: itemSource }) => itemSource), 'author-note', ...placements.authorNote.after.map(({ source: itemSource }) => itemSource)].join('+'),
+        [{ role: placements.authorNote.role, content: expand(relativeAuthorNote, 'worldbook:author-note') }],
+      );
+    }
   }
   if (placements !== undefined && !explicitAfterTarget
     && afterCharacterTarget !== undefined && afterCharacterTarget === executions.length - 1) {

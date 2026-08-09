@@ -9,6 +9,7 @@ import {
   requestGeneration,
   requestPreview,
   seedFullPromptGraph,
+  unitTokenizerRuntime,
 } from './prompt-integration-fixtures.js';
 
 afterEach(closePromptIntegrationContexts);
@@ -81,12 +82,25 @@ describe('generation persistence and snapshot trust boundary', () => {
       .run(JSON.stringify(unsupportedEntity), unsupportedPreview.snapshotId);
     const unsupported = await requestGeneration(app, unsupportedPreview.snapshotId);
     expect(unsupported.statusCode).toBe(409);
-    expect(unsupported.json()).toEqual({ error: 'snapshot_invalid' });
+    expect(unsupported.json()).toEqual({ error: 'snapshot_unsupported' });
+
+    const legacyPreview = (await requestPreview(app)).json();
+    const legacyRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(legacyPreview.snapshotId);
+    const legacyEntity = JSON.parse(String(legacyRow?.payload));
+    legacyEntity.payload.schemaVersion = 1;
+    const { payloadHash: ignoredLegacyHash, ...legacyWithoutHash } = legacyEntity.payload;
+    void ignoredLegacyHash;
+    legacyEntity.payload.payloadHash = canonicalHash(legacyWithoutHash);
+    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(legacyEntity), legacyPreview.snapshotId);
+    const legacy = await requestGeneration(app, legacyPreview.snapshotId);
+    expect(legacy.statusCode).toBe(409);
+    expect(legacy.json()).toEqual({ error: 'snapshot_unsupported' });
 
     const malformedPreview = (await requestPreview(app)).json();
     const malformedRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(malformedPreview.snapshotId);
     const malformedEntity = JSON.parse(String(malformedRow?.payload));
-    malformedEntity.payload = { schemaVersion: 1 };
+    malformedEntity.payload = { schemaVersion: 2 };
     database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
       .run(JSON.stringify(malformedEntity), malformedPreview.snapshotId);
     const malformed = await requestGeneration(app, malformedPreview.snapshotId);
@@ -103,6 +117,42 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(provider.text).toEqual([]);
     expect(repositories.messages.list()).toHaveLength(2);
     expect(runtimeStates(repositories)).toEqual([]);
+  });
+
+  it('replays the self-contained v2 artifact after tokenizer/compiler runtime becomes unavailable', async () => {
+    const provider = capturedProvider([{ type: 'completed', finishReason: 'stop' }]);
+    let runtimeAvailable = true;
+    let runtimeCalls = 0;
+    const delegate = unitTokenizerRuntime();
+    const tokenizerRuntime = unitTokenizerRuntime({
+      selectTokenizer(input) {
+        runtimeCalls += 1;
+        if (!runtimeAvailable) throw new Error('tokenizer runtime unavailable after preview');
+        return delegate.selectTokenizer(input);
+      },
+      async countText(text, decision) {
+        runtimeCalls += 1;
+        if (!runtimeAvailable) throw new Error('tokenizer runtime unavailable after preview');
+        return delegate.countText(text, decision);
+      },
+      async countMessages(messages, decision) {
+        runtimeCalls += 1;
+        if (!runtimeAvailable) throw new Error('tokenizer runtime unavailable after preview');
+        return delegate.countMessages(messages, decision);
+      },
+    });
+    const { app, repositories } = await createPromptIntegrationContext({ provider, tokenizerRuntime });
+    seedFullPromptGraph(repositories, 'chat');
+    const preview = (await requestPreview(app)).json();
+    expect(preview.schemaVersion).toBe(2);
+    const callsAfterPreview = runtimeCalls;
+    runtimeAvailable = false;
+
+    const response = await requestGeneration(app, preview.snapshotId);
+
+    expect(response.statusCode).toBe(200);
+    expect(runtimeCalls).toBe(callsAfterPreview);
+    expect(provider.chat).toEqual([preview.compiledRequest]);
   });
 
   it.each([
@@ -123,6 +173,14 @@ describe('generation persistence and snapshot trust boundary', () => {
     ['executable audit version', (payload: Record<string, unknown>) => {
       const executable = payload.executable as Record<string, unknown>;
       executable.schemaVersion = 999;
+    }],
+    ['Worldbook manifest binding', (payload: Record<string, unknown>) => {
+      const executable = payload.executable as Record<string, unknown>;
+      const worldbooks = executable.worldbooks as Array<Record<string, unknown>>;
+      const book = worldbooks.find((candidate) => candidate.source !== 'embedded')!;
+      const executableBook = book.book as Record<string, unknown>;
+      const entries = executableBook.entries as Array<Record<string, unknown>>;
+      entries[0]!.id = 'hash-consistent-mismatched-entry';
     }],
   ] as const)('rejects a hash-consistent malformed nested %s before provider execution', async (_label, mutate) => {
     const provider = capturedProvider();
@@ -146,6 +204,35 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(provider.text).toEqual([]);
     expect(repositories.messages.list()).toHaveLength(2);
     expect(runtimeStates(repositories)).toEqual([]);
+  });
+
+  it('rejects a self-consistent manifest that omits a current executable Worldbook relation', async () => {
+    const provider = capturedProvider();
+    const { app, database, repositories } = await createPromptIntegrationContext({ provider });
+    seedFullPromptGraph(repositories, 'chat');
+    const preview = (await requestPreview(app)).json();
+    const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(preview.snapshotId);
+    const entity = JSON.parse(String(row?.payload));
+    const manifest = entity.payload.entityRevisions as Record<string, unknown>;
+    const books = manifest.worldbooks as Array<Record<string, unknown>>;
+    const omitted = books.shift()!;
+    const executable = entity.payload.executable as Record<string, unknown>;
+    executable.entityRevisions = structuredClone(manifest);
+    executable.worldbooks = (executable.worldbooks as Array<Record<string, unknown>>)
+      .filter((book) => book.source === 'embedded' || book.id !== omitted.id);
+    const { payloadHash: ignoredPayloadHash, ...withoutPayloadHash } = entity.payload;
+    void ignoredPayloadHash;
+    entity.payload.payloadHash = canonicalHash(withoutPayloadHash);
+    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(entity), preview.snapshotId);
+
+    const response = await requestGeneration(app, preview.snapshotId);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'snapshot_stale' });
+    expect(provider.chat).toEqual([]);
+    expect(provider.text).toEqual([]);
+    expect(repositories.messages.list()).toHaveLength(2);
   });
 
   it('accepts the existing generation API by atomically creating the same immutable snapshot', async () => {

@@ -22,14 +22,18 @@ describe('domain contracts', () => {
     }).mode).toBe('swipe');
   });
 
-  it('retains typed Character extensions including the Worldbook depth prompt', () => {
+  it('keeps the Worldbook depth prompt in a dedicated typed Character field', () => {
     const character = CharacterSchema.parse({
       id: '018f0000-0000-7000-8000-000000000002', revision: 0,
       createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z',
       name: 'Aster', description: '', personality: '', scenario: '', firstMessage: '',
-      alternateGreetings: [], tags: [], extensions: { depth_prompt: { prompt: 'Depth only' } },
+      alternateGreetings: [], tags: [], depthPrompt: 'Depth only',
+      extensions: { depth_prompt: ['malformed legacy value'], arbitrary_export_field: { keep: true } },
     });
 
-    expect(character.extensions).toEqual({ depth_prompt: { prompt: 'Depth only' } });
+    expect(character.depthPrompt).toBe('Depth only');
+    expect(character.extensions).toEqual({
+      depth_prompt: ['malformed legacy value'], arbitrary_export_field: { keep: true },
+    });
   });
 });

@@ -237,3 +237,84 @@ Task 13 remains limited to normal turns; regenerate, swipe, and continue keep
 their previously documented Task 14 boundary. Fix Round 1 ships as
 `fix: preserve generation integration contracts` for independent controller
 review.
+
+## Fix Round 2
+
+All six Important findings and the compatibility-warning Minor from the second
+controller review were reproduced and closed. Snapshot replay, selector APIs,
+Worldbook placement parity, relationship bounds, and Character depth-prompt
+storage now have explicit fail-closed contracts.
+
+### Corrected execution contracts
+
+- Prompt snapshots now use schema v2 (with executable-audit v2). Stored v1
+  artifacts return the distinct `snapshot_unsupported` error. Acceptance
+  recursively validates the stored v2 artifact, both hashes, executable-to-
+  manifest identity/order, provider/request identity, and current revisions,
+  then sends the persisted compiled request without loading or compiling the
+  aggregate. A regression removes the preview-time tokenizer/compiler runtime
+  before acceptance and proves byte-equivalent request replay still succeeds.
+- Manifest revalidation now binds the exact conversation Character, Persona,
+  provider, preset ids/kinds, deduplicated global/Character/conversation
+  Worldbook sources, entry ids/order, message/active-variant revisions, and
+  timed state. Hash-consistent entry substitution and a self-consistent omitted
+  Worldbook relationship were each captured as RED and now fail closed.
+- `GET /api/presets` returns only the typed selector DTO `id`, `revision`,
+  `name`, and `kind`; raw settings, compatibility envelopes, unknown fields,
+  and secret sentinels never cross that route.
+- Numeric Worldbook positions 0 through 7 and all supported string aliases are
+  mapped exactly. Author's Note top/bottom entries wrap the configured note and
+  preserve its IN_PROMPT/IN_CHAT/BEFORE_PROMPT position, role, and depth.
+  Example-message top placement follows SillyTavern's repeated-unshift order;
+  at-depth roles/depths and named outlets retain their exact contracts.
+- Message, variant, and Worldbook-entry relation reads are stable by
+  `createdAt, id`, indexed, and bounded with `LIMIT max+1` before parsing or
+  allocation (2,048 messages; 4,096 variants; 4,096 entries). Stable relation-
+  specific cap errors cover UI loading, compilation, and manifest revalidation.
+- Character depth prompts are a dedicated typed field. Imports and schema-v5
+  migration validate only `extensions.depth_prompt.prompt`; malformed legacy
+  scalar/array extension shapes remain loadable with a local compatibility
+  warning, while arbitrary extensions remain compatibility/export data and are
+  excluded from executable snapshot audit.
+- Preview warnings now include persisted compatibility warnings from the
+  conversation, Character, Persona, provider, every selected preset,
+  Worldbooks and entries, embedded sources, messages, and variants.
+
+### Strict TDD and debugging evidence
+
+- Consolidated pre-production RED: 88 tests ran, 69 passed and 19 failed. The
+  18 intended failures covered every controller finding; one additional
+  database-heavy context exposed sql.js WASM heap exhaustion rather than a
+  behavior defect.
+- The compiler slice first reached 42/44, exposing two exact Text Author's Note
+  newline mismatches; the narrow story-only correction reached 44/44.
+- Systematic isolation showed the sql.js failure occurred only after the
+  eleventh full-generation database context. Moving two terminal-transaction
+  cases intact into a companion file kept every assertion and made the combined
+  server slice pass 29/29 without skips or relaxed coverage.
+- Two self-review adversarial tests were added after initial GREEN: a hash-
+  consistent executable Worldbook entry-id substitution and a hash-consistent
+  manifest that omitted a current executable Worldbook relationship. Both were
+  observed failing before the binding corrections and now return 409.
+
+### Fresh verification
+
+- Compiler/domain focused gate: 44/44 tests passed.
+- Server focused gate after the sql.js split: 29/29 tests passed; generation
+  persistence independently passes 11/11.
+- Repository gate: 15/15 tests passed, including both variant query plans,
+  `LIMIT max+1`, stable ties, and pre-parse cap failures.
+- Real ChatPage path: 6/6 tests passed, including explicit configuration of a
+  migrated conversation.
+- Read-only SillyTavern 1.18 differential oracle: 3/3 tests passed.
+- Oracle-enabled full suite: 36 files passed; 654 tests passed and one existing
+  platform-conditional test was skipped (655 total).
+- `npm run typecheck` passed. From a confirmed source-only tree with zero
+  generated workspace files, `npm run build` passed the TypeScript graph and
+  Vite transformed 182 modules; generated outputs were cleaned back to zero.
+- `git diff --check` passed. Final static review found no hidden compile/load in
+  existing-snapshot acceptance, no unsafe selector field, no unbounded relation
+  read, no arbitrary Character extension in the audit, and no generated output.
+
+Fix Round 2 ships as `fix: harden immutable snapshot replay` for independent
+controller review. Task 13 retains its documented normal-turn-only boundary.

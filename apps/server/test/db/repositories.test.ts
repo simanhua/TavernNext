@@ -63,7 +63,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 4 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 5 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -246,17 +246,70 @@ describe('SQLite repositories', () => {
       .toEqual([lowEntry.id, highEntry.id]);
 
     const messagePlan = database.sqlite.prepare(
-      'EXPLAIN QUERY PLAN SELECT payload FROM messages WHERE conversation_id = ? ORDER BY created_at, id',
+      'EXPLAIN QUERY PLAN SELECT payload FROM messages WHERE conversation_id = ? ORDER BY created_at, id LIMIT 2049',
     ).all(conversation.id) as Array<{ detail: string }>;
     const variantPlan = database.sqlite.prepare(
-      'EXPLAIN QUERY PLAN SELECT payload FROM message_variants WHERE message_id = ? ORDER BY created_at, id',
+      'EXPLAIN QUERY PLAN SELECT payload FROM message_variants WHERE message_id = ? ORDER BY created_at, id LIMIT 4097',
     ).all(highMessage.id) as Array<{ detail: string }>;
+    const conversationVariantPlan = database.sqlite.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT message_variants.payload FROM message_variants
+      INNER JOIN messages ON message_variants.message_id = messages.id
+      WHERE messages.conversation_id = ?
+      ORDER BY message_variants.created_at, message_variants.id LIMIT 4097
+    `).all(conversation.id) as Array<{ detail: string }>;
     const entryPlan = database.sqlite.prepare(
-      'EXPLAIN QUERY PLAN SELECT payload FROM worldbook_entries WHERE worldbook_id = ? ORDER BY created_at, id',
+      'EXPLAIN QUERY PLAN SELECT payload FROM worldbook_entries WHERE worldbook_id = ? ORDER BY created_at, id LIMIT 4097',
     ).all(book.id) as Array<{ detail: string }>;
     expect(messagePlan.some(({ detail }) => detail.includes('messages_conversation_created_id_idx'))).toBe(true);
     expect(variantPlan.some(({ detail }) => detail.includes('message_variants_message_created_id_idx'))).toBe(true);
+    expect(conversationVariantPlan.some(({ detail }) => detail.includes('messages_conversation'))).toBe(true);
+    expect(conversationVariantPlan.some(({ detail }) => detail.includes('message_variants_message'))).toBe(true);
     expect(entryPlan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_created_id_idx'))).toBe(true);
+  });
+
+  it('caps indexed relationship reads with LIMIT max+1 before allocating or parsing rows', async () => {
+    const { database, repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000071', name: 'Cap character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000072', name: 'Cap persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000073', characterId: character.id, personaId: persona.id, title: 'Caps',
+    });
+    const parent = repositories.messages.create({
+      id: '018f0000-0000-7000-8000-000000000074', conversationId: conversation.id,
+      role: 'assistant', content: '', activeVariantId: null,
+    });
+    const book = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000075', name: 'Cap book',
+    });
+    const digits = '(VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9))';
+    database.sqlite.exec(`
+      WITH seq(n) AS (
+        SELECT a.column1 + 10*b.column1 + 100*c.column1 + 1000*d.column1
+        FROM ${digits} a, ${digits} b, ${digits} c, ${digits} d LIMIT 2049
+      ) INSERT INTO messages (id, revision, created_at, updated_at, payload, conversation_id, active_variant_id, role)
+        SELECT printf('overflow-message-%04d', n), 0, '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z', '{}', '${conversation.id}', NULL, 'user' FROM seq;
+      WITH seq(n) AS (
+        SELECT a.column1 + 10*b.column1 + 100*c.column1 + 1000*d.column1
+        FROM ${digits} a, ${digits} b, ${digits} c, ${digits} d LIMIT 4097
+      ) INSERT INTO message_variants (id, revision, created_at, updated_at, payload, message_id, status)
+        SELECT printf('overflow-variant-%04d', n), 0, '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z', '{}', '${parent.id}', 'completed' FROM seq;
+      WITH seq(n) AS (
+        SELECT a.column1 + 10*b.column1 + 100*c.column1 + 1000*d.column1
+        FROM ${digits} a, ${digits} b, ${digits} c, ${digits} d LIMIT 4097
+      ) INSERT INTO worldbook_entries (id, revision, created_at, updated_at, payload, worldbook_id)
+        SELECT printf('overflow-entry-%04d', n), 0, '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z', '{}', '${book.id}' FROM seq;
+    `);
+
+    expect(() => repositories.messages.listByConversationId(conversation.id)).toThrow('message_relation_limit');
+    expect(() => repositories.messageVariants.listByMessageId(parent.id)).toThrow('variant_relation_limit');
+    expect(() => repositories.messageVariants.listByConversationId(conversation.id)).toThrow('variant_relation_limit');
+    expect(() => repositories.worldbookEntries.listByWorldbookId(book.id)).toThrow('worldbook_entry_relation_limit');
   });
 
   it('resolves global Worldbooks through the dedicated indexed repository method', async () => {
@@ -335,8 +388,10 @@ describe('SQLite repositories', () => {
     const ids = {
       character: '018f0000-0000-7000-8000-000000000030', persona: '018f0000-0000-7000-8000-000000000031', worldbook: '018f0000-0000-7000-8000-000000000032', entry: '018f0000-0000-7000-8000-000000000033',
       conversation: '018f0000-0000-7000-8000-000000000034', message: '018f0000-0000-7000-8000-000000000035', variant: '018f0000-0000-7000-8000-000000000036',
+      malformedCharacter: '018f0000-0000-7000-8000-000000000038',
     };
     const character = { id: ids.character, revision: 2, createdAt, updatedAt: createdAt, name: 'Legacy character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], compatibility: { sourceFormat: 'st-character-v3', rawPayload: { legacy: true, extensions: { depth_prompt: { prompt: 'Migrated depth prompt' } } }, unknownFields: { legacy: true }, compatWarnings: [], parserVersion: '1' } };
+    const malformedCharacter = { id: ids.malformedCharacter, revision: 0, createdAt, updatedAt: createdAt, name: 'Malformed legacy character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], compatibility: { sourceFormat: 'st-character-v3', rawPayload: { extensions: ['malformed'] }, unknownFields: {}, compatWarnings: [], parserVersion: '1' } };
     const persona = { id: ids.persona, revision: 0, createdAt, updatedAt: createdAt, name: 'Legacy persona', description: '', isDefault: true };
     const worldbook = { id: ids.worldbook, revision: 0, createdAt, updatedAt: createdAt, name: 'Legacy lore', enabled: true };
     const entry = { id: ids.entry, revision: 0, createdAt, updatedAt: createdAt, worldbookId: ids.worldbook, keys: ['legacy'], content: 'kept', enabled: true, position: 'before_character', order: 0 };
@@ -347,6 +402,7 @@ describe('SQLite repositories', () => {
       database.sqlite.prepare(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`).run(...values);
     };
     insert('characters', character, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [character.id, '2', createdAt, createdAt, JSON.stringify(character), character.name]);
+    insert('characters', malformedCharacter, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [malformedCharacter.id, '0', createdAt, createdAt, JSON.stringify(malformedCharacter), malformedCharacter.name]);
     insert('personas', persona, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [persona.id, '0', createdAt, createdAt, JSON.stringify(persona), persona.name]);
     insert('worldbooks', worldbook, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [worldbook.id, '0', createdAt, createdAt, JSON.stringify(worldbook), worldbook.name]);
     insert('worldbook_entries', entry, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'worldbook_id'], [entry.id, '0', createdAt, createdAt, JSON.stringify(entry), entry.worldbookId]);
@@ -360,8 +416,12 @@ describe('SQLite repositories', () => {
 
     expect(repositories.characters.get(ids.character)).toMatchObject({
       revision: 2,
-      extensions: { depth_prompt: { prompt: 'Migrated depth prompt' } },
+      depthPrompt: 'Migrated depth prompt',
       compatibility: { rawPayload: { legacy: true } },
+    });
+    expect(repositories.characters.get(ids.malformedCharacter)).toMatchObject({
+      depthPrompt: '',
+      compatibility: { compatWarnings: expect.arrayContaining(['character_depth_prompt_invalid']) },
     });
     expect(repositories.messages.get(ids.message)).toMatchObject({ activeVariantId: ids.variant });
     expect(database.sqlite.prepare('PRAGMA table_info(messages)').all().map((column) => column.name)).toContain('active_variant_id');
@@ -382,7 +442,7 @@ describe('SQLite repositories', () => {
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 4096, maxResponseTokens: 512,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 4 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 5 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

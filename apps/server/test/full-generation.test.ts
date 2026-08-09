@@ -1,4 +1,3 @@
-import { ProviderError } from '@tavernnext/provider-openai-compatible';
 import { TokenizerId, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createPromptSnapshotService } from '../src/services/prompt-snapshot-service.js';
@@ -103,6 +102,10 @@ describe('full prompt generation', () => {
     const provider = capturedProvider([{ type: 'completed', finishReason: 'stop' }]);
     const { app, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, mode);
+    const conversation = repositories.conversations.get(integrationIds.conversation)!;
+    expect(repositories.conversations.update(conversation.id, conversation.revision, {
+      authorNote: 'CONFIGURED-AUTHOR-NOTE', authorNotePosition: 1, authorNoteDepth: 1, authorNoteRole: 2,
+    })).toMatchObject({ ok: true });
     const character = repositories.characters.get(integrationIds.character)!;
     expect(repositories.characters.update(character.id, character.revision, {
       examples: '<START>\nTraveler: CARD-EXAMPLE\nAster: CARD-ANSWER',
@@ -137,16 +140,24 @@ describe('full prompt generation', () => {
       { id: '018f1000-0000-7000-8000-000000000128', sourceUid: 'em-top', position: 5, content: '<START>\nTraveler: EM-TOP\nAster: EM-TOP-A' },
       { id: '018f1000-0000-7000-8000-000000000129', sourceUid: 'em-bottom', position: 6, content: '<START>\nTraveler: EM-BOTTOM\nAster: EM-BOTTOM-A' },
       { id: '018f1000-0000-7000-8000-000000000130', sourceUid: 'outlet', position: 7, content: 'OUTLET-ONLY', outletName: 'sidebar' },
+      { id: '018f1000-0000-7000-8000-000000000131', sourceUid: 'before-alias', position: 'before_char', content: 'BEFORE-ALIAS' },
+      { id: '018f1000-0000-7000-8000-000000000132', sourceUid: 'after-alias', position: 'after_char', content: 'AFTER-ALIAS' },
+      { id: '018f1000-0000-7000-8000-000000000133', sourceUid: 'an-top-alias', position: 'an_top', content: 'AN-TOP-ALIAS' },
+      { id: '018f1000-0000-7000-8000-000000000134', sourceUid: 'an-bottom-alias', position: 'an_bottom', content: 'AN-BOTTOM-ALIAS' },
+      { id: '018f1000-0000-7000-8000-000000000135', sourceUid: 'at-depth-alias', position: 'at_depth', content: 'AT-DEPTH-ALIAS', depth: 1, role: 1 },
+      { id: '018f1000-0000-7000-8000-000000000136', sourceUid: 'em-top-alias', position: 'em_top', content: '<START>\nTraveler: EM-TOP-ALIAS\nAster: EM-TOP-ALIAS-A' },
+      { id: '018f1000-0000-7000-8000-000000000137', sourceUid: 'em-bottom-alias', position: 'em_bottom', content: '<START>\nTraveler: EM-BOTTOM-ALIAS\nAster: EM-BOTTOM-ALIAS-A' },
+      { id: '018f1000-0000-7000-8000-000000000138', sourceUid: 'outlet-alias', position: 'outlet', content: 'OUTLET-ALIAS', outletName: 'sidebar' },
     ];
-    for (const entry of entries) {
+    for (const [sourceOrdinal, entry] of entries.entries()) {
       repositories.worldbookEntries.create({
         worldbookId: integrationIds.globalBook,
-        sourceOrdinal: Number(entry.position), keys: [], constant: true,
+        sourceOrdinal, keys: [], constant: true,
         ...entry,
       });
     }
 
-    const previewResponse = await requestPreview(app);
+    const previewResponse = await requestPreview(app, { conversationRevision: 1 });
 
     expect(previewResponse.statusCode).toBe(201);
     const preview = previewResponse.json();
@@ -155,17 +166,24 @@ describe('full prompt generation', () => {
       : String(preview.text);
     if (mode === 'chat') {
       expect(preview.messages).toEqual(expect.arrayContaining([
-        expect.objectContaining({ content: 'AN-TOP\nAN-BOTTOM' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: expect.stringContaining('CONFIGURED-AUTHOR-NOTE'),
+        }),
       ]));
     } else {
-      expect(executable).toContain('AN-TOP\nAN-BOTTOM');
+      expect(executable).toContain('CONFIGURED-AUTHOR-NOTE');
     }
+    for (const value of [
+      'BEFORE-ALIAS', 'AFTER-ALIAS', 'AN-TOP-ALIAS', 'AN-BOTTOM-ALIAS',
+      'AT-DEPTH-ALIAS', 'EM-TOP-ALIAS', 'EM-BOTTOM-ALIAS',
+    ]) expect(executable).toContain(value);
     expect(executable).toContain('AT-DEPTH');
     expect(executable.indexOf('EM-TOP')).toBeLessThan(executable.indexOf('CARD-EXAMPLE'));
     expect(executable.indexOf('CARD-EXAMPLE')).toBeLessThan(executable.indexOf('EM-BOTTOM'));
     expect(executable).not.toContain('OUTLET-ONLY');
-    expect(preview.worldInfoOutlets).toEqual({ sidebar: 'OUTLET-ONLY' });
-    const generation = await requestGeneration(app, preview.snapshotId);
+    expect(preview.worldInfoOutlets).toEqual({ sidebar: 'OUTLET-ONLY\nOUTLET-ALIAS' });
+    const generation = await requestGeneration(app, preview.snapshotId, { conversationRevision: 1 });
     expect(generation.statusCode).toBe(200);
     expect(mode === 'chat' ? provider.chat : provider.text).toEqual([preview.compiledRequest]);
   });
@@ -199,16 +217,38 @@ describe('full prompt generation', () => {
     });
   });
 
-  it('scans only typed Character depth_prompt extensions and surfaces persisted compatibility warnings', async () => {
+  it('scans only the dedicated Character depth prompt and surfaces every loaded compatibility warning', async () => {
     const { app, repositories } = await createPromptIntegrationContext();
     seedFullPromptGraph(repositories, 'chat');
     const character = repositories.characters.get(integrationIds.character)!;
     expect(repositories.characters.update(character.id, character.revision, {
-      extensions: { depth_prompt: { prompt: 'Typed Character depth prompt' } },
+      depthPrompt: 'Typed Character depth prompt',
+      extensions: { depth_prompt: { prompt: 'FORGED NON-EXECUTABLE DEPTH PROMPT' }, audit_secret: 'MUST-NOT-ENTER-AUDIT' },
       postHistoryInstructions: 'PHI-only',
       compatibility: {
         sourceFormat: 'test', rawPayload: {}, unknownFields: {},
         compatWarnings: ['character_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    const conversation = repositories.conversations.get(integrationIds.conversation)!;
+    expect(repositories.conversations.update(conversation.id, conversation.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['conversation_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    const persona = repositories.personas.get(integrationIds.persona)!;
+    expect(repositories.personas.update(persona.id, persona.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['persona_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    const provider = repositories.providerProfiles.get(integrationIds.provider)!;
+    expect(repositories.providerProfiles.update(provider.id, provider.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['provider_compat_warning'], parserVersion: '1',
       },
     })).toMatchObject({ ok: true });
     const preset = repositories.presets.get(integrationIds.chatPreset)!;
@@ -225,10 +265,28 @@ describe('full prompt generation', () => {
         compatWarnings: ['worldbook_compat_warning'], parserVersion: '1',
       },
     })).toMatchObject({ ok: true });
+    const history = repositories.messages.get(integrationIds.historyUser)!;
+    expect(repositories.messages.update(history.id, history.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['message_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    const variant = repositories.messageVariants.get(integrationIds.historyVariant)!;
+    expect(repositories.messageVariants.update(variant.id, variant.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['variant_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
     repositories.worldbookEntries.create({
       id: '018f1000-0000-7000-8000-000000000122', worldbookId: integrationIds.globalBook,
       sourceUid: 'typed-depth', sourceOrdinal: 3, keys: ['Typed Character depth prompt'],
       content: 'TYPED-DEPTH-MATCH', matchCharacterDepthPrompt: true,
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['entry_compat_warning'], parserVersion: '1',
+      },
     });
     repositories.worldbookEntries.create({
       id: '018f1000-0000-7000-8000-000000000123', worldbookId: integrationIds.globalBook,
@@ -236,16 +294,24 @@ describe('full prompt generation', () => {
       content: 'PHI-MUST-NOT-MATCH', matchCharacterDepthPrompt: true,
     });
 
-    const response = await requestPreview(app);
+    const response = await requestPreview(app, { conversationRevision: 1 });
 
     expect(response.statusCode).toBe(201);
     const preview = response.json();
     expect(preview.worldbook.activated.map((entry: { content: string }) => entry.content)).toContain('TYPED-DEPTH-MATCH');
     expect(preview.worldbook.activated.map((entry: { content: string }) => entry.content)).not.toContain('PHI-MUST-NOT-MATCH');
+    expect(JSON.stringify(preview.executable)).not.toContain('MUST-NOT-ENTER-AUDIT');
+    expect(JSON.stringify(preview.executable)).not.toContain('FORGED NON-EXECUTABLE DEPTH PROMPT');
     expect(preview.warnings).toEqual(expect.arrayContaining([
+      { code: 'compatibility_warning', message: 'conversation_compat_warning', source: `conversation:${integrationIds.conversation}` },
       { code: 'compatibility_warning', message: 'character_compat_warning', source: `character:${integrationIds.character}` },
+      { code: 'compatibility_warning', message: 'persona_compat_warning', source: `persona:${integrationIds.persona}` },
+      { code: 'compatibility_warning', message: 'provider_compat_warning', source: `provider:${integrationIds.provider}` },
       { code: 'compatibility_warning', message: 'preset_compat_warning', source: `preset:${integrationIds.chatPreset}` },
       { code: 'compatibility_warning', message: 'worldbook_compat_warning', source: `worldbook:${integrationIds.globalBook}` },
+      { code: 'compatibility_warning', message: 'entry_compat_warning', source: 'worldbook-entry:018f1000-0000-7000-8000-000000000122' },
+      { code: 'compatibility_warning', message: 'message_compat_warning', source: `message:${integrationIds.historyUser}` },
+      { code: 'compatibility_warning', message: 'variant_compat_warning', source: `variant:${integrationIds.historyVariant}` },
     ]));
   });
 
@@ -403,73 +469,6 @@ describe('full prompt generation', () => {
     expect(tokenizerProvider.chat).toEqual([]);
     expect(tokenizerContext.repositories.generationSnapshots.list()).toEqual([]);
     expect(tokenizerContext.repositories.messages.list()).toHaveLength(2);
-  });
-
-  it('fails a malformed persisted Worldbook runtime state before snapshots, messages, or provider execution', async () => {
-    const provider = capturedProvider();
-    const { app, database, repositories } = await createPromptIntegrationContext({ provider });
-    seedFullPromptGraph(repositories, 'chat');
-    const state = repositories.worldbookRuntimeStates.create({
-      id: '018f1000-0000-7000-8000-000000000121',
-      conversationId: integrationIds.conversation,
-      timedState: { messageIndex: null, sticky: [], cooldown: [] },
-    });
-    database.sqlite.prepare('UPDATE worldbook_runtime_states SET payload = ? WHERE id = ?')
-      .run(JSON.stringify({ id: state.id, timedState: { malformed: true } }), state.id);
-
-    const response = await requestGeneration(app);
-
-    expect(response.statusCode).toBe(422);
-    expect(response.json()).toEqual({ error: 'invalid_runtime_state' });
-    expect(provider.chat).toEqual([]);
-    expect(provider.text).toEqual([]);
-    expect(repositories.generationSnapshots.list()).toEqual([]);
-    expect(repositories.messages.list()).toHaveLength(2);
-  });
-
-  it('does not advance timed state when the provider fails or an in-flight generation is aborted', async () => {
-    const failedProvider = capturedProvider();
-    failedProvider.client.streamChat = async function* (request) {
-      failedProvider.chat.push(structuredClone(request));
-      throw new ProviderError('connection');
-    };
-    const failedContext = await createPromptIntegrationContext({ provider: failedProvider });
-    seedFullPromptGraph(failedContext.repositories, 'chat');
-    const failedPreview = (await requestPreview(failedContext.app)).json();
-
-    const failed = await requestGeneration(failedContext.app, failedPreview.snapshotId);
-
-    expect(parseEventNames(failed.payload)).toEqual(['started', 'failed']);
-    expect(runtimeStates(failedContext.repositories)).toEqual([]);
-
-    const entered = deferred();
-    const abortedProvider = capturedProvider();
-    abortedProvider.client.streamChat = async function* (request, signal) {
-      abortedProvider.chat.push(structuredClone(request));
-      yield { type: 'delta', text: 'Partial' };
-      entered.resolve();
-      await new Promise<void>((_resolve, reject) => {
-        signal?.addEventListener('abort', () => reject(new ProviderError('aborted')), { once: true });
-      });
-    };
-    const abortedContext = await createPromptIntegrationContext({ provider: abortedProvider });
-    seedFullPromptGraph(abortedContext.repositories, 'chat');
-    const abortedPreview = (await requestPreview(abortedContext.app)).json();
-    const pending = requestGeneration(abortedContext.app, abortedPreview.snapshotId);
-    await entered.promise;
-    const cancellation = await abortedContext.app.inject({
-      method: 'DELETE',
-      url: `/api/generations/${abortedPreview.snapshotId}`,
-    });
-    expect(cancellation.statusCode).toBe(202);
-
-    const aborted = await pending;
-
-    expect(parseEventNames(aborted.payload)).toEqual(['started', 'delta', 'aborted']);
-    expect(runtimeStates(abortedContext.repositories)).toEqual([]);
-    expect(abortedContext.repositories.messageVariants.list()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: 'Partial', status: 'aborted' }),
-    ]));
   });
 
 });

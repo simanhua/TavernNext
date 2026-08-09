@@ -1,6 +1,13 @@
-import type { Character, Conversation, Message, MessageVariant, Persona, Preset } from '@tavernnext/domain';
+import type { Character, Conversation, Message, MessageVariant, Persona, PresetKind } from '@tavernnext/domain';
 
-export type { Character, Conversation, Message, MessageVariant, Persona, Preset };
+export type { Character, Conversation, Message, MessageVariant, Persona };
+
+export interface PresetSelectorView {
+  id: string;
+  revision: number;
+  name: string;
+  kind: PresetKind;
+}
 
 export interface ProviderProfileView {
   id: string;
@@ -59,7 +66,7 @@ export const api = {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input, isDefault: false }),
   }),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
-  listPresets: () => request<Preset[]>('/api/presets'),
+  listPresets: () => request<PresetSelectorView[]>('/api/presets'),
   saveProvider: (input: {
     id?: string;
     revision?: number;

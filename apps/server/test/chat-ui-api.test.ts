@@ -78,6 +78,7 @@ describe('chat UI API bindings', () => {
       kind: 'chat',
       settings: {
         tokenizer: TokenizerId.NONE,
+        secret_selector_sentinel: 'MUST-NOT-LEAVE-SERVER',
         prompts: [
           { identifier: 'main', role: 'system', content: 'Role chat', system_prompt: true },
           { identifier: 'chatHistory', marker: true, system_prompt: true },
@@ -90,12 +91,21 @@ describe('chat UI API bindings', () => {
           ],
         }],
       },
+      compatibility: {
+        sourceFormat: 'test',
+        rawPayload: { secret_raw_sentinel: 'MUST-NOT-LEAVE-SERVER' },
+        unknownFields: { secret_unknown_sentinel: 'MUST-NOT-LEAVE-SERVER' },
+        compatWarnings: ['secret_warning_sentinel'],
+        parserVersion: '1',
+      },
     });
     const listedPresets = await app.inject({ method: 'GET', url: '/api/presets' });
     expect(listedPresets.statusCode).toBe(200);
-    expect(listedPresets.json()).toEqual([
-      expect.objectContaining({ id: ids.preset, kind: 'chat', name: 'Role chat' }),
-    ]);
+    expect(listedPresets.json()).toEqual([{
+      id: ids.preset, revision: 0, kind: 'chat', name: 'Role chat',
+    }]);
+    expect(listedPresets.payload).not.toContain('MUST-NOT-LEAVE-SERVER');
+    expect(listedPresets.payload).not.toContain('secret_warning_sentinel');
     repositories.conversations.create({
       id: ids.conversation,
       characterId: ids.character,

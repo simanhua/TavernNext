@@ -418,16 +418,33 @@ describe('Chat preset compiler', () => {
       worldInfoPlacements: {
         beforeCharacter: 'WI-BEFORE',
         afterCharacter: 'WI-AFTER',
-        examplesBefore: [{ source: 'wi:em-top', content: '<START>\nYou: EM-TOP\nAster: EM-TOP-A' }],
-        examplesAfter: [{ source: 'wi:em-bottom', content: '<START>\nYou: EM-BOTTOM\nAster: EM-BOTTOM-A' }],
+        // SillyTavern world-info.js has already unshifted these collections. The
+        // downstream example insertion performs the second unshift for EMTop.
+        examplesBefore: [
+          { source: 'wi:em-top-second', content: '<START>\nYou: EM-TOP-SECOND\nAster: EM-TOP-SECOND-A' },
+          { source: 'wi:em-top-first', content: '<START>\nYou: EM-TOP-FIRST\nAster: EM-TOP-FIRST-A' },
+        ],
+        examplesAfter: [
+          { source: 'wi:em-bottom-second', content: '<START>\nYou: EM-BOTTOM-SECOND\nAster: EM-BOTTOM-SECOND-A' },
+          { source: 'wi:em-bottom-first', content: '<START>\nYou: EM-BOTTOM-FIRST\nAster: EM-BOTTOM-FIRST-A' },
+        ],
         authorNote: {
-          before: [{ source: 'wi:an-top', content: 'AN-TOP' }],
-          after: [{ source: 'wi:an-bottom', content: 'AN-BOTTOM' }],
+          before: [
+            { source: 'wi:an-top-second', content: 'AN-TOP-SECOND' },
+            { source: 'wi:an-top-first', content: 'AN-TOP-FIRST' },
+          ],
+          content: 'CONFIGURED-AUTHOR-NOTE',
+          after: [
+            { source: 'wi:an-bottom-second', content: 'AN-BOTTOM-SECOND' },
+            { source: 'wi:an-bottom-first', content: 'AN-BOTTOM-FIRST' },
+          ],
+          position: 1,
           depth: 2,
-          role: 'system',
+          role: 'user',
         },
         atDepth: [
-          { source: 'wi:depth-system', content: 'DEPTH-SYSTEM', depth: 1, role: 'system' },
+          { source: 'wi:depth-system-second', content: 'DEPTH-SYSTEM-SECOND', depth: 1, role: 'system' },
+          { source: 'wi:depth-system-first', content: 'DEPTH-SYSTEM-FIRST', depth: 1, role: 'system' },
           { source: 'wi:depth-user', content: 'DEPTH-USER', depth: 1, role: 'user' },
           { source: 'wi:depth-assistant', content: 'DEPTH-ASSISTANT', depth: 1, role: 'assistant' },
         ],
@@ -440,18 +457,47 @@ describe('Chat preset compiler', () => {
     const contents = result.messages.map((message) => message.content);
     expect(contents.indexOf('WI-BEFORE')).toBeGreaterThan(-1);
     expect(contents.indexOf('WI-AFTER')).toBeGreaterThan(-1);
-    expect(contents.indexOf('EM-TOP')).toBeLessThan(contents.indexOf('CARD-EXAMPLE'));
-    expect(contents.indexOf('CARD-EXAMPLE')).toBeLessThan(contents.indexOf('EM-BOTTOM'));
+    expect(contents.indexOf('EM-TOP-FIRST')).toBeLessThan(contents.indexOf('EM-TOP-SECOND'));
+    expect(contents.indexOf('EM-TOP-SECOND')).toBeLessThan(contents.indexOf('CARD-EXAMPLE'));
+    expect(contents.indexOf('CARD-EXAMPLE')).toBeLessThan(contents.indexOf('EM-BOTTOM-SECOND'));
+    expect(contents.indexOf('EM-BOTTOM-SECOND')).toBeLessThan(contents.indexOf('EM-BOTTOM-FIRST'));
     expect(result.messages).toEqual(expect.arrayContaining([
-      { role: 'system', content: 'AN-TOP\nAN-BOTTOM' },
-      { role: 'system', content: 'DEPTH-SYSTEM' },
+      { role: 'user', content: 'AN-TOP-SECOND\nAN-TOP-FIRST\nCONFIGURED-AUTHOR-NOTE\nAN-BOTTOM-SECOND\nAN-BOTTOM-FIRST' },
+      { role: 'system', content: 'DEPTH-SYSTEM-SECOND\nDEPTH-SYSTEM-FIRST' },
       { role: 'user', content: 'DEPTH-USER' },
       { role: 'assistant', content: 'DEPTH-ASSISTANT' },
     ]));
-    expect(contents.indexOf('DEPTH-SYSTEM')).toBeGreaterThan(contents.indexOf('OLD'));
-    expect(contents.indexOf('DEPTH-SYSTEM')).toBeLessThan(contents.indexOf('NEW'));
+    expect(contents.indexOf('DEPTH-SYSTEM-SECOND\nDEPTH-SYSTEM-FIRST')).toBeGreaterThan(contents.indexOf('OLD'));
+    expect(contents.indexOf('DEPTH-SYSTEM-SECOND\nDEPTH-SYSTEM-FIRST')).toBeLessThan(contents.indexOf('NEW'));
     expect(JSON.stringify(result.messages)).not.toContain('OUTLET-ONLY');
     expect(result.worldInfoOutlets).toEqual({ sidebar: 'OUTLET-ONLY' });
+  });
+
+  it.each([
+    [2, 'assistant', 'before'],
+    [0, 'user', 'after'],
+  ] as const)('places configured relative Author Note position %s exactly %s main', async (position, role, side) => {
+    const result = await compileChatPrompt({
+      character: character({ description: '', personality: '', scenario: '' }),
+      persona: persona({ description: '' }), preset: chatPreset(), maxPromptTokens: 1_000,
+      tokenizer: unitTokenizer(), history: [],
+      worldInfoPlacements: {
+        beforeCharacter: '', afterCharacter: '', examplesBefore: [], examplesAfter: [], atDepth: [], outlets: {},
+        authorNote: {
+          before: [{ source: 'wi:an-top', content: 'AN-TOP' }],
+          content: 'ACTUAL-NOTE',
+          after: [{ source: 'wi:an-bottom', content: 'AN-BOTTOM' }],
+          position, depth: 37, role,
+        },
+      },
+    });
+
+    expect(result.kind).toBe('chat');
+    if (result.kind !== 'chat') throw new Error(result.message);
+    const mainIndex = result.messages.findIndex(({ content }) => content === 'MAIN Aster/You');
+    const noteIndex = result.messages.findIndex(({ content }) => content === 'AN-TOP\nACTUAL-NOTE\nAN-BOTTOM');
+    expect(result.messages[noteIndex]).toEqual({ role, content: 'AN-TOP\nACTUAL-NOTE\nAN-BOTTOM' });
+    expect(side === 'before' ? noteIndex : mainIndex).toBeLessThan(side === 'before' ? mainIndex : noteIndex);
   });
 
   it('fails closed when an activated Worldbook example has no executable dialogue-example target', async () => {
@@ -465,7 +511,7 @@ describe('Chat preset compiler', () => {
         beforeCharacter: '', afterCharacter: '',
         examplesBefore: [{ source: 'wi:missing-target', content: '<START>\nYou: hidden' }],
         examplesAfter: [], atDepth: [], outlets: {},
-        authorNote: { before: [], after: [], depth: 4, role: 'system' },
+        authorNote: { before: [], content: '', after: [], position: 1, depth: 4, role: 'system' },
       },
     });
 

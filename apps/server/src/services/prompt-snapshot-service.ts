@@ -42,11 +42,11 @@ import {
   type TokenizerSelectionInput,
 } from '@tavernnext/tokenizer-engine';
 import type { TavernDatabase } from '../db/client.js';
-import type { Repositories } from '../db/repositories.js';
+import { RelationshipLimitError, type Repositories } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 1 as const;
-const EXECUTABLE_AUDIT_SCHEMA_VERSION = 1 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 2 as const;
+const EXECUTABLE_AUDIT_SCHEMA_VERSION = 2 as const;
 
 export interface ServerTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
@@ -139,6 +139,8 @@ export type PromptSnapshotErrorCode =
   | 'snapshot_stale'
   | 'snapshot_mismatch'
   | 'snapshot_invalid'
+  | 'snapshot_unsupported'
+  | 'aggregate_limit'
   | 'invalid_runtime_state'
   | 'unsupported_worldbook_placement'
   | 'context_overflow'
@@ -155,7 +157,7 @@ export function promptSnapshotErrorStatus(code: PromptSnapshotErrorCode): 400 | 
   if (code === 'invalid_user_text' || code === 'unsupported_mode') return 400;
   if (code === 'not_found') return 404;
   if (code === 'revision_conflict' || code === 'snapshot_stale'
-    || code === 'snapshot_mismatch' || code === 'snapshot_invalid') return 409;
+    || code === 'snapshot_mismatch' || code === 'snapshot_invalid' || code === 'snapshot_unsupported') return 409;
   return 422;
 }
 
@@ -172,6 +174,7 @@ interface LoadedPersistedBook extends LoadedBookBase {
 
 interface LoadedEmbeddedBook extends LoadedBookBase {
   source: 'embedded';
+  compatibilityWarnings: PromptWarning[];
 }
 
 type LoadedBook = LoadedPersistedBook | LoadedEmbeddedBook;
@@ -309,12 +312,32 @@ function stripBookAuditFields(book: NormalizedWorldbook): NormalizedWorldbook {
   };
 }
 
+function boundedRelation<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (error instanceof RelationshipLimitError) throw new PromptSnapshotError('aggregate_limit');
+    throw error;
+  }
+}
+
+function appendCompatibilityWarnings(
+  target: PromptWarning[],
+  value: { compatibility?: { compatWarnings: string[] } },
+  source: string,
+): void {
+  for (const message of value.compatibility?.compatWarnings ?? []) {
+    target.push({ code: 'compatibility_warning', message, source });
+  }
+}
+
 function stableEmbeddedBook(character: Character): LoadedEmbeddedBook | undefined {
   if (character.characterBook === undefined) return undefined;
-  const normalized = normalizeCharacterBook(
+  const result = normalizeCharacterBook(
     deepJson(character.characterBook),
     `${character.name} Book`,
-  ).worldbook;
+  );
+  const normalized = result.worldbook;
   const rawEntries = Array.isArray(character.characterBook.entries) ? character.characterBook.entries : [];
   const occurrences = new Map<string, number>();
   normalized.entries = normalized.entries.map((entry, index): NormalizedWorldbookEntry => {
@@ -337,16 +360,22 @@ function stableEmbeddedBook(character: Character): LoadedEmbeddedBook | undefine
     id: `embedded:${character.id}`,
     source: 'embedded',
     book: stripBookAuditFields(normalized),
+    compatibilityWarnings: result.warnings.map((warning) => ({
+      code: 'compatibility_warning',
+      message: `${warning.code}: ${warning.message}`,
+      source: `embedded-worldbook:${character.id}`,
+    })),
   };
 }
 
 function historyRows(repositories: Repositories, conversationId: string): {
   history: LoadedAggregate['history'];
   manifest: MessageRevisionRef[];
+  compatibilityWarnings: PromptWarning[];
 } {
-  const variants = new Map(repositories.messageVariants.listByConversationId(conversationId)
-    .map((variant) => [variant.id, variant]));
-  const messages = repositories.messages.listByConversationId(conversationId);
+  const variantRows = boundedRelation(() => repositories.messageVariants.listByConversationId(conversationId));
+  const variants = new Map(variantRows.map((variant) => [variant.id, variant]));
+  const messages = boundedRelation(() => repositories.messages.listByConversationId(conversationId));
   return {
     history: messages.map((message) => {
       const variant = message.activeVariantId === null ? undefined : variants.get(message.activeVariantId);
@@ -363,6 +392,14 @@ function historyRows(repositories: Repositories, conversationId: string): {
         activeVariant: variant === undefined ? null : ref(variant),
       };
     }),
+    compatibilityWarnings: [
+      ...messages.flatMap((message) => (message.compatibility?.compatWarnings ?? []).map((warning) => ({
+        code: 'compatibility_warning', message: warning, source: `message:${message.id}`,
+      } as PromptWarning))),
+      ...variantRows.flatMap((variant) => (variant.compatibility?.compatWarnings ?? []).map((warning) => ({
+        code: 'compatibility_warning', message: warning, source: `variant:${variant.id}`,
+      } as PromptWarning))),
+    ],
   };
 }
 
@@ -386,7 +423,7 @@ function persistedBook(
   row: Worldbook,
   source: LoadedPersistedBook['source'],
 ): LoadedPersistedBook {
-  const entries = repositories.worldbookEntries.listByWorldbookId(row.id);
+  const entries = boundedRelation(() => repositories.worldbookEntries.listByWorldbookId(row.id));
   return {
     id: row.id,
     source,
@@ -423,9 +460,10 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   if (provider === undefined) throw new PromptSnapshotError('provider_not_configured');
 
   const compatibilityWarnings: PromptWarning[] = [];
-  for (const message of character.compatibility?.compatWarnings ?? []) {
-    compatibilityWarnings.push({ code: 'compatibility_warning', message, source: `character:${character.id}` });
-  }
+  appendCompatibilityWarnings(compatibilityWarnings, conversation, `conversation:${conversation.id}`);
+  appendCompatibilityWarnings(compatibilityWarnings, character, `character:${character.id}`);
+  appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
+  appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
   const presets = provider.apiMode === 'chat'
     ? [requestedPreset(repositories, conversation.presetId, 'chat', compatibilityWarnings)]
@@ -441,22 +479,28 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   const addPersisted = (row: Worldbook | undefined, source: LoadedPersistedBook['source']) => {
     if (row === undefined || seen.has(row.id)) return;
     seen.add(row.id);
-    for (const message of row.compatibility?.compatWarnings ?? []) {
-      compatibilityWarnings.push({ code: 'compatibility_warning', message, source: `worldbook:${row.id}` });
+    appendCompatibilityWarnings(compatibilityWarnings, row, `worldbook:${row.id}`);
+    const loaded = persistedBook(repositories, row, source);
+    for (const entry of loaded.entries) {
+      appendCompatibilityWarnings(compatibilityWarnings, entry, `worldbook-entry:${entry.id}`);
     }
-    books.push(persistedBook(repositories, row, source));
+    books.push(loaded);
   };
   const globalBooks = repositories.worldbooks.listGlobal();
   for (const row of globalBooks) addPersisted(row, 'global');
   if (character.worldbookId !== undefined) addPersisted(repositories.worldbooks.get(character.worldbookId), 'character');
   const embedded = stableEmbeddedBook(character);
-  if (embedded !== undefined) books.push(embedded);
+  if (embedded !== undefined) {
+    compatibilityWarnings.push(...embedded.compatibilityWarnings);
+    books.push(embedded);
+  }
   for (const id of conversation.worldbookIds) addPersisted(repositories.worldbooks.get(id), 'conversation');
   for (const id of [character.worldbookId, ...conversation.worldbookIds]) {
     if (id !== undefined && repositories.worldbooks.get(id) === undefined) throw new PromptSnapshotError('not_found');
   }
 
   const history = historyRows(repositories, conversation.id);
+  compatibilityWarnings.push(...history.compatibilityWarnings);
   const runtimeState = runtimeStateFor(repositories, conversation.id);
   const seed = input.seed ?? `${conversation.id}:${conversation.revision}`;
   const messageIndex = input.messageIndex ?? history.history.length;
@@ -516,9 +560,28 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   };
   const conversation = repositories.conversations.get(manifest.conversation.id);
   exact(conversation, manifest.conversation);
-  exact(repositories.characters.get(manifest.character.id), manifest.character);
+  const character = repositories.characters.get(manifest.character.id);
+  exact(character, manifest.character);
   exact(repositories.personas.get(manifest.persona.id), manifest.persona);
-  exact(repositories.providerProfiles.get(manifest.provider.id), manifest.provider);
+  const provider = repositories.providerProfiles.get(manifest.provider.id);
+  exact(provider, manifest.provider);
+  if (conversation === undefined || character === undefined || provider === undefined
+    || conversation.characterId !== manifest.character.id
+    || conversation.personaId !== manifest.persona.id
+    || conversation.providerId !== manifest.provider.id) stale();
+  const configuredPresets: Array<{ id: string | undefined; kind: PresetKind }> = provider.apiMode === 'chat'
+    ? [{ id: conversation.presetId, kind: 'chat' }]
+    : [
+      { id: conversation.presetId, kind: 'text' },
+      { id: conversation.contextPresetId, kind: 'context' },
+      { id: conversation.instructPresetId, kind: 'instruct' },
+      { id: conversation.systemPresetId, kind: 'system' },
+    ];
+  if (configuredPresets.some(({ id }) => id === undefined)
+    || !sameCanonical(
+      manifest.presets.map(({ id, kind }) => ({ id, kind })),
+      configuredPresets,
+    )) stale();
   for (const preset of manifest.presets) {
     const current = repositories.presets.get(preset.id);
     exact(current, preset);
@@ -526,9 +589,23 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   }
   const currentGlobals = repositories.worldbooks.listGlobal().map(ref);
   if (!sameCanonical(currentGlobals, manifest.globalWorldbooks)) stale();
+  const expectedWorldbooks: Array<{ id: string; source: WorldbookRevisionRef['source'] }> = [];
+  const seenWorldbooks = new Set<string>();
+  const addExpectedWorldbook = (id: string | undefined, source: WorldbookRevisionRef['source']) => {
+    if (id === undefined || seenWorldbooks.has(id)) return;
+    seenWorldbooks.add(id);
+    expectedWorldbooks.push({ id, source });
+  };
+  for (const global of currentGlobals) addExpectedWorldbook(global.id, 'global');
+  addExpectedWorldbook(character.worldbookId, 'character');
+  for (const id of conversation.worldbookIds) addExpectedWorldbook(id, 'conversation');
+  if (!sameCanonical(
+    manifest.worldbooks.map(({ id, source }) => ({ id, source })),
+    expectedWorldbooks,
+  )) stale();
   for (const book of manifest.worldbooks) {
     exact(repositories.worldbooks.get(book.id), book);
-    const entries = repositories.worldbookEntries.listByWorldbookId(book.id).map(ref);
+    const entries = boundedRelation(() => repositories.worldbookEntries.listByWorldbookId(book.id)).map(ref);
     if (!sameCanonical(entries, book.entries)) stale();
   }
   if (!sameCanonical(currentMessageManifest(repositories, manifest.conversation.id), manifest.messages)) stale();
@@ -595,7 +672,19 @@ async function countWorldbookTexts(
   return result;
 }
 
-function worldInfo(result: WorldbookEvaluationResult): WorldInfoCompilerPlacements {
+function authorNotePosition(value: number): 0 | 1 | 2 {
+  if (value === 0 || value === 1 || value === 2) return value;
+  throw new PromptSnapshotError('unsupported_worldbook_placement');
+}
+
+function authorNoteRole(value: number): 'system' | 'user' | 'assistant' {
+  if (value === 0) return 'system';
+  if (value === 1) return 'user';
+  if (value === 2) return 'assistant';
+  throw new PromptSnapshotError('unsupported_worldbook_placement');
+}
+
+function worldInfo(result: WorldbookEvaluationResult, conversation: Conversation): WorldInfoCompilerPlacements {
   const before: string[] = [];
   const after: string[] = [];
   const examplesBefore: Array<{ source: string; content: string }> = [];
@@ -606,21 +695,27 @@ function worldInfo(result: WorldbookEvaluationResult): WorldInfoCompilerPlacemen
   const outlets: Record<string, Array<{ source: string; content: string }>> = {};
   const beforePositions = new Set<number | string>([0, 'before', 'before_char', 'before_character']);
   const afterPositions = new Set<number | string>([1, 'after', 'after_char', 'after_character']);
+  const authorTopPositions = new Set<number | string>([2, 'an_top']);
+  const authorBottomPositions = new Set<number | string>([3, 'an_bottom']);
+  const atDepthPositions = new Set<number | string>([4, 'at_depth']);
+  const examplesTopPositions = new Set<number | string>([5, 'em_top']);
+  const examplesBottomPositions = new Set<number | string>([6, 'em_bottom']);
+  const outletPositions = new Set<number | string>([7, 'outlet']);
   for (const entry of result.activated) {
     const item = { source: entry.entryKey, content: entry.content };
     if (beforePositions.has(entry.position)) before.unshift(entry.content);
     else if (afterPositions.has(entry.position)) after.unshift(entry.content);
-    else if (entry.position === 2) authorBefore.unshift(item);
-    else if (entry.position === 3) authorAfter.unshift(item);
-    else if (entry.position === 4) {
+    else if (authorTopPositions.has(entry.position)) authorBefore.unshift(item);
+    else if (authorBottomPositions.has(entry.position)) authorAfter.unshift(item);
+    else if (atDepthPositions.has(entry.position)) {
       const placementRole = entry.role === 0 ? 'system' : entry.role === 1 ? 'user' : entry.role === 2 ? 'assistant' : undefined;
       if (!Number.isSafeInteger(entry.depth) || entry.depth < 0 || placementRole === undefined) {
         throw new PromptSnapshotError('unsupported_worldbook_placement');
       }
       atDepth.unshift({ ...item, depth: entry.depth, role: placementRole });
-    } else if (entry.position === 5) examplesBefore.unshift(item);
-    else if (entry.position === 6) examplesAfter.unshift(item);
-    else if (entry.position === 7) {
+    } else if (examplesTopPositions.has(entry.position)) examplesBefore.unshift(item);
+    else if (examplesBottomPositions.has(entry.position)) examplesAfter.unshift(item);
+    else if (outletPositions.has(entry.position)) {
       if (entry.outletName.trim() === '') throw new PromptSnapshotError('unsupported_worldbook_placement');
       (outlets[entry.outletName] ??= []).push(item);
     } else {
@@ -632,7 +727,14 @@ function worldInfo(result: WorldbookEvaluationResult): WorldInfoCompilerPlacemen
     afterCharacter: after.join('\n'),
     examplesBefore,
     examplesAfter,
-    authorNote: { before: authorBefore, after: authorAfter, depth: 4, role: 'system' },
+    authorNote: {
+      before: authorBefore,
+      content: conversation.authorNote,
+      after: authorAfter,
+      position: authorNotePosition(conversation.authorNotePosition),
+      depth: conversation.authorNoteDepth,
+      role: authorNoteRole(conversation.authorNoteRole),
+    },
     atDepth,
     outlets,
   };
@@ -654,6 +756,16 @@ function executableAudit(aggregate: LoadedAggregate): Record<string, unknown> {
     schemaVersion: EXECUTABLE_AUDIT_SCHEMA_VERSION,
     input: aggregate.input,
     entityRevisions: aggregate.manifest,
+    conversation: {
+      id: aggregate.conversation.id,
+      revision: aggregate.conversation.revision,
+      maxPromptTokens: aggregate.conversation.maxPromptTokens,
+      maxResponseTokens: aggregate.conversation.maxResponseTokens,
+      authorNote: aggregate.conversation.authorNote,
+      authorNotePosition: aggregate.conversation.authorNotePosition,
+      authorNoteDepth: aggregate.conversation.authorNoteDepth,
+      authorNoteRole: aggregate.conversation.authorNoteRole,
+    },
     character: {
       id: aggregate.character.id,
       revision: aggregate.character.revision,
@@ -667,7 +779,7 @@ function executableAudit(aggregate: LoadedAggregate): Record<string, unknown> {
       postHistoryInstructions: aggregate.character.postHistoryInstructions,
       creatorNotes: aggregate.character.creatorNotes,
       tags: aggregate.character.tags,
-      extensions: aggregate.character.extensions,
+      depthPrompt: aggregate.character.depthPrompt,
     },
     persona: {
       id: aggregate.persona.id,
@@ -720,10 +832,6 @@ async function compileAggregate(
   const bookBudgets = aggregate.books.map((book) => book.book.tokenBudget)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
   const tokenBudget = Math.min(aggregate.conversation.maxPromptTokens, ...bookBudgets);
-  const depthPromptExtension = record(aggregate.character.extensions.depth_prompt)
-    && typeof aggregate.character.extensions.depth_prompt.prompt === 'string'
-    ? aggregate.character.extensions.depth_prompt.prompt
-    : '';
   const scanSources = {
     messages: [...history].reverse().map((message) => message.content),
     additional: [],
@@ -733,7 +841,7 @@ async function compileAggregate(
       tags: aggregate.character.tags,
       description: aggregate.character.description,
       personality: aggregate.character.personality,
-      depthPrompt: depthPromptExtension,
+      depthPrompt: aggregate.character.depthPrompt,
       scenario: aggregate.character.scenario,
       creatorNotes: aggregate.character.creatorNotes,
     },
@@ -754,7 +862,7 @@ async function compileAggregate(
       scanSources,
       books,
     }, tokenBudget);
-    const placements = worldInfo(worldbook);
+    const placements = worldInfo(worldbook, aggregate.conversation);
     const tokenizer = {
       countText: async (text: string) => {
         try {
@@ -1020,6 +1128,7 @@ function isExecutableAudit(value: unknown): value is Record<string, unknown> {
     || value.schemaVersion !== EXECUTABLE_AUDIT_SCHEMA_VERSION
     || !isInput(value.input)
     || !isManifest(value.entityRevisions)
+    || !record(value.conversation)
     || !record(value.character)
     || !record(value.persona)
     || !record(value.provider)
@@ -1028,19 +1137,31 @@ function isExecutableAudit(value: unknown): value is Record<string, unknown> {
     || !Array.isArray(value.history)
     || !WorldbookTimedStateSchema.safeParse(value.previousTimedState).success
     || !hasOnlyKeys(value, [
-      'schemaVersion', 'input', 'entityRevisions', 'character', 'persona', 'provider',
+      'schemaVersion', 'input', 'entityRevisions', 'conversation', 'character', 'persona', 'provider',
       'presets', 'worldbooks', 'history', 'previousTimedState',
+    ])) return false;
+  const conversation = value.conversation;
+  if (typeof conversation.id !== 'string'
+    || !nonNegativeInteger(conversation.revision)
+    || !nonNegativeInteger(conversation.maxPromptTokens)
+    || !nonNegativeInteger(conversation.maxResponseTokens)
+    || typeof conversation.authorNote !== 'string'
+    || (conversation.authorNotePosition !== 0 && conversation.authorNotePosition !== 1 && conversation.authorNotePosition !== 2)
+    || !nonNegativeInteger(conversation.authorNoteDepth)
+    || (conversation.authorNoteRole !== 0 && conversation.authorNoteRole !== 1 && conversation.authorNoteRole !== 2)
+    || !hasOnlyKeys(conversation, [
+      'id', 'revision', 'maxPromptTokens', 'maxResponseTokens', 'authorNote',
+      'authorNotePosition', 'authorNoteDepth', 'authorNoteRole',
     ])) return false;
   const character = value.character;
   if (typeof character.id !== 'string'
     || !nonNegativeInteger(character.revision)
     || !['name', 'description', 'personality', 'scenario', 'firstMessage', 'examples', 'systemPrompt',
-      'postHistoryInstructions', 'creatorNotes'].every((key) => typeof character[key] === 'string')
+      'postHistoryInstructions', 'creatorNotes', 'depthPrompt'].every((key) => typeof character[key] === 'string')
     || !Array.isArray(character.tags) || !character.tags.every((tag) => typeof tag === 'string')
-    || !record(character.extensions)
     || !hasOnlyKeys(character, [
       'id', 'revision', 'name', 'description', 'personality', 'scenario', 'firstMessage',
-      'examples', 'systemPrompt', 'postHistoryInstructions', 'creatorNotes', 'tags', 'extensions',
+      'examples', 'systemPrompt', 'postHistoryInstructions', 'creatorNotes', 'tags', 'depthPrompt',
     ])) return false;
   const persona = value.persona;
   if (typeof persona.id !== 'string' || !nonNegativeInteger(persona.revision)
@@ -1236,7 +1357,56 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
       && hasOnlyKeys(value, [...commonKeys, 'text']);
 }
 
+function executableBindingsMatch(value: PromptSnapshotPayload): boolean {
+  const audit = value.executable;
+  const manifest = value.entityRevisions;
+  const sameRef = (candidate: unknown, expected: RevisionRef) => record(candidate)
+    && candidate.id === expected.id && candidate.revision === expected.revision;
+  if (!sameRef(audit.conversation, manifest.conversation)
+    || !sameRef(audit.character, manifest.character)
+    || !sameRef(audit.persona, manifest.persona)
+    || !sameRef(audit.provider, manifest.provider)) return false;
+  if (!Array.isArray(audit.presets) || !sameCanonical(
+    audit.presets.map((preset) => record(preset)
+      ? { id: preset.id, revision: preset.revision, kind: preset.kind }
+      : preset),
+    manifest.presets,
+  )) return false;
+  if (!Array.isArray(audit.worldbooks)) return false;
+  const persistedBooks = audit.worldbooks.flatMap((book) => (
+    record(book) && book.source !== 'embedded' && record(book.book) && Array.isArray(book.book.entries)
+      ? [{
+        id: book.id,
+        source: book.source,
+        entries: book.book.entries.map((entry) => record(entry) ? entry.id : undefined),
+      }]
+      : []
+  ));
+  if (!sameCanonical(persistedBooks, manifest.worldbooks.map((book) => ({
+    id: book.id,
+    source: book.source,
+    entries: book.entries.map(({ id }) => id),
+  })))) {
+    return false;
+  }
+  if (!Array.isArray(audit.history)
+    || !sameCanonical(audit.history.map((message) => record(message) ? message.id : undefined), manifest.messages.map(({ id }) => id))) {
+    return false;
+  }
+  const provider = audit.provider;
+  if (!record(provider)
+    || provider.model !== value.compiledRequest.model
+    || (provider.apiMode === 'chat') !== (value.kind === 'chat')) return false;
+  if (value.tokenizerDecision.model !== undefined && value.tokenizerDecision.model !== provider.model) return false;
+  if (value.tokenizerDecision.api !== undefined && value.tokenizerDecision.api !== 'openai') return false;
+  return true;
+}
+
 function parseStoredPayload(value: unknown): PromptSnapshotPayload {
+  if (record(value) && nonNegativeInteger(value.schemaVersion)
+    && value.schemaVersion !== PROMPT_SNAPSHOT_SCHEMA_VERSION) {
+    throw new PromptSnapshotError('snapshot_unsupported');
+  }
   if (!isPromptSnapshotPayload(value)) {
     throw new PromptSnapshotError('snapshot_invalid');
   }
@@ -1252,6 +1422,7 @@ function parseStoredPayload(value: unknown): PromptSnapshotPayload {
     || !sameCanonical(value.executable.entityRevisions, value.entityRevisions)) {
     throw new PromptSnapshotError('snapshot_invalid');
   }
+  if (!executableBindingsMatch(value)) throw new PromptSnapshotError('snapshot_invalid');
   const auditedProvider = value.executable.provider;
   if (!record(auditedProvider)
     || value.compiledRequest.model !== auditedProvider.model
@@ -1349,25 +1520,20 @@ export function createPromptSnapshotService(options: {
         throw new PromptSnapshotError('snapshot_invalid');
       }
       assertSnapshotInput(payload, input);
-      const aggregate = database.transaction(() => {
-        revalidateManifest(repositories, payload.entityRevisions);
-        return loadAggregate(repositories, payload.input);
-      });
-      const rebuilt = await compileAggregate(aggregate, tokenizerRuntime);
-      if (!sameCanonical(rebuilt, payload)) throw new PromptSnapshotError('snapshot_invalid');
-
       return database.transaction(() => {
         const current = repositories.generationSnapshots.get(input.snapshotId);
         if (current === undefined) throw new PromptSnapshotError('not_found');
         let currentPayload: PromptSnapshotPayload;
         try {
           currentPayload = parseStoredPayload(current.payload);
-        } catch {
+        } catch (error) {
+          if (error instanceof PromptSnapshotError) throw error;
           throw new PromptSnapshotError('snapshot_invalid');
         }
         if (!sameCanonical(currentPayload, payload)) throw new PromptSnapshotError('snapshot_invalid');
-        const provider = acceptUserTurn(repositories, payload);
-        return { snapshotId: input.snapshotId, payload, provider: deepJson(provider) };
+        assertSnapshotInput(currentPayload, input);
+        const provider = acceptUserTurn(repositories, currentPayload);
+        return { snapshotId: input.snapshotId, payload: currentPayload, provider: deepJson(provider) };
       });
     },
     commitTimedState(payload) {

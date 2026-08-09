@@ -75,7 +75,12 @@ function asStopList(value: unknown): string[] {
 }
 
 function placementText(values: readonly { content: string }[]): string {
-  return values.map(({ content }) => content.trim()).filter(Boolean).join('\n');
+  return values.map(({ content }) => content).filter((content) => content !== '').join('\n');
+}
+
+function authorNoteText(authorNote: NonNullable<CompileTextPromptInput['worldInfoPlacements']>['authorNote']): string {
+  return `${placementText(authorNote.before)}\n${authorNote.content}\n${placementText(authorNote.after)}`
+    .replace(/(^\n)|(\n$)/g, '');
 }
 
 function placementOutlets(
@@ -166,14 +171,17 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     ? basePost
     : expand(input.character.postHistoryInstructions, 'character:postHistoryInstructions', { original: basePost });
 
+  const configuredAuthorNote = placements === undefined ? '' : authorNoteText(placements.authorNote);
   const storyValues = {
     system: systemContent,
     wiBefore: placements?.beforeCharacter ?? input.worldInfoBefore ?? '',
     wiAfter: placements?.afterCharacter ?? input.worldInfoAfter ?? '',
     loreBefore: placements?.beforeCharacter ?? input.worldInfoBefore ?? '',
     loreAfter: placements?.afterCharacter ?? input.worldInfoAfter ?? '',
-    anchorBefore: input.anchorBefore ?? '',
-    anchorAfter: input.anchorAfter ?? '',
+    anchorBefore: [input.anchorBefore ?? '', placements?.authorNote.position === 2 ? configuredAuthorNote : '']
+      .filter((value) => value !== '').join('\n'),
+    anchorAfter: [input.anchorAfter ?? '', placements?.authorNote.position === 0 ? configuredAuthorNote : '']
+      .filter((value) => value !== '').join('\n'),
   };
   const storyTemplate = renderStoryControlFlow(
     stringSetting(context, 'story_string'),
@@ -296,7 +304,7 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
 
   const exampleSeparator = expand(stringSetting(context, 'example_separator'), 'context:example-separator');
   const exampleSources = [
-    ...(placements?.examplesBefore ?? []),
+    ...[...(placements?.examplesBefore ?? [])].reverse(),
     { source: 'character:examples', content: input.character.examples },
     ...(placements?.examplesAfter ?? []),
   ];
@@ -358,9 +366,9 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
           policy: 'immutable' as const,
         },
       }));
-    const authorNote = placementText([...placements.authorNote.before, ...placements.authorNote.after]);
-    if (authorNote !== '') {
-      injected.push({
+    const authorNote = authorNoteText(placements.authorNote);
+    if (authorNote !== '' && placements.authorNote.position === 1) {
+      injected.unshift({
         depth: placements.authorNote.depth,
         item: {
           source: [...placements.authorNote.before, ...placements.authorNote.after].map(({ source }) => source).join('+'),
@@ -370,9 +378,27 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
         },
       });
     }
-    const depths = [...new Set(injected.map(({ depth }) => depth))].sort((left, right) => right - left);
+    const grouped = new Map<string, { depth: number; role: PromptRole; sources: string[]; contents: string[] }>();
+    for (const { depth, item } of injected) {
+      if (item.role === undefined) continue;
+      const key = `${depth}:${item.role}`;
+      const group = grouped.get(key) ?? { depth, role: item.role, sources: [], contents: [] };
+      group.sources.push(item.source);
+      group.contents.push(item.content);
+      grouped.set(key, group);
+    }
+    const groupedItems = [...grouped.values()].map((group) => ({
+      depth: group.depth,
+      item: {
+        source: group.sources.join('+'), role: group.role, content: group.contents.join('\n'), policy: 'immutable' as const,
+      },
+    }));
+    const depths = [...new Set(groupedItems.map(({ depth }) => depth))].sort((left, right) => right - left);
     for (const depth of depths) {
-      const atDepth = injected.filter((entry) => entry.depth === depth).map(({ item }) => item);
+      const atDepth = groupedItems.filter((entry) => entry.depth === depth)
+        .sort((left, right) => ['assistant', 'user', 'system'].indexOf(left.item.role)
+          - ['assistant', 'user', 'system'].indexOf(right.item.role))
+        .map(({ item }) => item);
       const index = Math.max(0, conversation.length - depth);
       conversation.splice(index, 0, ...atDepth);
     }
@@ -531,6 +557,11 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
         break;
       }
       if (lastConversation >= 0) values[lastConversation] = values[lastConversation]!.replace(/\n?$/, '');
+      else if (selected.at(-1)?.source === 'context:story-string'
+        && configuredAuthorNote !== ''
+        && placements?.authorNote.position !== 1) {
+        values[values.length - 1] = values.at(-1)!.replace(/\n$/, '');
+      }
     }
     return values.join('');
   };

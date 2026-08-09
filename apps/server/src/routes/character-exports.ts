@@ -116,6 +116,15 @@ export function registerCharacterExportRoutes(
             linkedWorldbook,
             repositories.worldbookEntries.listByWorldbookId(linkedWorldbook.id),
           ));
+        const sourceExtensions = source?.extensions ?? {};
+        const mergedExtensions = {
+          ...structuredClone(sourceExtensions),
+          ...structuredClone(character.extensions),
+        };
+        const existingDepthPrompt = record(mergedExtensions.depth_prompt) ?? {};
+        const exportExtensions = character.depthPrompt !== '' || Object.hasOwn(mergedExtensions, 'depth_prompt')
+          ? { ...mergedExtensions, depth_prompt: { ...existingDepthPrompt, prompt: character.depthPrompt } }
+          : mergedExtensions;
         const artifact = await exportCharacter({
           character: {
             name: character.name,
@@ -131,11 +140,7 @@ export function registerCharacterExportRoutes(
             tags: character.tags,
             creator: character.creator,
             characterVersion: character.characterVersion,
-            extensions: structuredClone(
-              Object.keys(character.extensions).length > 0
-                ? character.extensions
-                : source?.extensions ?? {},
-            ),
+            extensions: exportExtensions,
             ...(characterBook === undefined ? {} : { characterBook }),
           },
           unknownFields,

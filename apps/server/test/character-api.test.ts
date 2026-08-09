@@ -100,7 +100,7 @@ describe('typed Character import and export API', () => {
       creatorNotes: 'V3 creator note',
       creator: 'TavernNext tests',
       characterVersion: '3.1-test',
-      extensions: expect.objectContaining({ depth_prompt: { prompt: 'Typed Character depth prompt' } }),
+      depthPrompt: 'Typed Character depth prompt',
     });
     expect(character?.compatibility?.rawPayload).toMatchObject({
       sourceFormat: 'json',
@@ -133,7 +133,9 @@ describe('typed Character import and export API', () => {
     const id = committed.json().entityId as string;
     const edited = await app.inject({
       method: 'PATCH', url: `/api/characters/${id}`,
-      payload: { revision: 0, patch: { description: 'Edited through the API.' } },
+      payload: { revision: 0, patch: {
+        description: 'Edited through the API.', depthPrompt: 'Edited dedicated depth prompt',
+      } },
     });
     expect(edited.statusCode).toBe(200);
 
@@ -152,6 +154,7 @@ describe('typed Character import and export API', () => {
       } else {
         const document = exported.json();
         expect(document.data.description).toBe('Edited through the API.');
+        expect(document.data.extensions.depth_prompt.prompt).toBe('Edited dedicated depth prompt');
         expect(document).toMatchObject({ top_unknown: { keep: 'v3-top' } });
       }
     }

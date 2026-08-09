@@ -44,6 +44,22 @@ import {
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
 
+export const MAX_MESSAGES_PER_CONVERSATION = 2048;
+export const MAX_VARIANTS_PER_RELATION = 4096;
+export const MAX_ENTRIES_PER_WORLDBOOK = 4096;
+
+export type RelationshipLimitCode =
+  | 'message_relation_limit'
+  | 'variant_relation_limit'
+  | 'worldbook_entry_relation_limit';
+
+export class RelationshipLimitError extends Error {
+  constructor(readonly code: RelationshipLimitCode) {
+    super(code);
+    this.name = 'RelationshipLimitError';
+  }
+}
+
 type MutableEntity = {
   id: string;
   revision: number;
@@ -53,6 +69,7 @@ type MutableEntity = {
 type DefaultedField =
   | 'enabled' | 'position' | 'order' | 'settings' | 'worldbookIds' | 'apiMode' | 'headerSecretRefs'
   | 'examples' | 'systemPrompt' | 'postHistoryInstructions' | 'creatorNotes' | 'creator' | 'characterVersion'
+  | 'depthPrompt' | 'authorNote' | 'authorNotePosition' | 'authorNoteDepth' | 'authorNoteRole'
   | 'description' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning' | 'extensions'
   | 'secondaryKeys' | 'useRegex' | 'selective' | 'selectiveLogic' | 'constant' | 'vectorized'
   | 'probability' | 'useProbability' | 'group' | 'groupWeight' | 'groupOverride' | 'priority'
@@ -271,12 +288,16 @@ function createWorldbookEntryRepository(database: TavernDatabase): WorldbookEntr
   return {
     ...base,
     listByWorldbookId(worldbookId: string) {
-      return database.orm.select({ payload: worldbookEntries.payload })
+      const rows = database.orm.select({ payload: worldbookEntries.payload })
         .from(worldbookEntries)
         .where(eq(worldbookEntries.worldbookId, worldbookId))
         .orderBy(asc(worldbookEntries.createdAt), asc(worldbookEntries.id))
-        .all()
-        .map((row) => WorldbookEntrySchema.parse(row.payload));
+        .limit(MAX_ENTRIES_PER_WORLDBOOK + 1)
+        .all();
+      if (rows.length > MAX_ENTRIES_PER_WORLDBOOK) {
+        throw new RelationshipLimitError('worldbook_entry_relation_limit');
+      }
+      return rows.map((row) => WorldbookEntrySchema.parse(row.payload));
     },
   };
 }
@@ -295,12 +316,16 @@ function createMessageRepository(database: TavernDatabase): MessageRepository {
   return {
     ...base,
     listByConversationId(conversationId) {
-      return database.orm.select({ payload: messages.payload })
+      const rows = database.orm.select({ payload: messages.payload })
         .from(messages)
         .where(eq(messages.conversationId, conversationId))
         .orderBy(asc(messages.createdAt), asc(messages.id))
-        .all()
-        .map((row) => MessageSchema.parse(row.payload));
+        .limit(MAX_MESSAGES_PER_CONVERSATION + 1)
+        .all();
+      if (rows.length > MAX_MESSAGES_PER_CONVERSATION) {
+        throw new RelationshipLimitError('message_relation_limit');
+      }
+      return rows.map((row) => MessageSchema.parse(row.payload));
     },
   };
 }
@@ -315,7 +340,10 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
       status: value.status,
     }),
   });
-  const decode = (rows: Array<{ payload: unknown }>) => rows.map((row) => MessageVariantSchema.parse(row.payload));
+  const decode = (rows: Array<{ payload: unknown }>) => {
+    if (rows.length > MAX_VARIANTS_PER_RELATION) throw new RelationshipLimitError('variant_relation_limit');
+    return rows.map((row) => MessageVariantSchema.parse(row.payload));
+  };
   return {
     ...base,
     listByMessageId(messageId) {
@@ -323,6 +351,7 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
         .from(messageVariants)
         .where(eq(messageVariants.messageId, messageId))
         .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+        .limit(MAX_VARIANTS_PER_RELATION + 1)
         .all());
     },
     listByConversationId(conversationId) {
@@ -331,6 +360,7 @@ function createMessageVariantRepository(database: TavernDatabase): MessageVarian
         .innerJoin(messages, eq(messageVariants.messageId, messages.id))
         .where(eq(messages.conversationId, conversationId))
         .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+        .limit(MAX_VARIANTS_PER_RELATION + 1)
         .all());
     },
   };

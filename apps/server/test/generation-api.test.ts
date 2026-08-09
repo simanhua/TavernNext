@@ -241,7 +241,7 @@ describe('generation API', () => {
         conversationId: ids.conversation,
         conversationRevision: 0,
         payload: expect.objectContaining({
-          schemaVersion: 1,
+          schemaVersion: 2,
           input: expect.objectContaining({ conversationId: ids.conversation, conversationRevision: 0 }),
           compiledRequest: requests[0],
         }),

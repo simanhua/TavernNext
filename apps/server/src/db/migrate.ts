@@ -1,6 +1,6 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
@@ -99,15 +99,67 @@ function addPromptSnapshotColumns(database: TavernDatabase): void {
   `);
 }
 
-function backfillCharacterExtensions(database: TavernDatabase): void {
+function backfillCharacterDepthPrompt(database: TavernDatabase): void {
   database.sqlite.exec(`
     UPDATE characters
     SET payload = json_set(
       payload,
-      '$.extensions',
-      COALESCE(json_extract(payload, '$.compatibility.rawPayload.extensions'), json('{}'))
+      '$.depthPrompt',
+      CASE
+        WHEN json_type(payload, '$.extensions') = 'object'
+          AND json_type(payload, '$.extensions.depth_prompt') = 'object'
+          AND json_type(payload, '$.extensions.depth_prompt.prompt') = 'text'
+          THEN json_extract(payload, '$.extensions.depth_prompt.prompt')
+        WHEN json_type(payload, '$.compatibility.rawPayload.extensions') = 'object'
+          AND json_type(payload, '$.compatibility.rawPayload.extensions.depth_prompt') = 'object'
+          AND json_type(payload, '$.compatibility.rawPayload.extensions.depth_prompt.prompt') = 'text'
+          THEN json_extract(payload, '$.compatibility.rawPayload.extensions.depth_prompt.prompt')
+        ELSE ''
+      END
     )
-    WHERE json_valid(payload) AND json_type(payload, '$.extensions') IS NULL;
+    WHERE json_valid(payload) AND json_type(payload, '$.depthPrompt') IS NULL;
+
+    UPDATE characters
+    SET payload = json_set(
+      payload,
+      '$.compatibility.compatWarnings',
+      json_insert(
+        COALESCE(json_extract(payload, '$.compatibility.compatWarnings'), json('[]')),
+        '$[#]',
+        'character_depth_prompt_invalid'
+      )
+    )
+    WHERE json_valid(payload)
+      AND json_type(payload, '$.compatibility') = 'object'
+      AND (
+        (json_type(payload, '$.extensions') IS NOT NULL
+          AND (
+            json_type(payload, '$.extensions') <> 'object'
+            OR (json_type(payload, '$.extensions.depth_prompt') IS NOT NULL
+              AND (
+                json_type(payload, '$.extensions.depth_prompt') <> 'object'
+                OR (json_type(payload, '$.extensions.depth_prompt.prompt') IS NOT NULL
+                  AND json_type(payload, '$.extensions.depth_prompt.prompt') <> 'text')
+              ))
+          ))
+        OR (json_type(payload, '$.extensions') IS NULL
+          AND json_type(payload, '$.compatibility.rawPayload.extensions') IS NOT NULL
+          AND (
+            json_type(payload, '$.compatibility.rawPayload.extensions') <> 'object'
+            OR (json_type(payload, '$.compatibility.rawPayload.extensions.depth_prompt') IS NOT NULL
+              AND (
+                json_type(payload, '$.compatibility.rawPayload.extensions.depth_prompt') <> 'object'
+                OR (json_type(payload, '$.compatibility.rawPayload.extensions.depth_prompt.prompt') IS NOT NULL
+                  AND json_type(payload, '$.compatibility.rawPayload.extensions.depth_prompt.prompt') <> 'text')
+              ))
+          ))
+      );
+
+    UPDATE characters
+    SET payload = json_set(payload, '$.extensions', json('{}'))
+    WHERE json_valid(payload)
+      AND json_type(payload, '$.extensions') IS NOT NULL
+      AND json_type(payload, '$.extensions') <> 'object';
   `);
 }
 
@@ -124,7 +176,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
 
       addPromptSnapshotColumns(database);
-      backfillCharacterExtensions(database);
+      backfillCharacterDepthPrompt(database);
       backfillConversationWorldbooks(database);
       database.sqlite.exec(indexes);
       database.sqlite.exec(`DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION});`);

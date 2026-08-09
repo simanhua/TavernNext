@@ -22,6 +22,17 @@ function sameAsset(left: CharacterAuxiliaryAsset, right: CharacterAuxiliaryAsset
   return left.path === right.path && Buffer.from(left.bytes).equals(Buffer.from(right.bytes));
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function characterDepthPrompt(extensions: Record<string, unknown>): string {
+  const depthPrompt = record(extensions.depth_prompt);
+  return depthPrompt !== undefined && typeof depthPrompt.prompt === 'string' ? depthPrompt.prompt : '';
+}
+
 export function createCharacterImportHandler(): ImportHandler {
   return {
     id: 'tavernnext-character-card',
@@ -104,6 +115,7 @@ export function createCharacterImportHandler(): ImportHandler {
         creatorNotes: character.creatorNotes,
         creator: character.creator,
         characterVersion: character.characterVersion,
+        depthPrompt: characterDepthPrompt(character.extensions),
         alternateGreetings: character.alternateGreetings,
         tags: character.tags,
         extensions: structuredClone(character.extensions),
