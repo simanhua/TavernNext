@@ -1,6 +1,7 @@
 import multipart from '@fastify/multipart';
 import { createOpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
+import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loadConfig, loadProviderSecrets, type ProviderSecretMap, type ServerConfig } from './config.js';
 import { createDatabase, type TavernDatabase } from './db/client.js';
@@ -13,10 +14,13 @@ import { registerGenerationRoutes } from './routes/generations.js';
 import { registerMessageRoutes } from './routes/messages.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
+import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
 import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
+import { createPromptPreviewService } from './services/prompt-preview-service.js';
+import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
@@ -27,6 +31,7 @@ export interface CreateAppOptions {
   database?: TavernDatabase;
   providerClientFactory?: ProviderClientFactory;
   providerSecrets?: ProviderSecretMap;
+  tokenizerRuntime?: ServerTokenizerRuntime;
   importHandlers?: readonly ImportHandler[];
   importClock?: () => number;
   importMoveAssets?: (source: string, destination: string) => void;
@@ -87,7 +92,19 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       headers,
     });
   });
-  const generations = createGenerationService({ database, repositories, providerClientFactory });
+  const tokenizerRuntime: ServerTokenizerRuntime = options.tokenizerRuntime ?? {
+    selectTokenizer,
+    countText: (text, decision) => countText(text, decision, { dataDir: config.dataDir }),
+    countMessages: (messages, decision) => countMessages(messages, decision, { dataDir: config.dataDir }),
+  };
+  const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
+  const promptPreviews = createPromptPreviewService(promptSnapshots);
+  const generations = createGenerationService({
+    database,
+    repositories,
+    providerClientFactory,
+    promptSnapshotService: promptSnapshots,
+  });
 
   app.register(multipart, {
     limits: {
@@ -121,6 +138,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   });
   registerConversationRoutes(app, repositories);
   registerMessageRoutes(app, repositories);
+  registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationRoutes(app, generations);
 
   app.addHook('onClose', async () => {

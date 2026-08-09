@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import { GenerationRequestSchema } from '@tavernnext/domain';
 import type { FastifyInstance } from 'fastify';
 import type { GenerationEvent, GenerationService } from '../services/generation-service.js';
+import { promptSnapshotErrorStatus } from '../services/prompt-snapshot-service.js';
 
 function encode(event: GenerationEvent): string {
   const { type, ...data } = event;
@@ -19,12 +20,9 @@ export function registerGenerationRoutes(app: FastifyInstance, service: Generati
       conversationId: request.params.id,
     });
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
-    const result = service.start(parsed.data);
+    const result = await service.start(parsed.data);
     if (!result.ok) {
-      const status = result.reason === 'unsupported_mode' || result.reason === 'invalid_user_text' ? 400
-        : result.reason === 'not_found' ? 404
-        : result.reason === 'provider_not_configured' ? 422
-          : 409;
+      const status = result.reason === 'generation_active' ? 409 : promptSnapshotErrorStatus(result.reason);
       return reply.status(status).send({ error: result.reason });
     }
     reply.headers({

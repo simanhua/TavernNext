@@ -1,31 +1,35 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS worldbooks (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS worldbooks (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, is_global INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS worldbook_entries (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id));
   CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, character_id TEXT NOT NULL REFERENCES characters(id), persona_id TEXT NOT NULL REFERENCES personas(id), preset_id TEXT REFERENCES presets(id), title TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, character_id TEXT NOT NULL REFERENCES characters(id), persona_id TEXT NOT NULL REFERENCES personas(id), provider_id TEXT REFERENCES provider_profiles(id), preset_id TEXT REFERENCES presets(id), context_preset_id TEXT REFERENCES presets(id), instruct_preset_id TEXT REFERENCES presets(id), system_preset_id TEXT REFERENCES presets(id), title TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS conversation_worldbooks (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id), PRIMARY KEY (conversation_id, worldbook_id));
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, active_variant_id TEXT REFERENCES message_variants(id), role TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
 `;
 
 const indexes = `
+  CREATE INDEX IF NOT EXISTS worldbooks_is_global_idx ON worldbooks(is_global);
   CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_id_idx ON worldbook_entries(worldbook_id);
   CREATE INDEX IF NOT EXISTS conversations_character_id_idx ON conversations(character_id);
   CREATE INDEX IF NOT EXISTS conversations_persona_id_idx ON conversations(persona_id);
+  CREATE INDEX IF NOT EXISTS conversations_provider_id_idx ON conversations(provider_id);
   CREATE INDEX IF NOT EXISTS conversation_worldbooks_worldbook_id_idx ON conversation_worldbooks(worldbook_id);
   CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
   CREATE INDEX IF NOT EXISTS messages_active_variant_id_idx ON messages(active_variant_id);
   CREATE INDEX IF NOT EXISTS message_variants_message_id_idx ON message_variants(message_id);
   CREATE INDEX IF NOT EXISTS generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
+  CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);
 `;
 
 function columnNames(database: TavernDatabase, table: string): string[] {
@@ -69,6 +73,29 @@ function backfillConversationWorldbooks(database: TavernDatabase): void {
   `);
 }
 
+function addColumn(database: TavernDatabase, table: string, name: string, definition: string): void {
+  if (!columnNames(database, table).includes(name)) {
+    database.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+function addPromptSnapshotColumns(database: TavernDatabase): void {
+  addColumn(database, 'worldbooks', 'is_global', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(database, 'conversations', 'provider_id', 'TEXT REFERENCES provider_profiles(id)');
+  addColumn(database, 'conversations', 'context_preset_id', 'TEXT REFERENCES presets(id)');
+  addColumn(database, 'conversations', 'instruct_preset_id', 'TEXT REFERENCES presets(id)');
+  addColumn(database, 'conversations', 'system_preset_id', 'TEXT REFERENCES presets(id)');
+  database.sqlite.exec(`
+    UPDATE worldbooks SET is_global = CASE
+      WHEN json_valid(payload) AND json_extract(payload, '$.isGlobal') = 1 THEN 1 ELSE 0 END;
+    UPDATE conversations SET
+      provider_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.providerId') ELSE NULL END,
+      context_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.contextPresetId') ELSE NULL END,
+      instruct_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.instructPresetId') ELSE NULL END,
+      system_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.systemPresetId') ELSE NULL END;
+  `);
+}
+
 export function migrateDatabase(database: TavernDatabase): void {
   // SQLite requires this pragma to be changed outside a transaction. It is restored in finally,
   // while all schema/data changes and the schema-version write happen in one durable transaction.
@@ -81,6 +108,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if (hasCascadeWorldbookEntries(database)) rebuildWorldbookEntries(database);
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
 
+      addPromptSnapshotColumns(database);
       backfillConversationWorldbooks(database);
       database.sqlite.exec(indexes);
       database.sqlite.exec(`DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION});`);

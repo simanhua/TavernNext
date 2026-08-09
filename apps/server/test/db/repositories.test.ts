@@ -51,7 +51,7 @@ describe('SQLite repositories', () => {
       'characters', 'personas', 'worldbooks', 'worldbook_entries', 'presets',
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
-      'conversation_worldbooks',
+      'conversation_worldbooks', 'worldbook_runtime_states',
     ]));
   });
 
@@ -63,7 +63,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 2 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 3 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -192,6 +192,24 @@ describe('SQLite repositories', () => {
     expect(plan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_id_idx'))).toBe(true);
   });
 
+  it('resolves global Worldbooks through the dedicated indexed repository method', async () => {
+    const { database, repositories } = await createTestRepositories();
+    repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000052', name: 'Global lore', isGlobal: true,
+    });
+    repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000053', name: 'Local lore', isGlobal: false,
+    });
+
+    expect(repositories.worldbooks.listGlobal()).toEqual([
+      expect.objectContaining({ name: 'Global lore', isGlobal: true }),
+    ]);
+    const plan = database.sqlite.prepare(
+      'EXPLAIN QUERY PLAN SELECT payload FROM worldbooks WHERE is_global = 1',
+    ).all() as Array<{ detail: string }>;
+    expect(plan.some(({ detail }) => detail.includes('worldbooks_is_global_idx'))).toBe(true);
+  });
+
   it('continues to read legacy entries with negative depth values', async () => {
     const { repositories } = await createTestRepositories();
     const worldbook = repositories.worldbooks.create({
@@ -207,6 +225,37 @@ describe('SQLite repositories', () => {
     expect(repositories.worldbookEntries.listByWorldbookId(worldbook.id)).toEqual([
       expect.objectContaining({ id: entry.id, depth: -1, scanDepth: -2 }),
     ]);
+  });
+
+  it('persists a separately revisioned Worldbook timed state and exposes snapshots as immutable', async () => {
+    const { repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000047', name: 'Runtime character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000048', name: 'Runtime persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000049', characterId: character.id, personaId: persona.id, title: 'Runtime state',
+    });
+    const snapshot = repositories.generationSnapshots.create({
+      id: '018f0000-0000-7000-8000-000000000050', conversationId: conversation.id, conversationRevision: 0,
+      payload: { schemaVersion: 1, payloadHash: 'immutable' },
+    });
+    const runtime = repositories.worldbookRuntimeStates.create({
+      id: '018f0000-0000-7000-8000-000000000051', conversationId: conversation.id,
+      timedState: { messageIndex: null, sticky: [], cooldown: [] },
+    });
+
+    expect(repositories.generationSnapshots.get(snapshot.id)?.payload).toEqual({ schemaVersion: 1, payloadHash: 'immutable' });
+    expect('update' in repositories.generationSnapshots).toBe(false);
+    expect('delete' in repositories.generationSnapshots).toBe(false);
+    expect(repositories.worldbookRuntimeStates.update(runtime.id, runtime.revision, {
+      timedState: { messageIndex: 2, sticky: [], cooldown: [] },
+    })).toMatchObject({ ok: true, value: { revision: 1, timedState: { messageIndex: 2 } } });
+    expect(repositories.worldbookRuntimeStates.getByConversationId(conversation.id)).toMatchObject({
+      id: runtime.id, conversationId: conversation.id, revision: 1,
+    });
   });
 
   it('upgrades the b87d7f7 legacy schema without losing payloads or relationships', async () => {
@@ -254,7 +303,15 @@ describe('SQLite repositories', () => {
     });
     expect(insertedMessage.id).toBe('018f0000-0000-7000-8000-000000000037');
     expect(database.sqlite.prepare('SELECT active_variant_id FROM messages WHERE id = ?').get(insertedMessage.id)).toEqual({ active_variant_id: null });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 2 }]);
+    expect(database.sqlite.prepare('PRAGMA table_info(worldbooks)').all().map((column) => column.name)).toContain('is_global');
+    expect(database.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).toEqual(expect.arrayContaining([
+      'provider_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id',
+    ]));
+    expect(repositories.worldbooks.get(ids.worldbook)).toMatchObject({ isGlobal: false });
+    expect(repositories.conversations.get(ids.conversation)).toMatchObject({
+      maxPromptTokens: 4096, maxResponseTokens: 512,
+    });
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 3 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

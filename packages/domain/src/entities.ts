@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { CompatibilityMetadataSchema } from './compatibility.js';
+import { WorldbookTimedStateSchema } from './generation.js';
 
 export const DomainIdSchema = z.string().uuid();
 export const TimestampSchema = z.string().datetime({ offset: true });
@@ -48,6 +49,7 @@ export const WorldbookSchema = MutableEntitySchema.extend({
   scanDepth: z.number().nonnegative().nullable().default(null),
   tokenBudget: z.number().nonnegative().nullable().default(null),
   recursiveScanning: z.boolean().default(false),
+  isGlobal: z.boolean().default(false),
   extensions: z.record(z.string(), z.unknown()).default({}),
 }).extend(WithCompatibilitySchema.shape);
 
@@ -119,9 +121,15 @@ export const PresetSchema = MutableEntitySchema.extend({
 export const ConversationSchema = MutableEntitySchema.extend({
   characterId: DomainIdSchema,
   personaId: DomainIdSchema,
+  providerId: DomainIdSchema.optional(),
   title: z.string().min(1),
   presetId: DomainIdSchema.optional(),
+  contextPresetId: DomainIdSchema.optional(),
+  instructPresetId: DomainIdSchema.optional(),
+  systemPresetId: DomainIdSchema.optional(),
   worldbookIds: z.array(DomainIdSchema).default([]),
+  maxPromptTokens: z.number().int().nonnegative().default(4096),
+  maxResponseTokens: z.number().int().nonnegative().default(512),
 }).extend(WithCompatibilitySchema.shape);
 
 export const MessageRoleSchema = z.enum(['system', 'user', 'assistant']);
@@ -164,6 +172,11 @@ export const GenerationSnapshotSchema = MutableEntitySchema.extend({
   payload: z.record(z.string(), z.unknown()),
 });
 
+export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  timedState: WorldbookTimedStateSchema,
+});
+
 export type Character = z.infer<typeof CharacterSchema>;
 export type Persona = z.infer<typeof PersonaSchema>;
 export type Worldbook = z.infer<typeof WorldbookSchema>;
@@ -175,3 +188,4 @@ export type MessageVariant = z.infer<typeof MessageVariantSchema>;
 export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;
 export type ImportArtifact = z.infer<typeof ImportArtifactSchema>;
 export type GenerationSnapshot = z.infer<typeof GenerationSnapshotSchema>;
+export type WorldbookRuntimeState = z.infer<typeof WorldbookRuntimeStateSchema>;

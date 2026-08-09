@@ -1,10 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import type { GenerationMode, MessageVariant, ProviderProfile } from '@tavernnext/domain';
-import type { ChatRequest, OpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
+import type {
+  ChatRequest,
+  OpenAICompatibleClient,
+  ProviderEvent,
+  TextRequest,
+} from '@tavernnext/provider-openai-compatible';
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
+import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
-import { compileBasicChat, type MessageWithActiveVariant } from './basic-prompt.js';
+import {
+  createPromptSnapshotService,
+  PromptSnapshotError,
+  type PromptSnapshotErrorCode,
+  type PromptSnapshotPayload,
+  type PromptSnapshotService,
+  type ServerTokenizerRuntime,
+} from './prompt-snapshot-service.js';
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
@@ -19,103 +32,100 @@ export interface GenerationInput {
   conversationRevision: number;
   mode: GenerationMode;
   userText?: string;
+  snapshotId?: string;
+  seed?: string | number;
+  messageIndex?: number;
 }
 
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
 
+export type StartGenerationFailure = 'generation_active' | PromptSnapshotErrorCode;
 export type StartGenerationResult =
   | { ok: true; generationId: string; events: AsyncIterable<GenerationEvent> }
-  | { ok: false; reason: 'generation_active' | 'invalid_user_text' | 'not_found' | 'revision_conflict' | 'provider_not_configured' | 'unsupported_mode' };
+  | { ok: false; reason: StartGenerationFailure };
 
 interface ActiveGeneration {
   generationId: string;
   conversationId: string;
   controller: AbortController;
   state: 'reserved' | 'iterating' | 'closed';
+  reservationTimer?: ReturnType<typeof setTimeout>;
   cleanup(): void;
 }
 
-interface PreparedGeneration {
+const RESERVED_GENERATION_TIMEOUT_MS = 30_000;
+
+interface PreparedGenerationBase {
   generationId: string;
   conversationId: string;
   provider: ProviderProfile;
-  request: ChatRequest;
+  payload: PromptSnapshotPayload;
 }
+
+type PreparedGeneration =
+  | (PreparedGenerationBase & { kind: 'chat'; request: ChatRequest })
+  | (PreparedGenerationBase & { kind: 'text'; request: TextRequest });
 
 export interface GenerationService {
-  start(input: GenerationInput): StartGenerationResult;
+  start(input: GenerationInput): Promise<StartGenerationResult>;
   cancel(generationId: string): boolean;
-}
-
-function historyFor(repositories: Repositories, conversationId: string): MessageWithActiveVariant[] {
-  const variants = new Map(repositories.messageVariants.list().map((variant) => [variant.id, variant]));
-  return repositories.messages.list()
-    .filter((message) => message.conversationId === conversationId)
-    .map((message) => ({
-      message,
-      ...(message.activeVariantId === null ? {} : { activeVariant: variants.get(message.activeVariantId) }),
-    }));
 }
 
 function safeFailureCode(error: unknown): string {
   return error instanceof ProviderError ? error.code : 'upstream_error';
 }
 
+function defaultTokenizerRuntime(): ServerTokenizerRuntime {
+  return {
+    selectTokenizer,
+    countText: (text, decision) => countText(text, decision),
+    countMessages: (messages, decision) => countMessages(messages, decision),
+  };
+}
+
+function preparedRequest(
+  generationId: string,
+  provider: ProviderProfile,
+  payload: PromptSnapshotPayload,
+): PreparedGeneration {
+  const base: PreparedGenerationBase = {
+    generationId,
+    conversationId: payload.input.conversationId,
+    provider,
+    payload,
+  };
+  if (payload.kind === 'chat' && 'messages' in payload.compiledRequest) {
+    return { ...base, kind: 'chat', request: payload.compiledRequest };
+  }
+  if (payload.kind === 'text' && 'prompt' in payload.compiledRequest) {
+    return { ...base, kind: 'text', request: payload.compiledRequest };
+  }
+  throw new PromptSnapshotError('snapshot_invalid');
+}
+
 export function createGenerationService(options: {
   database: TavernDatabase;
   repositories: Repositories;
   providerClientFactory: ProviderClientFactory;
+  promptSnapshotService?: PromptSnapshotService;
+  tokenizerRuntime?: ServerTokenizerRuntime;
 }): GenerationService {
   const { database, repositories, providerClientFactory } = options;
+  const promptSnapshots = options.promptSnapshotService ?? createPromptSnapshotService({
+    database,
+    repositories,
+    tokenizerRuntime: options.tokenizerRuntime ?? defaultTokenizerRuntime(),
+  });
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
-  function prepare(input: GenerationInput, generationId: string): PreparedGeneration | StartGenerationResult {
-    const prepared = database.transaction(() => {
-      const conversation = repositories.conversations.get(input.conversationId);
-      if (conversation === undefined) return { ok: false as const, reason: 'not_found' as const };
-      if (conversation.revision !== input.conversationRevision) {
-        return { ok: false as const, reason: 'revision_conflict' as const };
-      }
-      const character = repositories.characters.get(conversation.characterId);
-      const persona = repositories.personas.get(conversation.personaId);
-      if (character === undefined || persona === undefined) return { ok: false as const, reason: 'not_found' as const };
-      const provider = repositories.providerProfiles.list()[0];
-      if (provider === undefined) return { ok: false as const, reason: 'provider_not_configured' as const };
-
-      repositories.messages.create({
-        id: randomUUID(),
-        conversationId: conversation.id,
-        role: 'user',
-        content: input.userText!,
-        activeVariantId: null,
-      });
-      const revision = repositories.conversations.update(conversation.id, input.conversationRevision, {});
-      if (!revision.ok) return { ok: false as const, reason: 'revision_conflict' as const };
-
-      repositories.generationSnapshots.create({
-        id: generationId,
-        conversationId: conversation.id,
-        conversationRevision: input.conversationRevision,
-        payload: {
-          conversation: { id: conversation.id, revision: conversation.revision },
-          character: { id: character.id, revision: character.revision },
-          persona: { id: persona.id, revision: persona.revision },
-          provider: { id: provider.id, revision: provider.revision },
-        },
-      });
-
-      return {
-        generationId,
-        conversationId: conversation.id,
-        provider,
-        request: {
-          model: provider.model,
-          messages: compileBasicChat({ character, persona, history: historyFor(repositories, conversation.id) }),
-        },
-      } satisfies PreparedGeneration;
-    });
-    return prepared;
+  async function* providerEvents(
+    prepared: PreparedGeneration,
+    signal: AbortSignal,
+  ): AsyncIterable<ProviderEvent> {
+    const client = providerClientFactory(prepared.provider);
+    if (prepared.kind === 'chat') yield* client.streamChat(prepared.request, signal);
+    else yield* client.streamText(prepared.request, signal);
   }
 
   async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<GenerationEvent> {
@@ -173,8 +183,7 @@ export function createGenerationService(options: {
 
     try {
       yield { type: 'started', generationId: prepared.generationId };
-      const client = providerClientFactory(prepared.provider);
-      for await (const event of client.streamChat(prepared.request, controller.signal)) {
+      for await (const event of providerEvents(prepared, controller.signal)) {
         if (timerError !== undefined) throw timerError;
         if (controller.signal.aborted) throw new ProviderError('aborted');
         if (event.type === 'delta') {
@@ -213,9 +222,15 @@ export function createGenerationService(options: {
       if (outcome === 'aborted') controller.abort();
       try {
         if (variant !== undefined) flush(outcome);
+        if (outcome === 'completed') promptSnapshots.commitTimedState(prepared.payload);
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
+        try {
+          if (variant !== undefined && variant.status !== 'failed') flush('failed');
+        } catch {
+          // The original persistence failure is the only externally observable code.
+        }
       }
       active.cleanup();
     }
@@ -233,7 +248,11 @@ export function createGenerationService(options: {
       },
       async next() {
         if (active.state === 'closed') return { done: true, value: undefined };
-        if (active.state === 'reserved') active.state = 'iterating';
+        if (active.state === 'reserved') {
+          if (active.reservationTimer !== undefined) clearTimeout(active.reservationTimer);
+          active.reservationTimer = undefined;
+          active.state = 'iterating';
+        }
         return source.next();
       },
       async return(value) {
@@ -252,13 +271,14 @@ export function createGenerationService(options: {
   }
 
   return {
-    start(input) {
+    async start(input) {
       if (input.mode !== 'normal') return { ok: false, reason: 'unsupported_mode' };
       if (typeof input.userText !== 'string' || input.userText.trim() === '') {
         return { ok: false, reason: 'invalid_user_text' };
       }
       if (activeByConversation.has(input.conversationId)) return { ok: false, reason: 'generation_active' };
-      const generationId = randomUUID();
+      const generationId = input.snapshotId ?? randomUUID();
+      if (activeById.has(generationId)) return { ok: false, reason: 'generation_active' };
       const controller = new AbortController();
       const active: ActiveGeneration = {
         generationId,
@@ -267,6 +287,8 @@ export function createGenerationService(options: {
         state: 'reserved',
         cleanup() {
           if (active.state === 'closed') return;
+          if (active.reservationTimer !== undefined) clearTimeout(active.reservationTimer);
+          active.reservationTimer = undefined;
           active.state = 'closed';
           if (activeByConversation.get(active.conversationId) === active.generationId) {
             activeByConversation.delete(active.conversationId);
@@ -277,14 +299,20 @@ export function createGenerationService(options: {
       activeByConversation.set(input.conversationId, generationId);
       activeById.set(generationId, active);
       try {
-        const prepared = prepare(input, generationId);
-        if ('ok' in prepared) {
+        const accepted = input.snapshotId === undefined
+          ? await promptSnapshots.createAndAccept(input, generationId)
+          : promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
+        const prepared = preparedRequest(generationId, accepted.provider, accepted.payload);
+        active.reservationTimer = setTimeout(() => {
+          if (active.state !== 'reserved') return;
+          active.controller.abort();
           active.cleanup();
-          return prepared;
-        }
+        }, RESERVED_GENERATION_TIMEOUT_MS);
+        active.reservationTimer.unref?.();
         return { ok: true, generationId, events: lifecycleEvents(prepared, active) };
       } catch (error) {
         active.cleanup();
+        if (error instanceof PromptSnapshotError) return { ok: false, reason: error.code };
         throw error;
       }
     },

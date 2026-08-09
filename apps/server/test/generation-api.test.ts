@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChatRequest, OpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
+import { TokenizerId } from '@tavernnext/tokenizer-engine';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
@@ -15,10 +16,12 @@ const ids = {
   persona: '018f0000-0000-7000-8000-000000000102',
   provider: '018f0000-0000-7000-8000-000000000103',
   conversation: '018f0000-0000-7000-8000-000000000104',
+  preset: '018f0000-0000-7000-8000-000000000105',
 };
 
 const directories: string[] = [];
 const apps: Array<ReturnType<typeof createApp>> = [];
+const databasesByRepository = new WeakMap<Repositories, ReturnType<typeof createDatabase>>();
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -50,6 +53,7 @@ async function createTestContext(client?: OpenAICompatibleClient, appOptions: Te
   const database = createDatabase(join(directory, 'tavernnext.sqlite'));
   migrateDatabase(database);
   const repositories = createRepositories(database);
+  databasesByRepository.set(repositories, database);
   const app = createApp({
     ...appOptions,
     database,
@@ -61,6 +65,7 @@ async function createTestContext(client?: OpenAICompatibleClient, appOptions: Te
 }
 
 function seed(repositories: Repositories) {
+  const create = () => {
   const character = repositories.characters.create({
     id: ids.character,
     name: 'Aster',
@@ -84,13 +89,41 @@ function seed(repositories: Repositories) {
     model: 'mock-model',
     secretRef: 'mock-secret',
   });
+  const preset = repositories.presets.create({
+    id: ids.preset,
+    name: 'Role chat',
+    kind: 'chat',
+    settings: {
+      tokenizer: TokenizerId.NONE,
+      prompts: [
+        { identifier: 'main', role: 'system', content: 'Role chat', system_prompt: true },
+        { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
+        { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
+        { identifier: 'chatHistory', marker: true, system_prompt: true },
+      ],
+      prompt_order: [{
+        character_id: character.id,
+        order: [
+          { identifier: 'main', enabled: true },
+          { identifier: 'charDescription', enabled: true },
+          { identifier: 'personaDescription', enabled: true },
+          { identifier: 'chatHistory', enabled: true },
+        ],
+      }],
+    },
+  });
   const conversation = repositories.conversations.create({
     id: ids.conversation,
     characterId: character.id,
     personaId: persona.id,
+    providerId: provider.id,
+    presetId: preset.id,
     title: 'Archive visit',
   });
-  return { character, persona, provider, conversation };
+    return { character, persona, provider, preset, conversation };
+  };
+  const database = databasesByRepository.get(repositories);
+  return database === undefined ? create() : database.transaction(create);
 }
 
 interface SseEvent {
@@ -188,8 +221,10 @@ describe('generation API', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ model: 'mock-model' });
     expect(requests[0]?.messages[0]?.role).toBe('system');
-    expect(requests[0]?.messages[0]?.content).toContain(entities.character.description);
-    expect(requests[0]?.messages[0]?.content).toContain(entities.persona.description);
+    const systemContext = requests[0]?.messages.filter(({ role }) => role === 'system')
+      .map(({ content }) => content).join('\n') ?? '';
+    expect(systemContext).toContain(entities.character.description);
+    expect(systemContext).toContain(entities.persona.description);
     expect(requests[0]?.messages.at(-1)).toEqual({ role: 'user', content: 'Hello' });
 
     const messages = repositories.messages.list().filter(({ conversationId }) => conversationId === ids.conversation);
@@ -205,12 +240,11 @@ describe('generation API', () => {
         id: events[0]?.data.generationId,
         conversationId: ids.conversation,
         conversationRevision: 0,
-        payload: {
-          conversation: { id: ids.conversation, revision: 0 },
-          character: { id: ids.character, revision: 0 },
-          persona: { id: ids.persona, revision: 0 },
-          provider: { id: ids.provider, revision: 0 },
-        },
+        payload: expect.objectContaining({
+          schemaVersion: 1,
+          input: expect.objectContaining({ conversationId: ids.conversation, conversationRevision: 0 }),
+          compiledRequest: requests[0],
+        }),
       }),
     ]);
   });
@@ -283,14 +317,14 @@ describe('generation API', () => {
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 0 });
     const service = createGenerationService({ database, repositories, providerClientFactory: () => client });
 
-    expect(service.start({ conversationId: ids.conversation, conversationRevision: 0, mode: 'normal' }))
-      .toEqual({ ok: false, reason: 'invalid_user_text' });
+    await expect(service.start({ conversationId: ids.conversation, conversationRevision: 0, mode: 'normal' }))
+      .resolves.toEqual({ ok: false, reason: 'invalid_user_text' });
     expect(providerCalls).toBe(0);
     expect(repositories.messages.list()).toEqual([]);
     expect(repositories.generationSnapshots.list()).toEqual([]);
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 0 });
 
-    const accepted = service.start({
+    const accepted = await service.start({
       conversationId: ids.conversation, conversationRevision: 0, mode: 'normal', userText: 'Accepted',
     });
     expect(accepted.ok).toBe(true);
@@ -305,7 +339,7 @@ describe('generation API', () => {
     expect(repositories.generationSnapshots.list()).toHaveLength(1);
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({ revision: 1 });
 
-    const first = service.start({
+    const first = await service.start({
       conversationId: ids.conversation, conversationRevision: 1, mode: 'normal', userText: 'Cancelled before iteration',
     });
     expect(first.ok).toBe(true);
@@ -313,7 +347,7 @@ describe('generation API', () => {
 
     expect(service.cancel(first.generationId)).toBe(true);
     await expect(first.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({ done: true });
-    const second = service.start({
+    const second = await service.start({
       conversationId: ids.conversation, conversationRevision: 2, mode: 'normal', userText: 'After cancellation',
     });
     expect(second.ok).toBe(true);
@@ -321,7 +355,7 @@ describe('generation API', () => {
       for await (const event of second.events) void event;
     }
 
-    const abandoned = service.start({
+    const abandoned = await service.start({
       conversationId: ids.conversation, conversationRevision: 3, mode: 'normal', userText: 'Closed before iteration',
     });
     expect(abandoned.ok).toBe(true);
@@ -329,7 +363,7 @@ describe('generation API', () => {
     const iterator = abandoned.events[Symbol.asyncIterator]();
 
     await iterator.return?.();
-    const afterClose = service.start({
+    const afterClose = await service.start({
       conversationId: ids.conversation, conversationRevision: 4, mode: 'normal', userText: 'After close',
     });
     expect(afterClose.ok).toBe(true);
@@ -345,7 +379,7 @@ describe('generation API', () => {
     const { database, repositories } = await createTestContext(client);
     seed(repositories);
     const service = createGenerationService({ database, repositories, providerClientFactory: () => client });
-    const first = service.start({
+    const first = await service.start({
       conversationId: ids.conversation, conversationRevision: 0, mode: 'normal', userText: 'Hello',
     });
     expect(first.ok).toBe(true);
@@ -354,7 +388,7 @@ describe('generation API', () => {
     await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'started' } });
     await iterator.return?.();
 
-    const second = service.start({
+    const second = await service.start({
       conversationId: ids.conversation, conversationRevision: 1, mode: 'normal', userText: 'Again',
     });
     expect(second.ok).toBe(true);
@@ -373,7 +407,7 @@ describe('generation API', () => {
     const { database, repositories } = await createTestContext(client);
     seed(repositories);
     const service = createGenerationService({ database, repositories, providerClientFactory: () => client });
-    const result = service.start({
+    const result = await service.start({
       conversationId: ids.conversation, conversationRevision: 0, mode: 'normal', userText: 'Hello',
     });
     expect(result.ok).toBe(true);

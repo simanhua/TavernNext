@@ -10,6 +10,7 @@ export interface ModelInfo {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  name?: string;
 }
 
 export interface ChatRequest {

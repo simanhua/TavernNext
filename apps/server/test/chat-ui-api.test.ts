@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TokenizerId } from '@tavernnext/tokenizer-engine';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -15,6 +16,7 @@ const ids = {
   userMessage: '018f0000-0000-7000-8000-000000000105',
   assistantMessage: '018f0000-0000-7000-8000-000000000106',
   variant: '018f0000-0000-7000-8000-000000000107',
+  preset: '018f0000-0000-7000-8000-000000000108',
 };
 
 const directories: string[] = [];
@@ -47,13 +49,55 @@ describe('chat UI API bindings', () => {
     apps.push(app);
     await app.ready();
 
+    const apiKey = 'task-5-recognizable-api-key';
+    const created = await app.inject({
+      method: 'POST', url: '/api/providers',
+      payload: {
+        id: ids.provider, name: 'Browser configured', baseUrl: 'http://127.0.0.1:8080/v1',
+        model: 'mock', apiMode: 'chat', apiKey,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ id: ids.provider, hasApiKey: true });
+    expect(created.payload).not.toContain(apiKey);
+    expect(created.json()).not.toHaveProperty('apiKey');
+    expect(created.json()).not.toHaveProperty('secretRef');
+    const listed = await app.inject({ method: 'GET', url: '/api/providers' });
+    expect(listed.json()).toEqual([expect.objectContaining({ id: ids.provider, hasApiKey: true })]);
+    expect(listed.payload).not.toContain(apiKey);
+    expect(listed.json()[0]).not.toHaveProperty('secretRef');
+
     repositories.characters.create({
       id: ids.character, name: 'Aster', description: '', personality: '', scenario: '',
       firstMessage: '', alternateGreetings: [], tags: [],
     });
     repositories.personas.create({ id: ids.persona, name: 'Traveler', description: '', isDefault: true });
+    repositories.presets.create({
+      id: ids.preset,
+      name: 'Role chat',
+      kind: 'chat',
+      settings: {
+        tokenizer: TokenizerId.NONE,
+        prompts: [
+          { identifier: 'main', role: 'system', content: 'Role chat', system_prompt: true },
+          { identifier: 'chatHistory', marker: true, system_prompt: true },
+        ],
+        prompt_order: [{
+          character_id: ids.character,
+          order: [
+            { identifier: 'main', enabled: true },
+            { identifier: 'chatHistory', enabled: true },
+          ],
+        }],
+      },
+    });
     repositories.conversations.create({
-      id: ids.conversation, characterId: ids.character, personaId: ids.persona, title: 'Chat',
+      id: ids.conversation,
+      characterId: ids.character,
+      personaId: ids.persona,
+      providerId: ids.provider,
+      presetId: ids.preset,
+      title: 'Chat',
     });
     const userMessage = repositories.messages.create({
       id: ids.userMessage, conversationId: ids.conversation, role: 'user', content: 'Original', activeVariantId: null,
@@ -83,24 +127,6 @@ describe('chat UI API bindings', () => {
       method: 'DELETE', url: `/api/messages/${assistantMessage.id}?revision=1`,
     })).statusCode).toBe(204);
     expect(repositories.messageVariants.get(variant.id)).toBeUndefined();
-
-    const apiKey = 'task-5-recognizable-api-key';
-    const created = await app.inject({
-      method: 'POST', url: '/api/providers',
-      payload: {
-        id: ids.provider, name: 'Browser configured', baseUrl: 'http://127.0.0.1:8080/v1',
-        model: 'mock', apiMode: 'chat', apiKey,
-      },
-    });
-    expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({ id: ids.provider, hasApiKey: true });
-    expect(created.payload).not.toContain(apiKey);
-    expect(created.json()).not.toHaveProperty('apiKey');
-    expect(created.json()).not.toHaveProperty('secretRef');
-    const listed = await app.inject({ method: 'GET', url: '/api/providers' });
-    expect(listed.json()).toEqual([expect.objectContaining({ id: ids.provider, hasApiKey: true })]);
-    expect(listed.payload).not.toContain(apiKey);
-    expect(listed.json()[0]).not.toHaveProperty('secretRef');
 
     const rotatedApiKey = 'task-5-rotated-api-key';
     const updatedProvider = await app.inject({

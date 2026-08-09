@@ -25,7 +25,8 @@ export const personas = sqliteTable('personas', {
 export const worldbooks = sqliteTable('worldbooks', {
   ...entityColumns,
   name: text('name').notNull(),
-});
+  isGlobal: integer('is_global', { mode: 'boolean' }).notNull(),
+}, (table) => [index('worldbooks_is_global_idx').on(table.isGlobal)]);
 export const worldbookEntries = sqliteTable('worldbook_entries', {
   ...entityColumns,
   worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),
@@ -35,15 +36,24 @@ export const presets = sqliteTable('presets', {
   name: text('name').notNull(),
   kind: text('kind').notNull(),
 });
+export const providerProfiles = sqliteTable('provider_profiles', {
+  ...entityColumns,
+  name: text('name').notNull(),
+});
 export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),
   personaId: text('persona_id').notNull().references(() => personas.id),
+  providerId: text('provider_id').references(() => providerProfiles.id),
   presetId: text('preset_id').references(() => presets.id),
+  contextPresetId: text('context_preset_id').references(() => presets.id),
+  instructPresetId: text('instruct_preset_id').references(() => presets.id),
+  systemPresetId: text('system_preset_id').references(() => presets.id),
   title: text('title').notNull(),
 }, (table) => [
   index('conversations_character_id_idx').on(table.characterId),
   index('conversations_persona_id_idx').on(table.personaId),
+  index('conversations_provider_id_idx').on(table.providerId),
 ]);
 export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
@@ -66,10 +76,6 @@ export const messages = sqliteTable('messages', {
   index('messages_conversation_id_idx').on(table.conversationId),
   index('messages_active_variant_id_idx').on(table.activeVariantId),
 ]);
-export const providerProfiles = sqliteTable('provider_profiles', {
-  ...entityColumns,
-  name: text('name').notNull(),
-});
 export const importArtifacts = sqliteTable('import_artifacts', {
   ...entityColumns,
   kind: text('kind').notNull(),
@@ -79,3 +85,7 @@ export const generationSnapshots = sqliteTable('generation_snapshots', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
 }, (table) => [index('generation_snapshots_conversation_id_idx').on(table.conversationId)]);
+export const worldbookRuntimeStates = sqliteTable('worldbook_runtime_states', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
+}, (table) => [index('worldbook_runtime_states_conversation_id_idx').on(table.conversationId)]);

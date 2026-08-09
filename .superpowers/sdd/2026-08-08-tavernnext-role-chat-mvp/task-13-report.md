@@ -1,0 +1,157 @@
+# Task 13 report: immutable prompt snapshots and generation integration
+
+## Status
+
+Complete. Prompt preview and normal Chat/Text generation now share one
+immutable schema-v1 snapshot pipeline. The provider request is read directly
+from the validated stored artifact; generation no longer recompiles macros,
+presets, Worldbooks, tokenization, or prompt content after snapshot acceptance.
+`compileBasicChat` was removed.
+
+## Public interfaces
+
+- `POST /api/conversations/:id/prompt-preview` accepts the conversation
+  revision, normal user input, and optional deterministic seed/message index.
+  It returns the snapshot ID, prompt kind, exact messages or text, stops,
+  ordered token ledger, local total, Worldbook evaluation ledger, final
+  tokenizer decision, warnings, deterministic inputs, revision manifest, and
+  both snapshot hashes.
+- `GenerationService.start(input)` is asynchronous. It accepts either a
+  referenced `snapshotId` or atomically creates and accepts an identical
+  snapshot for the existing normal-generation API. Validation failures are
+  returned before an event stream or provider connection exists.
+- `PromptSnapshotService` exposes `createPreview`, `createAndAccept`,
+  `acceptExisting`, and `commitTimedState`. `ServerTokenizerRuntime` injects
+  Task 6 selection plus async text/message counters without a production
+  SillyTavern import or network fallback.
+- Domain and storage schema v3 add explicit conversation provider and
+  Chat/Text/Context/Instruct/System preset selections, prompt/response limits,
+  global Worldbooks, and one revisioned Worldbook runtime-state row per
+  conversation. Migrations are additive and backfill existing rows.
+
+## Locked compilation behavior
+
+- Aggregate reads occur in one database transaction and leave it only as deep
+  JSON clones. Worldbooks resolve in global, Character-linked,
+  Character-embedded, then conversation-linked order. Persisted books are
+  stably de-duplicated by row ID; duplicate entry source UIDs remain distinct.
+  Entry reads use the indexed `listByWorldbookId` path.
+- Chat requires an explicitly selected Chat preset. Text requires explicitly
+  selected Text, Context, Instruct, and System companions. Every preset passes
+  through Task 9 execution sanitization before Task 10 compilation or provider
+  request construction.
+- Task 12 evaluates the locked books with the selected Task 6 tokenizer,
+  explicit seed/message index, and prior timed state. A bounded retry loop
+  restarts the complete evaluation/compile operation if deterministic
+  tokenizer fallback changes the final decision.
+- The executable request contains the provider model, exact compiled Chat
+  messages or Text prompt, exact stops, and only supported temperature and
+  response-token parameters. Chat calls `streamChat`; Text calls `streamText`.
+  Provider usage events remain separate from the immutable local token ledger.
+- The audit copy keeps only executable Character, Persona, provider, sanitized
+  preset, Worldbook, and prior-state data. API keys, secret references,
+  authorization/header values, and non-executable provider compatibility
+  envelopes are absent.
+
+## Snapshot schema and hashes
+
+`PROMPT_SNAPSHOT_SCHEMA_VERSION` is `1`. The persisted payload contains:
+
+- normalized input, kind, seed, and message index;
+- exact revisions for the conversation, Character, Persona, provider, selected
+  presets, global and linked Worldbooks, every persisted Worldbook entry,
+  message/active-variant history, and prior runtime-state row;
+- sanitized executable audit copies, prior and next Worldbook state, complete
+  activated/excluded/token/warning ledgers, and final tokenizer decision;
+- exact compiled messages or text, stops, local tokens, and provider request;
+- `compiledRequestHash` and `payloadHash`.
+
+`canonicalJson` recursively sorts object keys, preserves array order, and JSON
+serializes the result. `compiledRequestHash` is
+`SHA-256(UTF-8(canonicalJson(compiledRequest)))`. `payloadHash` applies the
+same definition to the complete payload with only `payloadHash` omitted.
+Stored snapshots are parsed with exact allowed-key and nested-shape checks,
+then both hashes and the request/prompt projection are recomputed. Unknown
+versions, malformed nested ledgers/decisions, mutable-row corruption, and
+hash-consistent semantic tampering all fail closed.
+
+## Revision and transaction rules
+
+- Preview loads a coherent aggregate, compiles outside the synchronous
+  transaction, then revalidates the complete manifest in a write transaction
+  before inserting only the immutable snapshot. It never mutates messages,
+  variants, conversation revision, or timed state.
+- Auto-snapshot creation, immutable-row insertion, normal user-message
+  acceptance, and conversation revision advancement share one durable outer
+  transaction. Referenced-snapshot acceptance validates its input, hashes,
+  exact schema, and every dependency revision in that transaction before
+  accepting the user turn.
+- Changed/deleted presets, provider, Character, Persona, Worldbook rows or
+  entries, message history/variants, conversation, global-book collection, or
+  runtime state return a stale/conflict error with zero provider calls and no
+  half-accepted user turn.
+- Worldbook timed state is committed only after a provider completion. Failed,
+  aborted, protocol-invalid, stale, overflow, tokenizer, and validation paths
+  do not advance it. If final state persistence fails, the stream fails and an
+  existing assistant variant is marked failed.
+- Active-generation reservations are cleaned on every pre-stream exception,
+  cancellation, iterator return, and stream completion. An unconsumed iterator
+  has a 30-second reservation timeout.
+
+## Strict TDD evidence
+
+- Required stable initial RED, before production edits: the two new integration
+  files failed with 11/11 tests because preview/snapshot integration did not
+  exist.
+- First implementation GREEN boundary: the required files reached 11/11.
+- Companion-selection self-review RED: prompt preview reported 2 failures and
+  3 passes because missing Text Instruct/System companions were accepted;
+  explicit typed selection restored GREEN.
+- Stored-payload self-review RED: generation reported 3 failures and 8 passes
+  for hash-consistent malformed nested token, Worldbook, and tokenizer
+  structures; strict recursive validation restored GREEN.
+- Runtime-state self-review RED: generation reported 1 failure and 11 passes
+  because malformed persisted state escaped as 500 instead of the typed 422;
+  fail-closed mapping restored GREEN.
+- Final-tokenizer self-review RED: preview reported 1 failure and 5 passes when
+  a repeatedly mutating `BEST_MATCH` decision could escape after the retry
+  limit; exhaustive final-decision validation restored GREEN.
+- The final required integration corpus is 18/18 tests across exact Chat/Text
+  preview/provider identity, all stale aggregate classes, overflow/tokenizer
+  failure, snapshot tampering and secret exclusion, preview non-mutation,
+  provider failure/abort state semantics, and reservation cleanup.
+
+## Fresh verification
+
+- Required focused gate: 2 files and 18/18 tests passed.
+- Repository/migration slice: 13/13 tests passed, including legacy schema
+  migration, indexed global/entry reads, runtime state, and snapshot
+  immutability.
+- Oracle-enabled `npm test` with the read-only SillyTavern checkout: 34/34
+  files passed; 631 tests passed and one existing platform-specific test was
+  skipped (632 total).
+- `npm run typecheck` passed.
+- `npx tsc -b --clean` established a source-only tree with zero generated
+  workspace files. `npm run build` passed the TypeScript graph and Vite
+  transformed 182 modules; TypeScript and web bundle outputs were cleaned back
+  to zero.
+- `git diff --check` passed. The task ships in commit
+  `feat: integrate presets and Worldbooks into generation`.
+
+## Remaining boundaries and self-review
+
+- Task 13 intentionally supports normal turns only. Regenerate, swipe, and
+  continue snapshot semantics remain Task 14; manager UI and prompt inspection
+  dialogs remain Task 15.
+- Task 10 exposes before/after Worldbook compiler slots. Activated entries with
+  other normalized placement values currently use the after-character slot and
+  emit the stable `worldbook_position_fallback` warning; richer placement-slot
+  support belongs in the compiler contract rather than an integration-only
+  inference.
+- The 30-second unconsumed-iterator cleanup is an in-process reservation guard,
+  not durable cross-process job recovery.
+- Self-review closed explicit companion selection, nested snapshot validation,
+  invalid persisted runtime state, unresolved tokenizer mutation, generated
+  artifact cleanup, and forbidden production-oracle/secret/cast hot spots. No
+  remaining Critical or Important implementation finding is known at handoff;
+  independent parent review is the next SDD checkpoint.
