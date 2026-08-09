@@ -27,6 +27,22 @@ describe('Worldbook recursion and budgeting', () => {
     expect(result.recursionSteps).toBe(3);
   });
 
+  it('joins entries activated in one pass with plain newlines and marks only boundaries between recursion passes', () => {
+    const samePass = evaluateWorldbooks(evaluationInput([runtimeBook('same-pass', [
+      worldbookEntry('alpha', { constant: true, content: 'alpha', order: 20 }),
+      worldbookEntry('beta', { constant: true, content: 'beta', order: 10, sourceOrdinal: 1 }),
+      worldbookEntry('plain-newline', { keys: ['/alpha\\nbeta/'], content: 'matched', order: 0, sourceOrdinal: 2 }),
+    ], { recursiveScanning: true })]));
+    expect(samePass.activated.map((entry) => entry.sourceUid)).toEqual(['alpha', 'beta', 'plain-newline']);
+
+    const separatePasses = evaluateWorldbooks(evaluationInput([runtimeBook('separate-passes', [
+      worldbookEntry('alpha', { constant: true, content: 'alpha', order: 20 }),
+      worldbookEntry('beta', { keys: ['alpha'], content: 'beta', order: 10, sourceOrdinal: 1 }),
+      worldbookEntry('segment-marker', { keys: ['/alpha\\n\\x01beta/'], content: 'matched', order: 0, sourceOrdinal: 2 }),
+    ], { recursiveScanning: true })]));
+    expect(separatePasses.activated.map((entry) => entry.sourceUid)).toEqual(['alpha', 'beta', 'segment-marker']);
+  });
+
   it('honors excludeRecursion, preventRecursion, delayUntilRecursion, and the recursion cap', () => {
     const excluded = evaluateWorldbooks(evaluationInput([runtimeBook('exclude', [
       worldbookEntry('first', { keys: ['alpha'], content: 'beta' }),
@@ -80,7 +96,27 @@ describe('Worldbook recursion and budgeting', () => {
   });
 
   it('uses exact combined token counts with ST strict budget boundaries, zero budgets, and ignoreBudget', () => {
-    const tokenizer = { countText: (text: string) => text.length };
+    const tokenizerInputs: string[] = [];
+    const tokenizer = { countText: (text: string) => {
+      tokenizerInputs.push(text);
+      return text.length;
+    } };
+    const fits = evaluateWorldbooks(evaluationInput([runtimeBook('fits', [
+      worldbookEntry('fits', { constant: true, content: 'AB' }),
+    ])], { tokenBudget: 4, tokenizer }));
+    expect(fits.activated.map((entry) => entry.sourceUid)).toEqual(['fits']);
+    expect(fits.tokenUsage).toEqual({ budget: 4, used: 3, overflowed: false });
+    expect(tokenizerInputs).toEqual(['AB\n']);
+
+    tokenizerInputs.splice(0);
+    const trailingBoundary = evaluateWorldbooks(evaluationInput([runtimeBook('trailing-boundary', [
+      worldbookEntry('boundary', { constant: true, content: 'AB' }),
+    ])], { tokenBudget: 3, tokenizer }));
+    expect(trailingBoundary.activated).toEqual([]);
+    expect(trailingBoundary.excluded[0]?.reason).toBe('budget');
+    expect(trailingBoundary.tokenUsage).toEqual({ budget: 3, used: 0, overflowed: true });
+    expect(tokenizerInputs).toEqual(['AB\n']);
+
     const exact = evaluateWorldbooks(evaluationInput([runtimeBook('exact', [
       worldbookEntry('exact', { constant: true, content: 'AB' }),
     ])], { tokenBudget: 2, tokenizer }));
@@ -93,17 +129,38 @@ describe('Worldbook recursion and budgeting', () => {
       worldbookEntry('ignored', { constant: true, content: 'B', ignoreBudget: true, sourceOrdinal: 1 }),
     ])], { tokenBudget: 0, tokenizer }));
     expect(zero.activated.map((entry) => entry.sourceUid)).toEqual(['ignored']);
-    expect(zero.tokenUsage).toEqual({ budget: 0, used: 1, overflowed: true });
+    expect(zero.tokenUsage).toEqual({ budget: 0, used: 2, overflowed: true });
 
     const combined = evaluateWorldbooks(evaluationInput([runtimeBook('combined', [
       worldbookEntry('a', { constant: true, content: 'A', order: 2 }),
       worldbookEntry('b', { constant: true, content: 'B', order: 1, sourceOrdinal: 1 }),
     ])], {
       tokenBudget: 2,
-      tokenizer: { countText: (text) => ({ A: 1, B: 1, 'A\nB': 1 }[text] ?? text.length) },
+      tokenizer: { countText: (text) => ({ 'A\n': 1, 'B\n': 1, 'A\nB\n': 1 }[text] ?? text.length) },
     }));
     expect(combined.activated.map((entry) => entry.sourceUid)).toEqual(['a', 'b']);
     expect(combined.tokenUsage.used).toBe(1);
+  });
+
+  it('allocates sticky entries before newly matched entries when the strict budget fits only one', () => {
+    const stickyEntry = worldbookEntry('sticky-low', {
+      constant: true, sticky: 5, content: 'S', order: 1,
+    });
+    const started = evaluateWorldbooks(evaluationInput([
+      runtimeBook('sticky-budget', [stickyEntry]),
+    ], { messageIndex: 10 }));
+
+    const held = evaluateWorldbooks(evaluationInput([runtimeBook('sticky-budget', [
+      stickyEntry,
+      worldbookEntry('new-high', { constant: true, content: 'N', order: 100, sourceOrdinal: 1 }),
+    ])], {
+      messageIndex: 11,
+      previousTimedState: started.timedState,
+      tokenBudget: 3,
+    }));
+
+    expect(held.activated.map((entry) => [entry.sourceUid, entry.activation])).toEqual([['sticky-low', 'sticky']]);
+    expect(held.excluded.find((entry) => entry.sourceUid === 'new-high')?.reason).toBe('budget');
   });
 
   it('turns tokenizer exceptions and invalid counts into stable exclusions without throwing', () => {
@@ -146,8 +203,7 @@ describe('Worldbook recursion and budgeting', () => {
       runtimeBook('large', tooMany),
     ], { tokenizer: { countText } }));
     expect(entriesResult.activated).toEqual([]);
-    expect(entriesResult.excluded).toHaveLength(tooMany.length);
-    expect(new Set(entriesResult.excluded.map((entry) => entry.reason))).toEqual(new Set(['evaluation_limit']));
+    expect(entriesResult.excluded).toEqual([]);
     expect(entriesResult.warnings[0]?.code).toBe('entry_limit');
     expect(countText).not.toHaveBeenCalled();
 
@@ -165,6 +221,80 @@ describe('Worldbook recursion and budgeting', () => {
     expect(sourceResult.excluded[0]?.reason).toBe('evaluation_limit');
     expect(sourceResult.warnings[0]?.code).toBe('scan_source_limit');
     expect(countText).not.toHaveBeenCalled();
+  });
+
+  it('checks book, entry, and identity envelopes before probing or allocating their contents', () => {
+    let bookProbes = 0;
+    const tooManyBooks = new Proxy(
+      Array.from({ length: 65 }, () => runtimeBook('unread', [])),
+      {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^\d+$/.test(property)) {
+            bookProbes += 1;
+            throw new Error('book contents must remain unread');
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const booksResult = evaluateWorldbooks(evaluationInput(tooManyBooks));
+    expect(booksResult.warnings[0]?.code).toBe('book_limit');
+    expect(bookProbes).toBe(0);
+
+    let entryProbes = 0;
+    const tooManyEntries = new Proxy(
+      Array.from({ length: MAX_WORLDBOOK_RUNTIME_ENTRIES + 1 }, () => worldbookEntry('unread')),
+      {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^\d+$/.test(property)) {
+            entryProbes += 1;
+            throw new Error('entry contents must remain unread');
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const entriesBook = runtimeBook('entry-envelope', []);
+    entriesBook.book.entries = tooManyEntries;
+    const entryResult = evaluateWorldbooks(evaluationInput([entriesBook]));
+    expect(entryResult.warnings[0]?.code).toBe('entry_limit');
+    expect(entryProbes).toBe(0);
+
+    let identityEntryProbes = 0;
+    const identityEntries = new Proxy([worldbookEntry('unread')], {
+      get(target, property, receiver) {
+        if (property === '0') {
+          identityEntryProbes += 1;
+          throw new Error('entries behind an oversized book identity must remain unread');
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const identityBook = runtimeBook('x'.repeat(4_097), []);
+    identityBook.book.entries = identityEntries;
+    const identityResult = evaluateWorldbooks(evaluationInput([identityBook]));
+    expect(identityResult.warnings[0]?.code).toBe('identity_limit');
+    expect(identityEntryProbes).toBe(0);
+
+    let nestedCollectionProbes = 0;
+    const oversizedTriggers = new Proxy(
+      Array.from({ length: 257 }, () => 'unread'),
+      {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^\d+$/.test(property)) {
+            nestedCollectionProbes += 1;
+            throw new Error('oversized nested entry collections must remain unread');
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const nestedEntry = worldbookEntry('nested-cap', { triggers: oversizedTriggers });
+    const nestedResult = evaluateWorldbooks(evaluationInput([
+      runtimeBook('nested-cap', [nestedEntry]),
+    ]));
+    expect(nestedResult.warnings[0]?.code).toBe('entry_collection_limit');
+    expect(nestedCollectionProbes).toBe(0);
   });
 
   it('caps aggregate entry text before matching or tokenization', () => {

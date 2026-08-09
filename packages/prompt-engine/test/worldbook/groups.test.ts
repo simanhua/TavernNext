@@ -17,6 +17,30 @@ describe('Worldbook group, probability, and ordering policy', () => {
     expect(seedFour.excluded[0]?.reason).toBe('group_loser');
   });
 
+  it('consumes seeded group rolls in first-occurrence order instead of lexical group-name order', () => {
+    const result = evaluateWorldbooks(evaluationInput([runtimeBook('group-order', [
+      worldbookEntry('z-one', { constant: true, group: 'z', groupWeight: 50, order: 200 }),
+      worldbookEntry('z-two', { constant: true, group: 'z', groupWeight: 50, order: 200, sourceOrdinal: 1 }),
+      worldbookEntry('a-one', { constant: true, group: 'a', groupWeight: 50, order: 100, sourceOrdinal: 2 }),
+      worldbookEntry('a-two', { constant: true, group: 'a', groupWeight: 50, order: 100, sourceOrdinal: 3 }),
+    ])], { seed: 1 }));
+
+    expect(result.activated.map((entry) => entry.sourceUid)).toEqual(['z-two', 'a-one']);
+  });
+
+  it('treats a previously active multi-group string as exact when suppressing later groups', () => {
+    const result = evaluateWorldbooks(evaluationInput([runtimeBook('active-group', [
+      worldbookEntry('multi', { keys: ['alpha'], content: 'beta', group: 'a,b', order: 200 }),
+      worldbookEntry('a-weighted', { keys: ['beta'], group: 'a', order: 100, sourceOrdinal: 1 }),
+      worldbookEntry('a-override', { keys: ['beta'], group: 'a', groupOverride: true, order: 90, sourceOrdinal: 2 }),
+    ], { recursiveScanning: true })], {
+      scanSources: { messages: ['alpha'], additional: [], trigger: 'normal' },
+    }));
+
+    expect(result.activated.map((entry) => entry.sourceUid)).toEqual(['multi', 'a-override']);
+    expect(result.excluded.find((entry) => entry.sourceUid === 'a-weighted')?.reason).toBe('group_loser');
+  });
+
   it('selects the highest-ranked group override before weighting', () => {
     const result = evaluateWorldbooks(evaluationInput([runtimeBook('override', [
       worldbookEntry('weighted', { constant: true, group: 'g', groupWeight: 1_000 }),
@@ -117,6 +141,42 @@ describe('Worldbook group, probability, and ordering policy', () => {
     );
 
     expect(keys(reversed)).toEqual(keys(forward));
+  });
+
+  it('uses stable entry ids to disambiguate duplicate typed UID and source-ordinal identities', () => {
+    const alpha = worldbookEntry('same', {
+      id: 'stable-alpha', constant: true, sourceOrdinal: 8, content: 'alpha',
+    });
+    const beta = worldbookEntry('same', {
+      id: 'stable-beta', constant: true, sourceOrdinal: 8, content: 'beta',
+    });
+    const forward = evaluateWorldbooks(evaluationInput([runtimeBook('duplicates', [alpha, beta])]));
+    const reversed = evaluateWorldbooks(evaluationInput([runtimeBook('duplicates', [beta, alpha])]));
+    const projection = (result: ReturnType<typeof evaluateWorldbooks>) => result.activated.map((entry) => ({
+      content: entry.content,
+      entryKey: entry.entryKey,
+    }));
+
+    expect(projection(reversed)).toEqual(projection(forward));
+    expect(new Set(forward.activated.map((entry) => entry.entryKey)).size).toBe(2);
+    expect(forward.activated.every((entry) => entry.entryKey.includes('stable-'))).toBe(true);
+  });
+
+  it('rejects entries whose complete stable identities are duplicates', () => {
+    const duplicate = worldbookEntry('same', {
+      id: 'same-id', constant: true, sourceOrdinal: 8,
+    });
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('exact-duplicates', [duplicate, { ...duplicate }]),
+    ]));
+
+    expect(result.activated).toEqual([]);
+    expect(result.excluded).toHaveLength(2);
+    expect(result.excluded.every((entry) => entry.reason === 'invalid_entry')).toBe(true);
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: 'invalid_entry',
+      message: 'Worldbook entries with the same stable identity were rejected.',
+    }));
   });
 
   it('creates deterministic entry keys for arbitrary UTF-16 string identities', () => {

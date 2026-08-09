@@ -22,7 +22,7 @@
         "ignoreBudget": false,
         "activation": "keyword",
         "activationStep": 0,
-        "tokenUsageAfter": 6
+        "tokenUsageAfter": 7
       },
       {
         "entryKey": "golden-book|string:constant@0",
@@ -40,7 +40,7 @@
         "ignoreBudget": false,
         "activation": "constant",
         "activationStep": 0,
-        "tokenUsageAfter": 12
+        "tokenUsageAfter": 13
       }
     ],
     "excluded": [
@@ -59,7 +59,7 @@
     },
     "tokenUsage": {
       "budget": 64,
-      "used": 12,
+      "used": 13,
       "overflowed": false
     },
     "recursionSteps": 1,

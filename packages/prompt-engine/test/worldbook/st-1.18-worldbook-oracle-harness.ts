@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const EXPECTED_WORLD_INFO_HASH = '5ba94f74ab7c1f13db7c2ac3dc8778f0174d95278cc9698b24bb1a9c8ab76d61';
+const EXPECTED_REVISION = '8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8';
 
 export interface OracleEntryFixture {
   uid: string;
@@ -13,6 +15,8 @@ export interface OracleEntryFixture {
   enabled?: boolean;
   group?: string;
   groupWeight?: number;
+  groupOverride?: boolean;
+  preventRecursion?: boolean;
   useProbability?: boolean;
   probability?: number;
   triggers?: string[];
@@ -36,6 +40,23 @@ export const ORACLE_TIMED_FIXTURE: readonly OracleEntryFixture[] = [
   { uid: 'clock', content: 'CLOCK', order: 100, constant: true, sticky: 2, cooldown: 2 },
 ];
 
+export const ORACLE_GROUP_ORDER_FIXTURE: readonly OracleEntryFixture[] = [
+  { uid: 'z-one', content: 'Z_ONE', order: 200, constant: true, group: 'z', groupWeight: 50 },
+  { uid: 'z-two', content: 'Z_TWO', order: 200, constant: true, group: 'z', groupWeight: 50 },
+  { uid: 'a-one', content: 'A_ONE', order: 100, constant: true, group: 'a', groupWeight: 50 },
+  { uid: 'a-two', content: 'A_TWO', order: 100, constant: true, group: 'a', groupWeight: 50 },
+];
+
+export const ORACLE_ACTIVE_MULTI_GROUP_FIXTURE: readonly OracleEntryFixture[] = [
+  { uid: 'multi', keys: ['alpha'], content: 'beta', order: 200, group: 'a,b' },
+  { uid: 'a-weighted', keys: ['beta'], content: 'WEIGHTED', order: 100, group: 'a' },
+  { uid: 'a-override', keys: ['beta'], content: 'OVERRIDE', order: 90, group: 'a', groupOverride: true },
+];
+
+export const ORACLE_BUDGET_FIXTURE: readonly OracleEntryFixture[] = [
+  { uid: 'boundary', content: 'AB', order: 100, constant: true },
+];
+
 export interface OracleProjection {
   activated: Array<{ uid: string; content: string; order: number }>;
   excluded: Array<{ uid: string; reason: string }>;
@@ -51,6 +72,7 @@ export interface WorldbookOracle {
     packageName: string;
     version: string;
     revision: string;
+    revisionVerifiedBy: string;
     worldInfoSha256: string;
     execution: string;
     declarations: string[];
@@ -61,6 +83,21 @@ export interface WorldbookOracle {
     held: OracleProjection;
     cooling: OracleProjection;
   };
+  groups: {
+    firstOccurrence: OracleProjection;
+    activeMultiGroup: OracleProjection;
+  };
+  budget: {
+    fits: OracleBudgetProjection;
+    boundary: OracleBudgetProjection;
+  };
+}
+
+export interface OracleBudgetProjection {
+  activated: string[];
+  excluded: string[];
+  tokenizerInputs: string[];
+  tokenUsage: { budget: number; used: number; overflowed: boolean };
 }
 
 type UpstreamEntry = Record<string, unknown> & { uid: string; content: string; order: number; world: string; hash: number };
@@ -166,14 +203,14 @@ function upstreamEntry(fixture: OracleEntryFixture, index: number): UpstreamEntr
     useProbability: fixture.useProbability ?? false,
     group: fixture.group ?? '',
     groupWeight: fixture.groupWeight ?? 100,
-    groupOverride: false,
+    groupOverride: fixture.groupOverride ?? false,
     useGroupScoring: false,
     ignoreBudget: false,
     scanDepth: null,
     caseSensitive: false,
     matchWholeWords: false,
     excludeRecursion: false,
-    preventRecursion: false,
+    preventRecursion: fixture.preventRecursion ?? false,
     delayUntilRecursion: 0,
     sticky: fixture.sticky ?? null,
     cooldown: fixture.cooldown ?? null,
@@ -233,10 +270,15 @@ async function runOracleCase(input: {
   state: UpstreamState;
   chatLength: number;
   lines: string[];
+  tokenInputs: string[];
+  chat?: string[];
+  maxContext?: number;
+  knownExcludedReason?: string;
 }): Promise<OracleProjection> {
   input.lines.splice(0, input.lines.length);
-  const chat = Array.from({ length: input.chatLength }, (_, index) => index === 0 ? 'alpha' : `pad-${index}`);
-  const result = await input.checkWorldInfo(chat, 64, false, {
+  input.tokenInputs.splice(0, input.tokenInputs.length);
+  const chat = input.chat ?? Array.from({ length: input.chatLength }, (_, index) => index === 0 ? 'alpha' : `pad-${index}`);
+  const result = await input.checkWorldInfo(chat, input.maxContext ?? 64, false, {
     trigger: 'normal', personaDescription: '', characterDescription: '', characterPersonality: '',
     characterDepthPrompt: '', scenario: '', creatorNotes: '',
   });
@@ -250,10 +292,44 @@ async function runOracleCase(input: {
     activated,
     excluded: input.fixtures.filter((entry) => !active.has(entry.uid)).map((entry) => ({
       uid: entry.uid,
-      reason: excludedReason(input.lines, entry.uid),
+      reason: input.knownExcludedReason ?? excludedReason(input.lines, entry.uid),
     })),
     timedState: normalizeState(input.state),
-    tokens: { used: activated.map((entry) => entry.content).join('\n').length },
+    tokens: { used: activated.length === 0 ? 0 : (input.tokenInputs.at(-1)?.length ?? 0) },
+  };
+}
+
+async function runBudgetOracleCase(input: {
+  checkWorldInfo: (...args: unknown[]) => Promise<{ allActivatedEntries: Set<UpstreamEntry> }>;
+  state: UpstreamState;
+  lines: string[];
+  tokenInputs: string[];
+  budget: number;
+}): Promise<OracleBudgetProjection> {
+  const projected = await runOracleCase({
+    checkWorldInfo: input.checkWorldInfo,
+    fixtures: ORACLE_BUDGET_FIXTURE,
+    state: input.state,
+    chatLength: 0,
+    chat: [],
+    maxContext: input.budget,
+    lines: input.lines,
+    tokenInputs: input.tokenInputs,
+    knownExcludedReason: 'budget',
+  });
+  const activated = projected.activated.map((entry) => entry.uid);
+  const excluded = ORACLE_BUDGET_FIXTURE
+    .filter((entry) => !activated.includes(entry.uid))
+    .map((entry) => entry.uid);
+  return {
+    activated,
+    excluded,
+    tokenizerInputs: [...input.tokenInputs],
+    tokenUsage: {
+      budget: input.budget,
+      used: activated.length === 0 ? 0 : (input.tokenInputs.at(-1)?.length ?? 0),
+      overflowed: excluded.length > 0,
+    },
   };
 }
 
@@ -266,6 +342,15 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
   const actualHash = sha256(source);
   if (actualHash !== EXPECTED_WORLD_INFO_HASH) {
     throw new Error(`SillyTavern world-info oracle hash mismatch: ${actualHash}.`);
+  }
+  let actualRevision: string;
+  try {
+    actualRevision = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  } catch (error) {
+    throw new Error(`Unable to verify the SillyTavern oracle Git revision: ${String(error)}`);
+  }
+  if (actualRevision !== EXPECTED_REVISION) {
+    throw new Error(`SillyTavern oracle revision mismatch: ${actualRevision}.`);
   }
 
   const names: Array<[string, 'function' | 'class']> = [
@@ -291,6 +376,7 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
   let currentEntries = fixtures.map(upstreamEntry);
   let currentState: UpstreamState = { timedWorldInfo: { sticky: {}, cooldown: {} } };
   const lines: string[] = [];
+  const tokenInputs: string[] = [];
   const capturedConsole = {
     debug: (...args: unknown[]) => lines.push(lineFrom(args)),
     log: (...args: unknown[]) => lines.push(lineFrom(args)),
@@ -327,7 +413,10 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
     getContext: () => context,
     getExtensionPromptByName: async () => '',
     getSortedEntries: async () => structuredClone(currentEntries),
-    getTokenCountAsync: async (text: string) => text.length,
+    getTokenCountAsync: async (text: string) => {
+      if (text.endsWith('\n')) tokenInputs.push(text);
+      return text.length;
+    },
     substituteParams: (value: string) => value,
     getCharaFilename: () => 'Aster.png',
     this_chid: 0,
@@ -348,34 +437,75 @@ export async function loadSillyTavern118WorldbookOracle(root: string): Promise<W
     `${extracted.join('\n\n')}\nreturn checkWorldInfo;`,
   ) as (...values: unknown[]) => (...args: unknown[]) => Promise<{ allActivatedEntries: Set<UpstreamEntry> }>;
   const checkWorldInfo = factory(...Object.values(dependencies));
+  const checkWorldInfoRecursive = factory(...Object.values({ ...dependencies, world_info_recursive: true }));
 
   const matching = await runOracleCase({
-    checkWorldInfo, fixtures, state: currentState, chatLength: 4, lines,
+    checkWorldInfo, fixtures, state: currentState, chatLength: 4, lines, tokenInputs,
   });
 
   currentEntries = ORACLE_TIMED_FIXTURE.map(upstreamEntry);
   currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
   random = seededRandom(1);
   const started = await runOracleCase({
-    checkWorldInfo, fixtures: ORACLE_TIMED_FIXTURE, state: currentState, chatLength: 10, lines,
+    checkWorldInfo, fixtures: ORACLE_TIMED_FIXTURE, state: currentState, chatLength: 10, lines, tokenInputs,
   });
   const held = await runOracleCase({
-    checkWorldInfo, fixtures: ORACLE_TIMED_FIXTURE, state: currentState, chatLength: 11, lines,
+    checkWorldInfo, fixtures: ORACLE_TIMED_FIXTURE, state: currentState, chatLength: 11, lines, tokenInputs,
   });
   const cooling = await runOracleCase({
-    checkWorldInfo, fixtures: ORACLE_TIMED_FIXTURE, state: currentState, chatLength: 12, lines,
+    checkWorldInfo, fixtures: ORACLE_TIMED_FIXTURE, state: currentState, chatLength: 12, lines, tokenInputs,
+  });
+
+  currentEntries = ORACLE_GROUP_ORDER_FIXTURE.map(upstreamEntry);
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  const firstOccurrence = await runOracleCase({
+    checkWorldInfo,
+    fixtures: ORACLE_GROUP_ORDER_FIXTURE,
+    state: currentState,
+    chatLength: 0,
+    lines,
+    tokenInputs,
+  });
+
+  currentEntries = ORACLE_ACTIVE_MULTI_GROUP_FIXTURE.map(upstreamEntry);
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  const activeMultiGroup = await runOracleCase({
+    checkWorldInfo: checkWorldInfoRecursive,
+    fixtures: ORACLE_ACTIVE_MULTI_GROUP_FIXTURE,
+    state: currentState,
+    chatLength: 1,
+    chat: ['alpha'],
+    lines,
+    tokenInputs,
+  });
+
+  currentEntries = ORACLE_BUDGET_FIXTURE.map(upstreamEntry);
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  const fits = await runBudgetOracleCase({
+    checkWorldInfo, state: currentState, lines, tokenInputs, budget: 4,
+  });
+  currentState.timedWorldInfo = { sticky: {}, cooldown: {} };
+  random = seededRandom(1);
+  const boundary = await runBudgetOracleCase({
+    checkWorldInfo, state: currentState, lines, tokenInputs, budget: 3,
   });
 
   return {
     provenance: {
       packageName: packageDocument.name,
       version: packageDocument.version,
-      revision: '8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8',
+      revision: actualRevision,
+      revisionVerifiedBy: 'git rev-parse HEAD',
       worldInfoSha256: actualHash,
       execution: 'read-only hash-pinned upstream WorldInfoBuffer, WorldInfoTimedEffects, grouping, and checkWorldInfo',
       declarations: names.map(([name]) => name),
     },
     matching,
     timed: { started, held, cooling },
+    groups: { firstOccurrence, activeMultiGroup },
+    budget: { fits, boundary },
   };
 }

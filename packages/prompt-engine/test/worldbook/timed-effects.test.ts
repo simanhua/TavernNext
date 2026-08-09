@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { NormalizedWorldbookEntry } from '@tavernnext/st-compat';
 import { evaluateWorldbooks } from '../../src/index.js';
 import { evaluationInput, runtimeBook, worldbookEntry } from './fixtures.js';
 
@@ -103,5 +104,96 @@ describe('Worldbook timed state transitions', () => {
       'timed_entry_changed',
     ]);
     expect(result.activated.map((entry) => entry.activation)).toEqual(['constant']);
+  });
+
+  it.each([
+    ['regex policy', { useRegex: false }],
+    ['secondary policy', { selective: true, selectiveLogic: 3 }],
+    ['vector policy', { vectorized: true }],
+    ['probability policy', { probability: 99 }],
+    ['probability switch', { useProbability: true }],
+    ['group weight', { groupWeight: 25 }],
+    ['group override', { groupOverride: true }],
+    ['priority', { priority: 7 }],
+    ['order', { order: 7 }],
+    ['placement', { position: 1, depth: 7, role: 1, outletName: 'slot' }],
+    ['budget policy', { ignoreBudget: true }],
+    ['scan depth', { scanDepth: 1 }],
+    ['case policy', { caseSensitive: true }],
+    ['word policy', { matchWholeWords: true }],
+    ['group scoring', { useGroupScoring: true }],
+    ['recursion exclusion', { excludeRecursion: true }],
+    ['recursion prevention', { preventRecursion: true }],
+    ['recursion delay', { delayUntilRecursion: 1 }],
+    ['character filter', { characterFilter: { isExclude: true, names: ['Nobody'], tags: [] } }],
+    ['persona filter', { personaFilter: { isExclude: true, names: ['Nobody'], tags: [] } }],
+    ['persona scan field', { matchPersonaDescription: true }],
+    ['character scan fields', {
+      matchCharacterDescription: true,
+      matchCharacterPersonality: true,
+      matchCharacterDepthPrompt: true,
+      matchScenario: true,
+      matchCreatorNotes: true,
+    }],
+    ['trigger policy', { triggers: ['normal'] }],
+  ] satisfies Array<[string, Partial<NormalizedWorldbookEntry>]>)('invalidates sticky state when executable %s changes', (_label, change) => {
+    const original = worldbookEntry('fingerprint', { constant: true, sticky: 5 });
+    const started = evaluateWorldbooks(evaluationInput([
+      runtimeBook('fingerprint', [original]),
+    ], { messageIndex: 10 }));
+    const changed = evaluateWorldbooks(evaluationInput([
+      runtimeBook('fingerprint', [{ ...original, ...change }]),
+    ], {
+      messageIndex: 11,
+      previousTimedState: started.timedState,
+    }));
+
+    expect(changed.warnings.map((warning) => warning.code)).toContain('timed_entry_changed');
+    expect(changed.activated.every((entry) => entry.activation !== 'sticky')).toBe(true);
+  });
+
+  it('canonicalizes filter fields and ignores presentation-only metadata in timed fingerprints', () => {
+    const original = worldbookEntry('canonical', {
+      constant: true,
+      sticky: 5,
+      characterFilter: { isExclude: false, names: [], tags: [] },
+    });
+    const started = evaluateWorldbooks(evaluationInput([
+      runtimeBook('canonical', [original]),
+    ], { messageIndex: 10 }));
+    const held = evaluateWorldbooks(evaluationInput([
+      runtimeBook('canonical', [{
+        ...original,
+        comment: 'presentation changed',
+        displayName: 'New title',
+        extensions: { visualOnly: true },
+        characterFilter: { tags: [], names: [], isExclude: false },
+      }]),
+    ], {
+      messageIndex: 11,
+      previousTimedState: started.timedState,
+    }));
+
+    expect(held.warnings.map((warning) => warning.code)).not.toContain('timed_entry_changed');
+    expect(held.activated.map((entry) => entry.activation)).toEqual(['sticky']);
+  });
+
+  it('fails malformed timed-state elements closed with a stable warning', () => {
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('malformed-state', [worldbookEntry('valid', { constant: true })]),
+    ], {
+      previousTimedState: {
+        messageIndex: 3,
+        sticky: [null, 42, 'bad'] as never,
+        cooldown: [undefined, false] as never,
+      },
+      messageIndex: 4,
+    }));
+
+    expect(result.activated.map((entry) => entry.sourceUid)).toEqual(['valid']);
+    expect(result.warnings).toContainEqual({
+      code: 'timed_effect_invalid',
+      message: 'A malformed Worldbook timed-state effect was ignored.',
+    });
   });
 });

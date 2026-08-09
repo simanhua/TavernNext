@@ -38,7 +38,9 @@ export function allocateWorldbookBudget(input: {
         input.exclude(candidate, 'budget');
         continue;
       }
-      const text = [...selected, candidate].map((value) => value.prepared.entry.content).join('\n');
+      const text = [...selected, candidate]
+        .map((value) => `${value.prepared.entry.content}\n`)
+        .join('');
       const candidateTokens = exactCount(input.tokenizer, text);
       if (!candidate.prepared.entry.ignoreBudget && candidateTokens >= input.budget) {
         overflowed = true;

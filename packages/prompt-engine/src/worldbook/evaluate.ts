@@ -4,7 +4,6 @@ import {
   compareMatchedEntries,
   comparePreparedEntries,
   createWorldbookRandom,
-  entryGroups,
   filterWorldbookGroups,
 } from './groups.js';
 import {
@@ -21,6 +20,7 @@ import {
 import {
   MAX_WORLDBOOK_ADDITIONAL_SOURCES,
   MAX_WORLDBOOK_CONTENT_CHARACTERS,
+  MAX_WORLDBOOK_IDENTITY_CHARACTERS,
   MAX_WORLDBOOK_KEY_CHARACTERS,
   MAX_WORLDBOOK_KEYS_PER_ENTRY,
   MAX_WORLDBOOK_MESSAGES,
@@ -40,7 +40,6 @@ import {
   type WorldbookEvaluationSettings,
   type WorldbookExcludedEntry,
   type WorldbookExclusionReason,
-  type WorldbookRuntimeBook,
   type WorldbookWarning,
 } from './types.js';
 
@@ -53,6 +52,15 @@ interface RawEntryReference {
   sourceOrdinal: number;
   rawEntry: unknown;
   rawBook: unknown;
+  duplicateIdentity: boolean;
+}
+
+interface RawBookEnvelope {
+  bookId: string;
+  encodedBookId: string;
+  bookIndex: number;
+  rawBook: Record<string, unknown>;
+  entries: readonly unknown[];
 }
 
 interface WarningCollector {
@@ -193,37 +201,132 @@ function uidIdentity(value: SourceUid): string {
   return `${typeof value}:${encodeIdentityComponent(String(value))}`;
 }
 
-function collectRawEntries(books: readonly WorldbookRuntimeBook[]): RawEntryReference[] {
-  const collisions = new Map<string, number>();
-  const references: RawEntryReference[] = [];
-  books.forEach((runtimeBook, bookIndex) => {
-    const rawRuntime = runtimeBook as unknown;
+function preflightBookEnvelopes(booksValue: unknown): {
+  envelopes: RawBookEnvelope[];
+  issue?: { code: string; message: string };
+} {
+  if (!Array.isArray(booksValue)) {
+    return { envelopes: [], issue: { code: 'book_limit', message: 'Worldbook books must be supplied as an array.' } };
+  }
+  if (booksValue.length > MAX_WORLDBOOK_RUNTIME_BOOKS) {
+    return {
+      envelopes: [],
+      issue: { code: 'book_limit', message: `Worldbook evaluation accepts at most ${MAX_WORLDBOOK_RUNTIME_BOOKS} books.` },
+    };
+  }
+
+  const envelopes: RawBookEnvelope[] = [];
+  let entryCount = 0;
+  for (let bookIndex = 0; bookIndex < booksValue.length; bookIndex += 1) {
+    const rawRuntime = booksValue[bookIndex] as unknown;
     const runtime = record(rawRuntime) ? rawRuntime : {};
+    if (typeof runtime.id === 'string' && runtime.id.length > MAX_WORLDBOOK_IDENTITY_CHARACTERS) {
+      return {
+        envelopes: [],
+        issue: {
+          code: 'identity_limit',
+          message: `Worldbook identities are limited to ${MAX_WORLDBOOK_IDENTITY_CHARACTERS} characters.`,
+        },
+      };
+    }
     const bookId = typeof runtime.id === 'string' && runtime.id !== '' ? runtime.id : `book-${bookIndex}`;
     const rawBook = record(runtime.book) ? runtime.book : {};
-    const entries = Array.isArray(rawBook.entries) ? rawBook.entries : [];
-    entries.forEach((rawEntry, entryIndex) => {
+    const entries: readonly unknown[] = Array.isArray(rawBook.entries) ? rawBook.entries : [];
+    entryCount += entries.length;
+    if (entryCount > MAX_WORLDBOOK_RUNTIME_ENTRIES) {
+      return {
+        envelopes: [],
+        issue: {
+          code: 'entry_limit',
+          message: `Worldbook evaluation accepts at most ${MAX_WORLDBOOK_RUNTIME_ENTRIES} entries.`,
+        },
+      };
+    }
+    envelopes.push({
+      bookId,
+      encodedBookId: encodeIdentityComponent(bookId),
+      bookIndex,
+      rawBook,
+      entries,
+    });
+  }
+
+  // Identities are checked in a bounded, allocation-free pass before entry
+  // references or encoded per-entry keys are constructed.
+  for (const envelope of envelopes) {
+    for (let entryIndex = 0; entryIndex < envelope.entries.length; entryIndex += 1) {
+      const rawEntry = envelope.entries[entryIndex];
+      if (!record(rawEntry)) continue;
+      if ((typeof rawEntry.id === 'string' && rawEntry.id.length > MAX_WORLDBOOK_IDENTITY_CHARACTERS)
+        || (typeof rawEntry.sourceUid === 'string'
+          && rawEntry.sourceUid.length > MAX_WORLDBOOK_IDENTITY_CHARACTERS)) {
+        return {
+          envelopes: [],
+          issue: {
+            code: 'identity_limit',
+            message: `Worldbook identities are limited to ${MAX_WORLDBOOK_IDENTITY_CHARACTERS} characters.`,
+          },
+        };
+      }
+      const nestedCollections: unknown[] = [rawEntry.keys, rawEntry.secondaryKeys, rawEntry.triggers];
+      for (const filter of [rawEntry.characterFilter, rawEntry.personaFilter]) {
+        if (record(filter)) nestedCollections.push(filter.names, filter.tags);
+      }
+      if (nestedCollections.some((value) => Array.isArray(value)
+        && value.length > MAX_WORLDBOOK_KEYS_PER_ENTRY)) {
+        return {
+          envelopes: [],
+          issue: {
+            code: 'entry_collection_limit',
+            message: `Worldbook entry collections are limited to ${MAX_WORLDBOOK_KEYS_PER_ENTRY} items each.`,
+          },
+        };
+      }
+    }
+  }
+  return { envelopes };
+}
+
+function collectRawEntries(envelopes: readonly RawBookEnvelope[]): RawEntryReference[] {
+  const seeds: Array<Omit<RawEntryReference, 'entryKey' | 'duplicateIdentity'> & {
+    baseKey: string;
+    stableId: string;
+  }> = [];
+  const baseCounts = new Map<string, number>();
+  for (const envelope of envelopes) {
+    for (let entryIndex = 0; entryIndex < envelope.entries.length; entryIndex += 1) {
+      const rawEntry = envelope.entries[entryIndex];
       const source = record(rawEntry) ? rawEntry : {};
       const sourceUid = safeUid(source.sourceUid, entryIndex);
       const sourceOrdinal = Number.isSafeInteger(source.sourceOrdinal) && Number(source.sourceOrdinal) >= 0
         ? Number(source.sourceOrdinal)
         : entryIndex;
-      const baseKey = `${encodeIdentityComponent(bookId)}|${uidIdentity(sourceUid)}@${sourceOrdinal}`;
-      const collision = collisions.get(baseKey) ?? 0;
-      collisions.set(baseKey, collision + 1);
-      references.push({
-        entryKey: collision === 0 ? baseKey : `${baseKey}#${collision}`,
-        bookId,
-        bookIndex,
+      const baseKey = `${envelope.encodedBookId}|${uidIdentity(sourceUid)}@${sourceOrdinal}`;
+      const stableId = encodeIdentityComponent(typeof source.id === 'string' ? source.id : `invalid-${entryIndex}`);
+      baseCounts.set(baseKey, (baseCounts.get(baseKey) ?? 0) + 1);
+      seeds.push({
+        baseKey,
+        stableId,
+        bookId: envelope.bookId,
+        bookIndex: envelope.bookIndex,
         entryIndex,
         sourceUid,
         sourceOrdinal,
         rawEntry,
-        rawBook,
+        rawBook: envelope.rawBook,
       });
-    });
-  });
-  return references;
+    }
+  }
+  const keys = seeds.map((seed) => baseCounts.get(seed.baseKey) === 1
+    ? seed.baseKey
+    : `${seed.baseKey}#id:${seed.stableId}`);
+  const keyCounts = new Map<string, number>();
+  for (const key of keys) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+  return seeds.map(({ baseKey: _baseKey, stableId: _stableId, ...seed }, index) => ({
+    ...seed,
+    entryKey: keys[index]!,
+    duplicateIdentity: (keyCounts.get(keys[index]!) ?? 0) > 1,
+  }));
 }
 
 function scanCharacterCount(input: WorldbookEvaluationInput): number {
@@ -403,11 +506,13 @@ function prepareEntries(
 ): PreparedWorldbookEntry[] {
   const prepared: PreparedWorldbookEntry[] = [];
   for (const reference of references) {
-    if (!validEntry(reference.rawEntry)) {
+    if (reference.duplicateIdentity || !validEntry(reference.rawEntry)) {
       reasons.set(reference.entryKey, 'invalid_entry');
       collector.warn({
         code: 'invalid_entry',
-        message: 'A malformed Worldbook entry was excluded while valid siblings continued.',
+        message: reference.duplicateIdentity
+          ? 'Worldbook entries with the same stable identity were rejected.'
+          : 'A malformed Worldbook entry was excluded while valid siblings continued.',
         entryKey: reference.entryKey,
         bookId: reference.bookId,
       });
@@ -503,7 +608,11 @@ function outputExclusions(
 }
 
 export function evaluateWorldbooks(input: WorldbookEvaluationInput): WorldbookEvaluationResult {
-  const references = collectRawEntries(Array.isArray(input.books) ? input.books : []);
+  const preflight = preflightBookEnvelopes(input.books);
+  if (preflight.issue !== undefined) {
+    return limitResult([], input, preflight.issue.code, preflight.issue.message);
+  }
+  const references = collectRawEntries(preflight.envelopes);
   const inputIssue = validateGlobalInput(input, references);
   if (inputIssue !== undefined) return limitResult(references, input, inputIssue.code, inputIssue.message);
 
@@ -604,14 +713,18 @@ export function evaluateWorldbooks(input: WorldbookEvaluationInput): WorldbookEv
       break;
     }
 
-    const activeGroups = new Set([...selected.values()].flatMap((candidate) => entryGroups(candidate.prepared.entry.group)));
+    const activeGroups = new Set([...selected.values()]
+      .map((candidate) => candidate.prepared.entry.group)
+      .filter((group) => group !== ''));
     const grouped = filterWorldbookGroups({
       candidates: matches.sort(compareMatchedEntries),
       alreadyActiveGroups: activeGroups,
       stickyEntryKeys: timed.stickyEntryKeys,
       settings,
       random,
-      exclude: (prepared, reason) => reasons.set(prepared.entryKey, reason),
+      exclude: (prepared, reason) => {
+        if (reasons.get(prepared.entryKey) !== 'group_loser') reasons.set(prepared.entryKey, reason);
+      },
     });
     const newlySelected: MatchedWorldbookEntry[] = [];
     for (const candidate of grouped) {
@@ -635,7 +748,7 @@ export function evaluateWorldbooks(input: WorldbookEvaluationInput): WorldbookEv
     const hasUnresolvedEntries = preparedEntries.some((prepared) => !selected.has(prepared.entryKey)
       && !probabilityFailed.has(prepared.entryKey));
     if (settings.recursiveScanning && recursiveContent.length > 0 && hasUnresolvedEntries) {
-      recursionText.push(...recursiveContent);
+      recursionText.push(recursiveContent.join('\n'));
       mode = 'recursion';
       recursionLevel += 1;
       activationStep += 1;
@@ -690,7 +803,11 @@ export function evaluateWorldbooks(input: WorldbookEvaluationInput): WorldbookEv
     }
   }
 
-  const budgetCandidates = [...selected.values()].sort(compareMatchedEntries);
+  const budgetCandidates = [...selected.values()].sort((left, right) => {
+    const leftSticky = left.activation === 'sticky' ? 1 : 0;
+    const rightSticky = right.activation === 'sticky' ? 1 : 0;
+    return rightSticky - leftSticky || compareMatchedEntries(left, right);
+  });
   const budget = allocateWorldbookBudget({
     candidates: budgetCandidates,
     budget: input.tokenBudget,

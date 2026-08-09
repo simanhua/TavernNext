@@ -3,6 +3,9 @@ import { evaluateWorldbooks, type WorldbookEvaluationResult } from '../../src/in
 import { evaluationInput, runtimeBook, worldbookEntry } from './fixtures.js';
 import {
   loadSillyTavern118WorldbookOracle,
+  ORACLE_ACTIVE_MULTI_GROUP_FIXTURE,
+  ORACLE_BUDGET_FIXTURE,
+  ORACLE_GROUP_ORDER_FIXTURE,
   ORACLE_MATCH_FIXTURE,
   ORACLE_TIMED_FIXTURE,
   type OracleEntryFixture,
@@ -21,13 +24,41 @@ function bookFrom(fixtures: readonly OracleEntryFixture[]) {
     enabled: fixture.enabled ?? true,
     group: fixture.group ?? '',
     groupWeight: fixture.groupWeight ?? 100,
+    groupOverride: fixture.groupOverride ?? false,
     useProbability: fixture.useProbability ?? false,
     probability: fixture.probability ?? 100,
     triggers: fixture.triggers ?? [],
     sticky: fixture.sticky ?? null,
     cooldown: fixture.cooldown ?? null,
+    preventRecursion: fixture.preventRecursion ?? false,
     characterFilter: fixture.characterFilter ?? { isExclude: false, names: [], tags: [] },
   })));
+}
+
+function activationProjection(result: WorldbookEvaluationResult) {
+  return {
+    activated: result.activated.map((entry) => ({
+      uid: String(entry.sourceUid), content: entry.content, order: entry.order,
+    })),
+    excluded: result.excluded.map((entry) => ({ uid: String(entry.sourceUid), reason: entry.reason })),
+  };
+}
+
+function budgetProjection(budget: number) {
+  const tokenizerInputs: string[] = [];
+  const result = evaluateWorldbooks(evaluationInput([bookFrom(ORACLE_BUDGET_FIXTURE)], {
+    tokenBudget: budget,
+    tokenizer: { countText: (text) => {
+      tokenizerInputs.push(text);
+      return text.length;
+    } },
+  }));
+  return {
+    activated: result.activated.map((entry) => String(entry.sourceUid)),
+    excluded: result.excluded.filter((entry) => entry.reason === 'budget').map((entry) => String(entry.sourceUid)),
+    tokenizerInputs,
+    tokenUsage: result.tokenUsage,
+  };
 }
 
 function projection(result: WorldbookEvaluationResult): OracleProjection {
@@ -57,6 +88,7 @@ describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 Worldbook
       packageName: 'sillytavern',
       version: '1.18.0',
       revision: '8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8',
+      revisionVerifiedBy: 'git rev-parse HEAD',
       execution: 'read-only hash-pinned upstream WorldInfoBuffer, WorldInfoTimedEffects, grouping, and checkWorldInfo',
       declarations: [
         'parseRegexFromString', 'WorldInfoBuffer', 'WorldInfoTimedEffects',
@@ -88,5 +120,26 @@ describe.runIf(oracleRoot !== undefined)('read-only SillyTavern 1.18.0 Worldbook
     expect(projection(started)).toEqual(oracle.timed.started);
     expect(projection(held)).toEqual(oracle.timed.held);
     expect(projection(cooling)).toEqual(oracle.timed.cooling);
+
+    const groupOrder = evaluateWorldbooks(evaluationInput([bookFrom(ORACLE_GROUP_ORDER_FIXTURE)], {
+      seed: 1,
+      tokenBudget: 64,
+    }));
+    expect(projection(groupOrder)).toEqual(oracle.groups.firstOccurrence);
+
+    const activeMultiGroup = evaluateWorldbooks(evaluationInput([
+      runtimeBook('oracle', bookFrom(ORACLE_ACTIVE_MULTI_GROUP_FIXTURE).book.entries, { recursiveScanning: true }),
+    ], {
+      seed: 1,
+      scanSources: { messages: ['alpha'], additional: [], trigger: 'normal' },
+      tokenBudget: 64,
+    }));
+    expect(activationProjection(activeMultiGroup)).toEqual({
+      activated: oracle.groups.activeMultiGroup.activated,
+      excluded: oracle.groups.activeMultiGroup.excluded,
+    });
+
+    expect(budgetProjection(4)).toEqual(oracle.budget.fits);
+    expect(budgetProjection(3)).toEqual(oracle.budget.boundary);
   });
 });

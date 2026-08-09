@@ -22,7 +22,8 @@ export function comparePreparedEntries(left: PreparedWorldbookEntry, right: Prep
   if (left.entry.sourceOrdinal !== right.entry.sourceOrdinal) {
     return left.entry.sourceOrdinal - right.entry.sourceOrdinal;
   }
-  return left.entryIndex - right.entryIndex;
+  if (left.entry.id !== right.entry.id) return left.entry.id < right.entry.id ? -1 : 1;
+  return 0;
 }
 
 export function compareMatchedEntries(left: MatchedWorldbookEntry, right: MatchedWorldbookEntry): number {
@@ -64,8 +65,7 @@ export function filterWorldbookGroups(input: {
   exclude: (entry: PreparedWorldbookEntry, reason: WorldbookExclusionReason) => void;
 }): MatchedWorldbookEntry[] {
   const selected = new Set(input.candidates);
-  const groupNames = [...new Set(input.candidates.flatMap((candidate) => entryGroups(candidate.prepared.entry.group)))]
-    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  const groupNames = [...new Set(input.candidates.flatMap((candidate) => entryGroups(candidate.prepared.entry.group)))];
 
   const remove = (candidate: MatchedWorldbookEntry, reason: WorldbookExclusionReason): void => {
     if (!selected.delete(candidate)) return;

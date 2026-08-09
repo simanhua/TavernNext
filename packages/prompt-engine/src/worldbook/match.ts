@@ -1,8 +1,9 @@
-import safeRegex from 'safe-regex2';
+import { RE2JS } from 're2js';
 import type { NormalizedWorldbookEntry } from '@tavernnext/st-compat';
 import {
   MAX_WORLDBOOK_MATCH_OPERATIONS,
   MAX_WORLDBOOK_REGEX_CHARACTERS,
+  MAX_WORLDBOOK_REGEX_PROGRAM_SIZE,
   type PreparedWorldbookEntry,
   type WorldbookEvaluationSettings,
   type WorldbookExclusionReason,
@@ -46,7 +47,7 @@ function parseDelimitedRegex(value: string):
   | { kind: 'literal' }
   | { kind: 'invalid' }
   | { kind: 'unsafe' }
-  | { kind: 'regex'; regex: RegExp } {
+  | { kind: 'regex'; test: (value: string) => boolean } {
   if (!value.startsWith('/')) return { kind: 'literal' };
   const match = /^\/([\s\S]+?)\/([gimsuy]*)$/.exec(value);
   if (match === null) return { kind: 'invalid' };
@@ -55,14 +56,46 @@ function parseDelimitedRegex(value: string):
   if (pattern.length > MAX_WORLDBOOK_REGEX_CHARACTERS || /(^|[^\\])\//.test(pattern)) {
     return { kind: 'invalid' };
   }
+  if (new Set(flags).size !== flags.length) return { kind: 'invalid' };
   const unescapedPattern = pattern.replaceAll('\\/', '/');
+  if (hasUnsupportedRegexSyntax(unescapedPattern)) return { kind: 'unsafe' };
   try {
-    const regex = new RegExp(unescapedPattern, flags);
-    if (!safeRegex(regex)) return { kind: 'unsafe' };
-    return { kind: 'regex', regex };
+    let re2Flags = 0;
+    if (flags.includes('i')) re2Flags |= RE2JS.CASE_INSENSITIVE;
+    if (flags.includes('m')) re2Flags |= RE2JS.MULTILINE;
+    if (flags.includes('s')) re2Flags |= RE2JS.DOTALL;
+    const regex = RE2JS.compile(RE2JS.translateRegExp(unescapedPattern), re2Flags);
+    if (regex.programSize() > MAX_WORLDBOOK_REGEX_PROGRAM_SIZE) return { kind: 'unsafe' };
+    const sticky = flags.includes('y');
+    return {
+      kind: 'regex',
+      test: sticky
+        ? (text) => regex.matcher(text).lookingAt()
+        : (text) => regex.test(text),
+    };
   } catch {
     return { kind: 'invalid' };
   }
+}
+
+/**
+ * Reject JavaScript constructs outside RE2's linear-time language. This scans
+ * syntax only; user patterns are never compiled or executed by native RegExp.
+ */
+function hasUnsupportedRegexSyntax(pattern: string): boolean {
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (pattern[index] === '\\') {
+      const escaped = pattern[index + 1];
+      if ((escaped !== undefined && escaped >= '1' && escaped <= '9') || escaped === 'k') return true;
+      index += 1;
+      continue;
+    }
+    if (pattern[index] !== '(' || pattern[index + 1] !== '?') continue;
+    const operator = pattern[index + 2];
+    if (operator === '=' || operator === '!' || operator === '>' || operator === '(') return true;
+    if (operator === '<' && (pattern[index + 3] === '=' || pattern[index + 3] === '!')) return true;
+  }
+  return false;
 }
 
 function matchKey(
@@ -82,8 +115,7 @@ function matchKey(
     if (parsed.kind === 'invalid') return { matched: false, issue: 'invalid_regex' };
     if (parsed.kind === 'unsafe') return { matched: false, issue: 'unsafe_regex' };
     if (parsed.kind === 'regex') {
-      parsed.regex.lastIndex = 0;
-      return { matched: parsed.regex.test(haystack) };
+      return { matched: parsed.test(haystack) };
     }
   }
 

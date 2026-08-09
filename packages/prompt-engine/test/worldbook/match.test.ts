@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { evaluateWorldbooks } from '../../src/index.js';
 import { evaluationInput, runtimeBook, worldbookEntry } from './fixtures.js';
 
@@ -133,18 +133,48 @@ describe('Worldbook keyword matching', () => {
     expect(excludedReason(result, 'persona-exclude')).toBe('persona_filter');
   });
 
-  it('warns on invalid and unsafe regexes while valid entries continue', () => {
+  it('warns on invalid and unsupported regexes while valid entries continue', () => {
     const result = evaluateWorldbooks(evaluationInput([
       runtimeBook('regex-safety', [
         worldbookEntry('invalid', { keys: ['/[a-/'] }),
-        worldbookEntry('unsafe', { keys: ['/^(a+)+$/'] }),
+        worldbookEntry('linear-nested', { keys: ['/^(a+)+$/'] }),
+        worldbookEntry('unsupported', { keys: ['/^(a+)\\1$/'] }),
         worldbookEntry('valid', { keys: ['safe'], content: 'valid' }),
       ]),
     ], { scanSources: { messages: [`${'a'.repeat(20_000)}! safe`], additional: [], trigger: 'normal' } }));
 
     expect(activatedUids(result)).toEqual(['valid']);
     expect(excludedReason(result, 'invalid')).toBe('invalid_regex');
-    expect(excludedReason(result, 'unsafe')).toBe('unsafe_regex');
+    expect(excludedReason(result, 'linear-nested')).toBe('primary_key_miss');
+    expect(excludedReason(result, 'unsupported')).toBe('unsafe_regex');
     expect(result.warnings.map((warning) => warning.code)).toEqual(['invalid_regex', 'unsafe_regex']);
+  });
+
+  it('never executes overlapping-alternative user patterns through native RegExp.test', () => {
+    const originalTest = RegExp.prototype.test;
+    const nativeTest = vi.spyOn(RegExp.prototype, 'test').mockImplementation(function guardedNativeTest(
+      this: RegExp,
+      value: string,
+    ) {
+      if (this.source === '(a|aa)+$') throw new Error('catastrophic user regex reached native execution');
+      return originalTest.call(this, value);
+    });
+    try {
+      const result = evaluateWorldbooks(evaluationInput([
+        runtimeBook('linear-regex', [
+          worldbookEntry('adversarial', { keys: ['/(a|aa)+$/'] }),
+          worldbookEntry('sibling', { keys: ['safe'], content: 'safe' }),
+        ]),
+      ], {
+        scanSources: {
+          messages: [`${'a'.repeat(100_000)}! safe`], additional: [], trigger: 'normal',
+        },
+      }));
+
+      expect(activatedUids(result)).toEqual(['sibling']);
+      expect(excludedReason(result, 'adversarial')).toBe('primary_key_miss');
+    } finally {
+      nativeTest.mockRestore();
+    }
   });
 });

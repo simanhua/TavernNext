@@ -16,27 +16,77 @@ function hashText(value: string): string {
 }
 export function fingerprintPreparedEntry(prepared: Omit<PreparedWorldbookEntry, 'fingerprint'>): string {
   const { entry } = prepared;
-  return hashText(JSON.stringify([
-    prepared.entryKey,
-    entry.content,
-    entry.keys,
-    entry.secondaryKeys,
-    entry.constant,
-    entry.group,
-    entry.sticky,
-    entry.cooldown,
-    entry.delay,
-    entry.enabled,
-  ]));
+  const canonical = JSON.stringify({
+    version: 2,
+    entryKey: prepared.entryKey,
+    bookScanDepth: prepared.bookScanDepth,
+    entry: {
+      id: entry.id,
+      sourceUid: entry.sourceUid,
+      sourceOrdinal: entry.sourceOrdinal,
+      keys: entry.keys,
+      secondaryKeys: entry.secondaryKeys,
+      useRegex: entry.useRegex,
+      selective: entry.selective,
+      selectiveLogic: entry.selectiveLogic,
+      constant: entry.constant,
+      vectorized: entry.vectorized,
+      probability: entry.probability,
+      useProbability: entry.useProbability,
+      group: entry.group,
+      groupWeight: entry.groupWeight,
+      groupOverride: entry.groupOverride,
+      priority: entry.priority,
+      order: entry.order,
+      position: entry.position,
+      depth: entry.depth,
+      role: entry.role,
+      ignoreBudget: entry.ignoreBudget,
+      scanDepth: entry.scanDepth,
+      caseSensitive: entry.caseSensitive,
+      matchWholeWords: entry.matchWholeWords,
+      useGroupScoring: entry.useGroupScoring,
+      excludeRecursion: entry.excludeRecursion,
+      preventRecursion: entry.preventRecursion,
+      delayUntilRecursion: entry.delayUntilRecursion,
+      sticky: entry.sticky,
+      cooldown: entry.cooldown,
+      delay: entry.delay,
+      characterFilter: {
+        isExclude: entry.characterFilter.isExclude,
+        names: entry.characterFilter.names,
+        tags: entry.characterFilter.tags,
+      },
+      personaFilter: {
+        isExclude: entry.personaFilter.isExclude,
+        names: entry.personaFilter.names,
+        tags: entry.personaFilter.tags,
+      },
+      matchPersonaDescription: entry.matchPersonaDescription,
+      matchCharacterDescription: entry.matchCharacterDescription,
+      matchCharacterPersonality: entry.matchCharacterPersonality,
+      matchCharacterDepthPrompt: entry.matchCharacterDepthPrompt,
+      matchScenario: entry.matchScenario,
+      matchCreatorNotes: entry.matchCreatorNotes,
+      content: entry.content,
+      enabled: entry.enabled,
+      outletName: entry.outletName,
+      triggers: entry.triggers,
+    },
+  });
+  return `v2:${canonical.length}:${hashText(canonical)}`;
 }
 
-function validEffect(value: WorldbookTimedEffect): boolean {
-  return typeof value.entryKey === 'string'
-    && typeof value.fingerprint === 'string'
-    && Number.isSafeInteger(value.start)
-    && Number.isSafeInteger(value.end)
-    && value.end >= value.start
-    && typeof value.protected === 'boolean';
+function validEffect(value: unknown): value is WorldbookTimedEffect {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as WorldbookTimedEffect).entryKey === 'string'
+    && typeof (value as WorldbookTimedEffect).fingerprint === 'string'
+    && Number.isSafeInteger((value as WorldbookTimedEffect).start)
+    && Number.isSafeInteger((value as WorldbookTimedEffect).end)
+    && (value as WorldbookTimedEffect).end >= (value as WorldbookTimedEffect).start
+    && typeof (value as WorldbookTimedEffect).protected === 'boolean';
 }
 
 function duration(value: number | null): number {
@@ -73,12 +123,20 @@ export function processWorldbookTimedEffects(input: {
 }): ProcessedTimedEffects {
   const sticky = new Map<string, WorldbookTimedEffect>();
   const cooldown = new Map<string, WorldbookTimedEffect>();
-  for (const effect of input.previous.cooldown) {
+  const invalidEffect = (): void => input.warn({
+    code: 'timed_effect_invalid',
+    message: 'A malformed Worldbook timed-state effect was ignored.',
+  });
+  for (const effect of input.previous.cooldown as readonly unknown[]) {
     if (validEffect(effect)) cooldown.set(effect.entryKey, copyEffect(effect));
+    else invalidEffect();
   }
 
-  for (const rawEffect of input.previous.sticky) {
-    if (!validEffect(rawEffect)) continue;
+  for (const rawEffect of input.previous.sticky as readonly unknown[]) {
+    if (!validEffect(rawEffect)) {
+      invalidEffect();
+      continue;
+    }
     const effect = copyEffect(rawEffect);
     const prepared = input.entries.get(effect.entryKey);
     if (prepared === undefined) {
