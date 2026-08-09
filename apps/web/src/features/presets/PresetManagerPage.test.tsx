@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
@@ -111,6 +111,37 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('PresetManagerPage', () => {
+  it('renders independently expandable Prompt, order-group, and advanced-settings cards', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+
+    const promptCards = screen.getAllByTestId('prompt-card');
+    expect(promptCards).toHaveLength(2);
+    expect(promptCards[0]!.hasAttribute('open')).toBe(true);
+    expect(promptCards[1]!.hasAttribute('open')).toBe(false);
+    expect(within(promptCards[0]!).getByText(/Main/)).not.toBeNull();
+    expect(within(promptCards[0]!).getByText(/system · Enabled/)).not.toBeNull();
+    expect(within(promptCards[1]!).getByText(/Post history/)).not.toBeNull();
+
+    await user.click(promptCards[1]!.querySelector('summary')!);
+    expect(promptCards[0]!.hasAttribute('open')).toBe(true);
+    expect(promptCards[1]!.hasAttribute('open')).toBe(true);
+
+    const orderCard = screen.getByTestId('prompt-order-card');
+    expect(orderCard.hasAttribute('open')).toBe(false);
+    await user.click(orderCard.querySelector('summary')!);
+    expect(orderCard.hasAttribute('open')).toBe(true);
+    expect(promptCards[0]!.hasAttribute('open')).toBe(true);
+    expect(promptCards[1]!.hasAttribute('open')).toBe(true);
+
+    const advanced = screen.getByTestId('advanced-settings');
+    expect(advanced.hasAttribute('open')).toBe(false);
+    await user.click(advanced.querySelector('summary')!);
+    expect(advanced.hasAttribute('open')).toBe(true);
+    expect(screen.getByLabelText('Executable settings JSON')).not.toBeNull();
+  });
+
   it('lists every family, edits typed Chat prompts, and preserves stable prompt order without exposing private values', async () => {
     const user = userEvent.setup();
     renderWithApp(<PresetManagerPage />);
