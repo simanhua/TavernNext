@@ -58,7 +58,7 @@ export function MessageList({
         const label = `${message.role} message ${content}`;
         return (
           <article className={`message message-${message.role}`} key={message.id}>
-            <header>{message.role === 'assistant' ? 'Assistant' : 'You'}</header>
+            <header>{message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.speakerLabel ?? 'System'}</header>
             {editingId === message.id ? (
               <form onSubmit={(event) => {
                 event.preventDefault();

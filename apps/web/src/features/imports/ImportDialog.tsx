@@ -9,9 +9,10 @@ export interface ImportDialogProps {
   title: string;
   onOpenChange: (open: boolean) => void;
   onCommitted: (receipt: ImportReceipt) => void;
+  commitImport?: (inspectionToken: string) => Promise<ImportReceipt>;
 }
 
-export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommitted }: ImportDialogProps) {
+export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommitted, commitImport = api.commitImport }: ImportDialogProps) {
   const inputId = useId();
   const [preview, setPreview] = useState<ImportPreviewData>();
   const [inspectError, setInspectError] = useState<string>();
@@ -60,7 +61,7 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
     setCommitting(true);
     setCommitError(undefined);
     try {
-      const receipt = await api.commitImport(token);
+      const receipt = await commitImport(token);
       if (inspectionEpoch.current !== operation) return;
       onCommitted(receipt);
       changeOpen(false);

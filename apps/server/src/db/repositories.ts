@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { ZodType } from 'zod';
@@ -149,6 +150,10 @@ export interface MessageRepository extends Repository<Message> {
 export interface MessageVariantRepository extends Repository<MessageVariant> {
   listByMessageId(messageId: string): MessageVariant[];
   listByConversationId(conversationId: string): MessageVariant[];
+}
+
+export interface ConversationRepository extends Repository<Conversation> {
+  createWithGreeting(input: CreateInput<Conversation>): Conversation;
 }
 
 type EntityRow = Record<string, unknown>;
@@ -584,7 +589,7 @@ export interface Repositories {
   worldbooks: WorldbookRepository;
   worldbookEntries: WorldbookEntryRepository;
   presets: Repository<Preset>;
-  conversations: Repository<Conversation>;
+  conversations: ConversationRepository;
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
@@ -596,16 +601,17 @@ export interface Repositories {
 
 export interface CreateRepositoriesOptions {
   snapshotIntegrityKey: Uint8Array;
+  createId?: () => string;
 }
 
 export function createRepositories(database: TavernDatabase, options: CreateRepositoriesOptions): Repositories {
-  return {
-    characters: createRepository(database, { table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
-    personas: createPersonaRepository(database),
-    worldbooks: createWorldbookRepository(database),
-    worldbookEntries: createWorldbookEntryRepository(database),
-    presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
-    conversations: createRepository(database, { table: entityTable(conversations), schema: ConversationSchema, toRow: (value) => ({
+  const charactersRepository = createRepository(database, {
+    table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }),
+  });
+  const messagesRepository = createMessageRepository(database);
+  const messageVariantsRepository = createMessageVariantRepository(database);
+  const baseConversations = createRepository(database, {
+    table: entityTable(conversations), schema: ConversationSchema, toRow: (value) => ({
       ...baseRow(value),
       characterId: value.characterId,
       personaId: value.personaId,
@@ -615,9 +621,41 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       instructPresetId: value.instructPresetId ?? null,
       systemPresetId: value.systemPresetId ?? null,
       title: value.title,
-    }), syncRelationships: syncConversationWorldbooks }),
-    messages: createMessageRepository(database),
-    messageVariants: createMessageVariantRepository(database),
+    }), syncRelationships: syncConversationWorldbooks,
+  });
+  const createId = options.createId ?? randomUUID;
+  const conversationsRepository: ConversationRepository = {
+    ...baseConversations,
+    createWithGreeting(input) {
+      return database.transaction(() => {
+        const character = charactersRepository.get(input.characterId);
+        if (character === undefined) throw new Error('character_not_found');
+        const conversation = baseConversations.create(input);
+        if (character.firstMessage === '') return conversation;
+        const message = messagesRepository.create({
+          id: createId(), conversationId: conversation.id, role: 'assistant',
+          content: character.firstMessage, activeVariantId: null,
+        });
+        const variants = [character.firstMessage, ...character.alternateGreetings].map((content, ordinal) => (
+          messageVariantsRepository.create({
+            id: createId(), messageId: message.id, ordinal, content, status: 'completed', finishReason: 'stop',
+          })
+        ));
+        const activated = messagesRepository.update(message.id, message.revision, { activeVariantId: variants[0]!.id });
+        if (!activated.ok) throw new Error('greeting_activation_failed');
+        return conversation;
+      });
+    },
+  };
+  return {
+    characters: charactersRepository,
+    personas: createPersonaRepository(database),
+    worldbooks: createWorldbookRepository(database),
+    worldbookEntries: createWorldbookEntryRepository(database),
+    presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
+    conversations: conversationsRepository,
+    messages: messagesRepository,
+    messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),

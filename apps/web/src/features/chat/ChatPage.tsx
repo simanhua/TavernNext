@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, errorCode, type Conversation } from '../../api/client.js';
 import { CharacterQuickCreate } from '../characters/CharacterQuickCreate.js';
 import { PersonaQuickCreate } from '../personas/PersonaQuickCreate.js';
+import { ImportDialog } from '../imports/ImportDialog.js';
 import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
@@ -22,6 +23,10 @@ export function ChatPage() {
   const [contextPresetId, setContextPresetId] = useState('');
   const [instructPresetId, setInstructPresetId] = useState('');
   const [systemPresetId, setSystemPresetId] = useState('');
+  const [chatImportOpen, setChatImportOpen] = useState(false);
+  const [chatImportTitle, setChatImportTitle] = useState('Imported chat');
+  const [chatTransferError, setChatTransferError] = useState<string>();
+  const creatingConversation = useRef<Promise<Conversation> | null>(null);
   const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters });
   const personas = useQuery({ queryKey: ['personas'], queryFn: api.listPersonas });
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.listProviders });
@@ -52,6 +57,7 @@ export function ChatPage() {
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
+  const exportChat = useMutation({ mutationFn: api.exportChat });
 
   const selectedProvider = providers.data?.find((provider) => provider.id === providerId);
   const requiredPrimaryKind = selectedProvider?.apiMode === 'text' ? 'text' : 'chat';
@@ -72,6 +78,22 @@ export function ChatPage() {
       systemPresetId,
     }),
   });
+
+  const createSelectedConversation = (): Promise<Conversation> => {
+    if (creatingConversation.current !== null) return creatingConversation.current;
+    const character = characters.data?.find((candidate) => candidate.id === characterId);
+    const attempt = createConversation.mutateAsync({
+      characterId,
+      personaId,
+      title: character === undefined ? 'New chat' : `${character.name} chat`,
+      ...selectedConfiguration(),
+    });
+    creatingConversation.current = attempt;
+    void attempt.finally(() => {
+      if (creatingConversation.current === attempt) creatingConversation.current = null;
+    }).catch(() => undefined);
+    return attempt;
+  };
 
   const ensureConfigured = async (target: Conversation): Promise<Conversation> => {
     if (!configurationReady) throw new Error('configuration_not_ready');
@@ -102,6 +124,12 @@ export function ChatPage() {
     }
   }, [activeConversationId, conversations.data]);
 
+  useEffect(() => {
+    if (activeConversationId !== null || personaId !== '') return;
+    const defaultPersona = personas.data?.find((persona) => persona.isDefault);
+    if (defaultPersona !== undefined) setPersonaId(defaultPersona.id);
+  }, [activeConversationId, personaId, personas.data]);
+
   const selectConversation = (id: string) => {
     setActiveConversationId(id === '' ? null : id);
     if (id === '') return;
@@ -122,20 +150,13 @@ export function ChatPage() {
     if (text === '' || generation.isActive) return;
     let target: Conversation | undefined = detail.data?.conversation;
     try {
-      const configuration = selectedConfiguration();
       if (target === undefined) {
-        const character = characters.data?.find((candidate) => candidate.id === characterId);
-        target = await createConversation.mutateAsync({
-          characterId,
-          personaId,
-          title: character === undefined ? 'New chat' : `${character.name} chat`,
-          ...configuration,
-        });
+        if (activeConversationId !== null) return;
+        target = await createSelectedConversation();
       } else {
         target = await ensureConfigured(target);
       }
-      setDraft('');
-      await generation.start(target, { mode: 'normal', userText: text });
+      await generation.start(target, { mode: 'normal', userText: text }, { onAccepted: () => setDraft('') });
     } catch {
       // Mutation state owns accessible feedback; keep the draft for retry.
     }
@@ -149,7 +170,8 @@ export function ChatPage() {
     || characters.isLoading
     || personas.isLoading
     || providers.isLoading
-    || presets.isLoading;
+    || presets.isLoading
+    || (activeConversationId !== null && detail.data === undefined);
 
   return (
     <main className="chat-page">
@@ -245,11 +267,60 @@ export function ChatPage() {
         ) : null}
         <details><summary>Add Character</summary><CharacterQuickCreate /></details>
         <details><summary>Add Persona</summary><PersonaQuickCreate /></details>
+        <label>
+          Imported chat title
+          <input value={chatImportTitle} onChange={(event) => setChatImportTitle(event.target.value)} />
+        </label>
+        <div className="chat-transfer-actions">
+          <button
+            type="button"
+            disabled={characterId === '' || personaId === '' || chatImportTitle.trim() === '' || generation.isActive}
+            onClick={() => { setChatTransferError(undefined); setChatImportOpen(true); }}
+          >Import chat</button>
+          <button
+            type="button"
+            disabled={activeConversationId === null || generation.isActive || exportChat.isPending}
+            onClick={() => {
+              if (activeConversationId === null) return;
+              setChatTransferError(undefined);
+              void exportChat.mutateAsync(activeConversationId).catch((error) => setChatTransferError(errorCode(error)));
+            }}
+          >Export chat</button>
+        </div>
+        <ImportDialog
+          open={chatImportOpen}
+          expectedKind="chat"
+          title="Import solo chat JSONL"
+          onOpenChange={setChatImportOpen}
+          commitImport={(inspectionToken) => api.commitChatImport(inspectionToken, {
+            characterId,
+            personaId,
+            title: chatImportTitle.trim(),
+          })}
+          onCommitted={(receipt) => {
+            if (receipt.entityId === undefined) {
+              setChatTransferError('chat_import_missing_entity');
+              return;
+            }
+            setActiveConversationId(receipt.entityId);
+            void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+          }}
+        />
+        {chatTransferError === undefined && exportChat.error === null
+          ? null
+          : <p role="alert">Chat transfer error: {chatTransferError ?? errorCode(exportChat.error)}</p>}
       </aside>
       <section className="chat-main">
         <header className="chat-header">
           <h2>{detail.data?.conversation.title ?? 'New conversation'}</h2>
           <div className="chat-header-actions">
+            {activeConversationId === null ? (
+              <button
+                type="button"
+                disabled={!prerequisitesReady || createConversation.isPending}
+                onClick={() => { void createSelectedConversation().catch(() => undefined); }}
+              >Start chat</button>
+            ) : null}
             {detail.data?.conversation === undefined ? null : <PromptPreviewDialog conversation={detail.data.conversation} userText={draft} />}
             <span className={`generation-status status-${generation.status}`}>{generation.status}</span>
           </div>

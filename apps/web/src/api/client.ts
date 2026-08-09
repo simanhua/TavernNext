@@ -237,6 +237,7 @@ export interface ProviderProfileView {
 }
 
 export interface MessageView extends Message {
+  speakerLabel?: string;
   variants: MessageVariant[];
 }
 
@@ -512,6 +513,14 @@ export const api = {
   commitImport: (inspectionToken: string) => request<ImportReceipt>('/api/imports/commit', {
     method: 'POST', body: JSON.stringify({ inspectionToken }),
   }),
+  commitChatImport: (inspectionToken: string, input: {
+    characterId: string;
+    personaId: string;
+    title: string;
+  }) => request<ImportReceipt>('/api/chats/imports/commit', {
+    method: 'POST', body: JSON.stringify({ inspectionToken, ...input }),
+  }),
+  exportChat: (id: string) => download(`/api/conversations/${id}/export?format=st-jsonl`),
   saveProvider: (input: {
     id?: string;
     revision?: number;

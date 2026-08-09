@@ -12,7 +12,8 @@ export function registerConversationRoutes(
     const { compatibility: ignoredCompatibility, ...safe } = conversation;
     void ignoredCompatibility;
     return safe;
-  }, (conversation) => generations.isConversationActive(conversation.id) ? 'generation_active' : undefined);
+  }, (conversation) => generations.isConversationActive(conversation.id) ? 'generation_active' : undefined,
+  (input) => repositories.conversations.createWithGreeting(input));
   app.get<{ Params: { id: string } }>('/api/conversations/:id/messages', async (request, reply) => {
     const conversation = repositories.conversations.get(request.params.id);
     if (conversation === undefined) return reply.status(404).send({ error: 'not_found' });
@@ -32,7 +33,16 @@ export function registerConversationRoutes(
             void ignoredVariantCompatibility;
             return safeVariant;
           });
-          return { ...safeMessage, variants };
+          const rawPayload = message.compatibility?.rawPayload;
+          const imported = typeof rawPayload === 'object' && rawPayload !== null && !Array.isArray(rawPayload)
+            ? rawPayload as Record<string, unknown>
+            : undefined;
+          const speakerLabel = message.role !== 'system'
+            ? undefined
+            : imported?.isSystem === false
+              ? 'Narrator'
+              : 'System';
+          return { ...safeMessage, ...(speakerLabel === undefined ? {} : { speakerLabel }), variants };
         });
       const { compatibility: ignoredConversationCompatibility, ...safeConversation } = conversation;
       void ignoredConversationCompatibility;

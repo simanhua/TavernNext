@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ChatPage } from './ChatPage.js';
 import { useChatUi } from './chat-store.js';
 import type { Conversation } from '../../api/client.js';
@@ -24,6 +24,7 @@ const ids = {
   generatedVariant: '018f0000-0000-7000-8000-000000000111',
   provider: '018f0000-0000-7000-8000-000000000108',
   chatPreset: '018f0000-0000-7000-8000-000000000109',
+  importedConversation: '018f0000-0000-7000-8000-000000000112',
 };
 
 const character = {
@@ -62,7 +63,8 @@ type MessageView = {
   createdAt: string;
   updatedAt: string;
   conversationId: string;
-  role: 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant';
+  speakerLabel?: string;
   content: string;
   activeVariantId: string | null;
   variants: Array<{
@@ -82,11 +84,15 @@ let conversations = [otherConversation];
 let conversationRevision = 0;
 let messages: MessageView[] = [];
 let generationCount = 0;
+let conversationCreateCount = 0;
+let seedGreetingOnCreate = false;
 let stopRequests = 0;
 let abortedRequests = 0;
 let holdFirstGeneration = false;
 let conversationCreateFailure = false;
 let generationNetworkFailure = false;
+let generationStartupFailureStatus: 409 | 422 | undefined;
+let generationAcceptedFailure = false;
 let messagePatchConflict = false;
 let messageDeleteFailure = false;
 let conversationConfigurationPatches = 0;
@@ -94,6 +100,10 @@ let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
 let promptPreviewRequests = 0;
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+let chatImportBlocking = false;
+let chatImportExpired = false;
+let chatCommitBodies: Array<Record<string, unknown>> = [];
+let chatExportRequests = 0;
 const encoder = new TextEncoder();
 const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
 
@@ -110,7 +120,18 @@ const server = setupServer(
       characterId: ids.character, personaId: ids.persona,
       providerId: ids.provider, presetId: ids.chatPreset,
     });
+    conversationCreateCount += 1;
     conversations = [otherConversation, conversation];
+    if (seedGreetingOnCreate) {
+      messages = [{
+        id: ids.assistantMessage, revision: 1, createdAt: now, updatedAt: now,
+        conversationId: ids.conversation, role: 'assistant', content: 'Greeting A', activeVariantId: ids.assistantVariant,
+        variants: [
+          { id: ids.assistantVariant, revision: 0, createdAt: now, updatedAt: now, messageId: ids.assistantMessage, ordinal: 0, content: 'Greeting A', status: 'completed', finishReason: 'stop' },
+          { id: ids.assistantSibling, revision: 0, createdAt: now, updatedAt: now, messageId: ids.assistantMessage, ordinal: 1, content: 'Greeting B', status: 'completed', finishReason: 'stop' },
+        ],
+      }];
+    }
     return HttpResponse.json(conversation, { status: 201 });
   }),
   http.patch('/api/conversations/:id', async ({ request }) => {
@@ -164,6 +185,9 @@ const server = setupServer(
   }),
   http.post('/api/conversations/:id/generations', async ({ request }) => {
     if (generationNetworkFailure) return HttpResponse.error();
+    if (generationStartupFailureStatus !== undefined) {
+      return HttpResponse.json({ error: `startup_${generationStartupFailureStatus}` }, { status: generationStartupFailureStatus });
+    }
     generationCount += 1;
     const body = await request.json() as Record<string, unknown>;
     const mode = String(body.mode);
@@ -205,6 +229,12 @@ const server = setupServer(
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(frame('started', { generationId: `generation-${generationCount}` }));
+        if (generationAcceptedFailure) {
+          controller.enqueue(frame('delta', { text: 'Accepted partial' }));
+          controller.enqueue(frame('failed', { code: 'accepted_stream_failed' }));
+          controller.close();
+          return;
+        }
         const completesImmediately = !holdFirstGeneration && (mode !== 'normal' || generationCount === 1);
         if (completesImmediately) {
           if (mode === 'normal') {
@@ -215,12 +245,14 @@ const server = setupServer(
             commitNonNormal();
           }
           if (mode === 'normal') {
+          const responseMessageId = seedGreetingOnCreate ? '018f0000-0000-7000-8000-000000000131' : ids.assistantMessage;
+          const responseVariantId = seedGreetingOnCreate ? '018f0000-0000-7000-8000-000000000132' : ids.assistantVariant;
           messages.push({
-            id: ids.assistantMessage, revision: 1, createdAt: now, updatedAt: now,
-            conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
+            id: responseMessageId, revision: 1, createdAt: now, updatedAt: now,
+            conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: responseVariantId,
             variants: [{
-              id: ids.assistantVariant, revision: 1, createdAt: now, updatedAt: now,
-              messageId: ids.assistantMessage, content: 'Hello', status: 'completed', finishReason: 'stop',
+              id: responseVariantId, revision: 1, createdAt: now, updatedAt: now,
+              messageId: responseMessageId, content: 'Hello', status: 'completed', finishReason: 'stop',
             }],
           });
           }
@@ -275,20 +307,55 @@ const server = setupServer(
     messages = messages.filter((message) => message.id !== params.id);
     return new HttpResponse(null, { status: 204 });
   }),
+  http.post('/api/imports/inspect', () => HttpResponse.json({
+    source: { fileName: 'import.jsonl', mediaType: 'application/x-ndjson', size: 10, sha256: 'chat-sha' },
+    detected: { container: 'jsonl', kind: 'chat', candidates: ['chat'] },
+    normalizedPreview: { header: { userName: 'Traveler', characterName: 'Aster' }, messages: [] },
+    warnings: [],
+    blockingErrors: chatImportBlocking ? [{ code: 'chat_blocked', message: 'Blocked chat fixture' }] : [],
+    ...(chatImportBlocking ? {} : { inspectionToken: 'chat-inspection-token', expiresAt: '2026-08-09T01:00:00.000Z' }),
+  }, { status: chatImportBlocking ? 422 : 200 })),
+  http.post('/api/chats/imports/commit', async ({ request }) => {
+    if (chatImportExpired) return HttpResponse.json({ error: 'inspection_token_expired' }, { status: 410 });
+    const body = await request.json() as Record<string, unknown>;
+    chatCommitBodies.push(body);
+    conversations.push({
+      ...conversation,
+      id: ids.importedConversation,
+      title: String(body.title),
+      characterId: String(body.characterId),
+      personaId: String(body.personaId),
+    });
+    return HttpResponse.json({ artifactId: '018f0000-0000-7000-8000-000000000113', entityId: ids.importedConversation }, { status: 201 });
+  }),
+  http.get('/api/conversations/:id/export', () => {
+    chatExportRequests += 1;
+    return new HttpResponse('{"user_name":"Traveler","character_name":"Aster"}\n', {
+      headers: {
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'content-disposition': 'attachment; filename="chat.jsonl"',
+      },
+    });
+  }),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
+  vi.restoreAllMocks();
   cleanup();
   conversations = [otherConversation];
   conversationRevision = 0;
   messages = [];
   generationCount = 0;
+  conversationCreateCount = 0;
+  seedGreetingOnCreate = false;
   stopRequests = 0;
   abortedRequests = 0;
   holdFirstGeneration = false;
   conversationCreateFailure = false;
   generationNetworkFailure = false;
+  generationStartupFailureStatus = undefined;
+  generationAcceptedFailure = false;
   messagePatchConflict = false;
   messageDeleteFailure = false;
   conversationConfigurationPatches = 0;
@@ -296,6 +363,10 @@ afterEach(() => {
   activeVariantSwitches = [];
   promptPreviewRequests = 0;
   activeStream = undefined;
+  chatImportBlocking = false;
+  chatImportExpired = false;
+  chatCommitBodies = [];
+  chatExportRequests = 0;
   useChatUi.setState({ activeConversationId: null, draft: '' });
 });
 afterAll(() => server.close());
@@ -312,6 +383,36 @@ function renderChatPage() {
 }
 
 describe('ChatPage', () => {
+  it('starts one persisted chat, shows and switches its greeting before the first provider request, then sends in place', async () => {
+    const user = userEvent.setup();
+    seedGreetingOnCreate = true;
+    renderChatPage();
+
+    await screen.findByRole('option', { name: 'Traveler' });
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
+    await user.dblClick(screen.getByRole('button', { name: 'Start chat' }));
+
+    expect(await screen.findByText('Greeting A')).not.toBeNull();
+    expect(screen.getByText('1 / 2')).not.toBeNull();
+    expect(conversationCreateCount).toBe(1);
+    expect(generationCount).toBe(0);
+    await user.click(screen.getByRole('button', { name: 'Next variant' }));
+    expect(await screen.findByText('Greeting B')).not.toBeNull();
+    expect(screen.getByText('2 / 2')).not.toBeNull();
+    expect(activeVariantSwitches).toEqual([ids.assistantSibling]);
+    expect(generationCount).toBe(0);
+
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'First question');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('Hello');
+    expect(conversationCreateCount).toBe(1);
+    expect(generationCount).toBe(1);
+    expect(messages.filter((message) => message.id === ids.assistantMessage)).toHaveLength(1);
+    expect(messages.find((message) => message.id === ids.assistantMessage)?.activeVariantId).toBe(ids.assistantSibling);
+  });
+
   it('opens Prompt Preview for the configured conversation without starting generation', async () => {
     const user = userEvent.setup();
     conversations = [conversation];
@@ -555,6 +656,105 @@ describe('ChatPage', () => {
     await user.type(composer, 'Will fail to send');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Generation error');
+    expect((composer as HTMLTextAreaElement).value).toBe('Will fail to send');
+  });
+
+  it.each([409, 422] as const)('retains the draft when generation startup returns HTTP %s', async (status) => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    generationStartupFailureStatus = status;
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+    await screen.findByRole('heading', { name: 'Aster chat' });
+    const composer = screen.getByRole('textbox', { name: 'Message' });
+    await user.type(composer, `Retry after ${status}`);
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(`startup_${status}`);
+    expect((composer as HTMLTextAreaElement).value).toBe(`Retry after ${status}`);
+  });
+
+  it('does not restore a draft after the stream was accepted and then failed with partial output', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    generationAcceptedFailure = true;
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+    await screen.findByRole('heading', { name: 'Aster chat' });
+    const composer = screen.getByRole('textbox', { name: 'Message' });
+    await user.type(composer, 'Accepted then failed');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect((composer as HTMLTextAreaElement).value).toBe(''));
+    expect((await screen.findByRole('alert')).textContent).toContain('Generation error');
+  });
+
+  it('selects the default Persona for a new chat and imports then exports solo JSONL through the UI', async () => {
+    const user = userEvent.setup();
+    const createObjectUrl = vi.fn(() => 'blob:chat-export');
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderChatPage();
+
+    await screen.findByRole('option', { name: 'Traveler' });
+    const personaSelect = screen.getByRole('combobox', { name: 'Persona' }) as HTMLSelectElement;
+    await waitFor(() => expect(personaSelect.value).toBe(ids.persona));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
+    const title = screen.getByRole('textbox', { name: 'Imported chat title' });
+    await user.clear(title);
+    await user.type(title, 'Imported from UI');
+    await user.click(screen.getByRole('button', { name: 'Import chat' }));
+    const file = new File(['{"user_name":"Traveler","character_name":"Aster"}\n'], 'chat.jsonl', { type: 'application/x-ndjson' });
+    await user.upload(await screen.findByLabelText('Choose a file'), file);
+    await user.click(await screen.findByRole('button', { name: 'Commit import' }));
+
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Conversation' }) as HTMLSelectElement).value).toBe(ids.importedConversation));
+    expect(chatCommitBodies).toEqual([{
+      inspectionToken: 'chat-inspection-token',
+      characterId: ids.character,
+      personaId: ids.persona,
+      title: 'Imported from UI',
+    }]);
+    await user.click(screen.getByRole('button', { name: 'Export chat' }));
+    await waitFor(() => expect(chatExportRequests).toBe(1));
+    expect(createObjectUrl).toHaveBeenCalledOnce();
+    expect(anchorClick).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:chat-export');
+  });
+
+  it('blocks invalid chat imports and reports an expired inspection token', async () => {
+    const user = userEvent.setup();
+    renderChatPage();
+    await screen.findByRole('option', { name: 'Traveler' });
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
+    await user.click(screen.getByRole('button', { name: 'Import chat' }));
+    const file = new File(['{}\n'], 'chat.jsonl', { type: 'application/x-ndjson' });
+    chatImportBlocking = true;
+    await user.upload(await screen.findByLabelText('Choose a file'), file);
+    expect(await screen.findByText('Blocked chat fixture')).not.toBeNull();
+    expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Cancel import' }));
+
+    chatImportBlocking = false;
+    chatImportExpired = true;
+    await user.click(screen.getByRole('button', { name: 'Import chat' }));
+    await user.upload(await screen.findByLabelText('Choose a file'), file);
+    await user.click(await screen.findByRole('button', { name: 'Commit import' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('inspection_token_expired');
+  });
+
+  it('renders user, assistant, system, and narrator speaker labels distinctly', async () => {
+    conversations = [conversation];
+    messages = [
+      { id: '018f0000-0000-7000-8000-000000000121', revision: 0, createdAt: now, updatedAt: now, conversationId: ids.conversation, role: 'system', speakerLabel: 'System', content: 'Policy', activeVariantId: null, variants: [] },
+      { id: '018f0000-0000-7000-8000-000000000122', revision: 0, createdAt: now, updatedAt: now, conversationId: ids.conversation, role: 'system', speakerLabel: 'Narrator', content: 'Rain fell', activeVariantId: null, variants: [] },
+      { id: ids.userMessage, revision: 0, createdAt: now, updatedAt: now, conversationId: ids.conversation, role: 'user', content: 'Hello', activeVariantId: null, variants: [] },
+    ];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+    expect(await screen.findByText('Policy')).not.toBeNull();
+    const articles = screen.getAllByRole('article');
+    expect(articles.map((article) => article.querySelector('header')?.textContent)).toEqual(['System', 'Narrator', 'You']);
   });
 
   it('reports revision conflicts and delete network failures', async () => {

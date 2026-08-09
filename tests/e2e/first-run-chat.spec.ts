@@ -69,8 +69,14 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await page.getByLabel('Persona').selectOption({ label: 'E2E Traveler' });
   await page.getByLabel('Provider').selectOption({ label: 'Local Mock' });
   await page.getByLabel('Chat preset').selectOption({ label: 'Synthetic Chat Settings' });
+  await page.getByRole('button', { name: 'Start chat' }).click();
+  await expect(page.locator('article.message-assistant')).toHaveCount(1);
+  await expect(page.locator('article.message-assistant').first()).toContainText('Ready for the local test.');
+  expect(stack.provider.requests).toHaveLength(0);
   await page.locator('#chat-draft').fill('Open the local gate');
   await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.locator('article.message-assistant')).toHaveCount(2);
+  await expect(page.locator('article.message-assistant').first()).toContainText('Ready for the local test.');
   await expect(page.locator('article.message-assistant').last()).toContainText('First answer');
   await expect(page.getByLabel('Response variants')).toContainText('1 / 1');
 

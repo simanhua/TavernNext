@@ -31,6 +31,7 @@ export function registerCrudRoutes<T extends MutableEntity>(
   repository: Repository<T>,
   serialize: (value: T) => unknown = (value) => value,
   mutationGuard?: (value: T) => string | undefined,
+  createValue: (input: CreateInput<T>) => T = (input) => repository.create(input),
 ): void {
   app.get(path, async () => repository.list().map(serialize));
   app.get<{ Params: IdParameters }>(`${path}/:id`, async (request, reply) => {
@@ -39,7 +40,7 @@ export function registerCrudRoutes<T extends MutableEntity>(
   });
   app.post<{ Body: unknown }>(path, async (request, reply) => {
     try {
-      return reply.status(201).send(serialize(repository.create(request.body as CreateInput<T>)));
+      return reply.status(201).send(serialize(createValue(request.body as CreateInput<T>)));
     } catch {
       return reply.status(400).send({ error: 'invalid_request' });
     }

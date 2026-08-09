@@ -17,6 +17,9 @@ export interface ActiveGenerationTarget {
   baseContent: string;
 }
 
+export type GenerationStartOutcome = 'accepted' | 'rejected' | 'busy';
+export interface GenerationStartOptions { onAccepted?: () => void }
+
 export function useGeneration() {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<GenerationStatus>('idle');
@@ -46,9 +49,14 @@ export function useGeneration() {
     ]);
   }, [queryClient]);
 
-  const start = useCallback(async (conversation: Conversation, input: GenerationStartInput) => {
-    if (active.current) return;
+  const start = useCallback(async (
+    conversation: Conversation,
+    input: GenerationStartInput,
+    options: GenerationStartOptions = {},
+  ): Promise<GenerationStartOutcome> => {
+    if (active.current) return 'busy';
     active.current = true;
+    let accepted = false;
     const controller = new AbortController();
     activeRequest.current = controller;
     setStatus('starting');
@@ -67,8 +75,12 @@ export function useGeneration() {
         : { mode: input.mode }, controller.signal);
       let terminal = false;
       for await (const event of readGenerationEvents(response, controller.signal)) {
-        if (!mounted.current) return;
+        if (!mounted.current) return accepted ? 'accepted' : 'rejected';
         if (event.type === 'started') {
+          if (!accepted) {
+            accepted = true;
+            options.onAccepted?.();
+          }
           generationId.current = event.generationId;
           setStatus('streaming');
         } else if (event.type === 'delta') {
@@ -77,7 +89,7 @@ export function useGeneration() {
           terminal = true;
           if (event.type === 'failed') setError(event.code);
           await refreshAuthoritativeState(conversation.id);
-          if (!mounted.current) return;
+          if (!mounted.current) return accepted ? 'accepted' : 'rejected';
           setStreamedText('');
           setTarget(null);
           setStatus('idle');
@@ -87,17 +99,19 @@ export function useGeneration() {
         }
       }
       if (!terminal) throw new Error('Generation stream ended without a terminal event');
+      return accepted ? 'accepted' : 'rejected';
     } catch (generationError) {
-      if (!mounted.current || controller.signal.aborted) return;
+      if (!mounted.current || controller.signal.aborted) return accepted ? 'accepted' : 'rejected';
       setError(generationError instanceof Error ? generationError.message : 'generation_failed');
       await refreshAuthoritativeState(conversation.id).catch(() => undefined);
-      if (!mounted.current) return;
+      if (!mounted.current) return accepted ? 'accepted' : 'rejected';
       setStreamedText('');
       setTarget(null);
       setStatus('idle');
       active.current = false;
       activeRequest.current = null;
       generationId.current = null;
+      return accepted ? 'accepted' : 'rejected';
     }
   }, [refreshAuthoritativeState]);
 
