@@ -624,6 +624,7 @@ export function evaluateWorldbooks(input: WorldbookEvaluationInput): WorldbookEv
   const operations: MatchOperationBudget = {
     count: 0,
     workCharacters: 0,
+    legacyTransformWork: 0,
     regexCache: new Map(),
   };
   const selected = new Map<string, MatchedWorldbookEntry>();

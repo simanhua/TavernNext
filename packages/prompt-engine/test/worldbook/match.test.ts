@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RE2JS } from 're2js';
-import { evaluateWorldbooks } from '../../src/index.js';
+import {
+  evaluateWorldbooks,
+  matchWorldbookEntry,
+  type MatchOperationBudget,
+  type PreparedWorldbookEntry,
+} from '../../src/index.js';
 import { evaluationInput, runtimeBook, worldbookEntry } from './fixtures.js';
 
 function activatedUids(result: ReturnType<typeof evaluateWorldbooks>): Array<string | number> {
@@ -9,6 +14,31 @@ function activatedUids(result: ReturnType<typeof evaluateWorldbooks>): Array<str
 
 function excludedReason(result: ReturnType<typeof evaluateWorldbooks>, uid: string | number): string | undefined {
   return result.excluded.find((entry) => entry.sourceUid === uid)?.reason;
+}
+
+function preparedMatcherEntry(
+  uid: string,
+  key: string,
+): PreparedWorldbookEntry {
+  return {
+    entryKey: `test:${uid}`,
+    fingerprint: `test:${uid}`,
+    bookId: 'matcher-test',
+    bookName: 'matcher-test',
+    bookIndex: 0,
+    entryIndex: 0,
+    bookScanDepth: null,
+    entry: worldbookEntry(uid, { keys: [key] }),
+  };
+}
+
+function matcherOperations(): MatchOperationBudget {
+  return {
+    count: 0,
+    workCharacters: 0,
+    regexCache: new Map(),
+    legacyTransformWork: 0,
+  };
 }
 
 describe('Worldbook keyword matching', () => {
@@ -244,6 +274,52 @@ describe('Worldbook keyword matching', () => {
     expect(activatedUids(result).includes('unicode')).toBe(unicode);
   });
 
+  it.each([
+    { escape: '\\c0', target: 0x10 },
+    { escape: '\\c9', target: 0x19 },
+    { escape: '\\c_', target: 0x1f },
+  ])('matches native legacy character-class semantics for $escape', ({ escape, target }) => {
+    const native = new RegExp(`^[${escape}]$`, 'i');
+    const targetCharacter = String.fromCharCode(target);
+    expect(native.test(targetCharacter)).toBe(true);
+    expect(native.test('c')).toBe(false);
+
+    const result = evaluateWorldbooks(evaluationInput([
+      runtimeBook('legacy-class-control', [
+        worldbookEntry('target', { keys: [`/^\\x01[${escape}]$/i`] }),
+      ]),
+    ], { scanSources: { messages: [targetCharacter], additional: [], trigger: 'normal' } }));
+    const literalResult = evaluateWorldbooks(evaluationInput([
+      runtimeBook('legacy-class-control-literal', [
+        worldbookEntry('literal-c', { keys: [`/^\\x01[${escape}]$/i`] }),
+      ]),
+    ], { scanSources: { messages: ['c'], additional: [], trigger: 'normal' } }));
+
+    expect(activatedUids(result)).toEqual(['target']);
+    expect(activatedUids(literalResult)).toEqual([]);
+  });
+
+  it('agrees with native legacy matching for a mixed class across every UTF-16 code unit', () => {
+    const prepared = preparedMatcherEntry('full-domain-differential', '/^\\x01[À-ö]$/i');
+    const operations = matcherOperations();
+    const native = /^[À-ö]$/i;
+    const mismatches: number[] = [];
+
+    for (let codeUnit = 0; codeUnit <= 0xffff; codeUnit += 1) {
+      const character = String.fromCharCode(codeUnit);
+      const actual = matchWorldbookEntry({
+        prepared,
+        text: `\x01${character}`,
+        settings: {},
+        operations,
+        warn: () => undefined,
+      }).matched;
+      if (actual !== native.test(character)) mismatches.push(codeUnit);
+    }
+
+    expect(mismatches).toEqual([]);
+  }, 20_000);
+
   it('keeps the internal UTF-16 alphabet outside Unicode case-folding orbits', () => {
     const result = evaluateWorldbooks(evaluationInput([
       runtimeBook('legacy-token-alphabet', [
@@ -269,6 +345,59 @@ describe('Worldbook keyword matching', () => {
     expect(activatedUids(result)).toEqual(['valid']);
     expect(excludedReason(result, 'oversized')).toBe('unsafe_regex');
     expect(result.warnings.map((warning) => warning.code)).toContain('unsafe_regex');
+  });
+
+  it('transforms many singleton classes without full-domain work per class', () => {
+    const singletonCount = 330;
+    const key = `/^\\x01${'[a]'.repeat(singletonCount)}$/i`;
+    const prepared = preparedMatcherEntry('singleton-classes', key);
+    const operations = matcherOperations();
+    const NativeUint8Array = globalThis.Uint8Array;
+    let fullDomainAllocations = 0;
+    const TrackingUint8Array = new Proxy(NativeUint8Array, {
+      construct(target, args, newTarget) {
+        if (args[0] === 65_536) fullDomainAllocations += 1;
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+    vi.stubGlobal('Uint8Array', TrackingUint8Array);
+    try {
+      const result = matchWorldbookEntry({
+        prepared,
+        text: `\x01${'a'.repeat(singletonCount)}`,
+        settings: {},
+        operations,
+        warn: () => undefined,
+      });
+
+      expect(result.matched).toBe(true);
+      expect(fullDomainAllocations).toBe(0);
+      expect(operations.legacyTransformWork).toBeGreaterThan(0);
+      expect(operations.legacyTransformWork).toBeLessThan(10_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects an expanded legacy source before invoking the RE2 compiler', () => {
+    const key = `/^\\x01[\\u0000-\\uffff]${'é'.repeat(1_000)}$/i`;
+    const prepared = preparedMatcherEntry('expanded-source-cap', key);
+    const operations = matcherOperations();
+    const compile = vi.spyOn(RE2JS, 'compile');
+    try {
+      const result = matchWorldbookEntry({
+        prepared,
+        text: '\x01safe',
+        settings: {},
+        operations,
+        warn: () => undefined,
+      });
+
+      expect(result).toMatchObject({ matched: false, reason: 'unsafe_regex' });
+      expect(compile).not.toHaveBeenCalled();
+    } finally {
+      compile.mockRestore();
+    }
   });
 
   it('compiles each slash-delimited regex once per evaluation', () => {

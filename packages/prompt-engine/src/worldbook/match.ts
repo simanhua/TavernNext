@@ -18,6 +18,8 @@ const JOINER = `\n${MATCHER}`;
 export interface MatchOperationBudget {
   count: number;
   workCharacters: number;
+  /** Subset of workCharacters spent compiling legacy non-u regexes. */
+  legacyTransformWork: number;
   regexCache: Map<string, ParsedDelimitedRegex>;
 }
 
@@ -58,6 +60,7 @@ function escapeRegex(value: string): string {
 // into its two UTF-16 surrogate code units.
 const LEGACY_CODE_UNIT_TOKEN_BASE = 0xf0000;
 const MAX_LEGACY_CLASS_RANGE_WORK = 65_536;
+const MAX_LEGACY_TRANSFORMED_PATTERN_CHARACTERS = 12 * MAX_WORLDBOOK_REGEX_CHARACTERS;
 
 /**
  * ECMAScript's legacy (non-u) IgnoreCase Canonicalize operation works on one
@@ -88,6 +91,28 @@ interface LegacyClassAtom {
   nextIndex: number;
 }
 
+interface LegacyTransformBudget {
+  operations: MatchOperationBudget;
+  rangeWork: number;
+  outputCharacters: number;
+}
+
+function chargeLegacyTransformWork(budget: LegacyTransformBudget, amount: number): boolean {
+  if (!Number.isSafeInteger(amount) || amount < 0) return false;
+  if (amount > MAX_WORLDBOOK_MATCH_WORK_CHARACTERS - budget.operations.workCharacters) return false;
+  budget.operations.workCharacters += amount;
+  budget.operations.legacyTransformWork += amount;
+  return true;
+}
+
+function appendLegacyOutput(parts: string[], source: string, budget: LegacyTransformBudget): boolean {
+  if (source.length > MAX_LEGACY_TRANSFORMED_PATTERN_CHARACTERS - budget.outputCharacters) return false;
+  if (!chargeLegacyTransformWork(budget, source.length)) return false;
+  budget.outputCharacters += source.length;
+  parts.push(source);
+  return true;
+}
+
 function readLegacyClassAtom(value: string, index: number): LegacyClassAtom | undefined {
   const current = value[index];
   if (current === undefined || current === ']') return undefined;
@@ -116,9 +141,11 @@ function readLegacyClassAtom(value: string, index: number): LegacyClassAtom | un
     return { source: `\\${escaped}`, nextIndex: index + 2 };
   }
   const control = value[index + 2];
-  if (escaped === 'c' && control !== undefined && /[A-Za-z]/.test(control)) {
+  // Annex B extends ClassControlLetter with DecimalDigit and `_` only for
+  // legacy (non-u) character classes. All accepted forms use the low five bits.
+  if (escaped === 'c' && control !== undefined && /[A-Za-z0-9_]/.test(control)) {
     return {
-      codeUnit: control.toUpperCase().charCodeAt(0) % 32,
+      codeUnit: control.charCodeAt(0) % 32,
       source: value.slice(index, index + 3),
       nextIndex: index + 3,
     };
@@ -150,30 +177,41 @@ function renderEncodedRange(first: number, last: number): string {
   return `${start}-\\x{${encodedLegacyCodeUnit(last).toString(16)}}`;
 }
 
-function renderLegacyClassSet(set: Uint8Array): string {
-  let rendered = '';
-  const appendRuns = (first: number, last: number): void => {
-    for (let index = first; index <= last;) {
-      if (set[index] === 0) {
-        index += 1;
-        continue;
-      }
-      let end = index;
-      while (end < last && set[end + 1] === 1) end += 1;
-      rendered += renderEncodedRange(index, end);
-      index = end + 1;
+function renderLegacyClassSet(
+  set: ReadonlySet<number>,
+  budget: LegacyTransformBudget,
+): string | undefined {
+  // Charge collection, comparison-sort, and sparse rendering before each loop.
+  // Unlike the old bitmap renderer, work is proportional to represented values,
+  // never 65,536 visits for every singleton class.
+  if (!chargeLegacyTransformWork(budget, set.size)) return undefined;
+  const values = [...set];
+  const sortWork = values.length <= 1
+    ? values.length
+    : values.length * Math.ceil(Math.log2(values.length));
+  if (!chargeLegacyTransformWork(budget, sortWork)) return undefined;
+  values.sort((left, right) => left - right);
+  if (!chargeLegacyTransformWork(budget, values.length)) return undefined;
+
+  const rendered: string[] = [];
+  for (let index = 0; index < values.length;) {
+    const start = values[index]!;
+    let end = start;
+    index += 1;
+    // Encoding jumps between ASCII and non-ASCII, so a range cannot cross 0x7f.
+    while (index < values.length && values[index] === end + 1 && end !== 0x7f) {
+      end = values[index]!;
+      index += 1;
     }
-  };
-  // Encoding jumps between ASCII and non-ASCII, so a range cannot cross 0x7f.
-  appendRuns(0, 0x7f);
-  appendRuns(0x80, 0xffff);
-  return rendered;
+    if (!appendLegacyOutput(rendered, renderEncodedRange(start, end), budget)) return undefined;
+  }
+  return rendered.join('');
 }
 
 function transformLegacyCharacterClass(
   value: string,
   openIndex: number,
-  budget: { rangeWork: number },
+  budget: LegacyTransformBudget,
 ): { source: string; endIndex: number } | undefined {
   let index = openIndex + 1;
   let negated = false;
@@ -181,7 +219,7 @@ function transformLegacyCharacterClass(
     negated = true;
     index += 1;
   }
-  const set = new Uint8Array(65_536);
+  const set = new Set<number>();
   const opaque: string[] = [];
   while (index < value.length && value[index] !== ']') {
     const first = readLegacyClassAtom(value, index);
@@ -192,25 +230,39 @@ function transformLegacyCharacterClass(
       if (last.codeUnit < first.codeUnit) return undefined;
       const rangeWork = last.codeUnit - first.codeUnit + 1;
       if (rangeWork > MAX_LEGACY_CLASS_RANGE_WORK - budget.rangeWork) return undefined;
+      if (!chargeLegacyTransformWork(budget, rangeWork)) return undefined;
       budget.rangeWork += rangeWork;
       for (let codeUnit = first.codeUnit; codeUnit <= last.codeUnit; codeUnit += 1) {
-        set[canonicalizeLegacyCodeUnit(codeUnit)] = 1;
+        set.add(canonicalizeLegacyCodeUnit(codeUnit));
       }
       index = last.nextIndex;
       continue;
     }
+    if (!chargeLegacyTransformWork(budget, 1)) return undefined;
     if (first.codeUnit === undefined) opaque.push(first.source);
-    else set[canonicalizeLegacyCodeUnit(first.codeUnit)] = 1;
+    else set.add(canonicalizeLegacyCodeUnit(first.codeUnit));
     index = first.nextIndex;
   }
   if (value[index] !== ']') return undefined;
-  const contents = `${renderLegacyClassSet(set)}${opaque.join('')}`;
+  const renderedSet = renderLegacyClassSet(set, budget);
+  if (renderedSet === undefined) return undefined;
+  const output: string[] = [renderedSet];
+  for (const source of opaque) {
+    if (!appendLegacyOutput(output, source, budget)) return undefined;
+  }
+  const contents = output.join('');
   if (contents === '') {
+    const source = negated ? '[\\s\\S]' : '[^\\s\\S]';
+    if (!appendLegacyOutput([], source, budget)) return undefined;
     return {
-      source: negated ? '[\\s\\S]' : '[^\\s\\S]',
+      source,
       endIndex: index,
     };
   }
+  const wrapper = negated ? 3 : 2;
+  if (wrapper > MAX_LEGACY_TRANSFORMED_PATTERN_CHARACTERS - budget.outputCharacters) return undefined;
+  if (!chargeLegacyTransformWork(budget, wrapper)) return undefined;
+  budget.outputCharacters += wrapper;
   return { source: `[${negated ? '^' : ''}${contents}]`, endIndex: index };
 }
 
@@ -229,24 +281,33 @@ function utf16CodeUnitText(value: string, ignoreCase: boolean): string {
   return transformed;
 }
 
-function utf16CodeUnitPattern(value: string, ignoreCase: boolean): string | undefined {
-  let transformed = '';
-  const budget = { rangeWork: 0 };
+function utf16CodeUnitPattern(
+  value: string,
+  ignoreCase: boolean,
+  operations: MatchOperationBudget,
+): string | undefined {
+  const transformed: string[] = [];
+  const budget: LegacyTransformBudget = { operations, rangeWork: 0, outputCharacters: 0 };
+  if (!chargeLegacyTransformWork(budget, value.length)) return undefined;
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
     if (ignoreCase && value[index] === '[') {
       const characterClass = transformLegacyCharacterClass(value, index, budget);
       if (characterClass === undefined) return undefined;
-      transformed += characterClass.source;
+      transformed.push(characterClass.source);
       index = characterClass.endIndex;
       continue;
     }
     if (ignoreCase && codeUnit >= 0x80) {
-      transformed += legacyCodeUnitTokenEscape(canonicalizeLegacyCodeUnit(codeUnit));
+      if (!appendLegacyOutput(
+        transformed,
+        legacyCodeUnitTokenEscape(canonicalizeLegacyCodeUnit(codeUnit)),
+        budget,
+      )) return undefined;
       continue;
     }
     if (codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
-      transformed += legacyCodeUnitTokenEscape(codeUnit);
+      if (!appendLegacyOutput(transformed, legacyCodeUnitTokenEscape(codeUnit), budget)) return undefined;
       continue;
     }
     if (value[index] === '\\') {
@@ -256,7 +317,7 @@ function utf16CodeUnitPattern(value: string, ignoreCase: boolean): string | unde
         if ((ignoreCase && escapedValue >= 0x80)
           || (escapedValue >= 0xd800 && escapedValue <= 0xdfff)) {
           const canonical = ignoreCase ? canonicalizeLegacyCodeUnit(escapedValue) : escapedValue;
-          transformed += legacyCodeUnitTokenEscape(canonical);
+          if (!appendLegacyOutput(transformed, legacyCodeUnitTokenEscape(canonical), budget)) return undefined;
           index += 5;
           continue;
         }
@@ -265,28 +326,33 @@ function utf16CodeUnitPattern(value: string, ignoreCase: boolean): string | unde
       if (ignoreCase && escapedByte !== null) {
         const escapedValue = Number.parseInt(escapedByte[1]!, 16);
         if (escapedValue >= 0x80) {
-          transformed += legacyCodeUnitTokenEscape(canonicalizeLegacyCodeUnit(escapedValue));
+          if (!appendLegacyOutput(
+            transformed,
+            legacyCodeUnitTokenEscape(canonicalizeLegacyCodeUnit(escapedValue)),
+            budget,
+          )) return undefined;
           index += 3;
           continue;
         }
       }
-      transformed += value[index];
+      let escapedSource = value[index]!;
       if (value[index + 1] !== undefined) {
-        transformed += value[index + 1];
+        escapedSource += value[index + 1];
         index += 1;
       }
+      if (!appendLegacyOutput(transformed, escapedSource, budget)) return undefined;
       continue;
     }
-    transformed += value[index];
+    if (!appendLegacyOutput(transformed, value[index]!, budget)) return undefined;
   }
-  return transformed;
+  return transformed.join('');
 }
 
-function parseDelimitedRegex(value: string, cache: Map<string, ParsedDelimitedRegex>): ParsedDelimitedRegex {
-  const cached = cache.get(value);
+function parseDelimitedRegex(value: string, operations: MatchOperationBudget): ParsedDelimitedRegex {
+  const cached = operations.regexCache.get(value);
   if (cached !== undefined) return cached;
   const finish = (parsed: ParsedDelimitedRegex): ParsedDelimitedRegex => {
-    cache.set(value, parsed);
+    operations.regexCache.set(value, parsed);
     return parsed;
   };
   if (!value.startsWith('/')) return finish({ kind: 'literal' });
@@ -315,11 +381,22 @@ function parseDelimitedRegex(value: string, cache: Map<string, ParsedDelimitedRe
     if (flags.includes('i')) re2Flags |= RE2JS.CASE_INSENSITIVE;
     if (flags.includes('m')) re2Flags |= RE2JS.MULTILINE;
     if (flags.includes('s')) re2Flags |= RE2JS.DOTALL;
-    const legacyPattern = unicode ? undefined : utf16CodeUnitPattern(nativeRegex.source, ignoreCase);
+    const legacyPattern = unicode
+      ? undefined
+      : utf16CodeUnitPattern(nativeRegex.source, ignoreCase, operations);
     if (!unicode && legacyPattern === undefined) return finish({ kind: 'unsafe' });
     const safePattern = unicode
       ? RE2JS.translateRegExp(nativeRegex)
       : RE2JS.translateRegExp(legacyPattern!);
+    if (safePattern.length > MAX_LEGACY_TRANSFORMED_PATTERN_CHARACTERS) return finish({ kind: 'unsafe' });
+    if (!unicode) {
+      const budget: LegacyTransformBudget = {
+        operations,
+        rangeWork: 0,
+        outputCharacters: safePattern.length,
+      };
+      if (!chargeLegacyTransformWork(budget, safePattern.length)) return finish({ kind: 'unsafe' });
+    }
     const regex = RE2JS.compile(safePattern, re2Flags);
     if (regex.programSize() > MAX_WORLDBOOK_REGEX_PROGRAM_SIZE) return finish({ kind: 'unsafe' });
     const sticky = flags.includes('y');
@@ -379,7 +456,7 @@ function matchKey(
   const needle = rawNeedle.trim();
   if (needle === '') return { matched: false };
   if (entry.useRegex) {
-    const parsed = parseDelimitedRegex(needle, operations.regexCache);
+    const parsed = parseDelimitedRegex(needle, operations);
     if (parsed.kind === 'invalid') return { matched: false, issue: 'invalid_regex' };
     if (parsed.kind === 'unsafe') return { matched: false, issue: 'unsafe_regex' };
     if (parsed.kind === 'regex') {
