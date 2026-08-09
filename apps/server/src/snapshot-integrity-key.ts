@@ -34,7 +34,7 @@ export interface SnapshotIntegrityKeyPublicationOperations {
   syncDirectory(directoryPath: string): void;
 }
 
-const windowsAclScript = Buffer.from(String.raw`
+const hardenWindowsAclScript = Buffer.from(String.raw`
 $ErrorActionPreference = 'Stop'
 $path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_PATH', 'Process')
 $kind = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_KIND', 'Process')
@@ -79,6 +79,27 @@ if ($verified.InheritanceFlags -ne $inheritance -or $verified.PropagationFlags -
 exit 0
 `, 'utf16le').toString('base64');
 
+const verifyWindowsAclScript = Buffer.from(String.raw`
+$ErrorActionPreference = 'Stop'
+$path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_PATH', 'Process')
+if ([String]::IsNullOrWhiteSpace($path)) { exit 40 }
+$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 41 }
+$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [IO.File]::GetAccessControl($path, 'Owner,Access')
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
+if ($owner.Value -ne $currentSid.Value -or -not $acl.AreAccessRulesProtected) { exit 42 }
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+if ($rules.Count -ne 1) { exit 43 }
+$verified = $rules[0]
+if ($verified.IsInherited -or $verified.IdentityReference.Value -ne $currentSid.Value) { exit 44 }
+if ($verified.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 45 }
+if ($verified.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) { exit 46 }
+if ($verified.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None) { exit 47 }
+if ($verified.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { exit 48 }
+exit 0
+`, 'utf16le').toString('base64');
+
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
     ? String(Reflect.get(error, 'code'))
@@ -89,17 +110,17 @@ function sameFile(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function secureWindowsPath(path: string, kind: 'directory' | 'file'): void {
+function runWindowsAclScript(path: string, script: string, kind?: 'directory' | 'file'): void {
   const systemRoot = process.env.SystemRoot;
   if (systemRoot === undefined) throw new Error('Snapshot integrity storage is unavailable.');
   const result = spawnSync(
     join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', windowsAclScript],
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', script],
     {
       env: {
         ...process.env,
         TAVERNNEXT_WINDOWS_ACL_PATH: path,
-        TAVERNNEXT_WINDOWS_ACL_KIND: kind,
+        ...(kind === undefined ? {} : { TAVERNNEXT_WINDOWS_ACL_KIND: kind }),
       },
       shell: false,
       stdio: 'ignore',
@@ -112,6 +133,22 @@ function secureWindowsPath(path: string, kind: 'directory' | 'file'): void {
   }
 }
 
+function hardenWindowsDataDirectory(path: string): void {
+  runWindowsAclScript(path, hardenWindowsAclScript, 'directory');
+}
+
+function hardenUnpublishedWindowsTemporaryKey(path: string): void {
+  runWindowsAclScript(path, hardenWindowsAclScript, 'file');
+}
+
+function verifyWindowsKeyWithoutMutation(path: string): void {
+  try {
+    runWindowsAclScript(path, verifyWindowsAclScript);
+  } catch {
+    throw new Error('Snapshot integrity key is untrusted.');
+  }
+}
+
 function ensureSecureDataDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const before = lstatSync(path);
@@ -119,7 +156,7 @@ function ensureSecureDataDirectory(path: string): void {
     throw new Error('Snapshot integrity storage is unavailable.');
   }
   if (process.platform === 'win32') {
-    secureWindowsPath(path, 'directory');
+    hardenWindowsDataDirectory(path);
   } else {
     if (typeof process.getuid !== 'function' || before.uid !== process.getuid()) {
       throw new Error('Snapshot integrity storage is unavailable.');
@@ -284,7 +321,7 @@ function writeTemporaryKey(directory: string): string {
     throw new Error('Snapshot integrity key could not be created.');
   }
   try {
-    if (process.platform === 'win32') secureWindowsPath(path, 'file');
+    if (process.platform === 'win32') hardenUnpublishedWindowsTemporaryKey(path);
     const verified = readExistingKey(path);
     if (!Buffer.from(verified).equals(key)) throw new Error('Snapshot integrity key could not be created.');
     return path;
@@ -299,12 +336,16 @@ function writeTemporaryKey(directory: string): string {
 }
 
 function readExistingKey(path: string): Uint8Array {
-  if (process.platform === 'win32') secureWindowsPath(path, 'file');
+  if (process.platform === 'win32') verifyWindowsKeyWithoutMutation(path);
   const before = lstatSync(path);
   if (!before.isFile() || before.isSymbolicLink()) throw new Error('Snapshot integrity key is untrusted.');
-  if (process.platform !== 'win32'
-    && (typeof process.getuid !== 'function' || before.uid !== process.getuid())) {
-    throw new Error('Snapshot integrity key is untrusted.');
+  let posixUid: number | undefined;
+  if (process.platform !== 'win32') {
+    posixUid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    if (posixUid === undefined || before.uid !== posixUid
+      || (before.mode & 0o777) !== PRIVATE_FILE_MODE) {
+      throw new Error('Snapshot integrity key is untrusted.');
+    }
   }
 
   const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
@@ -319,9 +360,7 @@ function readExistingKey(path: string): Uint8Array {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || !sameFile(before, opened)) throw new Error('Snapshot integrity key is untrusted.');
     if (process.platform !== 'win32') {
-      fchmodSync(descriptor, PRIVATE_FILE_MODE);
-      const secured = fstatSync(descriptor);
-      if (secured.uid !== process.getuid!() || (secured.mode & 0o777) !== PRIVATE_FILE_MODE) {
+      if (opened.uid !== posixUid || (opened.mode & 0o777) !== PRIVATE_FILE_MODE) {
         throw new Error('Snapshot integrity key is untrusted.');
       }
     }

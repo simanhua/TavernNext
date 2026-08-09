@@ -486,3 +486,72 @@ exactly like the hash-pinned SillyTavern 1.18.0 execution path.
 
 Fix Round 4 ships as `fix: make snapshot key publication atomic` for independent
 controller review. Task 13 retains its documented normal-turn-only boundary.
+
+## Fix Round 5
+
+The final Important finding is closed. Validation of an already published
+`snapshot-integrity.key` is now strictly non-mutating: unsafe POSIX ownership
+or mode and unsafe Windows ownership or DACL state are refused as untrusted
+instead of being repaired and accepted.
+
+### Non-mutating published-key validation
+
+- The Windows creation and validation paths are separate. Only
+  `hardenUnpublishedWindowsTemporaryKey` runs the owner/DACL-setting script,
+  and it is called before the private temporary is linked into the published
+  name. `verifyWindowsKeyWithoutMutation` runs a distinct read-only script
+  containing only item, owner, and access-rule queries.
+- The Windows verifier requires a non-reparse regular file owned by the current
+  SID, a protected DACL, and exactly one non-inherited allow ACE: current-SID
+  `FullControl` with no inheritance or propagation. A wrong owner, unprotected
+  DACL, extra readable principal, deny ACE, inherited rule, or different rights
+  fails closed before the key is opened or read.
+- POSIX validation no longer calls `fchmodSync`. It requires the named file to
+  have the current uid and exact `0600` mode, then rechecks the same uid/mode
+  on the no-follow descriptor before reading. Unsafe metadata is left exactly
+  as found.
+- Atomic hard-link publication, fsync ordering, loser behavior, live-creator
+  protection, crash-debris reclamation, and malformed-key refusal are
+  unchanged. Newly created unpublished temporaries are still hardened and
+  verified before publication.
+
+### Strict TDD and platform evidence
+
+- Windows RED before production edits: 11 tests ran with 2 failed, 5 passed,
+  and 4 platform/capability skips. Real NTFS files with an extra Everyone read
+  ACE and with `AreAccessRulesProtected = false` were both silently repaired
+  and accepted by the old combined script.
+- First GREEN: the same file reached 7 passed and 4 skips. Each unsafe Windows
+  test records `GetSecurityDescriptorBinaryForm()` before validation, expects
+  `Snapshot integrity key is untrusted.`, and asserts the post-refusal binary
+  security descriptor is byte-identical. The extra-principal test also proves
+  key bytes are unchanged.
+- POSIX regressions cover a byte-valid `0644` key and, when the test process can
+  change uid, a wrong-owner `0600` key. Both assert rejection plus unchanged
+  bytes, uid, and mode. They are platform-skipped on this Windows run.
+- A real wrong-owner Windows case dynamically runs when the process token can
+  assign another owner. The current standard-user token could not do so, so
+  this one case skipped; the production verifier still compares the owner SID
+  strictly before any ACL or file mutation.
+- Safe existing keys retain identical bytes and security metadata across
+  reopen. The original concurrency, crash-before-publication, live temporary,
+  malformed key, and parent-directory fsync cases remain intact.
+
+### Fresh verification
+
+- Focused key/HMAC/full-generation/compiler/oracle gate: 9/9 files passed;
+  81 tests passed and 4 platform/capability tests skipped (85 total).
+- Oracle-enabled full suite: 39/39 files passed; 675 tests passed and 5
+  platform/capability tests skipped (680 total).
+- Fresh `npm run typecheck` passed.
+- `npx tsc -b --clean` plus web-output cleanup established a source-only tree
+  with zero generated output files. `npm run build` passed the TypeScript graph
+  and Vite transformed 182 modules; generated outputs were cleaned back to
+  zero.
+- `git diff --check` passed. Static review confirms `readExistingKey` contains
+  no chmod, chown, owner setter, DACL setter, or ACL-protection setter, and the
+  read-only SillyTavern checkout was not changed.
+
+Fix Round 5 ships as `fix: refuse unsafe published snapshot keys` for final
+independent controller review. Task 13 retains its documented normal-turn-only
+boundary.
