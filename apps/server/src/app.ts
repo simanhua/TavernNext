@@ -16,6 +16,7 @@ import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
 import { registerPresetExportRoutes } from './routes/preset-exports.js';
+import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
@@ -120,6 +121,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerCharacterRoutes(app, repositories);
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
+  registerPresetRoutes(app, repositories);
   registerWorldbookExportRoutes(app, repositories);
   registerPersonaRoutes(app, repositories);
   registerProviderRoutes(app, repositories, {

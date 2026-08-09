@@ -30,7 +30,10 @@ export const worldbooks = sqliteTable('worldbooks', {
 export const worldbookEntries = sqliteTable('worldbook_entries', {
   ...entityColumns,
   worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),
-}, (table) => [index('worldbook_entries_worldbook_id_idx').on(table.worldbookId)]);
+}, (table) => [
+  index('worldbook_entries_worldbook_id_idx').on(table.worldbookId),
+  index('worldbook_entries_worldbook_created_id_idx').on(table.worldbookId, table.createdAt, table.id),
+]);
 export const presets = sqliteTable('presets', {
   ...entityColumns,
   name: text('name').notNull(),
@@ -66,7 +69,10 @@ export const messageVariants = sqliteTable('message_variants', {
   ...entityColumns,
   messageId: text('message_id').notNull(),
   status: text('status').notNull(),
-}, (table) => [index('message_variants_message_id_idx').on(table.messageId)]);
+}, (table) => [
+  index('message_variants_message_id_idx').on(table.messageId),
+  index('message_variants_message_created_id_idx').on(table.messageId, table.createdAt, table.id),
+]);
 export const messages = sqliteTable('messages', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
@@ -74,6 +80,7 @@ export const messages = sqliteTable('messages', {
   role: text('role').notNull(),
 }, (table) => [
   index('messages_conversation_id_idx').on(table.conversationId),
+  index('messages_conversation_created_id_idx').on(table.conversationId, table.createdAt, table.id),
   index('messages_active_variant_id_idx').on(table.activeVariantId),
 ]);
 export const importArtifacts = sqliteTable('import_artifacts', {

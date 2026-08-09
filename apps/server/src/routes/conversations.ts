@@ -7,14 +7,13 @@ export function registerConversationRoutes(app: FastifyInstance, repositories: R
   app.get<{ Params: { id: string } }>('/api/conversations/:id/messages', async (request, reply) => {
     const conversation = repositories.conversations.get(request.params.id);
     if (conversation === undefined) return reply.status(404).send({ error: 'not_found' });
-    const variantsByMessage = new Map<string, ReturnType<typeof repositories.messageVariants.list>>();
-    for (const variant of repositories.messageVariants.list()) {
+    const variantsByMessage = new Map<string, ReturnType<typeof repositories.messageVariants.listByConversationId>>();
+    for (const variant of repositories.messageVariants.listByConversationId(conversation.id)) {
       const variants = variantsByMessage.get(variant.messageId) ?? [];
       variants.push(variant);
       variantsByMessage.set(variant.messageId, variants);
     }
-    const messages = repositories.messages.list()
-      .filter((message) => message.conversationId === conversation.id)
+    const messages = repositories.messages.listByConversationId(conversation.id)
       .map((message) => ({ ...message, variants: variantsByMessage.get(message.id) ?? [] }));
     return { conversation, messages };
   });

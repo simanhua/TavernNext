@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CompatibilityMetadataSchema, GenerationRequestSchema } from '../src/index.js';
+import { CharacterSchema, CompatibilityMetadataSchema, GenerationRequestSchema } from '../src/index.js';
 
 describe('domain contracts', () => {
   it('retains unknown compatibility fields verbatim', () => {
@@ -20,5 +20,16 @@ describe('domain contracts', () => {
       conversationRevision: 3,
       mode: 'swipe',
     }).mode).toBe('swipe');
+  });
+
+  it('retains typed Character extensions including the Worldbook depth prompt', () => {
+    const character = CharacterSchema.parse({
+      id: '018f0000-0000-7000-8000-000000000002', revision: 0,
+      createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z',
+      name: 'Aster', description: '', personality: '', scenario: '', firstMessage: '',
+      alternateGreetings: [], tags: [], extensions: { depth_prompt: { prompt: 'Depth only' } },
+    });
+
+    expect(character.extensions).toEqual({ depth_prompt: { prompt: 'Depth only' } });
   });
 });

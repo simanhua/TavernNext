@@ -50,7 +50,18 @@ function multipart(fileName: string, bytes: Uint8Array, mediaType = 'application
 
 async function v3Bytes(): Promise<Uint8Array> {
   const fixture = JSON.parse(await readFile(join(fixtureRoot, 'v3.json'), 'utf8')) as Record<string, unknown>;
-  return encoder.encode(JSON.stringify({ ...fixture, data: { ...(fixture.data as object), name: 'Export / Aster' } }));
+  const data = fixture.data as Record<string, unknown>;
+  return encoder.encode(JSON.stringify({
+    ...fixture,
+    data: {
+      ...data,
+      name: 'Export / Aster',
+      extensions: {
+        ...(data.extensions as Record<string, unknown>),
+        depth_prompt: { prompt: 'Typed Character depth prompt' },
+      },
+    },
+  }));
 }
 
 async function inspectAndCommit(app: ReturnType<typeof createApp>) {
@@ -89,6 +100,7 @@ describe('typed Character import and export API', () => {
       creatorNotes: 'V3 creator note',
       creator: 'TavernNext tests',
       characterVersion: '3.1-test',
+      extensions: expect.objectContaining({ depth_prompt: { prompt: 'Typed Character depth prompt' } }),
     });
     expect(character?.compatibility?.rawPayload).toMatchObject({
       sourceFormat: 'json',

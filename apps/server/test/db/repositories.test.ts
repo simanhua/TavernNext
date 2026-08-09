@@ -63,7 +63,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 3 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 4 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -192,6 +192,73 @@ describe('SQLite repositories', () => {
     expect(plan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_id_idx'))).toBe(true);
   });
 
+  it('uses stable indexed message, variant, and Worldbook-entry relationship reads without global scans', async () => {
+    const { database, repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000061', name: 'Indexed character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000062', name: 'Indexed persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000063', characterId: character.id, personaId: persona.id, title: 'Indexed',
+    });
+    const highMessage = repositories.messages.create({
+      id: '018f0000-0000-7000-8000-000000000069', conversationId: conversation.id,
+      role: 'assistant', content: '', activeVariantId: null,
+    });
+    const lowMessage = repositories.messages.create({
+      id: '018f0000-0000-7000-8000-000000000064', conversationId: conversation.id,
+      role: 'user', content: 'low', activeVariantId: null,
+    });
+    const highVariant = repositories.messageVariants.create({
+      id: '018f0000-0000-7000-8000-000000000068', messageId: highMessage.id, content: 'high', status: 'completed',
+    });
+    const lowVariant = repositories.messageVariants.create({
+      id: '018f0000-0000-7000-8000-000000000065', messageId: highMessage.id, content: 'low', status: 'completed',
+    });
+    const book = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000000066', name: 'Stable entries',
+    });
+    const highEntry = repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000000070', worldbookId: book.id,
+      keys: [], constant: true, content: 'high',
+    });
+    const lowEntry = repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000000067', worldbookId: book.id,
+      keys: [], constant: true, content: 'low',
+    });
+    const tied = '2026-08-08T00:00:00.000Z';
+    database.sqlite.exec(`
+      UPDATE messages SET created_at = '${tied}' WHERE conversation_id = '${conversation.id}';
+      UPDATE message_variants SET created_at = '${tied}' WHERE message_id = '${highMessage.id}';
+      UPDATE worldbook_entries SET created_at = '${tied}' WHERE worldbook_id = '${book.id}';
+    `);
+
+    expect(repositories.messages.listByConversationId(conversation.id).map((row) => row.id))
+      .toEqual([lowMessage.id, highMessage.id]);
+    expect(repositories.messageVariants.listByMessageId(highMessage.id).map((row) => row.id))
+      .toEqual([lowVariant.id, highVariant.id]);
+    expect(repositories.messageVariants.listByConversationId(conversation.id).map((row) => row.id))
+      .toEqual([lowVariant.id, highVariant.id]);
+    expect(repositories.worldbookEntries.listByWorldbookId(book.id).map((row) => row.id))
+      .toEqual([lowEntry.id, highEntry.id]);
+
+    const messagePlan = database.sqlite.prepare(
+      'EXPLAIN QUERY PLAN SELECT payload FROM messages WHERE conversation_id = ? ORDER BY created_at, id',
+    ).all(conversation.id) as Array<{ detail: string }>;
+    const variantPlan = database.sqlite.prepare(
+      'EXPLAIN QUERY PLAN SELECT payload FROM message_variants WHERE message_id = ? ORDER BY created_at, id',
+    ).all(highMessage.id) as Array<{ detail: string }>;
+    const entryPlan = database.sqlite.prepare(
+      'EXPLAIN QUERY PLAN SELECT payload FROM worldbook_entries WHERE worldbook_id = ? ORDER BY created_at, id',
+    ).all(book.id) as Array<{ detail: string }>;
+    expect(messagePlan.some(({ detail }) => detail.includes('messages_conversation_created_id_idx'))).toBe(true);
+    expect(variantPlan.some(({ detail }) => detail.includes('message_variants_message_created_id_idx'))).toBe(true);
+    expect(entryPlan.some(({ detail }) => detail.includes('worldbook_entries_worldbook_created_id_idx'))).toBe(true);
+  });
+
   it('resolves global Worldbooks through the dedicated indexed repository method', async () => {
     const { database, repositories } = await createTestRepositories();
     repositories.worldbooks.create({
@@ -269,7 +336,7 @@ describe('SQLite repositories', () => {
       character: '018f0000-0000-7000-8000-000000000030', persona: '018f0000-0000-7000-8000-000000000031', worldbook: '018f0000-0000-7000-8000-000000000032', entry: '018f0000-0000-7000-8000-000000000033',
       conversation: '018f0000-0000-7000-8000-000000000034', message: '018f0000-0000-7000-8000-000000000035', variant: '018f0000-0000-7000-8000-000000000036',
     };
-    const character = { id: ids.character, revision: 2, createdAt, updatedAt: createdAt, name: 'Legacy character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], compatibility: { sourceFormat: 'st-character-v3', rawPayload: { legacy: true }, unknownFields: { legacy: true }, compatWarnings: [], parserVersion: '1' } };
+    const character = { id: ids.character, revision: 2, createdAt, updatedAt: createdAt, name: 'Legacy character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], compatibility: { sourceFormat: 'st-character-v3', rawPayload: { legacy: true, extensions: { depth_prompt: { prompt: 'Migrated depth prompt' } } }, unknownFields: { legacy: true }, compatWarnings: [], parserVersion: '1' } };
     const persona = { id: ids.persona, revision: 0, createdAt, updatedAt: createdAt, name: 'Legacy persona', description: '', isDefault: true };
     const worldbook = { id: ids.worldbook, revision: 0, createdAt, updatedAt: createdAt, name: 'Legacy lore', enabled: true };
     const entry = { id: ids.entry, revision: 0, createdAt, updatedAt: createdAt, worldbookId: ids.worldbook, keys: ['legacy'], content: 'kept', enabled: true, position: 'before_character', order: 0 };
@@ -291,7 +358,11 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     const repositories = createRepositories(database);
 
-    expect(repositories.characters.get(ids.character)).toMatchObject({ revision: 2, compatibility: { rawPayload: { legacy: true } } });
+    expect(repositories.characters.get(ids.character)).toMatchObject({
+      revision: 2,
+      extensions: { depth_prompt: { prompt: 'Migrated depth prompt' } },
+      compatibility: { rawPayload: { legacy: true } },
+    });
     expect(repositories.messages.get(ids.message)).toMatchObject({ activeVariantId: ids.variant });
     expect(database.sqlite.prepare('PRAGMA table_info(messages)').all().map((column) => column.name)).toContain('active_variant_id');
     expect(database.sqlite.prepare('PRAGMA index_list(messages)').all().map((index) => index.name)).toContain('messages_active_variant_id_idx');
@@ -311,7 +382,7 @@ describe('SQLite repositories', () => {
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 4096, maxResponseTokens: 512,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 3 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 4 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

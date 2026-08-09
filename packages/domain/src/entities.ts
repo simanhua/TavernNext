@@ -30,6 +30,7 @@ export const CharacterSchema = MutableEntitySchema.extend({
   characterVersion: z.string().default(''),
   alternateGreetings: z.array(z.string()),
   tags: z.array(z.string()),
+  extensions: z.record(z.string(), z.unknown()).default({}),
   characterBook: z.record(z.string(), z.unknown()).optional(),
   worldbookId: DomainIdSchema.optional(),
   avatarPath: z.string().optional(),

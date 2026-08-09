@@ -117,6 +117,19 @@ function formatWorldInfo(value: string, format: string): string {
   return format.replace(/\{(\d+)\}/g, (literal, index: string) => index === '0' ? value : literal);
 }
 
+function placementText(values: readonly { content: string }[]): string {
+  return values.map(({ content }) => content.trim()).filter(Boolean).join('\n');
+}
+
+function placementOutlets(
+  outlets: Readonly<Record<string, readonly { content: string }[]>> | undefined,
+): Record<string, string> {
+  return Object.fromEntries(Object.entries(outlets ?? {}).flatMap(([name, values]) => {
+    const content = placementText(values);
+    return content === '' ? [] : [[name, content]];
+  }));
+}
+
 function role(value: string | undefined): PromptRole | undefined {
   const candidate = value ?? 'system';
   return candidate === 'system' || candidate === 'user' || candidate === 'assistant' ? candidate : undefined;
@@ -274,6 +287,30 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     seenExecutableIdentifiers.add(entry.identifier);
     return { entry, prompt, fixedReason };
   });
+  const placements = input.worldInfoPlacements;
+  if (placements !== undefined) {
+    const hasMarker = (identifier: string) => executions.some(({ prompt, fixedReason }) => (
+      fixedReason === undefined && prompt?.marker === true && prompt.identifier === identifier
+    ));
+    const hasCharacterTarget = executions.some(({ prompt, fixedReason }) => (
+      fixedReason === undefined && prompt?.marker === true
+      && ['charDescription', 'charPersonality', 'scenario'].includes(prompt.identifier)
+    ));
+    const missingTarget = (
+      (placements.beforeCharacter !== '' && !hasMarker('worldInfoBefore') && !hasCharacterTarget)
+      || (placements.afterCharacter !== '' && !hasMarker('worldInfoAfter') && !hasCharacterTarget)
+      || ([...placements.examplesBefore, ...placements.examplesAfter].some(({ content }) => content !== '')
+        && !hasMarker('dialogueExamples'))
+      || ([...placements.authorNote.before, ...placements.authorNote.after, ...placements.atDepth]
+        .some(({ content }) => content !== '') && !hasMarker('chatHistory'))
+    );
+    if (missingTarget) {
+      return compilationFailure({
+        target: 'chat', code: 'unsupported_worldbook_placement', stop, warnings,
+        message: 'An activated Worldbook entry has no executable Chat preset target.',
+      });
+    }
+  }
   const contentFor = (prompt: ChatPromptDefinition): string => {
     if (prompt.identifier === 'main' && input.character.systemPrompt !== '' && prompt.forbid_overrides !== true) {
       return input.character.systemPrompt;
@@ -301,8 +338,57 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       order: Number.isFinite(prompt.injection_order) ? prompt.injection_order! : 100,
     });
   }
+  if (placements !== undefined) {
+    const authorNote = placementText([...placements.authorNote.before, ...placements.authorNote.after]);
+    if (authorNote !== '') {
+      absolutePrompts.push({
+        source: [...placements.authorNote.before, ...placements.authorNote.after].map(({ source }) => source).join('+'),
+        role: placements.authorNote.role,
+        content: expand(authorNote, 'worldbook:author-note'),
+        depth: placements.authorNote.depth,
+        order: 100,
+      });
+    }
+    for (const item of placements.atDepth) {
+      if (item.content === '') continue;
+      absolutePrompts.push({
+        source: item.source,
+        role: item.role,
+        content: expand(item.content, item.source),
+        depth: item.depth,
+        order: 100,
+      });
+    }
+  }
 
-  for (const execution of executions) {
+  const explicitBeforeTarget = executions.some(({ prompt, fixedReason }) => (
+    fixedReason === undefined && prompt?.marker === true && prompt.identifier === 'worldInfoBefore'
+  ));
+  const explicitAfterTarget = executions.some(({ prompt, fixedReason }) => (
+    fixedReason === undefined && prompt?.marker === true && prompt.identifier === 'worldInfoAfter'
+  ));
+  const characterTargetIndexes = executions.flatMap(({ prompt, fixedReason }, index) => (
+    fixedReason === undefined && prompt?.marker === true
+      && ['charDescription', 'charPersonality', 'scenario'].includes(prompt.identifier) ? [index] : []
+  ));
+  const firstCharacterTarget = characterTargetIndexes[0];
+  const afterCharacterTarget = characterTargetIndexes.at(-1);
+  for (const [executionIndex, execution] of executions.entries()) {
+    if (placements !== undefined && !explicitBeforeTarget && executionIndex === firstCharacterTarget) {
+      const content = expand(
+        formatWorldInfo(placements.beforeCharacter, stringSetting(settings, 'wi_format')),
+        'worldbook:before-character',
+      );
+      add('worldbook:before-character', content === '' ? [] : [{ role: 'system', content }]);
+    }
+    if (placements !== undefined && !explicitAfterTarget
+      && afterCharacterTarget !== undefined && executionIndex === afterCharacterTarget + 1) {
+      const content = expand(
+        formatWorldInfo(placements.afterCharacter, stringSetting(settings, 'wi_format')),
+        'worldbook:after-character',
+      );
+      add('worldbook:after-character', content === '' ? [] : [{ role: 'system', content }]);
+    }
     const { entry } = execution;
     const source = `prompt:${entry.identifier}`;
     const { prompt } = execution;
@@ -354,7 +440,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
         }
         case 'worldInfoBefore': {
           const content = expandEnabled(
-            formatWorldInfo(input.worldInfoBefore ?? '', stringSetting(settings, 'wi_format')),
+            formatWorldInfo(placements?.beforeCharacter ?? input.worldInfoBefore ?? '', stringSetting(settings, 'wi_format')),
             'marker:worldInfoBefore',
           );
           add('marker:worldInfoBefore', content === '' ? [] : [{ role: role(prompt.role) ?? 'system', content }], 'immutable', fixedReason);
@@ -362,20 +448,27 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
         }
         case 'worldInfoAfter': {
           const content = expandEnabled(
-            formatWorldInfo(input.worldInfoAfter ?? '', stringSetting(settings, 'wi_format')),
+            formatWorldInfo(placements?.afterCharacter ?? input.worldInfoAfter ?? '', stringSetting(settings, 'wi_format')),
             'marker:worldInfoAfter',
           );
           add('marker:worldInfoAfter', content === '' ? [] : [{ role: role(prompt.role) ?? 'system', content }], 'immutable', fixedReason);
           break;
         }
         case 'dialogueExamples': {
-          const expanded = expandEnabled(input.character.examples, 'marker:dialogueExamples');
           const heading = expandEnabled(stringSetting(settings, 'new_example_chat_prompt'), 'chat:new-example');
-          for (const [index, messages] of exampleGroups(expanded, input.persona.name, input.character.name).entries()) {
-            add(`example:${index}`, [
-              ...(heading === '' ? [] : [{ role: 'system' as const, content: heading, squashExcluded: true }]),
-              ...messages,
-            ], 'optional', fixedReason);
+          const sources = [
+            ...(placements?.examplesBefore ?? []),
+            { source: 'marker:dialogueExamples', content: input.character.examples },
+            ...(placements?.examplesAfter ?? []),
+          ];
+          for (const sourceItem of sources) {
+            const expanded = expandEnabled(sourceItem.content, sourceItem.source);
+            for (const [index, messages] of exampleGroups(expanded, input.persona.name, input.character.name).entries()) {
+              add(`${sourceItem.source}:${index}`, [
+                ...(heading === '' ? [] : [{ role: 'system' as const, content: heading, squashExcluded: true }]),
+                ...messages,
+              ], 'optional', fixedReason);
+            }
           }
           break;
         }
@@ -428,6 +521,14 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     const content = contentFor(prompt);
     const expanded = expandEnabled(content, source, { original: prompt.content ?? '' });
     add(source, expanded === '' ? [] : [{ role: promptRole, content: expanded }], 'immutable', fixedReason);
+  }
+  if (placements !== undefined && !explicitAfterTarget
+    && afterCharacterTarget !== undefined && afterCharacterTarget === executions.length - 1) {
+    const content = expand(
+      formatWorldInfo(placements.afterCharacter, stringSetting(settings, 'wi_format')),
+      'worldbook:after-character',
+    );
+    add('worldbook:after-character', content === '' ? [] : [{ role: 'system', content }]);
   }
 
   if (macroFailed) {
@@ -505,6 +606,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
   return {
     kind: 'chat',
     messages: renderMessages(blocks.filter((_block, index) => included.has(index))),
+    worldInfoOutlets: placementOutlets(placements?.outlets),
     stop,
     tokenBreakdown: budget.tokenBreakdown,
     totalTokens: budget.totalTokens,

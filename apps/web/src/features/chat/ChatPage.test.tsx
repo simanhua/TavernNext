@@ -9,6 +9,7 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ChatPage } from './ChatPage.js';
 import { useChatUi } from './chat-store.js';
+import type { Conversation } from '../../api/client.js';
 
 const now = '2026-08-08T00:00:00.000Z';
 const ids = {
@@ -19,6 +20,8 @@ const ids = {
   userMessage: '018f0000-0000-7000-8000-000000000105',
   assistantMessage: '018f0000-0000-7000-8000-000000000106',
   assistantVariant: '018f0000-0000-7000-8000-000000000107',
+  provider: '018f0000-0000-7000-8000-000000000108',
+  chatPreset: '018f0000-0000-7000-8000-000000000109',
 };
 
 const character = {
@@ -30,13 +33,23 @@ const persona = {
   id: ids.persona, revision: 0, createdAt: now, updatedAt: now,
   name: 'Traveler', description: 'A curious visitor', isDefault: true,
 };
-const otherConversation = {
-  id: ids.otherConversation, revision: 0, createdAt: now, updatedAt: now,
-  characterId: ids.character, personaId: ids.persona, title: 'Saved chat', worldbookIds: [],
+const provider = {
+  id: ids.provider, revision: 0, createdAt: now, updatedAt: now,
+  name: 'Local Chat', baseUrl: 'http://127.0.0.1:8080/v1', model: 'mock', apiMode: 'chat', hasApiKey: false,
 };
-const conversation = {
+const chatPreset = {
+  id: ids.chatPreset, revision: 0, createdAt: now, updatedAt: now,
+  name: 'Role Chat', kind: 'chat', settings: {},
+};
+const otherConversation: Conversation = {
+  id: ids.otherConversation, revision: 0, createdAt: now, updatedAt: now,
+  characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
+  title: 'Saved chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 512,
+};
+const conversation: Conversation = {
   id: ids.conversation, revision: 0, createdAt: now, updatedAt: now,
-  characterId: ids.character, personaId: ids.persona, title: 'Aster chat', worldbookIds: [],
+  characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
+  title: 'Aster chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 512,
 };
 
 type MessageView = {
@@ -71,6 +84,7 @@ let conversationCreateFailure = false;
 let generationNetworkFailure = false;
 let messagePatchConflict = false;
 let messageDeleteFailure = false;
+let conversationConfigurationPatches = 0;
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
 const encoder = new TextEncoder();
 const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -78,13 +92,27 @@ const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type
 const server = setupServer(
   http.get('/api/characters', () => HttpResponse.json([character])),
   http.get('/api/personas', () => HttpResponse.json([persona])),
+  http.get('/api/providers', () => HttpResponse.json([provider])),
+  http.get('/api/presets', () => HttpResponse.json([chatPreset])),
   http.get('/api/conversations', () => HttpResponse.json(conversations)),
   http.post('/api/conversations', async ({ request }) => {
     if (conversationCreateFailure) return HttpResponse.error();
     const body = await request.json() as Record<string, unknown>;
-    expect(body).toMatchObject({ characterId: ids.character, personaId: ids.persona });
+    expect(body).toMatchObject({
+      characterId: ids.character, personaId: ids.persona,
+      providerId: ids.provider, presetId: ids.chatPreset,
+    });
     conversations = [otherConversation, conversation];
     return HttpResponse.json(conversation, { status: 201 });
+  }),
+  http.patch('/api/conversations/:id', async ({ request }) => {
+    const body = await request.json() as { revision: number; patch: Record<string, unknown> };
+    expect(body.patch).toMatchObject({ providerId: ids.provider, presetId: ids.chatPreset });
+    conversationConfigurationPatches += 1;
+    conversationRevision += 1;
+    const configured = { ...conversation, ...body.patch, revision: conversationRevision };
+    conversations = conversations.map((item) => item.id === conversation.id ? configured : item);
+    return HttpResponse.json(configured);
   }),
   http.get('/api/conversations/:id/messages', ({ params }) => {
     if (params.id === ids.otherConversation) {
@@ -191,6 +219,7 @@ afterEach(() => {
   generationNetworkFailure = false;
   messagePatchConflict = false;
   messageDeleteFailure = false;
+  conversationConfigurationPatches = 0;
   activeStream = undefined;
   useChatUi.setState({ activeConversationId: null, draft: '', selectedVariantId: null });
 });
@@ -219,6 +248,9 @@ describe('ChatPage', () => {
     await screen.findByRole('option', { name: 'Traveler' });
     await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Persona' }), ids.persona);
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
     expect((composer as HTMLTextAreaElement).disabled).toBe(false);
 
     await user.type(composer, 'Hello');
@@ -248,6 +280,28 @@ describe('ChatPage', () => {
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conversation' }), ids.otherConversation);
     expect(await screen.findByText('Old persisted answer')).not.toBeNull();
+  });
+
+  it('configures a migrated conversation explicitly before its first generation', async () => {
+    const user = userEvent.setup();
+    const migrated = {
+      ...conversation,
+      providerId: undefined,
+      presetId: undefined,
+    };
+    conversations = [migrated];
+    useChatUi.setState({ activeConversationId: migrated.id, draft: '', selectedVariantId: null });
+    renderChatPage();
+
+    const composer = await screen.findByRole('textbox', { name: 'Message' });
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
+    await user.type(composer, 'Configure then send');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(conversationConfigurationPatches).toBe(1));
+    expect(generationCount).toBe(1);
   });
 
   it('aborts one in-flight request on navigation and can generate in the same conversation after returning', async () => {
@@ -296,6 +350,8 @@ describe('ChatPage', () => {
     await screen.findByRole('option', { name: 'Aster' });
     await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Persona' }), ids.persona);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
     const composer = screen.getByRole('textbox', { name: 'Message' });
     await user.type(composer, 'Will fail');
     await user.click(screen.getByRole('button', { name: 'Send' }));

@@ -221,13 +221,24 @@ export function createGenerationService(options: {
       if (flushTimer !== undefined) clearInterval(flushTimer);
       if (outcome === 'aborted') controller.abort();
       try {
-        if (variant !== undefined) flush(outcome);
-        if (outcome === 'completed') promptSnapshots.commitTimedState(prepared.payload);
+        if (outcome === 'completed') {
+          database.transaction(() => {
+            if (variant !== undefined) flush('completed');
+            promptSnapshots.commitTimedState(prepared.payload);
+          });
+        } else if (variant !== undefined) {
+          flush(outcome);
+        }
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (variant !== undefined && variant.status !== 'failed') flush('failed');
+          if (variant !== undefined) {
+            variant = repositories.messageVariants.get(variant.id);
+            if (variant !== undefined && variant.status !== 'failed') {
+              database.transaction(() => flush('failed'));
+            }
+          }
         } catch {
           // The original persistence failure is the only externally observable code.
         }
@@ -301,7 +312,7 @@ export function createGenerationService(options: {
       try {
         const accepted = input.snapshotId === undefined
           ? await promptSnapshots.createAndAccept(input, generationId)
-          : promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
+          : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
         const prepared = preparedRequest(generationId, accepted.provider, accepted.payload);
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;

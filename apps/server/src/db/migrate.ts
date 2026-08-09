@@ -1,6 +1,6 @@
 import type { TavernDatabase } from './client.js';
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 const tables = `
   CREATE TABLE IF NOT EXISTS characters (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
@@ -20,13 +20,16 @@ const tables = `
 
 const indexes = `
   CREATE INDEX IF NOT EXISTS worldbooks_is_global_idx ON worldbooks(is_global);
+  CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_created_id_idx ON worldbook_entries(worldbook_id, created_at, id);
   CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_id_idx ON worldbook_entries(worldbook_id);
   CREATE INDEX IF NOT EXISTS conversations_character_id_idx ON conversations(character_id);
   CREATE INDEX IF NOT EXISTS conversations_persona_id_idx ON conversations(persona_id);
   CREATE INDEX IF NOT EXISTS conversations_provider_id_idx ON conversations(provider_id);
   CREATE INDEX IF NOT EXISTS conversation_worldbooks_worldbook_id_idx ON conversation_worldbooks(worldbook_id);
+  CREATE INDEX IF NOT EXISTS messages_conversation_created_id_idx ON messages(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
   CREATE INDEX IF NOT EXISTS messages_active_variant_id_idx ON messages(active_variant_id);
+  CREATE INDEX IF NOT EXISTS message_variants_message_created_id_idx ON message_variants(message_id, created_at, id);
   CREATE INDEX IF NOT EXISTS message_variants_message_id_idx ON message_variants(message_id);
   CREATE INDEX IF NOT EXISTS generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
   CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);
@@ -96,6 +99,18 @@ function addPromptSnapshotColumns(database: TavernDatabase): void {
   `);
 }
 
+function backfillCharacterExtensions(database: TavernDatabase): void {
+  database.sqlite.exec(`
+    UPDATE characters
+    SET payload = json_set(
+      payload,
+      '$.extensions',
+      COALESCE(json_extract(payload, '$.compatibility.rawPayload.extensions'), json('{}'))
+    )
+    WHERE json_valid(payload) AND json_type(payload, '$.extensions') IS NULL;
+  `);
+}
+
 export function migrateDatabase(database: TavernDatabase): void {
   // SQLite requires this pragma to be changed outside a transaction. It is restored in finally,
   // while all schema/data changes and the schema-version write happen in one durable transaction.
@@ -109,6 +124,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
 
       addPromptSnapshotColumns(database);
+      backfillCharacterExtensions(database);
       backfillConversationWorldbooks(database);
       database.sqlite.exec(indexes);
       database.sqlite.exec(`DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION});`);

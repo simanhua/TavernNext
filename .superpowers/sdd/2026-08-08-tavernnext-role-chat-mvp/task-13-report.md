@@ -155,3 +155,85 @@ hash-consistent semantic tampering all fail closed.
   artifact cleanup, and forbidden production-oracle/secret/cast hot spots. No
   remaining Critical or Important implementation finding is known at handoff;
   independent parent review is the next SDD checkpoint.
+
+## Fix Round 1
+
+All seven Important and both Minor controller findings were reproduced and
+closed without changing the immutable snapshot-v1 public contract.
+
+### Corrected execution contracts
+
+- The prompt-engine boundary now carries structured Worldbook placements for
+  positions 0 through 7. Chat and Text preserve before/after Character,
+  Author's Note top/bottom, Example Messages top/bottom, at-depth role/depth,
+  and named outlet targets. Outlets remain explicitly out of band in
+  `worldInfoOutlets`; missing compiler anchors and unknown/malformed placement
+  values fail closed as `unsupported_worldbook_placement`.
+- Text `BEST_MATCH` now selects with the OpenAI-compatible API plus provider
+  model, so `gpt-3.5-turbo-instruct` resolves to the OPENAI tokenizer rather
+  than NONE.
+- Character `extensions` is typed and persisted. Import, export, schema-v4
+  migration, executable audit, and matching all carry
+  `extensions.depth_prompt.prompt`; `postHistoryInstructions` is never used as
+  a substitute for `matchCharacterDepthPrompt`.
+- The shipped Chat page loads providers and presets, requires an explicit
+  mode-compatible selection, creates configured conversations, and PATCHes
+  unconfigured migrated conversations before generation. Text mode requires
+  explicit Text, Context, Instruct, and System presets. No arbitrary first-row
+  default is selected.
+- Message, variant, and Worldbook-entry repositories now expose stable
+  relationship reads ordered by `createdAt, id`. Composite relationship/order
+  indexes back those reads, and prompt compilation, revalidation, and the Chat
+  message route no longer scan global message or variant collections.
+- A successful terminal variant flush and Worldbook timed-state commit now run
+  in one durable outer transaction. An injected timed-state fault rolls the
+  completed status back before the variant is durably marked failed; provider
+  failure and abort continue to leave timed state unchanged.
+- The executable audit has its own exact schema version and recursively
+  validates Character, Persona, provider, preset containers, normalized
+  Worldbooks/entries/filters, history, and prior timed state. Acceptance binds
+  audit input and manifest to the root payload, provider mode/model to the
+  compiled request, verifies both hashes, revalidates revisions, and
+  deterministically recompiles before the user turn is accepted. Unknown,
+  malformed, and hash-consistent semantic tampering fails closed.
+- Persisted Character, Preset, and Worldbook compatibility warnings are now
+  included in preview warnings. All base and relationship list orderings have
+  the stable ID tie-break.
+
+### Strict TDD and debugging evidence
+
+- Consolidated pre-production RED: all 8 affected test files failed, with 23
+  failed and 65 passing tests (88 total). The failures covered placement
+  routing, Text tokenizer identity, typed depth prompt matching, real ChatPage
+  configuration, indexed reads/order, atomic terminal rollback, strict audit
+  validation, compatibility warnings, and stable ties.
+- The implementation reached 88/88 affected tests across 9 files. The final
+  count uses 9 files because 8 persistence/security cases were moved intact
+  from `full-generation.test.ts` to `generation-persistence.test.ts` after
+  systematic isolation showed sql.js asm-heap exhaustion at the sixteenth
+  database-heavy context. Both files pass together at 21/21 with no skip and
+  no behavioral relaxation.
+- Migration self-review raised the schema marker to v4 and added a legacy-row
+  regression proving raw Character depth-prompt extensions are backfilled into
+  the typed field. Preset discovery was narrowed to the GET-only API required
+  by the Chat UI.
+
+### Fresh verification
+
+- Affected gate: 9/9 files, 88/88 tests passed.
+- Normal full suite: 33 files passed, 513 tests passed, and 8 gated/existing
+  tests skipped (521 total).
+- Read-only pinned SillyTavern oracle full suite: 35/35 files passed, 646 tests
+  passed, and one existing Windows/platform test skipped (647 total).
+- `npm run typecheck` passed.
+- From a confirmed source-only tree with zero workspace `dist`/`.tsbuild`
+  files, `npm run build` passed the TypeScript graph and Vite transformed 182
+  modules. Generated outputs were cleaned back to zero.
+- `git diff --check` passed; only Git's existing LF-to-CRLF notices were
+  printed. Static self-review found no production global message/variant scan,
+  no newly introduced unchecked trust-boundary cast, and no generated output.
+
+Task 13 remains limited to normal turns; regenerate, swipe, and continue keep
+their previously documented Task 14 boundary. Fix Round 1 ships as
+`fix: preserve generation integration contracts` for independent controller
+review.

@@ -94,6 +94,15 @@ export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRun
   getByConversationId(conversationId: string): WorldbookRuntimeState | undefined;
 }
 
+export interface MessageRepository extends Repository<Message> {
+  listByConversationId(conversationId: string): Message[];
+}
+
+export interface MessageVariantRepository extends Repository<MessageVariant> {
+  listByMessageId(messageId: string): MessageVariant[];
+  listByConversationId(conversationId: string): MessageVariant[];
+}
+
 type EntityRow = Record<string, unknown>;
 type EntityTable = SQLiteTable & {
   id: typeof characters.id;
@@ -144,7 +153,7 @@ function createRepository<T extends MutableEntity>(database: TavernDatabase, def
     },
     get,
     list() {
-      return database.orm.select({ payload: table.payload }).from(table).orderBy(asc(table.createdAt)).all()
+      return database.orm.select({ payload: table.payload }).from(table).orderBy(asc(table.createdAt), asc(table.id)).all()
         .map((row) => definition.schema.parse(row.payload));
     },
     update(id, expectedRevision, patch) {
@@ -265,9 +274,64 @@ function createWorldbookEntryRepository(database: TavernDatabase): WorldbookEntr
       return database.orm.select({ payload: worldbookEntries.payload })
         .from(worldbookEntries)
         .where(eq(worldbookEntries.worldbookId, worldbookId))
-        .orderBy(asc(worldbookEntries.createdAt))
+        .orderBy(asc(worldbookEntries.createdAt), asc(worldbookEntries.id))
         .all()
         .map((row) => WorldbookEntrySchema.parse(row.payload));
+    },
+  };
+}
+
+function createMessageRepository(database: TavernDatabase): MessageRepository {
+  const base = createRepository(database, {
+    table: entityTable(messages),
+    schema: MessageSchema,
+    toRow: (value: Message) => ({
+      ...baseRow(value),
+      conversationId: value.conversationId,
+      activeVariantId: value.activeVariantId,
+      role: value.role,
+    }),
+  });
+  return {
+    ...base,
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: messages.payload })
+        .from(messages)
+        .where(eq(messages.conversationId, conversationId))
+        .orderBy(asc(messages.createdAt), asc(messages.id))
+        .all()
+        .map((row) => MessageSchema.parse(row.payload));
+    },
+  };
+}
+
+function createMessageVariantRepository(database: TavernDatabase): MessageVariantRepository {
+  const base = createRepository(database, {
+    table: entityTable(messageVariants),
+    schema: MessageVariantSchema,
+    toRow: (value: MessageVariant) => ({
+      ...baseRow(value),
+      messageId: value.messageId,
+      status: value.status,
+    }),
+  });
+  const decode = (rows: Array<{ payload: unknown }>) => rows.map((row) => MessageVariantSchema.parse(row.payload));
+  return {
+    ...base,
+    listByMessageId(messageId) {
+      return decode(database.orm.select({ payload: messageVariants.payload })
+        .from(messageVariants)
+        .where(eq(messageVariants.messageId, messageId))
+        .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+        .all());
+    },
+    listByConversationId(conversationId) {
+      return decode(database.orm.select({ payload: messageVariants.payload })
+        .from(messageVariants)
+        .innerJoin(messages, eq(messageVariants.messageId, messages.id))
+        .where(eq(messages.conversationId, conversationId))
+        .orderBy(asc(messageVariants.createdAt), asc(messageVariants.id))
+        .all());
     },
   };
 }
@@ -316,8 +380,8 @@ export interface Repositories {
   worldbookEntries: WorldbookEntryRepository;
   presets: Repository<Preset>;
   conversations: Repository<Conversation>;
-  messages: Repository<Message>;
-  messageVariants: Repository<MessageVariant>;
+  messages: MessageRepository;
+  messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
@@ -342,8 +406,8 @@ export function createRepositories(database: TavernDatabase): Repositories {
       systemPresetId: value.systemPresetId ?? null,
       title: value.title,
     }), syncRelationships: syncConversationWorldbooks }),
-    messages: createRepository(database, { table: entityTable(messages), schema: MessageSchema, toRow: (value) => ({ ...baseRow(value), conversationId: value.conversationId, activeVariantId: value.activeVariantId, role: value.role }) }),
-    messageVariants: createRepository(database, { table: entityTable(messageVariants), schema: MessageVariantSchema, toRow: (value) => ({ ...baseRow(value), messageId: value.messageId, status: value.status }) }),
+    messages: createMessageRepository(database),
+    messageVariants: createMessageVariantRepository(database),
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: immutableRepository(createRepository(database, { table: entityTable(generationSnapshots), schema: GenerationSnapshotSchema, toRow: (value) => ({ ...baseRow(value), conversationId: value.conversationId }) })),

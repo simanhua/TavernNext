@@ -23,6 +23,7 @@ export function character(overrides: Partial<Character> = {}): Character {
     alternateGreetings: [],
     tags: [],
     ...overrides,
+    extensions: overrides.extensions ?? {},
   };
 }
 

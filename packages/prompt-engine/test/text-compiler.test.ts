@@ -551,4 +551,46 @@ describe('Text preset compiler', () => {
     expect(first).toMatchObject({ kind: 'text', text: '', warnings: [{ code: 'unsupported_role' }] });
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
   });
+
+  it('places every Worldbook target in Text output while retaining named outlets out of band', async () => {
+    const result = await compileTextPrompt({
+      character: character({ examples: '<START>\nYou: CARD-EXAMPLE\nAster: CARD-ANSWER' }),
+      persona: persona(), ...textInputs(), maxPromptTokens: 10_000, tokenizer: unitTokenizer(),
+      history: [
+        { id: 'old', role: 'user', content: 'OLD' },
+        { id: 'new', role: 'assistant', content: 'NEW' },
+      ],
+      worldInfoPlacements: {
+        beforeCharacter: 'WI-BEFORE', afterCharacter: 'WI-AFTER',
+        examplesBefore: [{ source: 'wi:em-top', content: '<START>\nYou: EM-TOP\nAster: EM-TOP-A' }],
+        examplesAfter: [{ source: 'wi:em-bottom', content: '<START>\nYou: EM-BOTTOM\nAster: EM-BOTTOM-A' }],
+        authorNote: {
+          before: [{ source: 'wi:an-top', content: 'AN-TOP' }],
+          after: [{ source: 'wi:an-bottom', content: 'AN-BOTTOM' }],
+          depth: 2,
+          role: 'system',
+        },
+        atDepth: [
+          { source: 'wi:depth-system', content: 'DEPTH-SYSTEM', depth: 1, role: 'system' },
+          { source: 'wi:depth-user', content: 'DEPTH-USER', depth: 1, role: 'user' },
+          { source: 'wi:depth-assistant', content: 'DEPTH-ASSISTANT', depth: 1, role: 'assistant' },
+        ],
+        outlets: { sidebar: [{ source: 'wi:outlet', content: 'OUTLET-ONLY' }] },
+      },
+    });
+
+    expect(result.kind).toBe('text');
+    if (result.kind !== 'text') throw new Error(result.message);
+    expect(result.text).toContain('WI-BEFORE');
+    expect(result.text).toContain('WI-AFTER');
+    expect(result.text.indexOf('EM-TOP')).toBeLessThan(result.text.indexOf('CARD-EXAMPLE'));
+    expect(result.text.indexOf('CARD-EXAMPLE')).toBeLessThan(result.text.indexOf('EM-BOTTOM'));
+    expect(result.text).toContain('AN-TOP\nAN-BOTTOM');
+    expect(result.text.indexOf('DEPTH-SYSTEM')).toBeGreaterThan(result.text.indexOf('OLD'));
+    expect(result.text.indexOf('DEPTH-SYSTEM')).toBeLessThan(result.text.indexOf('NEW'));
+    expect(result.text).toContain('DEPTH-USER');
+    expect(result.text).toContain('DEPTH-ASSISTANT');
+    expect(result.text).not.toContain('OUTLET-ONLY');
+    expect(result.worldInfoOutlets).toEqual({ sidebar: 'OUTLET-ONLY' });
+  });
 });

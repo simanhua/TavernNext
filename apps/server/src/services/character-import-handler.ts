@@ -106,6 +106,7 @@ export function createCharacterImportHandler(): ImportHandler {
         characterVersion: character.characterVersion,
         alternateGreetings: character.alternateGreetings,
         tags: character.tags,
+        extensions: structuredClone(character.extensions),
         ...(character.characterBook === undefined ? {} : { characterBook: character.characterBook }),
         ...(avatarStoredPath === undefined ? {} : { avatarPath: avatarStoredPath }),
         compatibility: {

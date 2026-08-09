@@ -54,6 +54,31 @@ export interface MacroLimits {
   maxExpandedLength?: number;
 }
 
+export interface WorldInfoPlacementContent {
+  source: string;
+  content: string;
+}
+
+export interface WorldInfoDepthPlacement extends WorldInfoPlacementContent {
+  depth: number;
+  role: PromptRole;
+}
+
+export interface WorldInfoCompilerPlacements {
+  beforeCharacter: string;
+  afterCharacter: string;
+  examplesBefore: readonly WorldInfoPlacementContent[];
+  examplesAfter: readonly WorldInfoPlacementContent[];
+  authorNote: {
+    before: readonly WorldInfoPlacementContent[];
+    after: readonly WorldInfoPlacementContent[];
+    depth: number;
+    role: PromptRole;
+  };
+  atDepth: readonly WorldInfoDepthPlacement[];
+  outlets: Readonly<Record<string, readonly WorldInfoPlacementContent[]>>;
+}
+
 interface CompilationInputBase {
   character: Character;
   persona: Persona;
@@ -72,6 +97,7 @@ export interface CompileChatPromptInput extends CompilationInputBase {
   promptOrderCharacterId?: string | number;
   worldInfoBefore?: string;
   worldInfoAfter?: string;
+  worldInfoPlacements?: WorldInfoCompilerPlacements;
 }
 
 export interface CompileTextPromptInput extends CompilationInputBase {
@@ -81,6 +107,7 @@ export interface CompileTextPromptInput extends CompilationInputBase {
   systemPreset?: Preset;
   worldInfoBefore?: string;
   worldInfoAfter?: string;
+  worldInfoPlacements?: WorldInfoCompilerPlacements;
   anchorBefore?: string;
   anchorAfter?: string;
   generationType?: GenerationMode;
@@ -96,11 +123,13 @@ interface CompilationResultBase {
 export interface ChatPromptCompilation extends CompilationResultBase {
   kind: 'chat';
   messages: PromptChatMessage[];
+  worldInfoOutlets: Record<string, string>;
 }
 
 export interface TextPromptCompilation extends CompilationResultBase {
   kind: 'text';
   text: string;
+  worldInfoOutlets: Record<string, string>;
 }
 
 export type PromptCompilationErrorCode =
@@ -109,6 +138,7 @@ export type PromptCompilationErrorCode =
   | 'macro_expansion_limit'
   | 'budget_search_limit'
   | 'tokenizer_error'
+  | 'unsupported_worldbook_placement'
   | 'context_overflow';
 
 export interface PromptCompilationFailure<TTarget extends 'chat' | 'text' = 'chat' | 'text'> extends CompilationResultBase {

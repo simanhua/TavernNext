@@ -91,6 +91,11 @@ describe('chat UI API bindings', () => {
         }],
       },
     });
+    const listedPresets = await app.inject({ method: 'GET', url: '/api/presets' });
+    expect(listedPresets.statusCode).toBe(200);
+    expect(listedPresets.json()).toEqual([
+      expect.objectContaining({ id: ids.preset, kind: 'chat', name: 'Role chat' }),
+    ]);
     repositories.conversations.create({
       id: ids.conversation,
       characterId: ids.character,

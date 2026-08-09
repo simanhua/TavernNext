@@ -131,7 +131,11 @@ export function registerCharacterExportRoutes(
             tags: character.tags,
             creator: character.creator,
             characterVersion: character.characterVersion,
-            extensions: structuredClone(source?.extensions ?? {}),
+            extensions: structuredClone(
+              Object.keys(character.extensions).length > 0
+                ? character.extensions
+                : source?.extensions ?? {},
+            ),
             ...(characterBook === undefined ? {} : { characterBook }),
           },
           unknownFields,

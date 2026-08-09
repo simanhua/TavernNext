@@ -21,6 +21,7 @@ import {
   type PromptChatMessage,
   type PromptWarning,
   type TokenBreakdownEntry,
+  type WorldInfoCompilerPlacements,
   type WorldbookEvaluationResult,
   type WorldbookRuntimeBook,
 } from '@tavernnext/prompt-engine';
@@ -45,6 +46,7 @@ import type { Repositories } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
 
 export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+const EXECUTABLE_AUDIT_SCHEMA_VERSION = 1 as const;
 
 export interface ServerTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
@@ -116,6 +118,7 @@ export interface PromptSnapshotPayload {
   tokenBreakdown: TokenBreakdownEntry[];
   totalTokens: number;
   warnings: PromptWarning[];
+  worldInfoOutlets: Record<string, string>;
   compiledRequest: ChatRequest | TextRequest;
   compiledRequestHash: string;
   payloadHash: string;
@@ -137,6 +140,7 @@ export type PromptSnapshotErrorCode =
   | 'snapshot_mismatch'
   | 'snapshot_invalid'
   | 'invalid_runtime_state'
+  | 'unsupported_worldbook_placement'
   | 'context_overflow'
   | 'tokenizer_error';
 
@@ -183,6 +187,7 @@ interface LoadedAggregate {
   books: LoadedBook[];
   previousTimedState: WorldbookTimedState;
   manifest: PromptEntityRevisionManifest;
+  compatibilityWarnings: PromptWarning[];
 }
 
 interface BuiltSnapshot {
@@ -199,7 +204,7 @@ export interface AcceptedPromptSnapshot {
 export interface PromptSnapshotService {
   createPreview(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
   createAndAccept(input: PromptSnapshotInput, snapshotId: string): Promise<AcceptedPromptSnapshot>;
-  acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): AcceptedPromptSnapshot;
+  acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): Promise<AcceptedPromptSnapshot>;
   commitTimedState(payload: PromptSnapshotPayload): void;
 }
 
@@ -339,8 +344,9 @@ function historyRows(repositories: Repositories, conversationId: string): {
   history: LoadedAggregate['history'];
   manifest: MessageRevisionRef[];
 } {
-  const variants = new Map(repositories.messageVariants.list().map((variant) => [variant.id, variant]));
-  const messages = repositories.messages.list().filter((message) => message.conversationId === conversationId);
+  const variants = new Map(repositories.messageVariants.listByConversationId(conversationId)
+    .map((variant) => [variant.id, variant]));
+  const messages = repositories.messages.listByConversationId(conversationId);
   return {
     history: messages.map((message) => {
       const variant = message.activeVariantId === null ? undefined : variants.get(message.activeVariantId);
@@ -364,10 +370,14 @@ function requestedPreset(
   repositories: Repositories,
   id: string | undefined,
   kind: PresetKind,
+  compatibilityWarnings: PromptWarning[],
 ): Preset {
   if (id === undefined) throw new PromptSnapshotError('preset_not_configured');
   const preset = repositories.presets.get(id);
   if (preset === undefined) throw new PromptSnapshotError('not_found');
+  for (const message of preset.compatibility?.compatWarnings ?? []) {
+    compatibilityWarnings.push({ code: 'compatibility_warning', message, source: `preset:${preset.id}` });
+  }
   return safePreset(preset, kind);
 }
 
@@ -412,13 +422,18 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   const provider = repositories.providerProfiles.get(conversation.providerId);
   if (provider === undefined) throw new PromptSnapshotError('provider_not_configured');
 
+  const compatibilityWarnings: PromptWarning[] = [];
+  for (const message of character.compatibility?.compatWarnings ?? []) {
+    compatibilityWarnings.push({ code: 'compatibility_warning', message, source: `character:${character.id}` });
+  }
+
   const presets = provider.apiMode === 'chat'
-    ? [requestedPreset(repositories, conversation.presetId, 'chat')]
+    ? [requestedPreset(repositories, conversation.presetId, 'chat', compatibilityWarnings)]
     : [
-      requestedPreset(repositories, conversation.presetId, 'text'),
-      requestedPreset(repositories, conversation.contextPresetId, 'context'),
-      requestedPreset(repositories, conversation.instructPresetId, 'instruct'),
-      requestedPreset(repositories, conversation.systemPresetId, 'system'),
+      requestedPreset(repositories, conversation.presetId, 'text', compatibilityWarnings),
+      requestedPreset(repositories, conversation.contextPresetId, 'context', compatibilityWarnings),
+      requestedPreset(repositories, conversation.instructPresetId, 'instruct', compatibilityWarnings),
+      requestedPreset(repositories, conversation.systemPresetId, 'system', compatibilityWarnings),
     ];
 
   const seen = new Set<string>();
@@ -426,6 +441,9 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   const addPersisted = (row: Worldbook | undefined, source: LoadedPersistedBook['source']) => {
     if (row === undefined || seen.has(row.id)) return;
     seen.add(row.id);
+    for (const message of row.compatibility?.compatWarnings ?? []) {
+      compatibilityWarnings.push({ code: 'compatibility_warning', message, source: `worldbook:${row.id}` });
+    }
     books.push(persistedBook(repositories, row, source));
   };
   const globalBooks = repositories.worldbooks.listGlobal();
@@ -480,6 +498,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
       deepJson(runtimeState?.timedState ?? EMPTY_WORLDBOOK_TIMED_STATE),
     ),
     manifest: deepJson(manifest),
+    compatibilityWarnings: deepJson(compatibilityWarnings),
   };
 }
 
@@ -528,7 +547,7 @@ function tokenizerRequest(preset: Preset, provider: ProviderProfile): TokenizerS
       ? requested as TokenizerId
       : TokenizerId.BEST_MATCH,
     model: provider.model,
-    api: provider.apiMode === 'chat' ? 'openai' : undefined,
+    api: 'openai',
   };
 }
 
@@ -576,26 +595,47 @@ async function countWorldbookTexts(
   return result;
 }
 
-function worldInfo(result: WorldbookEvaluationResult): { before: string; after: string; warnings: PromptWarning[] } {
+function worldInfo(result: WorldbookEvaluationResult): WorldInfoCompilerPlacements {
   const before: string[] = [];
   const after: string[] = [];
-  const warnings: PromptWarning[] = [];
+  const examplesBefore: Array<{ source: string; content: string }> = [];
+  const examplesAfter: Array<{ source: string; content: string }> = [];
+  const authorBefore: Array<{ source: string; content: string }> = [];
+  const authorAfter: Array<{ source: string; content: string }> = [];
+  const atDepth: WorldInfoCompilerPlacements['atDepth'][number][] = [];
+  const outlets: Record<string, Array<{ source: string; content: string }>> = {};
   const beforePositions = new Set<number | string>([0, 'before', 'before_char', 'before_character']);
   const afterPositions = new Set<number | string>([1, 'after', 'after_char', 'after_character']);
   for (const entry of result.activated) {
-    if (beforePositions.has(entry.position)) before.push(entry.content);
-    else {
-      after.push(entry.content);
-      if (!afterPositions.has(entry.position)) {
-        warnings.push({
-          code: 'worldbook_position_fallback',
-          message: `Worldbook position ${String(entry.position)} was placed after character context.`,
-          source: entry.entryKey,
-        });
+    const item = { source: entry.entryKey, content: entry.content };
+    if (beforePositions.has(entry.position)) before.unshift(entry.content);
+    else if (afterPositions.has(entry.position)) after.unshift(entry.content);
+    else if (entry.position === 2) authorBefore.unshift(item);
+    else if (entry.position === 3) authorAfter.unshift(item);
+    else if (entry.position === 4) {
+      const placementRole = entry.role === 0 ? 'system' : entry.role === 1 ? 'user' : entry.role === 2 ? 'assistant' : undefined;
+      if (!Number.isSafeInteger(entry.depth) || entry.depth < 0 || placementRole === undefined) {
+        throw new PromptSnapshotError('unsupported_worldbook_placement');
       }
+      atDepth.unshift({ ...item, depth: entry.depth, role: placementRole });
+    } else if (entry.position === 5) examplesBefore.unshift(item);
+    else if (entry.position === 6) examplesAfter.unshift(item);
+    else if (entry.position === 7) {
+      if (entry.outletName.trim() === '') throw new PromptSnapshotError('unsupported_worldbook_placement');
+      (outlets[entry.outletName] ??= []).push(item);
+    } else {
+      throw new PromptSnapshotError('unsupported_worldbook_placement');
     }
   }
-  return { before: before.join('\n'), after: after.join('\n'), warnings };
+  return {
+    beforeCharacter: before.join('\n'),
+    afterCharacter: after.join('\n'),
+    examplesBefore,
+    examplesAfter,
+    authorNote: { before: authorBefore, after: authorAfter, depth: 4, role: 'system' },
+    atDepth,
+    outlets,
+  };
 }
 
 function finiteSetting(settings: Record<string, unknown>, key: string): number | undefined {
@@ -611,6 +651,9 @@ function responseTokens(conversation: Conversation, preset: Preset): number | un
 
 function executableAudit(aggregate: LoadedAggregate): Record<string, unknown> {
   return {
+    schemaVersion: EXECUTABLE_AUDIT_SCHEMA_VERSION,
+    input: aggregate.input,
+    entityRevisions: aggregate.manifest,
     character: {
       id: aggregate.character.id,
       revision: aggregate.character.revision,
@@ -624,6 +667,7 @@ function executableAudit(aggregate: LoadedAggregate): Record<string, unknown> {
       postHistoryInstructions: aggregate.character.postHistoryInstructions,
       creatorNotes: aggregate.character.creatorNotes,
       tags: aggregate.character.tags,
+      extensions: aggregate.character.extensions,
     },
     persona: {
       id: aggregate.persona.id,
@@ -644,6 +688,7 @@ function executableAudit(aggregate: LoadedAggregate): Record<string, unknown> {
       settings: preset.settings,
     })),
     worldbooks: aggregate.books.map((book) => ({ id: book.id, source: book.source, book: book.book })),
+    history: aggregate.history,
     previousTimedState: aggregate.previousTimedState,
   };
 }
@@ -651,6 +696,7 @@ function executableAudit(aggregate: LoadedAggregate): Record<string, unknown> {
 function compilerError(code: string): never {
   if (code === 'context_overflow' || code === 'invalid_budget') throw new PromptSnapshotError('context_overflow');
   if (code === 'tokenizer_error') throw new PromptSnapshotError('tokenizer_error');
+  if (code === 'unsupported_worldbook_placement') throw new PromptSnapshotError('unsupported_worldbook_placement');
   throw new PromptSnapshotError('invalid_preset');
 }
 
@@ -674,6 +720,10 @@ async function compileAggregate(
   const bookBudgets = aggregate.books.map((book) => book.book.tokenBudget)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
   const tokenBudget = Math.min(aggregate.conversation.maxPromptTokens, ...bookBudgets);
+  const depthPromptExtension = record(aggregate.character.extensions.depth_prompt)
+    && typeof aggregate.character.extensions.depth_prompt.prompt === 'string'
+    ? aggregate.character.extensions.depth_prompt.prompt
+    : '';
   const scanSources = {
     messages: [...history].reverse().map((message) => message.content),
     additional: [],
@@ -683,7 +733,7 @@ async function compileAggregate(
       tags: aggregate.character.tags,
       description: aggregate.character.description,
       personality: aggregate.character.personality,
-      depthPrompt: aggregate.character.postHistoryInstructions,
+      depthPrompt: depthPromptExtension,
       scenario: aggregate.character.scenario,
       creatorNotes: aggregate.character.creatorNotes,
     },
@@ -704,7 +754,7 @@ async function compileAggregate(
       scanSources,
       books,
     }, tokenBudget);
-    const split = worldInfo(worldbook);
+    const placements = worldInfo(worldbook);
     const tokenizer = {
       countText: async (text: string) => {
         try {
@@ -734,8 +784,7 @@ async function compileAggregate(
         maxPromptTokens: aggregate.conversation.maxPromptTokens,
         generationType: aggregate.input.mode,
         promptOrderCharacterId: aggregate.character.id,
-        worldInfoBefore: split.before,
-        worldInfoAfter: split.after,
+        worldInfoPlacements: placements,
       })
       : await compileTextPrompt({
         character: aggregate.character,
@@ -755,8 +804,7 @@ async function compileAggregate(
           finiteSetting(aggregate.presets[0]!.settings, 'max_context') ?? aggregate.conversation.maxPromptTokens,
         ),
         generationType: aggregate.input.mode,
-        worldInfoBefore: split.before,
-        worldInfoAfter: split.after,
+        worldInfoPlacements: placements,
       });
 
     if (compilation.kind === 'error') compilerError(compilation.code);
@@ -787,8 +835,8 @@ async function compileAggregate(
         message: warning.message,
         ...(warning.entryKey === undefined ? {} : { source: warning.entryKey }),
       })),
-      ...split.warnings,
       ...compilation.warnings,
+      ...aggregate.compatibilityWarnings,
       ...(decision.warning === undefined ? [] : [{
         code: 'tokenizer_fallback',
         message: decision.warning,
@@ -811,6 +859,7 @@ async function compileAggregate(
       tokenBreakdown: deepJson(compilation.tokenBreakdown),
       totalTokens: compilation.totalTokens,
       warnings: deepJson(warnings),
+      worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
       compiledRequest: deepJson(compiledRequest),
       compiledRequestHash: canonicalHash(compiledRequest),
     };
@@ -887,6 +936,137 @@ function isInput(value: unknown): value is SnapshotInputPayload {
     ]);
 }
 
+function nullableFinite(value: unknown): boolean {
+  return value === null || finiteNumber(value);
+}
+
+function nullableBoolean(value: unknown): boolean {
+  return value === null || typeof value === 'boolean';
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isExecutableFilter(value: unknown): boolean {
+  return record(value)
+    && typeof value.isExclude === 'boolean'
+    && stringArray(value.names)
+    && stringArray(value.tags)
+    && hasOnlyKeys(value, ['isExclude', 'names', 'tags']);
+}
+
+function isExecutableWorldbookEntry(value: unknown): boolean {
+  if (!record(value)
+    || typeof value.id !== 'string'
+    || !isSourceUid(value.sourceUid)
+    || !nonNegativeInteger(value.sourceOrdinal)
+    || !stringArray(value.keys)
+    || !stringArray(value.secondaryKeys)
+    || !['useRegex', 'selective', 'constant', 'vectorized', 'useProbability', 'groupOverride', 'ignoreBudget',
+      'excludeRecursion', 'preventRecursion', 'matchPersonaDescription', 'matchCharacterDescription',
+      'matchCharacterPersonality', 'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes',
+      'enabled', 'addMemo'].every((key) => typeof value[key] === 'boolean')
+    || !['selectiveLogic', 'probability', 'groupWeight', 'order', 'depth', 'role']
+      .every((key) => finiteNumber(value[key]))
+    || typeof value.group !== 'string'
+    || !nullableFinite(value.priority)
+    || !(typeof value.position === 'string' || finiteNumber(value.position))
+    || !nullableFinite(value.scanDepth)
+    || !nullableBoolean(value.caseSensitive)
+    || !nullableBoolean(value.matchWholeWords)
+    || !nullableBoolean(value.useGroupScoring)
+    || !(typeof value.delayUntilRecursion === 'boolean' || finiteNumber(value.delayUntilRecursion))
+    || !nullableFinite(value.sticky) || !nullableFinite(value.cooldown) || !nullableFinite(value.delay)
+    || !isExecutableFilter(value.characterFilter) || !isExecutableFilter(value.personaFilter)
+    || !['comment', 'displayName', 'content', 'outletName', 'automationId']
+      .every((key) => typeof value[key] === 'string')
+    || !nullableFinite(value.displayIndex)
+    || !stringArray(value.triggers)
+    || !record(value.extensions) || !record(value.unknownFields)) return false;
+  return hasOnlyKeys(value, [
+    'id', 'sourceUid', 'sourceOrdinal', 'keys', 'secondaryKeys', 'useRegex', 'selective',
+    'selectiveLogic', 'constant', 'vectorized', 'probability', 'useProbability', 'group',
+    'groupWeight', 'groupOverride', 'priority', 'order', 'position', 'depth', 'role',
+    'ignoreBudget', 'scanDepth', 'caseSensitive', 'matchWholeWords', 'useGroupScoring',
+    'excludeRecursion', 'preventRecursion', 'delayUntilRecursion', 'sticky', 'cooldown', 'delay',
+    'characterFilter', 'personaFilter', 'matchPersonaDescription', 'matchCharacterDescription',
+    'matchCharacterPersonality', 'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes',
+    'comment', 'displayName', 'content', 'enabled', 'addMemo', 'displayIndex', 'outletName',
+    'automationId', 'triggers', 'extensions', 'unknownFields',
+  ]);
+}
+
+function isExecutableWorldbook(value: unknown): boolean {
+  return record(value)
+    && typeof value.name === 'string'
+    && typeof value.description === 'string'
+    && typeof value.enabled === 'boolean'
+    && nullableFinite(value.scanDepth)
+    && nullableFinite(value.tokenBudget)
+    && typeof value.recursiveScanning === 'boolean'
+    && record(value.extensions)
+    && record(value.unknownFields)
+    && Array.isArray(value.entries)
+    && value.entries.every(isExecutableWorldbookEntry)
+    && hasOnlyKeys(value, [
+      'name', 'description', 'enabled', 'scanDepth', 'tokenBudget', 'recursiveScanning',
+      'extensions', 'unknownFields', 'entries',
+    ]);
+}
+
+function isExecutableAudit(value: unknown): value is Record<string, unknown> {
+  if (!record(value)
+    || value.schemaVersion !== EXECUTABLE_AUDIT_SCHEMA_VERSION
+    || !isInput(value.input)
+    || !isManifest(value.entityRevisions)
+    || !record(value.character)
+    || !record(value.persona)
+    || !record(value.provider)
+    || !Array.isArray(value.presets)
+    || !Array.isArray(value.worldbooks)
+    || !Array.isArray(value.history)
+    || !WorldbookTimedStateSchema.safeParse(value.previousTimedState).success
+    || !hasOnlyKeys(value, [
+      'schemaVersion', 'input', 'entityRevisions', 'character', 'persona', 'provider',
+      'presets', 'worldbooks', 'history', 'previousTimedState',
+    ])) return false;
+  const character = value.character;
+  if (typeof character.id !== 'string'
+    || !nonNegativeInteger(character.revision)
+    || !['name', 'description', 'personality', 'scenario', 'firstMessage', 'examples', 'systemPrompt',
+      'postHistoryInstructions', 'creatorNotes'].every((key) => typeof character[key] === 'string')
+    || !Array.isArray(character.tags) || !character.tags.every((tag) => typeof tag === 'string')
+    || !record(character.extensions)
+    || !hasOnlyKeys(character, [
+      'id', 'revision', 'name', 'description', 'personality', 'scenario', 'firstMessage',
+      'examples', 'systemPrompt', 'postHistoryInstructions', 'creatorNotes', 'tags', 'extensions',
+    ])) return false;
+  const persona = value.persona;
+  if (typeof persona.id !== 'string' || !nonNegativeInteger(persona.revision)
+    || typeof persona.name !== 'string' || typeof persona.description !== 'string'
+    || !hasOnlyKeys(persona, ['id', 'revision', 'name', 'description'])) return false;
+  const provider = value.provider;
+  if (typeof provider.id !== 'string' || !nonNegativeInteger(provider.revision)
+    || typeof provider.model !== 'string' || (provider.apiMode !== 'chat' && provider.apiMode !== 'text')
+    || !hasOnlyKeys(provider, ['id', 'revision', 'model', 'apiMode'])) return false;
+  if (!value.presets.every((preset) => record(preset)
+    && typeof preset.id === 'string' && nonNegativeInteger(preset.revision)
+    && ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'].includes(String(preset.kind))
+    && record(preset.settings)
+    && hasOnlyKeys(preset, ['id', 'revision', 'kind', 'settings']))) return false;
+  if (!value.worldbooks.every((book) => record(book)
+    && typeof book.id === 'string'
+    && ['global', 'character', 'conversation', 'embedded'].includes(String(book.source))
+    && isExecutableWorldbook(book.book)
+    && hasOnlyKeys(book, ['id', 'source', 'book']))) return false;
+  return value.history.every((message) => record(message)
+    && typeof message.id === 'string'
+    && typeof message.role === 'string'
+    && typeof message.content === 'string'
+    && hasOnlyKeys(message, ['id', 'role', 'content']));
+}
+
 function isWarnings(value: unknown): value is PromptWarning[] {
   return Array.isArray(value) && value.every((item) => record(item)
     && typeof item.code === 'string'
@@ -898,6 +1078,10 @@ function isWarnings(value: unknown): value is PromptWarning[] {
 
 function isStop(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isWorldInfoOutlets(value: unknown): value is Record<string, string> {
+  return record(value) && Object.values(value).every((item) => typeof item === 'string');
 }
 
 function isSourceUid(value: unknown): boolean {
@@ -1024,13 +1208,14 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
     || !isInput(value.input)
     || (value.kind !== 'chat' && value.kind !== 'text')
     || !isManifest(value.entityRevisions)
-    || !record(value.executable)
+    || !isExecutableAudit(value.executable)
     || !isWorldbookResult(value.worldbook)
     || !isTokenizerDecision(value.tokenizerDecision)
     || !isStop(value.stop)
     || !isTokenBreakdown(value.tokenBreakdown)
     || !nonNegativeInteger(value.totalTokens)
     || !isWarnings(value.warnings)
+    || !isWorldInfoOutlets(value.worldInfoOutlets)
     || typeof value.compiledRequestHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.compiledRequestHash)
     || typeof value.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.payloadHash)
     || !sameCanonical(value.seed, value.input.seed)
@@ -1038,7 +1223,7 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
   const commonKeys = [
     'schemaVersion', 'input', 'kind', 'seed', 'messageIndex', 'entityRevisions', 'executable',
     'worldbook', 'tokenizerDecision', 'stop', 'tokenBreakdown', 'totalTokens', 'warnings',
-    'compiledRequest', 'compiledRequestHash', 'payloadHash',
+    'worldInfoOutlets', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
   ];
   return value.kind === 'chat'
     ? isChatRequest(value.compiledRequest)
@@ -1063,6 +1248,16 @@ function parseStoredPayload(value: unknown): PromptSnapshotPayload {
     || !sameCanonical(value.text, value.compiledRequest.prompt)
     || value.messages !== undefined) throw new PromptSnapshotError('snapshot_invalid');
   if (!sameCanonical(value.stop, value.compiledRequest.stop ?? [])) throw new PromptSnapshotError('snapshot_invalid');
+  if (!sameCanonical(value.executable.input, value.input)
+    || !sameCanonical(value.executable.entityRevisions, value.entityRevisions)) {
+    throw new PromptSnapshotError('snapshot_invalid');
+  }
+  const auditedProvider = value.executable.provider;
+  if (!record(auditedProvider)
+    || value.compiledRequest.model !== auditedProvider.model
+    || (value.kind === 'chat') !== (auditedProvider.apiMode === 'chat')) {
+    throw new PromptSnapshotError('snapshot_invalid');
+  }
   if (canonicalHash(value.compiledRequest) !== value.compiledRequestHash) throw new PromptSnapshotError('snapshot_invalid');
   const { payloadHash, ...withoutPayloadHash } = value;
   if (canonicalHash(withoutPayloadHash) !== payloadHash) throw new PromptSnapshotError('snapshot_invalid');
@@ -1138,23 +1333,39 @@ export function createPromptSnapshotService(options: {
         return { snapshotId, payload: deepJson(built.payload), provider: deepJson(provider) };
       });
     },
-    acceptExisting(input) {
+    async acceptExisting(input) {
+      let snapshot: ReturnType<typeof repositories.generationSnapshots.get>;
+      try {
+        snapshot = repositories.generationSnapshots.get(input.snapshotId);
+      } catch {
+        throw new PromptSnapshotError('snapshot_invalid');
+      }
+      if (snapshot === undefined) throw new PromptSnapshotError('not_found');
+      let payload: PromptSnapshotPayload;
+      try {
+        payload = parseStoredPayload(snapshot.payload);
+      } catch (error) {
+        if (error instanceof PromptSnapshotError) throw error;
+        throw new PromptSnapshotError('snapshot_invalid');
+      }
+      assertSnapshotInput(payload, input);
+      const aggregate = database.transaction(() => {
+        revalidateManifest(repositories, payload.entityRevisions);
+        return loadAggregate(repositories, payload.input);
+      });
+      const rebuilt = await compileAggregate(aggregate, tokenizerRuntime);
+      if (!sameCanonical(rebuilt, payload)) throw new PromptSnapshotError('snapshot_invalid');
+
       return database.transaction(() => {
-        let snapshot: ReturnType<typeof repositories.generationSnapshots.get>;
+        const current = repositories.generationSnapshots.get(input.snapshotId);
+        if (current === undefined) throw new PromptSnapshotError('not_found');
+        let currentPayload: PromptSnapshotPayload;
         try {
-          snapshot = repositories.generationSnapshots.get(input.snapshotId);
+          currentPayload = parseStoredPayload(current.payload);
         } catch {
           throw new PromptSnapshotError('snapshot_invalid');
         }
-        if (snapshot === undefined) throw new PromptSnapshotError('not_found');
-        let payload: PromptSnapshotPayload;
-        try {
-          payload = parseStoredPayload(snapshot.payload);
-        } catch (error) {
-          if (error instanceof PromptSnapshotError) throw error;
-          throw new PromptSnapshotError('snapshot_invalid');
-        }
-        assertSnapshotInput(payload, input);
+        if (!sameCanonical(currentPayload, payload)) throw new PromptSnapshotError('snapshot_invalid');
         const provider = acceptUserTurn(repositories, payload);
         return { snapshotId: input.snapshotId, payload, provider: deepJson(provider) };
       });

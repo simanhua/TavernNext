@@ -1,6 +1,6 @@
-import type { Character, Conversation, Message, MessageVariant, Persona } from '@tavernnext/domain';
+import type { Character, Conversation, Message, MessageVariant, Persona, Preset } from '@tavernnext/domain';
 
-export type { Character, Conversation, Message, MessageVariant, Persona };
+export type { Character, Conversation, Message, MessageVariant, Persona, Preset };
 
 export interface ProviderProfileView {
   id: string;
@@ -59,6 +59,7 @@ export const api = {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input, isDefault: false }),
   }),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
+  listPresets: () => request<Preset[]>('/api/presets'),
   saveProvider: (input: {
     id?: string;
     revision?: number;
@@ -78,8 +79,26 @@ export const api = {
       });
   },
   listConversations: () => request<Conversation[]>('/api/conversations'),
-  createConversation: (input: { characterId: string; personaId: string; title: string }) => request<Conversation>('/api/conversations', {
+  createConversation: (input: {
+    characterId: string;
+    personaId: string;
+    title: string;
+    providerId: string;
+    presetId: string;
+    contextPresetId?: string;
+    instructPresetId?: string;
+    systemPresetId?: string;
+  }) => request<Conversation>('/api/conversations', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
+  }),
+  updateConversationConfiguration: (conversation: Conversation, patch: {
+    providerId: string;
+    presetId: string;
+    contextPresetId?: string;
+    instructPresetId?: string;
+    systemPresetId?: string;
+  }) => request<Conversation>(`/api/conversations/${conversation.id}`, {
+    method: 'PATCH', body: JSON.stringify({ revision: conversation.revision, patch }),
   }),
   getConversationMessages: (id: string) => request<ConversationDetail>(`/api/conversations/${id}/messages`),
   updateMessage: (message: Message, content: string) => request<Message>(`/api/messages/${message.id}`, {

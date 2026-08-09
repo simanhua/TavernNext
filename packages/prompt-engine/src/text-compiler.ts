@@ -74,6 +74,19 @@ function asStopList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry !== '') : [];
 }
 
+function placementText(values: readonly { content: string }[]): string {
+  return values.map(({ content }) => content.trim()).filter(Boolean).join('\n');
+}
+
+function placementOutlets(
+  outlets: Readonly<Record<string, readonly { content: string }[]>> | undefined,
+): Record<string, string> {
+  return Object.fromEntries(Object.entries(outlets ?? {}).flatMap(([name, values]) => {
+    const content = placementText(values);
+    return content === '' ? [] : [[name, content]];
+  }));
+}
+
 function renderStoryControlFlow(
   template: string,
   values: Readonly<Record<string, string>>,
@@ -127,6 +140,7 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     });
   }
   void textSettings;
+  const placements = input.worldInfoPlacements;
 
   let macroFailed = false;
   const expand = (value: string, source: string, values?: Readonly<Record<string, string>>): string => {
@@ -154,10 +168,10 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
 
   const storyValues = {
     system: systemContent,
-    wiBefore: input.worldInfoBefore ?? '',
-    wiAfter: input.worldInfoAfter ?? '',
-    loreBefore: input.worldInfoBefore ?? '',
-    loreAfter: input.worldInfoAfter ?? '',
+    wiBefore: placements?.beforeCharacter ?? input.worldInfoBefore ?? '',
+    wiAfter: placements?.afterCharacter ?? input.worldInfoAfter ?? '',
+    loreBefore: placements?.beforeCharacter ?? input.worldInfoBefore ?? '',
+    loreAfter: placements?.afterCharacter ?? input.worldInfoAfter ?? '',
     anchorBefore: input.anchorBefore ?? '',
     anchorAfter: input.anchorAfter ?? '',
   };
@@ -175,6 +189,16 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     warnings,
   );
   let story = expand(storyTemplate, 'context:story-string', storyValues);
+  if (placements !== undefined) {
+    const hasBeforeSlot = /\{\{(?:wi|lore)Before\}\}/i.test(storyTemplate);
+    const hasAfterSlot = /\{\{(?:wi|lore)After\}\}/i.test(storyTemplate);
+    if (!hasBeforeSlot && placements.beforeCharacter !== '') {
+      story = `${expand(placements.beforeCharacter, 'worldbook:before-character')}\n${story}`;
+    }
+    if (!hasAfterSlot && placements.afterCharacter !== '') {
+      story = `${story.replace(/\n?$/, '\n')}${expand(placements.afterCharacter, 'worldbook:after-character')}\n`;
+    }
+  }
   story = story.replace(/^\n+/, '');
   const storyInChat = context.story_string_position === 1;
   const storyPrefix = instruct === undefined || storyInChat ? '' : sequence('story_string_prefix', 'System');
@@ -270,17 +294,24 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
     return [prefix, `${content}${suffix}`].filter((part) => part !== '').join(wrap ? '\n' : '');
   };
 
-  const expandedExamples = expand(input.character.examples, 'character:examples');
   const exampleSeparator = expand(stringSetting(context, 'example_separator'), 'context:example-separator');
-  if (instruct === undefined || booleanSetting(instruct, 'skip_examples')) {
-    rawExampleGroups(expandedExamples).forEach((raw, index) => {
-      add(`example:${index}`, `${exampleSeparator === '' ? '' : `${exampleSeparator}\n`}${raw}`, 'optional');
-    });
-  } else {
-    exampleGroups(expandedExamples, input.persona.name, input.character.name).forEach((messages, index) => {
-      const formatted = messages.map(formatExampleMessage).join('');
-      add(`example:${index}`, `${exampleSeparator === '' ? '' : `${exampleSeparator}\n`}${formatted}`, 'optional');
-    });
+  const exampleSources = [
+    ...(placements?.examplesBefore ?? []),
+    { source: 'character:examples', content: input.character.examples },
+    ...(placements?.examplesAfter ?? []),
+  ];
+  for (const sourceItem of exampleSources) {
+    const expandedExamples = expand(sourceItem.content, sourceItem.source);
+    if (instruct === undefined || booleanSetting(instruct, 'skip_examples')) {
+      rawExampleGroups(expandedExamples).forEach((raw, index) => {
+        add(`${sourceItem.source}:${index}`, `${exampleSeparator === '' ? '' : `${exampleSeparator}\n`}${raw}`, 'optional');
+      });
+    } else {
+      exampleGroups(expandedExamples, input.persona.name, input.character.name).forEach((messages, index) => {
+        const formatted = messages.map(formatExampleMessage).join('');
+        add(`${sourceItem.source}:${index}`, `${exampleSeparator === '' ? '' : `${exampleSeparator}\n`}${formatted}`, 'optional');
+      });
+    }
   }
 
   const chatStart = expand(stringSetting(context, 'chat_start'), 'context:chat-start');
@@ -315,6 +346,37 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
       ...(isContinue && index === input.history.length - 1 ? { continued: true } : {}),
     };
   });
+  if (placements !== undefined) {
+    const injected: Array<{ depth: number; item: ConversationItem }> = placements.atDepth
+      .filter(({ content }) => content !== '')
+      .map((entry) => ({
+        depth: entry.depth,
+        item: {
+          source: entry.source,
+          role: entry.role,
+          content: expand(entry.content, entry.source),
+          policy: 'immutable' as const,
+        },
+      }));
+    const authorNote = placementText([...placements.authorNote.before, ...placements.authorNote.after]);
+    if (authorNote !== '') {
+      injected.push({
+        depth: placements.authorNote.depth,
+        item: {
+          source: [...placements.authorNote.before, ...placements.authorNote.after].map(({ source }) => source).join('+'),
+          role: placements.authorNote.role,
+          content: expand(authorNote, 'worldbook:author-note'),
+          policy: 'immutable',
+        },
+      });
+    }
+    const depths = [...new Set(injected.map(({ depth }) => depth))].sort((left, right) => right - left);
+    for (const depth of depths) {
+      const atDepth = injected.filter((entry) => entry.depth === depth).map(({ item }) => item);
+      const index = Math.max(0, conversation.length - depth);
+      conversation.splice(index, 0, ...atDepth);
+    }
+  }
   if (storyInChat && story !== '') {
     const rawDepth = context.story_string_depth;
     const depth = typeof rawDepth === 'number' && Number.isSafeInteger(rawDepth) && rawDepth >= 0 ? rawDepth : 1;
@@ -519,6 +581,7 @@ export async function compileTextPrompt(input: CompileTextPromptInput): Promise<
   return {
     kind: 'text',
     text: renderSelection(blocks.filter((_block, index) => included.has(index))),
+    worldInfoOutlets: placementOutlets(placements?.outlets),
     stop,
     tokenBreakdown: budget.tokenBreakdown,
     totalTokens: budget.totalTokens,

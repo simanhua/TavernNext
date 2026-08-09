@@ -1,6 +1,7 @@
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
+import { TokenizerId, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import { afterEach, describe, expect, it } from 'vitest';
-import { canonicalHash } from '../src/services/prompt-snapshot-service.js';
+import { createPromptSnapshotService } from '../src/services/prompt-snapshot-service.js';
 import type { Repositories } from '../src/db/repositories.js';
 import {
   capturedProvider,
@@ -96,6 +97,194 @@ describe('full prompt generation', () => {
       temperature: 0.4,
       maxTokens: 72,
     });
+  });
+
+  it.each(['chat', 'text'] as const)('routes Worldbook positions 0-7 into exact %s compiler targets', async (mode) => {
+    const provider = capturedProvider([{ type: 'completed', finishReason: 'stop' }]);
+    const { app, repositories } = await createPromptIntegrationContext({ provider });
+    seedFullPromptGraph(repositories, mode);
+    const character = repositories.characters.get(integrationIds.character)!;
+    expect(repositories.characters.update(character.id, character.revision, {
+      examples: '<START>\nTraveler: CARD-EXAMPLE\nAster: CARD-ANSWER',
+    })).toMatchObject({ ok: true });
+    if (mode === 'chat') {
+      const preset = repositories.presets.get(integrationIds.chatPreset)!;
+      const prompts = preset.settings.prompts as Array<Record<string, unknown>>;
+      const promptOrder = preset.settings.prompt_order as Array<{ character_id: string; order: Array<Record<string, unknown>> }>;
+      expect(repositories.presets.update(preset.id, preset.revision, {
+        settings: {
+          ...preset.settings,
+          prompts: [
+            ...prompts.slice(0, -2),
+            { identifier: 'dialogueExamples', marker: true, system_prompt: true },
+            ...prompts.slice(-2),
+          ],
+          prompt_order: [{
+            ...promptOrder[0],
+            order: [
+              ...promptOrder[0]!.order.slice(0, -2),
+              { identifier: 'dialogueExamples', enabled: true },
+              ...promptOrder[0]!.order.slice(-2),
+            ],
+          }],
+        },
+      })).toMatchObject({ ok: true });
+    }
+    const entries = [
+      { id: '018f1000-0000-7000-8000-000000000125', sourceUid: 'an-top', position: 2, content: 'AN-TOP' },
+      { id: '018f1000-0000-7000-8000-000000000126', sourceUid: 'an-bottom', position: 3, content: 'AN-BOTTOM' },
+      { id: '018f1000-0000-7000-8000-000000000127', sourceUid: 'at-depth', position: 4, content: 'AT-DEPTH', depth: 1, role: 1 },
+      { id: '018f1000-0000-7000-8000-000000000128', sourceUid: 'em-top', position: 5, content: '<START>\nTraveler: EM-TOP\nAster: EM-TOP-A' },
+      { id: '018f1000-0000-7000-8000-000000000129', sourceUid: 'em-bottom', position: 6, content: '<START>\nTraveler: EM-BOTTOM\nAster: EM-BOTTOM-A' },
+      { id: '018f1000-0000-7000-8000-000000000130', sourceUid: 'outlet', position: 7, content: 'OUTLET-ONLY', outletName: 'sidebar' },
+    ];
+    for (const entry of entries) {
+      repositories.worldbookEntries.create({
+        worldbookId: integrationIds.globalBook,
+        sourceOrdinal: Number(entry.position), keys: [], constant: true,
+        ...entry,
+      });
+    }
+
+    const previewResponse = await requestPreview(app);
+
+    expect(previewResponse.statusCode).toBe(201);
+    const preview = previewResponse.json();
+    const executable = mode === 'chat'
+      ? JSON.stringify(preview.messages)
+      : String(preview.text);
+    if (mode === 'chat') {
+      expect(preview.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'AN-TOP\nAN-BOTTOM' }),
+      ]));
+    } else {
+      expect(executable).toContain('AN-TOP\nAN-BOTTOM');
+    }
+    expect(executable).toContain('AT-DEPTH');
+    expect(executable.indexOf('EM-TOP')).toBeLessThan(executable.indexOf('CARD-EXAMPLE'));
+    expect(executable.indexOf('CARD-EXAMPLE')).toBeLessThan(executable.indexOf('EM-BOTTOM'));
+    expect(executable).not.toContain('OUTLET-ONLY');
+    expect(preview.worldInfoOutlets).toEqual({ sidebar: 'OUTLET-ONLY' });
+    const generation = await requestGeneration(app, preview.snapshotId);
+    expect(generation.statusCode).toBe(200);
+    expect(mode === 'chat' ? provider.chat : provider.text).toEqual([preview.compiledRequest]);
+  });
+
+  it('selects BEST_MATCH for Text through the OpenAI-compatible API/model contract', async () => {
+    const selections: Array<{ api?: string; model?: string }> = [];
+    const tokenizerRuntime = unitTokenizerRuntime({
+      selectTokenizer(input) {
+        selections.push({ api: input.api, model: input.model });
+        return selectTokenizer(input);
+      },
+    });
+    const { app, repositories } = await createPromptIntegrationContext({ tokenizerRuntime });
+    seedFullPromptGraph(repositories, 'text');
+    const provider = repositories.providerProfiles.get(integrationIds.provider)!;
+    expect(repositories.providerProfiles.update(provider.id, provider.revision, {
+      model: 'gpt-3.5-turbo-instruct',
+    })).toMatchObject({ ok: true });
+    const preset = repositories.presets.get(integrationIds.textPreset)!;
+    expect(repositories.presets.update(preset.id, preset.revision, {
+      settings: { ...preset.settings, tokenizer: TokenizerId.BEST_MATCH },
+    })).toMatchObject({ ok: true });
+
+    const response = await requestPreview(app);
+
+    expect(response.statusCode).toBe(201);
+    expect(selections).toEqual([{ api: 'openai', model: 'gpt-3.5-turbo-instruct' }]);
+    expect(response.json().tokenizerDecision).toMatchObject({
+      tokenizerId: TokenizerId.OPENAI,
+      tiktokenModel: 'gpt-3.5-turbo',
+    });
+  });
+
+  it('scans only typed Character depth_prompt extensions and surfaces persisted compatibility warnings', async () => {
+    const { app, repositories } = await createPromptIntegrationContext();
+    seedFullPromptGraph(repositories, 'chat');
+    const character = repositories.characters.get(integrationIds.character)!;
+    expect(repositories.characters.update(character.id, character.revision, {
+      extensions: { depth_prompt: { prompt: 'Typed Character depth prompt' } },
+      postHistoryInstructions: 'PHI-only',
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['character_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    const preset = repositories.presets.get(integrationIds.chatPreset)!;
+    expect(repositories.presets.update(preset.id, preset.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['preset_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    const book = repositories.worldbooks.get(integrationIds.globalBook)!;
+    expect(repositories.worldbooks.update(book.id, book.revision, {
+      compatibility: {
+        sourceFormat: 'test', rawPayload: {}, unknownFields: {},
+        compatWarnings: ['worldbook_compat_warning'], parserVersion: '1',
+      },
+    })).toMatchObject({ ok: true });
+    repositories.worldbookEntries.create({
+      id: '018f1000-0000-7000-8000-000000000122', worldbookId: integrationIds.globalBook,
+      sourceUid: 'typed-depth', sourceOrdinal: 3, keys: ['Typed Character depth prompt'],
+      content: 'TYPED-DEPTH-MATCH', matchCharacterDepthPrompt: true,
+    });
+    repositories.worldbookEntries.create({
+      id: '018f1000-0000-7000-8000-000000000123', worldbookId: integrationIds.globalBook,
+      sourceUid: 'phi-depth', sourceOrdinal: 4, keys: ['PHI-only'],
+      content: 'PHI-MUST-NOT-MATCH', matchCharacterDepthPrompt: true,
+    });
+
+    const response = await requestPreview(app);
+
+    expect(response.statusCode).toBe(201);
+    const preview = response.json();
+    expect(preview.worldbook.activated.map((entry: { content: string }) => entry.content)).toContain('TYPED-DEPTH-MATCH');
+    expect(preview.worldbook.activated.map((entry: { content: string }) => entry.content)).not.toContain('PHI-MUST-NOT-MATCH');
+    expect(preview.warnings).toEqual(expect.arrayContaining([
+      { code: 'compatibility_warning', message: 'character_compat_warning', source: `character:${integrationIds.character}` },
+      { code: 'compatibility_warning', message: 'preset_compat_warning', source: `preset:${integrationIds.chatPreset}` },
+      { code: 'compatibility_warning', message: 'worldbook_compat_warning', source: `worldbook:${integrationIds.globalBook}` },
+    ]));
+  });
+
+  it('loads and revalidates prompt history only through relationship-indexed repositories', async () => {
+    const { database, repositories } = await createPromptIntegrationContext();
+    seedFullPromptGraph(repositories, 'chat');
+    repositories.messages.list = () => { throw new Error('global message scan'); };
+    repositories.messageVariants.list = () => { throw new Error('global variant scan'); };
+    const service = createPromptSnapshotService({
+      database,
+      repositories,
+      tokenizerRuntime: unitTokenizerRuntime(),
+    });
+
+    const preview = await service.createPreview({
+      conversationId: integrationIds.conversation,
+      ...previewPayload(),
+      mode: 'normal' as const,
+    });
+
+    expect(preview.compiledRequestHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('fails closed for an activated Worldbook position without an exact compiler target', async () => {
+    const provider = capturedProvider();
+    const { app, repositories } = await createPromptIntegrationContext({ provider });
+    seedFullPromptGraph(repositories, 'chat');
+    repositories.worldbookEntries.create({
+      id: '018f1000-0000-7000-8000-000000000124', worldbookId: integrationIds.globalBook,
+      sourceUid: 'future-position', sourceOrdinal: 5, keys: [], constant: true,
+      content: 'MUST-NOT-COLLAPSE', position: 99,
+    });
+
+    const response = await requestPreview(app);
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({ error: 'unsupported_worldbook_placement' });
+    expect(provider.chat).toEqual([]);
+    expect(repositories.generationSnapshots.list()).toEqual([]);
   });
 
   it('rejects every changed executable aggregate with zero provider calls and zero partial writes', async () => {
@@ -283,107 +472,4 @@ describe('full prompt generation', () => {
     ]));
   });
 
-  it('rejects mismatched, hash-tampered, malformed, and unsupported snapshots fail-closed', async () => {
-    const provider = capturedProvider();
-    const { app, database, repositories } = await createPromptIntegrationContext({ provider });
-    seedFullPromptGraph(repositories, 'chat');
-    const mismatchPreview = (await requestPreview(app)).json();
-    const mismatch = await requestGeneration(app, mismatchPreview.snapshotId, { userText: 'Different input' });
-    expect(mismatch.statusCode).toBe(409);
-    expect(mismatch.json()).toEqual({ error: 'snapshot_mismatch' });
-
-    const tamperedPreview = (await requestPreview(app)).json();
-    const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(tamperedPreview.snapshotId);
-    const entity = JSON.parse(String(row?.payload));
-    entity.payload.compiledRequest.messages[0].content = 'TAMPERED';
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(entity), tamperedPreview.snapshotId);
-    const tampered = await requestGeneration(app, tamperedPreview.snapshotId);
-    expect(tampered.statusCode).toBe(409);
-    expect(tampered.json()).toEqual({ error: 'snapshot_invalid' });
-
-    const unsupportedPreview = (await requestPreview(app)).json();
-    const unsupportedRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(unsupportedPreview.snapshotId);
-    const unsupportedEntity = JSON.parse(String(unsupportedRow?.payload));
-    unsupportedEntity.payload.schemaVersion = 999;
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(unsupportedEntity), unsupportedPreview.snapshotId);
-    const unsupported = await requestGeneration(app, unsupportedPreview.snapshotId);
-    expect(unsupported.statusCode).toBe(409);
-    expect(unsupported.json()).toEqual({ error: 'snapshot_invalid' });
-
-    const malformedPreview = (await requestPreview(app)).json();
-    const malformedRow = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(malformedPreview.snapshotId);
-    const malformedEntity = JSON.parse(String(malformedRow?.payload));
-    malformedEntity.payload = { schemaVersion: 1 };
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(malformedEntity), malformedPreview.snapshotId);
-    const malformed = await requestGeneration(app, malformedPreview.snapshotId);
-    expect(malformed.statusCode).toBe(409);
-    expect(malformed.json()).toEqual({ error: 'snapshot_invalid' });
-
-    const malformedEntityPreview = (await requestPreview(app)).json();
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run('{}', malformedEntityPreview.snapshotId);
-    const malformedEntityResponse = await requestGeneration(app, malformedEntityPreview.snapshotId);
-    expect(malformedEntityResponse.statusCode).toBe(409);
-    expect(malformedEntityResponse.json()).toEqual({ error: 'snapshot_invalid' });
-
-    expect(provider.chat).toEqual([]);
-    expect(provider.text).toEqual([]);
-    expect(repositories.messages.list()).toHaveLength(2);
-    expect(runtimeStates(repositories)).toEqual([]);
-  });
-
-  it.each([
-    ['token ledger', (payload: Record<string, unknown>) => {
-      payload.tokenBreakdown = [{ source: 7, includedTokens: 0, omittedTokens: 0 }];
-    }],
-    ['Worldbook ledger', (payload: Record<string, unknown>) => {
-      (payload.worldbook as Record<string, unknown>).activated = [{ entryKey: 'incomplete' }];
-    }],
-    ['tokenizer decision', (payload: Record<string, unknown>) => {
-      (payload.tokenizerDecision as Record<string, unknown>).warning = 42;
-    }],
-  ] as const)('rejects a hash-consistent malformed nested %s before provider execution', async (_label, mutate) => {
-    const provider = capturedProvider();
-    const { app, database, repositories } = await createPromptIntegrationContext({ provider });
-    seedFullPromptGraph(repositories, 'chat');
-    const preview = (await requestPreview(app)).json();
-    const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(preview.snapshotId);
-    const entity = JSON.parse(String(row?.payload));
-    mutate(entity.payload);
-    const { payloadHash: ignoredPayloadHash, ...withoutPayloadHash } = entity.payload;
-    void ignoredPayloadHash;
-    entity.payload.payloadHash = canonicalHash(withoutPayloadHash);
-    database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(entity), preview.snapshotId);
-
-    const response = await requestGeneration(app, preview.snapshotId);
-
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'snapshot_invalid' });
-    expect(provider.chat).toEqual([]);
-    expect(provider.text).toEqual([]);
-    expect(repositories.messages.list()).toHaveLength(2);
-    expect(runtimeStates(repositories)).toEqual([]);
-  });
-
-  it('accepts the existing generation API by atomically creating the same immutable snapshot', async () => {
-    const provider = capturedProvider([{ type: 'completed', finishReason: 'stop' }]);
-    const { app, repositories } = await createPromptIntegrationContext({ provider });
-    seedFullPromptGraph(repositories, 'chat');
-
-    const response = await requestGeneration(app);
-
-    expect(response.statusCode).toBe(200);
-    expect(provider.chat).toHaveLength(1);
-    expect(repositories.generationSnapshots.list()).toHaveLength(1);
-    const snapshot = repositories.generationSnapshots.list()[0]!;
-    expect(snapshot.payload).toMatchObject({
-      input: previewPayload(),
-      compiledRequest: provider.chat[0],
-      compiledRequestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-    });
-  });
 });

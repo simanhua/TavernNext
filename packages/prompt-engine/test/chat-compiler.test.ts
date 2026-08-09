@@ -406,4 +406,69 @@ describe('Chat preset compiler', () => {
     };
     expect(JSON.stringify(await compileChatPrompt(input))).toBe(JSON.stringify(await compileChatPrompt(input)));
   });
+
+  it('places every Worldbook target without collapsing examples, author note, depth roles, or outlets', async () => {
+    const result = await compileChatPrompt({
+      character: character({ examples: '<START>\nYou: CARD-EXAMPLE\nAster: CARD-ANSWER' }),
+      persona: persona(), preset: chatPreset(), maxPromptTokens: 1_000, tokenizer: unitTokenizer(),
+      history: [
+        { id: 'old', role: 'user', content: 'OLD' },
+        { id: 'new', role: 'assistant', content: 'NEW' },
+      ],
+      worldInfoPlacements: {
+        beforeCharacter: 'WI-BEFORE',
+        afterCharacter: 'WI-AFTER',
+        examplesBefore: [{ source: 'wi:em-top', content: '<START>\nYou: EM-TOP\nAster: EM-TOP-A' }],
+        examplesAfter: [{ source: 'wi:em-bottom', content: '<START>\nYou: EM-BOTTOM\nAster: EM-BOTTOM-A' }],
+        authorNote: {
+          before: [{ source: 'wi:an-top', content: 'AN-TOP' }],
+          after: [{ source: 'wi:an-bottom', content: 'AN-BOTTOM' }],
+          depth: 2,
+          role: 'system',
+        },
+        atDepth: [
+          { source: 'wi:depth-system', content: 'DEPTH-SYSTEM', depth: 1, role: 'system' },
+          { source: 'wi:depth-user', content: 'DEPTH-USER', depth: 1, role: 'user' },
+          { source: 'wi:depth-assistant', content: 'DEPTH-ASSISTANT', depth: 1, role: 'assistant' },
+        ],
+        outlets: { sidebar: [{ source: 'wi:outlet', content: 'OUTLET-ONLY' }] },
+      },
+    });
+
+    expect(result.kind).toBe('chat');
+    if (result.kind !== 'chat') throw new Error(result.message);
+    const contents = result.messages.map((message) => message.content);
+    expect(contents.indexOf('WI-BEFORE')).toBeGreaterThan(-1);
+    expect(contents.indexOf('WI-AFTER')).toBeGreaterThan(-1);
+    expect(contents.indexOf('EM-TOP')).toBeLessThan(contents.indexOf('CARD-EXAMPLE'));
+    expect(contents.indexOf('CARD-EXAMPLE')).toBeLessThan(contents.indexOf('EM-BOTTOM'));
+    expect(result.messages).toEqual(expect.arrayContaining([
+      { role: 'system', content: 'AN-TOP\nAN-BOTTOM' },
+      { role: 'system', content: 'DEPTH-SYSTEM' },
+      { role: 'user', content: 'DEPTH-USER' },
+      { role: 'assistant', content: 'DEPTH-ASSISTANT' },
+    ]));
+    expect(contents.indexOf('DEPTH-SYSTEM')).toBeGreaterThan(contents.indexOf('OLD'));
+    expect(contents.indexOf('DEPTH-SYSTEM')).toBeLessThan(contents.indexOf('NEW'));
+    expect(JSON.stringify(result.messages)).not.toContain('OUTLET-ONLY');
+    expect(result.worldInfoOutlets).toEqual({ sidebar: 'OUTLET-ONLY' });
+  });
+
+  it('fails closed when an activated Worldbook example has no executable dialogue-example target', async () => {
+    const result = await compileChatPrompt({
+      character: character(), persona: persona(), maxPromptTokens: 100, tokenizer: unitTokenizer(), history: [],
+      preset: preset('chat', {
+        prompts: [{ identifier: 'chatHistory', marker: true }],
+        prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }],
+      }),
+      worldInfoPlacements: {
+        beforeCharacter: '', afterCharacter: '',
+        examplesBefore: [{ source: 'wi:missing-target', content: '<START>\nYou: hidden' }],
+        examplesAfter: [], atDepth: [], outlets: {},
+        authorNote: { before: [], after: [], depth: 4, role: 'system' },
+      },
+    });
+
+    expect(result).toMatchObject({ kind: 'error', target: 'chat', code: 'unsupported_worldbook_placement' });
+  });
 });
