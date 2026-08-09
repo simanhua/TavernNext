@@ -412,3 +412,77 @@ restarts, and Chat Author's Note placement matches the pinned SillyTavern
 
 Fix Round 3 ships as `fix: anchor immutable snapshot replay` for independent
 controller review. Task 13 retains its documented normal-turn-only boundary.
+
+## Fix Round 4
+
+The two remaining Important findings are closed. First-run integrity-key
+creation now has an atomic no-clobber publication boundary, and normal relative
+Chat Author's Note placement now applies the selected preset definition's role
+exactly like the hash-pinned SillyTavern 1.18.0 execution path.
+
+### Atomic integrity-key lifecycle
+
+- A creator opens an unpredictable same-directory task temporary with exclusive
+  creation, writes exactly 256 random bits, applies POSIX `0600` or the existing
+  protected current-user-only Windows DACL, fsyncs and revalidates file identity,
+  and only then publishes with `linkSync(temporary, final)`. Hard-link creation
+  is the cross-platform no-clobber primitive: an existing final path returns
+  `EEXIST` and is never renamed over or replaced.
+- Winners and losers validate only the atomically published final path. A loser
+  also fsyncs the POSIX parent directory before returning the winner; reopening
+  an already published key does the same, closing a publisher-process crash
+  between `link(2)` and its own directory fsync. Windows reads use a writable
+  handle and `FlushFileBuffers` after the protected DACL is verified.
+- Every normal creator removes its own temporary in `finally`. Crash debris is
+  named with the creator PID and 128-bit entropy and is reclaimed only after a
+  final key is valid and the owning PID is definitely absent (`ESRCH`). This
+  prevents a winner from unlinking another live creator while it is still
+  writing. PID reuse and ambiguous liveness fail safe by retaining the temp.
+- A malformed, symlink/reparse, wrong-owner, wrong-mode, wrong-ACL, replaced, or
+  wrong-length final key remains a strict refusal. It is never treated as a
+  failed attempt that may be overwritten. Filesystems without atomic hard-link
+  publication fail closed rather than falling back to a visible partial copy.
+- A real eight-process Windows stress run returned one unique 256-bit key from
+  every process, all bytes matched the published file, and the directory ended
+  with only `snapshot-integrity.key`.
+
+### Chat Author's Note parity
+
+- The computed selected-preset `authorsNote.role` is now shared by absolute and
+  both relative-main insertion branches. The configured extension role remains
+  the fallback only when the preset has no role override; preset placeholder
+  content is still replaced by the configured note.
+- The executable, hash-pinned SillyTavern 1.18.0 oracle now includes relative
+  main with an assistant preset role overriding a user extension role and a
+  user preset role overriding an assistant extension role, covering both before
+  and after main placement. The read-only oracle checkout was not modified.
+
+### Strict TDD and debugging evidence
+
+- Initial RED: 3/3 files failed; 27 tests ran with 5 failed, 21 passed, and one
+  POSIX-only test skipped on Windows. The failures were atomic publication,
+  crash-before-publish recovery, two local relative-role cases, and the real ST
+  differential.
+- Self-review found a second concurrency edge: eager orphan cleanup could unlink
+  a live creator before it reached publication. Its regression was observed RED
+  at 1 failed, 3 passed, and one platform skip, then GREEN at 4 passed and one
+  skip after PID-liveness-gated reclamation.
+
+### Fresh verification
+
+- Final integrity-key gate: 4/4 tests passed with one POSIX directory-fsync test
+  conditionally skipped on Windows; the existing snapshot HMAC/ACL gate also
+  passed 6/6.
+- Chat compiler and executable ST oracle: 23/23 tests passed.
+- Oracle-enabled full suite: 39/39 files passed; 672 tests passed and two
+  platform-conditional tests were skipped (674 total).
+- Fresh `npm run typecheck` passed.
+- From a confirmed source-only tree with zero generated workspace files,
+  `npm run build` passed the TypeScript graph and Vite transformed 182 modules;
+  generated outputs were cleaned back to zero.
+- `git diff --check` passed. Static review found no check-then-rename overwrite,
+  partially visible final key, live-temp reclamation, malformed-key replacement,
+  lost preset role override, SillyTavern checkout change, or generated output.
+
+Fix Round 4 ships as `fix: make snapshot key publication atomic` for independent
+controller review. Task 13 retains its documented normal-turn-only boundary.

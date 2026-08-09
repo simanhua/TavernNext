@@ -486,7 +486,11 @@ async function chatMessages(
 
 function withAuthorNoteOverrides(
   settings: Record<string, unknown>,
-  options: { absoluteAuthorNote?: boolean; absoluteMain?: boolean },
+  options: {
+    absoluteAuthorNote?: boolean;
+    absoluteMain?: boolean;
+    relativeAuthorNoteRole?: 'user' | 'assistant';
+  },
 ): Record<string, unknown> {
   const result = structuredClone(settings);
   const prompts = Array.isArray(result.prompts) ? result.prompts as Array<Record<string, unknown>> : [];
@@ -497,10 +501,11 @@ function withAuthorNoteOverrides(
     main.injection_depth = 1;
     main.injection_order = 300;
   }
-  if (options.absoluteAuthorNote) {
+  if (options.absoluteAuthorNote || options.relativeAuthorNoteRole !== undefined) {
     prompts.push({
-      identifier: 'authorsNote', role: 'assistant', content: '', system_prompt: true,
-      injection_position: 1, injection_depth: 0, injection_order: 250,
+      identifier: 'authorsNote', role: options.relativeAuthorNoteRole ?? 'assistant', content: '', system_prompt: true,
+      injection_position: options.absoluteAuthorNote ? 1 : 0,
+      ...(options.absoluteAuthorNote ? { injection_depth: 0, injection_order: 250 } : {}),
     });
     for (const value of Array.isArray(result.prompt_order) ? result.prompt_order : []) {
       const group = value as Record<string, unknown>;
@@ -800,6 +805,33 @@ export async function loadSillyTavern118Oracle(root: string): Promise<SillyTaver
       '2_floating_prompt': { value: absoluteMain.authorNote.content, position: 2, depth: 37, role: 1 },
     }),
   });
+  for (const relative of [
+    {
+      label: 'Relative Author Note assistant preset role before relative main',
+      presetRole: 'assistant' as const,
+      authorNote: { content: 'ORACLE-AUTHOR-NOTE', position: 2 as const, depth: 37, role: 1 as const },
+    },
+    {
+      label: 'Relative Author Note user preset role after relative main',
+      presetRole: 'user' as const,
+      authorNote: { content: 'ORACLE-AUTHOR-NOTE', position: 0 as const, depth: 37, role: 2 as const },
+    },
+  ]) {
+    const settings = withAuthorNoteOverrides(chatSettings, { relativeAuthorNoteRole: relative.presetRole });
+    authorNoteCases.push({
+      label: relative.label,
+      settings,
+      authorNote: relative.authorNote,
+      messages: await chatMessages(root, settings, {
+        '2_floating_prompt': {
+          value: relative.authorNote.content,
+          position: relative.authorNote.position,
+          depth: relative.authorNote.depth,
+          role: relative.authorNote.role,
+        },
+      }),
+    });
+  }
   const normalHistory = [SILLY_TAVERN_118_FIXTURE.chatHistory[0]];
   const continuationHistory = [...SILLY_TAVERN_118_FIXTURE.chatHistory];
   const assistantFirstHistory = [SILLY_TAVERN_118_FIXTURE.chatHistory[1]];

@@ -500,6 +500,49 @@ describe('Chat preset compiler', () => {
     expect(side === 'before' ? noteIndex : mainIndex).toBeLessThan(side === 'before' ? mainIndex : noteIndex);
   });
 
+  it.each([
+    ['assistant', 'user', 2, 'before'],
+    ['user', 'assistant', 0, 'after'],
+  ] as const)(
+    'uses the selected relative authorsNote %s role instead of the configured %s role %s main',
+    async (presetRole, configuredRole, position, side) => {
+      const result = await compileChatPrompt({
+        character: character({ description: '', personality: '', scenario: '' }),
+        persona: persona({ description: '' }), maxPromptTokens: 1_000, tokenizer: unitTokenizer(), history: [],
+        preset: preset('chat', {
+          prompts: [
+            { identifier: 'main', role: 'system', content: 'MAIN' },
+            {
+              identifier: 'authorsNote', role: presetRole, content: 'PRESET-CONTENT-IS-REPLACED',
+              system_prompt: true, injection_position: 0,
+            },
+            { identifier: 'chatHistory', marker: true },
+          ],
+          prompt_order: [{ character_id: 100001, order: [
+            { identifier: 'main', enabled: true },
+            { identifier: 'authorsNote', enabled: true },
+            { identifier: 'chatHistory', enabled: true },
+          ] }],
+          new_chat_prompt: '',
+        }),
+        worldInfoPlacements: {
+          beforeCharacter: '', afterCharacter: '', examplesBefore: [], examplesAfter: [], atDepth: [], outlets: {},
+          authorNote: {
+            before: [], content: 'ACTUAL-NOTE', after: [], position, depth: 37, role: configuredRole,
+          },
+        },
+      });
+
+      expect(result.kind).toBe('chat');
+      if (result.kind !== 'chat') throw new Error(result.message);
+      const mainIndex = result.messages.findIndex(({ content }) => content === 'MAIN');
+      const noteIndex = result.messages.findIndex(({ content }) => content === 'ACTUAL-NOTE');
+      expect(result.messages[noteIndex]).toEqual({ role: presetRole, content: 'ACTUAL-NOTE' });
+      expect(side === 'before' ? noteIndex : mainIndex).toBeLessThan(side === 'before' ? mainIndex : noteIndex);
+      expect(JSON.stringify(result.messages)).not.toContain('PRESET-CONTENT-IS-REPLACED');
+    },
+  );
+
   it('applies the selected authorsNote absolute position, depth, order, and role overrides', async () => {
     const result = await compileChatPrompt({
       character: character({ description: '', personality: '', scenario: '' }),

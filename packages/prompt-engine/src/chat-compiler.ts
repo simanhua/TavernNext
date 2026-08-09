@@ -298,6 +298,10 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
     authorNoteDefinition?.injection_position === 1
     || (authorNoteDefinition?.injection_position === undefined && placements.authorNote.position === 1)
   );
+  const overriddenAuthorNoteRole = authorNoteDefinition?.role === undefined
+    ? undefined
+    : role(authorNoteDefinition.role);
+  const authorNoteRole = overriddenAuthorNoteRole ?? placements?.authorNote.role ?? 'system';
   if (placements !== undefined) {
     const hasMarker = (identifier: string) => executions.some(({ prompt, fixedReason }) => (
       fixedReason === undefined && prompt?.marker === true && prompt.identifier === identifier
@@ -362,10 +366,6 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       'author-note',
       ...placements.authorNote.after.map(({ source }) => source),
     ].join('+');
-    const overriddenAuthorNoteRole = authorNoteDefinition?.role === undefined
-      ? undefined
-      : role(authorNoteDefinition.role);
-    const authorNoteRole = overriddenAuthorNoteRole ?? placements.authorNote.role;
     const configuredAuthorNoteDepth = authorNoteDefinition?.injection_depth;
     const authorNoteDepth = typeof configuredAuthorNoteDepth === 'number'
       && Number.isSafeInteger(configuredAuthorNoteDepth) && configuredAuthorNoteDepth >= 0
@@ -433,7 +433,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       && relativeAuthorNote !== '') {
       add(
         [...placements.authorNote.before.map(({ source }) => source), 'author-note', ...placements.authorNote.after.map(({ source }) => source)].join('+'),
-        [{ role: placements.authorNote.role, content: expand(relativeAuthorNote, 'worldbook:author-note') }],
+        [{ role: authorNoteRole, content: expand(relativeAuthorNote, 'worldbook:author-note') }],
       );
     }
     if (placements !== undefined && !explicitBeforeTarget && executionIndex === firstCharacterTarget) {
@@ -591,7 +591,7 @@ export async function compileChatPrompt(input: CompileChatPromptInput): Promise<
       && relativeAuthorNote !== '') {
       add(
         [...placements.authorNote.before.map(({ source: itemSource }) => itemSource), 'author-note', ...placements.authorNote.after.map(({ source: itemSource }) => itemSource)].join('+'),
-        [{ role: placements.authorNote.role, content: expand(relativeAuthorNote, 'worldbook:author-note') }],
+        [{ role: authorNoteRole, content: expand(relativeAuthorNote, 'worldbook:author-note') }],
       );
     }
   }
