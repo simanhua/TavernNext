@@ -59,6 +59,8 @@ export interface ImportCommitContext {
 
 export interface ImportCommitResult {
   entityId?: string;
+  /** Existing task-owned asset that preserves the exact uploaded artifact. */
+  preservedArtifactPath?: string;
 }
 
 /** Later compatibility tasks register typed handlers through this boundary. */
@@ -558,7 +560,9 @@ export function createImportService(options: ImportServiceOptions): ImportServic
             kind: stage.preview.detected.kind === 'unknown' ? stage.preview.detected.container : stage.preview.detected.kind,
             sourceName: artifact.fileName,
             mediaType: artifact.mediaType?.trim() || 'application/octet-stream',
-            rawArtifact: Buffer.from(originalBytes).toString('base64'),
+            rawArtifact: result.preservedArtifactPath === undefined
+              ? Buffer.from(originalBytes).toString('base64')
+              : '',
             ...(result.entityId === undefined ? {} : { entityId: result.entityId }),
             compatibility: {
               sourceFormat: [stage.preview.detected.container, stage.preview.detected.kind, stage.preview.detected.version].filter(Boolean).join(':'),
@@ -566,6 +570,13 @@ export function createImportService(options: ImportServiceOptions): ImportServic
                 sha256: stage.preview.source.sha256,
                 detected: stage.preview.detected,
                 normalizedPreview: stage.preview.normalizedPreview,
+                ...(result.preservedArtifactPath === undefined ? {} : {
+                  rawArtifactStorage: {
+                    kind: 'asset',
+                    path: result.preservedArtifactPath,
+                    encoding: 'binary',
+                  },
+                }),
               },
               unknownFields: {},
               compatWarnings: stage.preview.warnings.map((warning) => warning.code),

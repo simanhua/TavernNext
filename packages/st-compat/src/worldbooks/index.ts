@@ -68,6 +68,35 @@ export interface DecodedWorldbookArtifact {
   warnings: ImportPreview['warnings'];
 }
 
+/**
+ * Decodes a Character Card's already-parsed Character Book without applying
+ * the standalone preview's raw-plus-normalized duplication limit. The source
+ * envelope and logical collection bounds are still enforced by the JSON codec.
+ */
+export function decodeEmbeddedCharacterBook(
+  rawPayload: JsonObject,
+  fallbackName = 'Imported Worldbook',
+): DecodedWorldbookArtifact {
+  const decoded = decodeJsonWorldbook(encoder.encode(JSON.stringify(rawPayload)));
+  if (decoded.sourceFormat !== 'character-book') {
+    throw new WorldbookCodecError(
+      'worldbook_decode_failed',
+      'The embedded Character Book does not match the Character Book schema.',
+    );
+  }
+  const normalized = normalizeWorldbookPayload(
+    structuredClone(decoded.rawPayload),
+    decoded.sourceFormat,
+    fallbackName,
+  );
+  const validationIssues = boundedWorldbookDiagnostics(
+    validateRawWorldbookFilters(decoded.rawPayload, decoded.sourceFormat),
+    validateNormalizedWorldbook(normalized.worldbook),
+  );
+  if (validationIssues.length > 0) throw new WorldbookValidationError(validationIssues);
+  return { ...decoded, ...normalized };
+}
+
 function serializedBytes(value: unknown): number {
   return encoder.encode(JSON.stringify(value)).byteLength;
 }

@@ -1,16 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import {
+  decodeEmbeddedCharacterBook,
   decodeInspectedCharacter,
   diagnostic,
+  type DecodedWorldbookArtifact,
+  WorldbookCodecError,
+  WorldbookValidationError,
 } from '@tavernnext/st-compat';
 import type { ImportHandler } from './import-service.js';
+import { persistDecodedWorldbook } from './worldbook-import-handler.js';
 import { sanitizePublicPng, validatePngRaster } from './avatar-png.js';
 
 export interface StoredCharacterSource {
   sourceFormat: string;
   version: string;
   selectedPayload: string;
-  rawPayloads: Record<string, unknown>;
+  rawPayloads?: Record<string, unknown>;
   unknownFields: { topLevel: Record<string, unknown>; data: Record<string, unknown> };
   extensions: Record<string, unknown>;
   sourcePngPath?: string;
@@ -42,6 +47,16 @@ function publicAvatarBytes(bytes: Uint8Array): Uint8Array {
   return avatarExtension(bytes) === 'png' ? sanitizePublicPng(bytes) : bytes;
 }
 
+function embeddedWorldbook(
+  character: { name: string; characterBook?: Record<string, unknown> },
+): DecodedWorldbookArtifact | undefined {
+  if (character.characterBook === undefined) return undefined;
+  return decodeEmbeddedCharacterBook(
+    character.characterBook,
+    `${character.name || 'Imported Character'} Worldbook`,
+  );
+}
+
 export function createCharacterImportHandler(): ImportHandler {
   return {
     id: 'tavernnext-character-card',
@@ -56,9 +71,12 @@ export function createCharacterImportHandler(): ImportHandler {
         );
         const avatarBytes = decoded.avatar?.bytes ?? decoded.sourcePng;
         if (avatarBytes !== undefined && avatarExtension(avatarBytes) === 'png') validatePngRaster(avatarBytes);
+        const worldbook = decoded.character === null ? undefined : embeddedWorldbook(decoded.character);
         return {
-          normalizedPreview: decoded.character,
-          warnings: [],
+          normalizedPreview: decoded.character === null || worldbook === undefined
+            ? decoded.character
+            : { ...decoded.character, characterBook: worldbook.worldbook },
+          warnings: worldbook?.warnings ?? [],
           blockingErrors: decoded.character === null
             ? [diagnostic('character_card_invalid', 'Character Card has no normalized fields.')]
             : [],
@@ -67,10 +85,16 @@ export function createCharacterImportHandler(): ImportHandler {
         return {
           normalizedPreview: null,
           warnings: [],
-          blockingErrors: [diagnostic(
-            'character_decode_failed',
-            error instanceof Error ? error.message : 'Character Card could not be decoded.',
-          )],
+          blockingErrors: error instanceof WorldbookValidationError
+            ? error.issues.map((issue) => ({
+              ...issue,
+              ...(issue.path === undefined ? {} : { path: `characterBook.${issue.path}` }),
+            }))
+            : [diagnostic(
+              error instanceof WorldbookCodecError ? error.code : 'character_decode_failed',
+              error instanceof Error ? error.message : 'Character Card could not be decoded.',
+              error instanceof WorldbookCodecError ? 'characterBook' : undefined,
+            )],
         };
       }
     },
@@ -83,6 +107,10 @@ export function createCharacterImportHandler(): ImportHandler {
       );
       const character = decoded.character;
       if (character === null) throw new Error('Character Card has no normalized fields');
+      const embedded = embeddedWorldbook(character);
+      const worldbook = embedded === undefined
+        ? undefined
+        : persistDecodedWorldbook(context.repositories, embedded, context.preview.warnings);
       const characterId = randomUUID();
       const storedAssets = decoded.auxiliaryAssets.map((asset, index) => ({
         originalPath: asset.path,
@@ -100,7 +128,10 @@ export function createCharacterImportHandler(): ImportHandler {
         sourceFormat: decoded.sourceFormat,
         version: decoded.version,
         selectedPayload: decoded.selectedPayload,
-        rawPayloads: structuredClone(decoded.rawPayloads),
+        // The original PNG is already retained byte-for-byte. Keeping both
+        // decoded metadata documents in SQLite duplicates several megabytes
+        // on large cards; export recovers them from sourcePngPath on demand.
+        ...(decoded.sourceFormat === 'png' ? {} : { rawPayloads: structuredClone(decoded.rawPayloads) }),
         unknownFields: structuredClone(decoded.unknownFields),
         extensions: structuredClone(character.extensions),
         ...(sourcePngPath === undefined ? {} : { sourcePngPath }),
@@ -127,6 +158,7 @@ export function createCharacterImportHandler(): ImportHandler {
         tags: character.tags,
         extensions: structuredClone(character.extensions),
         ...(character.characterBook === undefined ? {} : { characterBook: character.characterBook }),
+        ...(worldbook === undefined ? {} : { worldbookId: worldbook.id }),
         ...(avatarStoredPath === undefined ? {} : { avatarPath: avatarStoredPath }),
         compatibility: {
           sourceFormat: `character:${decoded.sourceFormat}:${decoded.version}`,
@@ -139,7 +171,10 @@ export function createCharacterImportHandler(): ImportHandler {
           parserVersion: '1',
         },
       });
-      return { entityId: value.id };
+      return {
+        entityId: value.id,
+        ...(sourcePngPath === undefined ? {} : { preservedArtifactPath: sourcePngPath }),
+      };
     },
   };
 }

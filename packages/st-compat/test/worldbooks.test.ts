@@ -10,6 +10,7 @@ import extractPngChunks from 'png-chunks-extract';
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_INSPECTION_LIMITS,
+  decodeEmbeddedCharacterBook,
   decodeWorldbookArtifact,
   exportCharacterBook,
   exportWorldbook,
@@ -202,6 +203,32 @@ describe('Worldbook all-field normalization', () => {
 });
 
 describe('Worldbook family codecs', () => {
+  it('decodes a bounded embedded Character Book without the standalone preview duplication limit', () => {
+    const raw = {
+      name: 'Large embedded lore',
+      entries: [{
+        id: 1,
+        keys: ['large'],
+        content: 'x'.repeat(1_100_000),
+        enabled: true,
+        extensions: {},
+      }],
+    };
+    expect(() => decodeWorldbookArtifact(
+      encoder.encode(JSON.stringify(raw)),
+      'standalone-character-book.json',
+    )).toThrowError(expect.objectContaining({ code: 'worldbook_preview_limit' }));
+
+    const decoded = decodeEmbeddedCharacterBook(raw, 'Fallback name');
+
+    expect(decoded.sourceFormat).toBe('character-book');
+    expect(decoded.worldbook).toMatchObject({
+      name: 'Large embedded lore',
+      entries: [expect.objectContaining({ sourceUid: 1, keys: ['large'] })],
+    });
+    expect(decoded.worldbook.entries[0]?.content).toHaveLength(1_100_000);
+  });
+
   it.each([
     {
       file: 'native.json', format: 'st-native', name: 'Native Synthetic Lore', uid: 'alpha-uid',

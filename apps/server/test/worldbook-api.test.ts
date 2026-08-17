@@ -106,6 +106,111 @@ async function importCharacter(app: ReturnType<typeof createApp>) {
 }
 
 describe('typed Worldbook import and export API', () => {
+  it('normalizes and atomically links an embedded Character Book during Character import', async () => {
+    const { app, repositories } = await context();
+    const bytes = await fixture(characterFixtures, 'v2.json');
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('embedded-book.json', bytes),
+    });
+
+    expect(inspected.statusCode).toBe(200);
+    expect(inspected.json()).toMatchObject({
+      detected: { kind: 'character' },
+      normalizedPreview: {
+        name: 'V2 Aster',
+        characterBook: {
+          name: 'Synthetic Archive Notes',
+          scanDepth: 3,
+          tokenBudget: 256,
+          recursiveScanning: true,
+          entries: [expect.objectContaining({
+            sourceUid: expect.stringMatching(/^tn-/),
+            sourceOrdinal: 0,
+            keys: ['archive', 'catalogue'],
+            content: 'This entry is synthetic.',
+            order: 9,
+          })],
+        },
+      },
+      warnings: expect.arrayContaining([
+        expect.objectContaining({ code: 'worldbook_source_uid_generated' }),
+        expect.objectContaining({ code: 'worldbook_foreign_field_preserved' }),
+      ]),
+      blockingErrors: [],
+    });
+
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+    expect(committed.statusCode).toBe(201);
+    const character = repositories.characters.get(committed.json().entityId as string);
+    expect(character).toMatchObject({
+      name: 'V2 Aster',
+      worldbookId: expect.any(String),
+      characterBook: {
+        entries: [expect.objectContaining({ insertion_order: 9, entry_extra: 'keep' })],
+      },
+    });
+    const worldbook = repositories.worldbooks.get(character!.worldbookId!);
+    expect(worldbook).toMatchObject({
+      name: 'Synthetic Archive Notes',
+      scanDepth: 3,
+      tokenBudget: 256,
+      recursiveScanning: true,
+      compatibility: { sourceFormat: 'worldbook:character-book' },
+    });
+    expect(repositories.worldbookEntries.listByWorldbookId(worldbook!.id)).toEqual([
+      expect.objectContaining({
+        worldbookId: worldbook!.id,
+        keys: ['archive', 'catalogue'],
+        content: 'This entry is synthetic.',
+        order: 9,
+        compatibility: expect.objectContaining({ sourceFormat: 'worldbook-entry:character-book' }),
+      }),
+    ]);
+    expect(repositories.importArtifacts.list()).toHaveLength(1);
+
+    const exported = await app.inject({
+      method: 'GET', url: `/api/characters/${character!.id}/export?format=json-v3`,
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject({
+      data: {
+        character_book: {
+          name: 'Synthetic Archive Notes',
+          entries: [expect.objectContaining({
+            insertion_order: 9,
+            entry_extra: 'keep',
+            extensions: expect.objectContaining({ entry_unknown: 7 }),
+          })],
+        },
+      },
+    });
+  });
+
+  it('blocks a malformed embedded Character Book before any Character rows are staged', async () => {
+    const { app, repositories } = await context();
+    const source = encoder.encode(JSON.stringify({
+      spec: 'chara_card_v3',
+      spec_version: '3.0',
+      data: { name: 'Broken embedded lore', character_book: { entries: [{ keys: [], content: 42 }] } },
+    }));
+
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect', ...multipart('broken-embedded-book.json', source),
+    });
+
+    expect(inspected.statusCode).toBe(422);
+    expect(inspected.json()).toMatchObject({
+      normalizedPreview: null,
+      blockingErrors: [expect.objectContaining({ code: 'worldbook_decode_failed', path: 'characterBook' })],
+    });
+    expect(inspected.json()).not.toHaveProperty('inspectionToken');
+    expect(repositories.characters.list()).toEqual([]);
+    expect(repositories.worldbooks.list()).toEqual([]);
+    expect(repositories.worldbookEntries.list()).toEqual([]);
+  });
+
   it('registers the Worldbook handler and atomically creates one book, every entry, and one ImportArtifact', async () => {
     const { app, repositories } = await context();
     const { inspected, committed } = await inspectAndCommit(app);
@@ -340,6 +445,19 @@ describe('typed Worldbook import and export API', () => {
     });
     expect(committedPng.statusCode).toBe(201);
     const pngCharacterId = committedPng.json().entityId as string;
+    const pngArtifact = repositories.importArtifacts.list().find((artifact) => artifact.entityId === pngCharacterId)!;
+    expect(pngArtifact.rawArtifact).toBe('');
+    expect(pngArtifact.compatibility?.rawPayload).toMatchObject({
+      rawArtifactStorage: {
+        kind: 'asset',
+        path: expect.stringMatching(/character\/source\.png$/),
+        encoding: 'binary',
+      },
+    });
+    const preservedSourcePath = (pngArtifact.compatibility?.rawPayload as {
+      rawArtifactStorage: { path: string };
+    }).rawArtifactStorage.path;
+    expect(await readFile(join(directory, ...preservedSourcePath.split('/')))).toEqual(sourcePng.rawPayload);
 
     const { committed } = await inspectAndCommit(app, 'character-book.json');
     const worldbookId = committed.json().entityId as string;

@@ -3,12 +3,15 @@ import type { Worldbook, WorldbookEntry } from '@tavernnext/domain';
 import {
   decodeWorldbookArtifact,
   diagnostic,
+  type DecodedWorldbookArtifact,
+  type ImportDiagnostic,
   type NormalizedWorldbook,
   type NormalizedWorldbookEntry,
   type WorldbookSourceFormat,
   WorldbookCodecError,
   WorldbookValidationError,
 } from '@tavernnext/st-compat';
+import type { Repositories } from '../db/repositories.js';
 import type { ImportHandler } from './import-service.js';
 
 export interface StoredWorldbookSource {
@@ -150,6 +153,64 @@ export function normalizedWorldbookFromRows(worldbook: Worldbook, entries: reado
   };
 }
 
+/** Persists a fully decoded Worldbook inside the caller's existing transaction. */
+export function persistDecodedWorldbook(
+  repositories: Repositories,
+  decoded: Pick<DecodedWorldbookArtifact, 'sourceFormat' | 'rawPayload' | 'worldbook'>,
+  warnings: readonly ImportDiagnostic[],
+): Worldbook {
+  const source: StoredWorldbookSource = {
+    sourceFormat: decoded.sourceFormat,
+    rawDocument: structuredClone(decoded.rawPayload),
+    unknownFields: structuredClone(decoded.worldbook.unknownFields),
+    extensions: structuredClone(decoded.worldbook.extensions),
+  };
+  const worldbook = repositories.worldbooks.create({
+    id: randomUUID(),
+    name: decoded.worldbook.name,
+    description: decoded.worldbook.description,
+    enabled: decoded.worldbook.enabled,
+    scanDepth: decoded.worldbook.scanDepth,
+    tokenBudget: decoded.worldbook.tokenBudget,
+    recursiveScanning: decoded.worldbook.recursiveScanning,
+    extensions: structuredClone(decoded.worldbook.extensions),
+    compatibility: {
+      sourceFormat: `worldbook:${decoded.sourceFormat}`,
+      rawPayload: source,
+      unknownFields: structuredClone(decoded.worldbook.unknownFields),
+      compatWarnings: warnings.map((warning) => warning.code),
+      parserVersion: '1',
+    },
+  });
+  for (const entry of decoded.worldbook.entries) {
+    const entrySource: StoredWorldbookEntrySource = {
+      sourceFormat: decoded.sourceFormat,
+      sourceUid: entry.sourceUid,
+      sourceOrdinal: entry.sourceOrdinal,
+      unknownFields: structuredClone(entry.unknownFields),
+      extensions: structuredClone(entry.extensions),
+      ...(entry.characterFilter.unknownFields === undefined
+        ? {}
+        : { characterFilterUnknownFields: structuredClone(entry.characterFilter.unknownFields) }),
+      ...(entry.personaFilter.unknownFields === undefined
+        ? {}
+        : { personaFilterUnknownFields: structuredClone(entry.personaFilter.unknownFields) }),
+    };
+    repositories.worldbookEntries.create({
+      ...entry,
+      worldbookId: worldbook.id,
+      compatibility: {
+        sourceFormat: `worldbook-entry:${decoded.sourceFormat}`,
+        rawPayload: entrySource,
+        unknownFields: structuredClone(entry.unknownFields),
+        compatWarnings: warnings.map((warning) => warning.code),
+        parserVersion: '1',
+      },
+    });
+  }
+  return worldbook;
+}
+
 /** Typed commits decode digest-checked staged bytes and run inside ImportService's outer transaction. */
 export function createWorldbookImportHandler(): ImportHandler {
   return {
@@ -178,55 +239,7 @@ export function createWorldbookImportHandler(): ImportHandler {
     },
     commit(context) {
       const decoded = decodeWorldbookArtifact(context.artifact.bytes, context.artifact.fileName);
-      const source: StoredWorldbookSource = {
-        sourceFormat: decoded.sourceFormat,
-        rawDocument: structuredClone(decoded.rawPayload),
-        unknownFields: structuredClone(decoded.worldbook.unknownFields),
-        extensions: structuredClone(decoded.worldbook.extensions),
-      };
-      const worldbook = context.repositories.worldbooks.create({
-        id: randomUUID(),
-        name: decoded.worldbook.name,
-        description: decoded.worldbook.description,
-        enabled: decoded.worldbook.enabled,
-        scanDepth: decoded.worldbook.scanDepth,
-        tokenBudget: decoded.worldbook.tokenBudget,
-        recursiveScanning: decoded.worldbook.recursiveScanning,
-        extensions: structuredClone(decoded.worldbook.extensions),
-        compatibility: {
-          sourceFormat: `worldbook:${decoded.sourceFormat}`,
-          rawPayload: source,
-          unknownFields: structuredClone(decoded.worldbook.unknownFields),
-          compatWarnings: context.preview.warnings.map((warning) => warning.code),
-          parserVersion: '1',
-        },
-      });
-      for (const entry of decoded.worldbook.entries) {
-        const entrySource: StoredWorldbookEntrySource = {
-          sourceFormat: decoded.sourceFormat,
-          sourceUid: entry.sourceUid,
-          sourceOrdinal: entry.sourceOrdinal,
-          unknownFields: structuredClone(entry.unknownFields),
-          extensions: structuredClone(entry.extensions),
-          ...(entry.characterFilter.unknownFields === undefined
-            ? {}
-            : { characterFilterUnknownFields: structuredClone(entry.characterFilter.unknownFields) }),
-          ...(entry.personaFilter.unknownFields === undefined
-            ? {}
-            : { personaFilterUnknownFields: structuredClone(entry.personaFilter.unknownFields) }),
-        };
-        context.repositories.worldbookEntries.create({
-          ...entry,
-          worldbookId: worldbook.id,
-          compatibility: {
-            sourceFormat: `worldbook-entry:${decoded.sourceFormat}`,
-            rawPayload: entrySource,
-            unknownFields: structuredClone(entry.unknownFields),
-            compatWarnings: context.preview.warnings.map((warning) => warning.code),
-            parserVersion: '1',
-          },
-        });
-      }
+      const worldbook = persistDecodedWorldbook(context.repositories, decoded, context.preview.warnings);
       return { entityId: worldbook.id };
     },
   };
