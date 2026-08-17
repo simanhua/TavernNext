@@ -548,6 +548,140 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
 .prompt-preview-content pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 3px; padding: .75rem; background: #050e0c; }
 .prompt-messages { display: grid; gap: .6rem; margin: 0; padding-left: 1.5rem; }
 .prompt-messages li { white-space: pre-wrap; overflow-wrap: anywhere; }
+.manager-editor > .preset-editor { width: min(1120px, 100%); }
+
+.preset-section {
+  display: grid;
+  gap: .75rem;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.preset-section > legend {
+  margin-bottom: .15rem;
+  padding: 0;
+  color: var(--gold);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.preset-card {
+  min-width: 0;
+  overflow: clip;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: linear-gradient(145deg, rgb(17 39 33 / 88%), rgb(7 21 18 / 92%));
+  box-shadow: 0 .25rem 1rem rgb(0 0 0 / 16%);
+}
+
+.preset-card-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .75rem;
+  min-width: 0;
+  padding: .9rem 1rem;
+  color: var(--paper);
+  background: rgb(15 35 29 / 88%);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.preset-card-summary::-webkit-details-marker { display: none; }
+.preset-card-summary::before {
+  color: var(--gold);
+  content: "›";
+  font-size: 1.35rem;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+.preset-card[open] > .preset-card-summary::before { transform: rotate(90deg); }
+.preset-card[open] > .preset-card-summary { border-bottom: 1px solid var(--line); background: rgb(20 45 37 / 92%); }
+.preset-card-summary:hover { background: rgb(24 50 42 / 92%); }
+.preset-card-summary:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+
+.preset-card-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-card-meta {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: .22rem .55rem;
+  color: #a8bdb1;
+  background: rgb(5 17 14 / 72%);
+  font-size: .78rem;
+  white-space: nowrap;
+}
+
+.preset-card-body { display: grid; gap: 1rem; min-width: 0; padding: 1rem; }
+.preset-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  gap: .85rem;
+  min-width: 0;
+}
+.preset-card-grid-advanced { border-top: 1px solid var(--line); padding-top: 1rem; }
+.preset-card-content { min-width: 0; }
+.preset-card-content textarea { min-height: 12rem; }
+.preset-card-toggle {
+  align-self: end;
+  min-height: 2.8rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: .65rem .75rem;
+  background: rgb(8 25 20 / 72%);
+}
+
+.preset-card-actions,
+.preset-order-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+}
+
+.preset-card-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: .85rem;
+}
+
+.preset-card-fieldset { display: grid; gap: 1rem; min-width: 0; margin: 0; border: 0; padding: 0; background: transparent; }
+.preset-order-items { display: grid; gap: .65rem; }
+.preset-order-item {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto auto;
+  align-items: end;
+  gap: .65rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: .75rem;
+  background: rgb(8 25 20 / 72%);
+}
+
+.preset-card[data-testid="advanced-settings"] textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 [role="alert"] { color: var(--danger); }
 
 @media (max-width: 1180px) {
@@ -595,6 +729,15 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
   .section-heading { align-items: flex-start; flex-direction: column; }
   .provider-templates,
   .connection-form-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  .preset-card-summary { grid-template-columns: auto minmax(0, 1fr); }
+  .preset-card-meta { grid-column: 2; justify-self: start; }
+  .preset-card-grid,
+  .preset-order-item { grid-template-columns: 1fr; }
+  .preset-order-item-actions,
+  .preset-card-actions { justify-content: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
