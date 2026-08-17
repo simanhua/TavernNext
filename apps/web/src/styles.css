@@ -477,6 +477,21 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
 .settings-header > div > span { color: #789486; font-size: .68rem; font-weight: 700; letter-spacing: .17em; text-transform: uppercase; }
 .settings-security-note { border: 1px solid rgb(111 158 134 / 24%); border-radius: 999px; padding: .38rem .7rem; color: #98b3a4; background: rgb(11 31 26 / 58%); font-size: .72rem; }
 .settings-security-note::before { margin-right: .38rem; color: #75ad8f; content: "●"; font-size: .55rem; }
+.saved-connections { display: grid; gap: .8rem; margin: 1.3rem 0 1.5rem; }
+.saved-connections .section-heading > div { display: grid; gap: .2rem; }
+.saved-connections .section-heading > div > span { color: #7e9187; font-size: .76rem; }
+.saved-connections-empty { margin: 0; border: 1px dashed var(--line); padding: .8rem; color: var(--muted); text-align: center; }
+.saved-connection-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.saved-connection-list > button { display: flex; align-items: center; justify-content: space-between; gap: .8rem; min-width: 0; border-color: rgb(133 171 151 / 22%); padding: .78rem .85rem; text-align: left; background: rgb(7 22 18 / 70%); }
+.saved-connection-list > button:hover { border-color: rgb(133 171 151 / 48%); }
+.saved-connection-list > .saved-connection-active { border-color: rgb(196 166 110 / 58%); background: linear-gradient(135deg, rgb(42 49 33 / 86%), rgb(10 29 23 / 88%)); box-shadow: inset 3px 0 0 #c4a66e; }
+.saved-connection-name { display: grid; gap: .2rem; min-width: 0; }
+.saved-connection-name strong,
+.saved-connection-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-connection-name strong { color: #e7e9e2; }
+.saved-connection-name small { color: #81978b; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.connection-key-status { flex: 0 0 auto; border: 1px solid rgb(198 83 66 / 35%); border-radius: 999px; padding: .23rem .48rem; color: #d59a8d; font-size: .68rem; }
+.connection-key-saved { border-color: rgb(110 178 139 / 35%); color: #9bc9ae; }
 .provider-template-section { display: grid; gap: .8rem; margin: 1.3rem 0 1.5rem; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
 .section-heading h2 { margin: 0; color: #dfe5dd; font-family: Georgia, "Noto Serif SC", serif; font-size: 1rem; font-weight: 500; }
@@ -728,6 +743,7 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
   .settings-header,
   .section-heading { align-items: flex-start; flex-direction: column; }
   .provider-templates,
+  .saved-connection-list,
   .connection-form-grid { grid-template-columns: 1fr; }
 }
 

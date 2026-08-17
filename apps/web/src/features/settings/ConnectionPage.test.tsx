@@ -18,7 +18,10 @@ const server = setupServer(
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 beforeEach(() => localStorage.setItem('tavernnext.language', 'en'));
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  server.resetHandlers();
+});
 afterAll(() => server.close());
 
 describe('ConnectionPage', () => {
@@ -44,5 +47,65 @@ describe('ConnectionPage', () => {
     await user.click(screen.getByRole('button', { name: 'Use OpenCode Go preset' }));
     expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://opencode.ai/zen/go/v1');
     expect((screen.getByRole('combobox', { name: 'Model' }) as HTMLInputElement).value).toBe('deepseek-v4-flash');
+  });
+
+  it('switches, updates, and creates independently saved connections', async () => {
+    const primary = {
+      id: '018f0000-0000-7000-8000-000000000101', revision: 0,
+      createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
+      name: 'Primary API', baseUrl: 'https://primary.example/v1', model: 'primary-model', apiMode: 'chat' as const, hasApiKey: true,
+    };
+    const backup = {
+      id: '018f0000-0000-7000-8000-000000000102', revision: 0,
+      createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
+      name: 'Backup API', baseUrl: 'https://backup.example/v1', model: 'backup-model', apiMode: 'chat' as const, hasApiKey: false,
+    };
+    let stored = [primary, backup];
+    let updatedId: string | undefined;
+    let createdApiKey: string | undefined;
+    server.use(
+      http.get('/api/providers', () => HttpResponse.json(stored)),
+      http.patch('/api/providers/:id', async ({ params, request }) => {
+        const body = await request.json() as { patch: Partial<typeof backup> };
+        updatedId = String(params.id);
+        const current = stored.find((provider) => provider.id === updatedId)!;
+        const updated = { ...current, ...body.patch, revision: current.revision + 1 };
+        stored = stored.map((provider) => provider.id === updated.id ? updated : provider);
+        return HttpResponse.json(updated);
+      }),
+      http.post('/api/providers', async ({ request }) => {
+        const body = await request.json() as typeof primary & { apiKey?: string };
+        createdApiKey = body.apiKey;
+        const created = { ...body, revision: 0, createdAt: primary.createdAt, updatedAt: primary.updatedAt, hasApiKey: body.apiKey !== undefined };
+        stored = [...stored, created];
+        return HttpResponse.json(created, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithApp(<ConnectionPage />);
+
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Display name' }) as HTMLInputElement).value).toBe('Primary API'));
+    expect(screen.getByText('2 saved connections')).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'New connection' }));
+    expect((screen.getByRole('textbox', { name: 'Display name' }) as HTMLInputElement).value).toBe('');
+    await user.click(screen.getByRole('button', { name: 'Edit Backup API connection' }));
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://backup.example/v1'));
+    const model = screen.getByRole('combobox', { name: 'Model' });
+    await user.clear(model);
+    await user.type(model, 'backup-model-v2');
+    await user.click(screen.getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(updatedId).toBe(backup.id));
+    expect(stored[0]?.model).toBe('primary-model');
+    expect(stored[1]?.model).toBe('backup-model-v2');
+
+    await user.click(screen.getByRole('button', { name: 'Use DeepSeek preset' }));
+    expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://api.deepseek.com');
+    await user.type(screen.getByLabelText('API key'), 'new-secret');
+    await user.click(screen.getByRole('button', { name: 'Save connection' }));
+
+    expect(await screen.findByRole('button', { name: 'Edit DeepSeek connection' })).not.toBeNull();
+    expect(createdApiKey).toBe('new-secret');
+    expect(stored).toHaveLength(3);
   });
 });

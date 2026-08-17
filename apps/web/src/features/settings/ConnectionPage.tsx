@@ -15,6 +15,14 @@ const schema = z.object({
 });
 type Values = z.infer<typeof schema>;
 
+const emptyValues: Values = {
+  name: '',
+  baseUrl: 'http://127.0.0.1:8080/v1',
+  model: '',
+  apiKey: '',
+  apiMode: 'chat',
+};
+
 const providerTemplates: Array<Values & { id: string; description: string }> = [
   {
     id: 'deepseek',
@@ -58,25 +66,42 @@ export function ConnectionPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.listProviders });
-  const current = providers.data?.[0];
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>();
+  const current = selectedProviderId === null || selectedProviderId === undefined
+    ? undefined
+    : providers.data?.find((provider) => provider.id === selectedProviderId);
   const [detectedModels, setDetectedModels] = useState<ProviderModelView[]>([]);
   const { register, handleSubmit, reset, getValues, setValue, trigger, formState } = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { name: '', baseUrl: 'http://127.0.0.1:8080/v1', model: '', apiKey: '', apiMode: 'chat' },
+    defaultValues: emptyValues,
   });
+
+  useEffect(() => {
+    if (providers.data === undefined) return;
+    if (selectedProviderId === undefined) {
+      setSelectedProviderId(providers.data[0]?.id ?? null);
+      return;
+    }
+    if (selectedProviderId !== null && !providers.data.some((provider) => provider.id === selectedProviderId)) {
+      setSelectedProviderId(providers.data[0]?.id ?? null);
+    }
+  }, [providers.data, selectedProviderId]);
+
   useEffect(() => {
     if (current === undefined) return;
     reset({ name: current.name, baseUrl: current.baseUrl, model: current.model, apiMode: current.apiMode, apiKey: '' });
   }, [current, reset]);
+
   const save = useMutation({
     mutationFn: (values: Values) => api.saveProvider({
       ...(current === undefined ? {} : { id: current.id, revision: current.revision }),
       name: values.name, baseUrl: values.baseUrl, model: values.model, apiMode: values.apiMode,
       ...(values.apiKey.trim() === '' ? {} : { apiKey: values.apiKey }),
     }),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
       reset((values) => ({ ...values, apiKey: '' }));
       await queryClient.invalidateQueries({ queryKey: ['providers'] });
+      setSelectedProviderId(saved.id);
     },
   });
   const probeInput = (): ProviderProbeInput => {
@@ -93,11 +118,25 @@ export function ConnectionPage() {
     onSuccess: ({ models }) => setDetectedModels(models),
   });
   const probing = connectionProbe.isPending || modelProbe.isPending;
-  const applyTemplate = (template: Values) => {
-    reset(template);
+  const resetOperationState = () => {
     setDetectedModels([]);
     connectionProbe.reset();
     modelProbe.reset();
+    save.reset();
+  };
+  const selectProvider = (id: string) => {
+    setSelectedProviderId(id);
+    resetOperationState();
+  };
+  const createProvider = () => {
+    setSelectedProviderId(null);
+    reset(emptyValues);
+    resetOperationState();
+  };
+  const applyTemplate = (template: Values) => {
+    setSelectedProviderId(null);
+    reset(template);
+    resetOperationState();
   };
   const validateThen = async (operation: () => void) => {
     if (await trigger('baseUrl')) operation();
@@ -113,6 +152,35 @@ export function ConnectionPage() {
         <span className="settings-security-note">{t('API keys stay on this device')}</span>
       </header>
       <p>{t("Configure the local server's OpenAI-compatible provider. The saved key is never returned to this browser.")}</p>
+      <section className="saved-connections" aria-labelledby="saved-connections-heading">
+        <div className="section-heading">
+          <div>
+            <h2 id="saved-connections-heading">{t('Saved connections')}</h2>
+            <span>{t('{{count}} saved connections', { count: providers.data?.length ?? 0 })}</span>
+          </div>
+          <button type="button" onClick={createProvider}>{t('New connection')}</button>
+        </div>
+        {providers.isLoading ? <p>{t('Loading connections…')}</p> : null}
+        {providers.isError ? <p role="alert">{t('Unable to load connections: {{error}}', { error: errorCode(providers.error) })}</p> : null}
+        {providers.data?.length === 0 ? <p className="saved-connections-empty">{t('No connections saved yet.')}</p> : null}
+        <div className="saved-connection-list">
+          {(providers.data ?? []).map((provider) => (
+            <button
+              type="button"
+              key={provider.id}
+              className={provider.id === selectedProviderId ? 'saved-connection-active' : undefined}
+              aria-current={provider.id === selectedProviderId ? 'true' : undefined}
+              aria-label={t('Edit {{provider}} connection', { provider: provider.name })}
+              onClick={() => selectProvider(provider.id)}
+            >
+              <span className="saved-connection-name"><strong>{provider.name}</strong><small>{provider.model}</small></span>
+              <span className={`connection-key-status ${provider.hasApiKey ? 'connection-key-saved' : ''}`}>
+                {t(provider.hasApiKey ? 'API key saved' : 'API key required')}
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
       <section className="provider-template-section" aria-labelledby="provider-templates-heading">
         <div className="section-heading">
           <h2 id="provider-templates-heading">{t('Provider presets')}</h2>
@@ -135,6 +203,7 @@ export function ConnectionPage() {
         </div>
       </section>
       <form onSubmit={handleSubmit((values) => { void save.mutateAsync(values).catch(() => undefined); })}>
+        <h2>{t(current === undefined ? 'New connection' : 'Edit connection')}</h2>
         <div className="connection-form-grid">
           <label>{t('Display name')}<input {...register('name')} /></label>
           <label>Base URL<input type="url" {...register('baseUrl')} /></label>
