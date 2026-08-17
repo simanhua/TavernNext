@@ -198,6 +198,7 @@ describe('generation modes and active variants', () => {
     let completedCleanup = 0;
     currentStream = async function* () {
       try {
+        yield { type: 'delta', text: 'Completed content' };
         yield { type: 'completed', finishReason: 'stop' };
       } finally {
         completedCleanup += 1;
@@ -206,7 +207,7 @@ describe('generation modes and active variants', () => {
     const completed = await start();
     const completedEvents: GenerationEvent[] = [];
     for await (const event of completed.events) completedEvents.push(event);
-    expect(completedEvents.map(({ type }) => type)).toEqual(['started', 'completed']);
+    expect(completedEvents.map(({ type }) => type)).toEqual(['started', 'delta', 'completed']);
     expect(completedCleanup).toBe(1);
 
     let protocolCleanup = 0;

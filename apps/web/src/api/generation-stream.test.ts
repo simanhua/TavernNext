@@ -12,10 +12,10 @@ function responseFrom(payloads: string[]): Response {
 }
 
 describe('readGenerationEvents', () => {
-  it('parses the six generation event types across chunk boundaries', async () => {
+  it('parses the seven generation event types across chunk boundaries', async () => {
     const response = responseFrom([
       'event: started\ndata: {"generationId":"generation-1"}\n\nevent: del',
-      'ta\ndata: {"text":"Hi"}\n\nevent: usage\ndata: {"inputTokens":1,"outputTokens":1}\n\n',
+      'ta\ndata: {"text":"Hi"}\n\nevent: reasoning_delta\ndata: {"text":"Think"}\n\nevent: usage\ndata: {"inputTokens":1,"outputTokens":1}\n\n',
       'event: completed\ndata: {"finishReason":"stop"}\n\nevent: aborted\ndata: {}\n\n',
       'event: failed\ndata: {"code":"connection"}\n\n',
     ]);
@@ -26,6 +26,7 @@ describe('readGenerationEvents', () => {
     expect(events).toEqual([
       { type: 'started', generationId: 'generation-1' },
       { type: 'delta', text: 'Hi' },
+      { type: 'reasoning_delta', text: 'Think' },
       { type: 'usage', inputTokens: 1, outputTokens: 1 },
       { type: 'completed', finishReason: 'stop' },
       { type: 'aborted' },

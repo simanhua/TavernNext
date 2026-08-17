@@ -14,7 +14,7 @@ const conversation: Conversation = {
   id: '018f0000-0000-7000-8000-000000000941', revision: 7, createdAt: now, updatedAt: now,
   characterId: '018f0000-0000-7000-8000-000000000942', personaId: '018f0000-0000-7000-8000-000000000943',
   providerId: '018f0000-0000-7000-8000-000000000944', presetId: '018f0000-0000-7000-8000-000000000945',
-  title: 'Preview chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 512,
+  title: 'Preview chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
 

@@ -30,6 +30,7 @@ export interface TextRequest {
 }
 
 export type ProviderEvent =
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'completed'; finishReason: string };

@@ -425,7 +425,7 @@ describe('generation API', () => {
     ]);
   });
 
-  it('flushes pending text after 250ms while the upstream stream remains open', async () => {
+  it('keeps streamed text in memory until the terminal persistence boundary', async () => {
     const waiting = deferred();
     const release = deferred();
     const client = mockClient(async function* () {
@@ -441,14 +441,15 @@ describe('generation API', () => {
     const response = generate(app);
     await waiting.promise;
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(repositories.messageVariants.list()).toEqual([
-      expect.objectContaining({ content: 'A timed flush', status: 'streaming' }),
-    ]);
+    expect(repositories.messageVariants.list()).toEqual([]);
     release.resolve();
     await response;
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: 'A timed flush', status: 'completed', revision: 1 }),
+    ]);
   });
 
-  it('flushes after 256 newly accumulated characters without waiting for the timer', async () => {
+  it('does not rewrite SQLite when a large content delta arrives mid-stream', async () => {
     const waiting = deferred();
     const release = deferred();
     const client = mockClient(async function* () {
@@ -463,11 +464,12 @@ describe('generation API', () => {
 
     const response = generate(app);
     await waiting.promise;
-    expect(repositories.messageVariants.list()).toEqual([
-      expect.objectContaining({ content: `A${'b'.repeat(256)}`, status: 'streaming' }),
-    ]);
+    expect(repositories.messageVariants.list()).toEqual([]);
     release.resolve();
     await response;
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: `A${'b'.repeat(256)}`, status: 'completed', revision: 1 }),
+    ]);
   });
 
   it('retains partial content and marks it aborted when cancellation is requested', async () => {
@@ -511,6 +513,50 @@ describe('generation API', () => {
       expect.objectContaining({ role: 'user', content: 'Hello' }),
     ]);
     expect(repositories.messageVariants.list()).toEqual([]);
+  });
+
+  it('streams and persists reasoning separately from the final answer', async () => {
+    const client = mockClient(async function* () {
+      for (let index = 0; index < 200; index += 1) {
+        yield { type: 'reasoning_delta', text: `Private working note ${index}.` };
+      }
+      yield { type: 'delta', text: 'Final answer.' };
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = await generate(app);
+
+    const events = parseSse(response.payload);
+    expect(events[0]?.event).toBe('started');
+    expect(events.filter(({ event }) => event === 'reasoning_delta')).toHaveLength(200);
+    expect(events.slice(-2).map(({ event }) => event)).toEqual(['delta', 'completed']);
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({
+        reasoning: expect.stringContaining('Private working note 199.'),
+        content: 'Final answer.', status: 'completed', revision: 1,
+      }),
+    ]);
+  });
+
+  it('promotes visible reasoning when a provider completes without a separate final-content channel', async () => {
+    const client = mockClient(async function* () {
+      yield { type: 'reasoning_delta', text: 'The response budget was consumed by reasoning.' };
+      yield { type: 'completed', finishReason: 'length' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = await generate(app);
+    const events = parseSse(response.payload);
+
+    expect(events.map(({ event }) => event)).toEqual(['started', 'reasoning_delta', 'completed']);
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({
+        content: 'The response budget was consumed by reasoning.', status: 'completed',
+      }),
+    ]);
   });
 
   it('does not resolve a client-selected secret reference from the process environment', async () => {

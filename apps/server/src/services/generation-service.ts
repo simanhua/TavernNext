@@ -21,6 +21,7 @@ import {
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'completed'; finishReason: string }
@@ -147,20 +148,19 @@ export function createGenerationService(options: {
       if (siblingMode) variant = undefined;
     }
     let content = mode === 'continue' ? variant?.content ?? '' : '';
-    let persistedContent = content;
+    let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
     let hasDelta = false;
+    let hasReasoningDelta = false;
     let finishReason = 'stop';
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
-    let flushTimer: ReturnType<typeof setInterval> | undefined;
-    let timerError: unknown;
     let providerIterator: AsyncIterator<ProviderEvent> | undefined;
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
-      if (status === 'streaming' && persistedContent === content) return;
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
+        ...(reasoning === '' ? {} : { reasoning }),
         status,
         finishReason: status === 'completed' ? finishReason : undefined,
         ...(mode === 'continue' && hasDelta ? {
@@ -174,7 +174,6 @@ export function createGenerationService(options: {
       });
       if (!updated.ok) throw new Error(`Unable to flush generation variant: ${updated.reason}`);
       variant = updated.value;
-      persistedContent = content;
     };
 
     const beginPersistence = () => {
@@ -192,6 +191,7 @@ export function createGenerationService(options: {
             messageId: message.id,
             ordinal: 0,
             content,
+            ...(reasoning === '' ? {} : { reasoning }),
             status: 'streaming',
             continuationBoundaries: [],
           });
@@ -205,6 +205,7 @@ export function createGenerationService(options: {
             messageId: targetMessage!.id,
             ordinal,
             content,
+            ...(reasoning === '' ? {} : { reasoning }),
             status: 'streaming',
             continuationBoundaries: [],
           });
@@ -212,15 +213,6 @@ export function createGenerationService(options: {
           flush();
         }
       });
-      persistedContent = content;
-      flushTimer = setInterval(() => {
-        try {
-          flush();
-        } catch (error) {
-          timerError = error;
-          controller.abort();
-        }
-      }, 250);
     };
 
     const selectSibling = () => {
@@ -237,17 +229,28 @@ export function createGenerationService(options: {
       if (initializationError !== undefined) throw initializationError;
       providerIterator = providerEvents(prepared, controller.signal)[Symbol.asyncIterator]();
       for (;;) {
-        if (timerError !== undefined) throw timerError;
         if (controller.signal.aborted) throw new ProviderError('aborted');
         const next = await providerIterator.next();
         if (next.done) break;
         const event = next.value;
+        if (event.type === 'reasoning_delta') {
+          if (event.text === '') continue;
+          reasoning += event.text;
+          hasReasoningDelta = true;
+          // Reasoning streams can be very large. Keep them live in the SSE
+          // response, then persist once with the first final-content delta or
+          // terminal event instead of rewriting the full SQLite image for
+          // every reasoning chunk.
+          yield { type: 'reasoning_delta', text: event.text };
+          continue;
+        }
         if (event.type === 'delta') {
           if (event.text === '') continue;
           content += event.text;
           hasDelta = true;
-          if (variant === undefined || (mode === 'continue' && flushTimer === undefined)) beginPersistence();
-          else if (content.length - persistedContent.length >= 256) flush();
+          // The SSE response is the live source of truth. Persist once at the
+          // terminal boundary so large outputs do not repeatedly export the
+          // complete sql.js database while they are still streaming.
           yield { type: 'delta', text: event.text };
           continue;
         }
@@ -263,12 +266,20 @@ export function createGenerationService(options: {
       if (outcome !== 'completed') {
         outcome = 'failed';
         failureCode = 'protocol';
+      } else if (!hasDelta && hasReasoningDelta) {
+        // Some reasoning-capable providers place the entire requested answer
+        // in reasoning_content and leave content empty. When the caller has
+        // explicitly streamed that visible reasoning, promote it to the final
+        // assistant response instead of treating a complete answer as empty.
+        content = reasoning;
+        reasoning = '';
+        hasDelta = true;
+      } else if (!hasDelta) {
+        outcome = 'failed';
+        failureCode = 'empty_response';
       }
     } catch (error) {
-      if (timerError !== undefined) {
-        outcome = 'failed';
-        failureCode = safeFailureCode(timerError);
-      } else if (controller.signal.aborted || (error instanceof ProviderError && error.code === 'aborted')) {
+      if (controller.signal.aborted || (error instanceof ProviderError && error.code === 'aborted')) {
         outcome = 'aborted';
       } else {
         outcome = 'failed';
@@ -282,19 +293,19 @@ export function createGenerationService(options: {
           // Closing the provider transport must not replace the generation's primary outcome.
         }
       }
-      if (flushTimer !== undefined) clearInterval(flushTimer);
       if (outcome === 'aborted') controller.abort();
       try {
         database.transaction(() => {
-          if (variant !== undefined && hasDelta) flush(outcome);
-          if (hasDelta) selectSibling();
+          if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
+          if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
+          if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
         });
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (variant !== undefined && hasDelta) {
+          if (variant !== undefined && (hasDelta || hasReasoningDelta)) {
             variant = repositories.messageVariants.get(variant.id);
             if (variant !== undefined && variant.status !== 'failed') {
               database.transaction(() => {

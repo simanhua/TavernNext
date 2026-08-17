@@ -1,5 +1,6 @@
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'completed'; finishReason: string }
@@ -17,6 +18,7 @@ function parseFrame(frame: string): GenerationEvent | undefined {
     case 'started':
       if (typeof data.generationId !== 'string') break;
       return { type, generationId: data.generationId };
+    case 'reasoning_delta':
     case 'delta':
       if (typeof data.text !== 'string') break;
       return { type, text: data.text };

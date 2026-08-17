@@ -45,6 +45,7 @@ describe('OpenAI-compatible provider client', () => {
       expect(request.body).toEqual({ model: 'mock', messages: [{ role: 'user', content: 'Hi' }], stream: true });
       beginSse(response);
       response.write(': keepalive\r\n');
+      response.write('data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}\r\n\r\n');
       response.write('data: {"choices":[{"delta":{"content":"Hel"}}]}\r\n\r\n');
       response.write('data: {"choices":[{"delta":{"content":"lo"}}]}\n\n');
       response.write('data: {"usage":{"prompt_tokens":4,\n');
@@ -56,6 +57,7 @@ describe('OpenAI-compatible provider client', () => {
     await expect(collect(client(`${server.baseUrl}/`).streamChat({
       model: 'mock', messages: [{ role: 'user', content: 'Hi' }],
     }))).resolves.toEqual([
+      { type: 'reasoning_delta', text: 'Think' },
       { type: 'delta', text: 'Hel' },
       { type: 'delta', text: 'lo' },
       { type: 'usage', inputTokens: 4, outputTokens: 2 },
@@ -81,7 +83,7 @@ describe('OpenAI-compatible provider client', () => {
   it('normalizes a non-stream JSON completion response', async () => {
     const server = await mock((_request, response) => {
       sendJson(response, 200, {
-        choices: [{ message: { content: 'Hello' }, finish_reason: 'stop' }],
+        choices: [{ message: { reasoning_content: 'Think', content: 'Hello' }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 2, completion_tokens: 1 },
       });
     });
@@ -89,6 +91,7 @@ describe('OpenAI-compatible provider client', () => {
     await expect(collect(client(server.baseUrl).streamChat({
       model: 'mock', messages: [{ role: 'user', content: 'Hi' }],
     }))).resolves.toEqual([
+      { type: 'reasoning_delta', text: 'Think' },
       { type: 'delta', text: 'Hello' },
       { type: 'usage', inputTokens: 2, outputTokens: 1 },
       { type: 'completed', finishReason: 'stop' },

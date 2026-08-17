@@ -48,13 +48,13 @@ const chatPreset = {
 const otherConversation: Conversation = {
   id: ids.otherConversation, revision: 0, createdAt: now, updatedAt: now,
   characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
-  title: 'Saved chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 512,
+  title: 'Saved chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
 const conversation: Conversation = {
   id: ids.conversation, revision: 0, createdAt: now, updatedAt: now,
   characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
-  title: 'Aster chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 512,
+  title: 'Aster chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
 
@@ -76,8 +76,9 @@ type MessageView = {
     messageId: string;
     ordinal?: number;
     content: string;
-    status: 'completed' | 'aborted';
+    status: 'completed' | 'aborted' | 'failed';
     finishReason?: string;
+    reasoning?: string;
   }>;
 };
 
@@ -97,6 +98,7 @@ let generationAcceptedFailure = false;
 let messagePatchConflict = false;
 let messageDeleteFailure = false;
 let conversationConfigurationPatches = 0;
+let lastConversationConfigurationPatch: Record<string, unknown> | undefined;
 let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
 let promptPreviewRequests = 0;
@@ -139,6 +141,7 @@ const server = setupServer(
     const body = await request.json() as { revision: number; patch: Record<string, unknown> };
     expect(body.patch).toMatchObject({ providerId: ids.provider, presetId: ids.chatPreset });
     conversationConfigurationPatches += 1;
+    lastConversationConfigurationPatch = body.patch;
     conversationRevision += 1;
     const configured = { ...conversation, ...body.patch, revision: conversationRevision };
     conversations = conversations.map((item) => item.id === conversation.id ? configured : item);
@@ -360,6 +363,7 @@ afterEach(() => {
   messagePatchConflict = false;
   messageDeleteFailure = false;
   conversationConfigurationPatches = 0;
+  lastConversationConfigurationPatch = undefined;
   requestedGenerationModes = [];
   activeVariantSwitches = [];
   promptPreviewRequests = 0;
@@ -587,10 +591,20 @@ describe('ChatPage', () => {
     expect((composer as HTMLTextAreaElement).disabled).toBe(true);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
+    const promptBudget = screen.getByRole('spinbutton', { name: 'Maximum prompt tokens' });
+    const responseBudget = screen.getByRole('spinbutton', { name: 'Maximum response tokens' });
+    await user.clear(promptBudget);
+    await user.type(promptBudget, '200000');
+    await user.clear(responseBudget);
+    await user.type(responseBudget, '64000');
     await user.type(composer, 'Configure then send');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(conversationConfigurationPatches).toBe(1));
+    expect(lastConversationConfigurationPatch).toMatchObject({
+      maxPromptTokens: 200_000,
+      maxResponseTokens: 64_000,
+    });
     expect(generationCount).toBe(1);
   });
 
@@ -760,6 +774,23 @@ describe('ChatPage', () => {
     expect(await screen.findByText('Policy')).not.toBeNull();
     const articles = screen.getAllByRole('article');
     expect(articles.map((article) => article.querySelector('header')?.textContent)).toEqual(['System', 'Narrator', 'You']);
+  });
+
+  it('renders persisted reasoning and an explicit empty-final-response state', async () => {
+    conversations = [conversation];
+    messages = [{
+      id: ids.assistantMessage, revision: 1, createdAt: now, updatedAt: now,
+      conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.assistantVariant,
+      variants: [{
+        id: ids.assistantVariant, revision: 1, createdAt: now, updatedAt: now,
+        messageId: ids.assistantMessage, content: '', reasoning: 'Reasoning was returned.', status: 'failed',
+      }],
+    }];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    expect(await screen.findByText('Reasoning was returned.')).not.toBeNull();
+    expect(screen.getByText('No final response was generated.')).not.toBeNull();
   });
 
   it('reports revision conflicts and delete network failures', async () => {

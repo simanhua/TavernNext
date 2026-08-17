@@ -24,6 +24,7 @@ export function useGeneration() {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<GenerationStatus>('idle');
   const [streamedText, setStreamedText] = useState('');
+  const [streamedReasoning, setStreamedReasoning] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState<ActiveGenerationTarget | null>(null);
   const generationId = useRef<string | null>(null);
@@ -61,6 +62,7 @@ export function useGeneration() {
     activeRequest.current = controller;
     setStatus('starting');
     setStreamedText('');
+    setStreamedReasoning('');
     setError(null);
     setTarget(input.mode === 'normal' ? null : {
       mode: input.mode,
@@ -83,6 +85,8 @@ export function useGeneration() {
           }
           generationId.current = event.generationId;
           setStatus('streaming');
+        } else if (event.type === 'reasoning_delta') {
+          setStreamedReasoning((current) => current + event.text);
         } else if (event.type === 'delta') {
           setStreamedText((current) => current + event.text);
         } else if (event.type === 'completed' || event.type === 'aborted' || event.type === 'failed') {
@@ -91,6 +95,7 @@ export function useGeneration() {
           await refreshAuthoritativeState(conversation.id);
           if (!mounted.current) return accepted ? 'accepted' : 'rejected';
           setStreamedText('');
+          setStreamedReasoning('');
           setTarget(null);
           setStatus('idle');
           active.current = false;
@@ -106,6 +111,7 @@ export function useGeneration() {
       await refreshAuthoritativeState(conversation.id).catch(() => undefined);
       if (!mounted.current) return accepted ? 'accepted' : 'rejected';
       setStreamedText('');
+      setStreamedReasoning('');
       setTarget(null);
       setStatus('idle');
       active.current = false;
@@ -132,6 +138,7 @@ export function useGeneration() {
   return {
     status,
     streamedText,
+    streamedReasoning,
     target,
     error,
     isActive: status !== 'idle',
