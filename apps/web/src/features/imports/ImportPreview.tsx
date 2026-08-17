@@ -24,10 +24,12 @@ function normalizedSummary(kind: string, value: unknown, t: (key: string, variab
   if (root === undefined) return [t('Normalized data is ready')];
   if (kind === 'character') {
     const character = record(root.character) ?? root;
+    const characterBook = record(character.characterBook);
     return [
       boundedLabel(character.name),
       Array.isArray(character.alternateGreetings) ? quantity(character.alternateGreetings.length, 'alternate greeting', t) : undefined,
       Array.isArray(character.tags) ? quantity(character.tags.length, 'tag', t) : undefined,
+      Array.isArray(characterBook?.entries) ? quantity(characterBook.entries.length, 'embedded worldbook entry', t) : undefined,
       Array.isArray(root.auxiliaryAssets) ? quantity(root.auxiliaryAssets.length, 'auxiliary asset', t) : undefined,
     ].filter((item): item is string => item !== undefined);
   }

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import {
+  decodeInspectedCharacter,
   exportCharacter,
   exportCharacterBook,
   type CharacterAuxiliaryAsset,
@@ -108,6 +109,15 @@ export function registerCharacterExportRoutes(
         : { path: source.avatar.originalPath, bytes: sourceAvatarBytes };
       const avatar = currentAvatar ?? sourceAvatar;
       const sourcePng = readDataAsset(dataDir, source?.sourcePngPath);
+      let recoveredPngPayloads: Record<string, unknown> | undefined;
+      if (source?.rawPayloads === undefined && sourcePng !== undefined) {
+        try {
+          recoveredPngPayloads = decodeInspectedCharacter(sourcePng, 'source.png', undefined, 'png').rawPayloads;
+        } catch {
+          // A current Character remains exportable from normalized fields even
+          // when its retained source PNG metadata can no longer be recovered.
+        }
+      }
       const unknownFields = (source?.unknownFields ?? character.compatibility?.unknownFields ?? {
         topLevel: {}, data: {},
       }) as CharacterUnknownFields;
@@ -149,7 +159,7 @@ export function registerCharacterExportRoutes(
             ...(characterBook === undefined ? {} : { characterBook }),
           },
           unknownFields,
-          rawPayloads: source?.rawPayloads,
+          rawPayloads: source?.rawPayloads ?? recoveredPngPayloads,
           ...(sourcePng === undefined ? {} : { sourcePng }),
           ...(avatar === undefined ? {} : { avatar }),
           auxiliaryAssets,

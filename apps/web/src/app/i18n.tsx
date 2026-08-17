@@ -219,6 +219,7 @@ const zhCN: Record<string, string> = {
   'Enabled': '已启用',
   'Disabled': '已禁用',
   '{{count}} alternate greeting': '{{count}} 条备选开场白',
+  '{{count}} embedded worldbook entry': '{{count}} 条内嵌世界书条目',
   '{{count}} tag': '{{count}} 个标签',
   '{{count}} auxiliary asset': '{{count}} 个辅助资源',
   '{{count}} recognized setting': '{{count}} 项已识别设置',

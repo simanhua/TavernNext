@@ -15,6 +15,7 @@ const validPreview = {
   normalizedPreview: {
     character: {
       name: 'Aster', alternateGreetings: ['Welcome'], tags: ['archivist'],
+      characterBook: { entries: [{ id: 1 }, { id: 2 }] },
       extensions: { rawPayload: 'must-not-render-import-raw-payload' },
     },
     auxiliaryAssets: [{ path: 'portrait.webp' }],
@@ -128,6 +129,7 @@ describe('ImportDialog', () => {
     expect(screen.getByText('Aster')).not.toBeNull();
     expect(screen.getByText('1 alternate greeting')).not.toBeNull();
     expect(screen.getByText('1 tag')).not.toBeNull();
+    expect(screen.getByText('2 embedded worldbook entry')).not.toBeNull();
     expect(screen.getByText('1 auxiliary asset')).not.toBeNull();
     expect(screen.queryByText('must-not-render-import-raw-payload')).toBeNull();
     expect(screen.queryByText('C:\\private\\stage\\original.bin')).toBeNull();
