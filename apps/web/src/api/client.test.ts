@@ -8,7 +8,7 @@ const conversation: Conversation = {
   id: '018f0000-0000-7000-8000-000000000901', revision: 3, createdAt: now, updatedAt: now,
   characterId: '018f0000-0000-7000-8000-000000000902', personaId: '018f0000-0000-7000-8000-000000000903',
   providerId: '018f0000-0000-7000-8000-000000000904', presetId: '018f0000-0000-7000-8000-000000000905',
-  title: 'Projection test', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 512,
+  title: 'Projection test', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
 

@@ -485,7 +485,7 @@ describe('SQLite repositories', () => {
       .toContain('ordinal');
     expect(repositories.worldbooks.get(ids.worldbook)).toMatchObject({ isGlobal: false });
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
-      maxPromptTokens: 4096, maxResponseTokens: 512,
+      maxPromptTokens: 4096, maxResponseTokens: 4096,
     });
     expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 9 }]);
   });

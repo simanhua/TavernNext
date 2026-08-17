@@ -131,7 +131,7 @@ export const ConversationSchema = MutableEntitySchema.extend({
   systemPresetId: DomainIdSchema.optional(),
   worldbookIds: z.array(DomainIdSchema).default([]),
   maxPromptTokens: z.number().int().nonnegative().default(4096),
-  maxResponseTokens: z.number().int().nonnegative().default(512),
+  maxResponseTokens: z.number().int().nonnegative().default(4096),
   authorNote: z.string().default(''),
   authorNotePosition: z.number().int().min(0).max(2).default(1),
   authorNoteDepth: z.number().int().nonnegative().default(4),

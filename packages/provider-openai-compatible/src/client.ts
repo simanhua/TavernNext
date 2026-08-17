@@ -77,7 +77,9 @@ function eventsFromJson(payload: unknown, isChat: boolean): ProviderEvent[] {
     const choice = firstChoice as Record<string, unknown>;
     const delta = typeof choice.delta === 'object' && choice.delta !== null ? choice.delta as Record<string, unknown> : undefined;
     const message = typeof choice.message === 'object' && choice.message !== null ? choice.message as Record<string, unknown> : undefined;
+    const reasoning = isChat ? delta?.reasoning_content ?? message?.reasoning_content : undefined;
     const text = isChat ? delta?.content ?? message?.content : choice.text;
+    if (typeof reasoning === 'string' && reasoning !== '') events.push({ type: 'reasoning_delta', text: reasoning });
     if (typeof text === 'string' && text !== '') events.push({ type: 'delta', text });
   }
   const usage = typeof record.usage === 'object' && record.usage !== null ? record.usage as Record<string, unknown> : undefined;

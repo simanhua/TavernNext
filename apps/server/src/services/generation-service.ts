@@ -21,6 +21,7 @@ import {
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'completed'; finishReason: string }
@@ -147,8 +148,11 @@ export function createGenerationService(options: {
       if (siblingMode) variant = undefined;
     }
     let content = mode === 'continue' ? variant?.content ?? '' : '';
+    let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
     let persistedContent = content;
+    let persistedReasoning = reasoning;
     let hasDelta = false;
+    let hasReasoningDelta = false;
     let finishReason = 'stop';
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
@@ -158,9 +162,10 @@ export function createGenerationService(options: {
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
-      if (status === 'streaming' && persistedContent === content) return;
+      if (status === 'streaming' && persistedContent === content && persistedReasoning === reasoning) return;
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
+        ...(reasoning === '' ? {} : { reasoning }),
         status,
         finishReason: status === 'completed' ? finishReason : undefined,
         ...(mode === 'continue' && hasDelta ? {
@@ -175,6 +180,7 @@ export function createGenerationService(options: {
       if (!updated.ok) throw new Error(`Unable to flush generation variant: ${updated.reason}`);
       variant = updated.value;
       persistedContent = content;
+      persistedReasoning = reasoning;
     };
 
     const beginPersistence = () => {
@@ -213,6 +219,7 @@ export function createGenerationService(options: {
         }
       });
       persistedContent = content;
+      persistedReasoning = reasoning;
       flushTimer = setInterval(() => {
         try {
           flush();
@@ -242,6 +249,15 @@ export function createGenerationService(options: {
         const next = await providerIterator.next();
         if (next.done) break;
         const event = next.value;
+        if (event.type === 'reasoning_delta') {
+          if (event.text === '') continue;
+          reasoning += event.text;
+          hasReasoningDelta = true;
+          if (variant === undefined || (mode === 'continue' && flushTimer === undefined)) beginPersistence();
+          else if (reasoning.length - persistedReasoning.length >= 256) flush();
+          yield { type: 'reasoning_delta', text: event.text };
+          continue;
+        }
         if (event.type === 'delta') {
           if (event.text === '') continue;
           content += event.text;
@@ -263,6 +279,9 @@ export function createGenerationService(options: {
       if (outcome !== 'completed') {
         outcome = 'failed';
         failureCode = 'protocol';
+      } else if (!hasDelta) {
+        outcome = 'failed';
+        failureCode = 'empty_response';
       }
     } catch (error) {
       if (timerError !== undefined) {
@@ -286,15 +305,15 @@ export function createGenerationService(options: {
       if (outcome === 'aborted') controller.abort();
       try {
         database.transaction(() => {
-          if (variant !== undefined && hasDelta) flush(outcome);
-          if (hasDelta) selectSibling();
+          if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
+          if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
         });
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (variant !== undefined && hasDelta) {
+          if (variant !== undefined && (hasDelta || hasReasoningDelta)) {
             variant = repositories.messageVariants.get(variant.id);
             if (variant !== undefined && variant.status !== 'failed') {
               database.transaction(() => {

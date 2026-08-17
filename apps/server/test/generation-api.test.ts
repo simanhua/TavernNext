@@ -513,6 +513,47 @@ describe('generation API', () => {
     expect(repositories.messageVariants.list()).toEqual([]);
   });
 
+  it('streams and persists reasoning separately from the final answer', async () => {
+    const client = mockClient(async function* () {
+      yield { type: 'reasoning_delta', text: 'Private working notes.' };
+      yield { type: 'delta', text: 'Final answer.' };
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = await generate(app);
+
+    expect(parseSse(response.payload).map(({ event }) => event)).toEqual([
+      'started', 'reasoning_delta', 'delta', 'completed',
+    ]);
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({
+        reasoning: 'Private working notes.', content: 'Final answer.', status: 'completed',
+      }),
+    ]);
+  });
+
+  it('fails explicitly and retains reasoning when a provider completes without final content', async () => {
+    const client = mockClient(async function* () {
+      yield { type: 'reasoning_delta', text: 'The response budget was consumed by reasoning.' };
+      yield { type: 'completed', finishReason: 'length' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+
+    const response = await generate(app);
+    const events = parseSse(response.payload);
+
+    expect(events.map(({ event }) => event)).toEqual(['started', 'reasoning_delta', 'failed']);
+    expect(events.at(-1)?.data).toEqual({ code: 'empty_response' });
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({
+        reasoning: 'The response budget was consumed by reasoning.', content: '', status: 'failed',
+      }),
+    ]);
+  });
+
   it('does not resolve a client-selected secret reference from the process environment', async () => {
     let sentAuthorization = false;
     vi.stubGlobal('fetch', async (_input: string | URL | Request, init?: RequestInit) => {

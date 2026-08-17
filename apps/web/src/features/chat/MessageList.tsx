@@ -9,6 +9,7 @@ interface MessageListProps {
   conversationId: string | null;
   messages: MessageView[];
   streamedText: string;
+  streamedReasoning: string;
   generationTarget: ActiveGenerationTarget | null;
   controlsDisabled: boolean;
   generationDisabled: boolean;
@@ -25,6 +26,7 @@ export function MessageList({
   conversationId,
   messages,
   streamedText,
+  streamedReasoning,
   generationTarget,
   controlsDisabled,
   generationDisabled,
@@ -53,10 +55,16 @@ export function MessageList({
   return (
     <section className="messages" aria-label={t('Messages')}>
       {messages.map((message) => {
+        const activeVariant = message.role === 'assistant'
+          ? message.variants.find((variant) => variant.id === message.activeVariantId) ?? message.variants[0]
+          : undefined;
         const baseContent = authoritativeContent(message);
         const content = generationTarget?.messageId === message.id && streamedText !== ''
           ? generationTarget.mode === 'continue' ? generationTarget.baseContent + streamedText : streamedText
           : baseContent;
+        const reasoning = generationTarget?.messageId === message.id && streamedReasoning !== ''
+          ? streamedReasoning
+          : activeVariant?.reasoning ?? '';
         const role = language === 'en'
           ? message.role
           : t(message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : 'System');
@@ -74,7 +82,19 @@ export function MessageList({
                 <button type="submit" disabled={edit.isPending || editText.trim() === ''}>{t('Save edit')}</button>
                 <button type="button" onClick={() => setEditingId(null)}>{t('Cancel edit')}</button>
               </form>
-            ) : <p>{content}</p>}
+            ) : (
+              <>
+                {reasoning === '' ? null : (
+                  <details className="message-reasoning" open={content === ''}>
+                    <summary>{t('Reasoning')}</summary>
+                    <p>{reasoning}</p>
+                  </details>
+                )}
+                <p>{content || (activeVariant?.status === 'streaming'
+                  ? t('Waiting for final response…')
+                  : t('No final response was generated.'))}</p>
+              </>
+            )}
             {message.id === lastAssistantId ? (
               <SwipeControls
                 message={message}
@@ -112,6 +132,16 @@ export function MessageList({
         <article className="message message-assistant" aria-live="polite">
           <header>{t('Assistant')}</header>
           <p>{streamedText}</p>
+        </article>
+      ) : null}
+      {generationTarget === null && streamedText === '' && streamedReasoning !== '' ? (
+        <article className="message message-assistant" aria-live="polite">
+          <header>{t('Assistant')}</header>
+          <details className="message-reasoning" open>
+            <summary>{t('Reasoning')}</summary>
+            <p>{streamedReasoning}</p>
+          </details>
+          <p>{t('Waiting for final response…')}</p>
         </article>
       ) : null}
     </section>

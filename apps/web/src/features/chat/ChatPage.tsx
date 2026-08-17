@@ -340,6 +340,7 @@ export function ChatPage() {
           conversationId={activeConversationId}
           messages={detail.data?.messages ?? []}
           streamedText={generation.streamedText}
+          streamedReasoning={generation.streamedReasoning}
           generationTarget={generation.target}
           controlsDisabled={generation.isActive || configureConversation.isPending}
           generationDisabled={generation.isActive || configureConversation.isPending || !configurationReady}
@@ -356,7 +357,7 @@ export function ChatPage() {
             })();
           }}
         />
-        {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: generation.error })}</p> : null}
+        {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: t(generation.error) })}</p> : null}
         {characters.isLoading || personas.isLoading || providers.isLoading || presets.isLoading ? (
           <p>{t('Loading chat configuration…')}</p>
         ) : (
