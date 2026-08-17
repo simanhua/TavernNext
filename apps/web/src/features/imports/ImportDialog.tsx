@@ -2,6 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useId, useRef, useState } from 'react';
 import { api, errorCode, type ImportPreview as ImportPreviewData, type ImportReceipt } from '../../api/client.js';
 import { ImportPreview } from './ImportPreview.js';
+import { useI18n } from '../../app/i18n.js';
 
 export interface ImportDialogProps {
   open: boolean;
@@ -13,6 +14,7 @@ export interface ImportDialogProps {
 }
 
 export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommitted, commitImport = api.commitImport }: ImportDialogProps) {
+  const { t } = useI18n();
   const inputId = useId();
   const [preview, setPreview] = useState<ImportPreviewData>();
   const [inspectError, setInspectError] = useState<string>();
@@ -97,17 +99,17 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
               void inspect(event.dataTransfer.files[0]);
             }}
           >
-            Choose a file
-            <input id={inputId} aria-label="Choose a file" type="file" onChange={(event) => void inspect(event.target.files?.[0])} />
-            <span>or drag and drop it here</span>
+            {t('Choose a file')}
+            <input id={inputId} aria-label={t('Choose a file')} type="file" onChange={(event) => void inspect(event.target.files?.[0])} />
+            <span>{t('or drag and drop it here')}</span>
           </label>
-          {inspecting ? <p role="status">Inspecting locally staged upload…</p> : null}
+          {inspecting ? <p role="status">{t('Inspecting locally staged upload…')}</p> : null}
           {inspectError === undefined ? null : <p role="alert">{inspectError}</p>}
           {preview === undefined ? null : <ImportPreview preview={preview} expectedKind={expectedKind} />}
           {commitError === undefined ? null : <p role="alert">{commitError}</p>}
           <div className="dialog-actions">
-            <button type="button" onClick={() => changeOpen(false)}>Cancel import</button>
-            <button type="button" disabled={!canCommit} onClick={() => void commit()}>{committing ? 'Committing…' : 'Commit import'}</button>
+            <button type="button" onClick={() => changeOpen(false)}>{t('Cancel import')}</button>
+            <button type="button" disabled={!canCommit} onClick={() => void commit()}>{t(committing ? 'Committing…' : 'Commit import')}</button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

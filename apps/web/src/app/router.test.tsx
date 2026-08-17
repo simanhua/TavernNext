@@ -8,6 +8,7 @@ import { setupServer } from 'msw/node';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { appRoutes } from './router.js';
+import { I18nProvider } from './i18n.js';
 
 const server = setupServer(
   http.get('/api/characters', () => HttpResponse.json([])),
@@ -27,7 +28,7 @@ describe('application routes', () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/characters'] });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
+    render(<I18nProvider><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></I18nProvider>);
 
     const destinations = [
       ['Chat', 'New conversation'],

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderOptions } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
+import { I18nProvider } from '../app/i18n.js';
 
 export function renderWithApp(
   element: ReactElement,
@@ -14,9 +15,11 @@ export function renderWithApp(
   return {
     queryClient,
     ...render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[route]}>{element}</MemoryRouter>
-      </QueryClientProvider>,
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[route]}>{element}</MemoryRouter>
+        </QueryClientProvider>
+      </I18nProvider>,
       renderOptions,
     ),
   };

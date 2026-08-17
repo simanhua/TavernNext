@@ -236,6 +236,17 @@ export interface ProviderProfileView {
   hasApiKey: boolean;
 }
 
+export interface ProviderModelView {
+  id: string;
+  ownedBy?: string;
+}
+
+export interface ProviderProbeInput {
+  id?: string;
+  baseUrl: string;
+  apiKey?: string;
+}
+
 export interface MessageView extends Message {
   speakerLabel?: string;
   variants: MessageVariant[];
@@ -479,6 +490,12 @@ export const api = {
   deletePersona: (id: string, revision: number) => request<void>(`/api/personas/${id}?revision=${revision}`, { method: 'DELETE' }),
   uploadPersonaAvatar: (id: string, revision: number, file: File) => uploadAvatar<PersonaView>('personas', id, revision, file),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
+  probeProvider: (input: ProviderProbeInput) => request<{ ok: true; modelCount: number }>('/api/providers/probe', {
+    method: 'POST', body: JSON.stringify(input),
+  }),
+  detectProviderModels: (input: ProviderProbeInput) => request<{ models: ProviderModelView[] }>('/api/providers/models', {
+    method: 'POST', body: JSON.stringify(input),
+  }),
   listPresets: () => request<PresetSelectorView[]>('/api/presets'),
   getPreset: (id: string) => request<PresetView>(`/api/presets/${id}`),
   createPreset: (input: { name: string; kind: PresetKind; settings: Record<string, unknown> }) => request<PresetView>('/api/presets', {

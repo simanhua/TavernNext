@@ -8,7 +8,10 @@ interface ComposerProps {
   onStop(): void;
 }
 
+import { useI18n } from '../../app/i18n.js';
+
 export function Composer(props: ComposerProps) {
+  const { t } = useI18n();
   const { draft, disabled, canStop, stopping, onDraftChange, onSend, onStop } = props;
   return (
     <form
@@ -18,7 +21,7 @@ export function Composer(props: ComposerProps) {
         if (!disabled && draft.trim() !== '') onSend();
       }}
     >
-      <label htmlFor="chat-draft">Message</label>
+      <label htmlFor="chat-draft">{t('Message')}</label>
       <textarea
         id="chat-draft"
         value={draft}
@@ -33,8 +36,8 @@ export function Composer(props: ComposerProps) {
         }}
       />
       <div className="composer-actions">
-        <button type="submit" disabled={disabled || draft.trim() === ''}>Send</button>
-        {canStop ? <button type="button" disabled={stopping} onClick={onStop}>Stop</button> : null}
+        <button type="submit" disabled={disabled || draft.trim() === ''}>{t('Send')}</button>
+        {canStop ? <button type="button" disabled={stopping} onClick={onStop}>{t('Stop')}</button> : null}
       </div>
     </form>
   );

@@ -10,6 +10,7 @@ import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 import { WorldbookEntryEditor } from './WorldbookEntryEditor.js';
+import { useI18n } from '../../app/i18n.js';
 
 const nullableNumber = z.string().refine((value) => value === '' || Number.isFinite(Number(value)), 'Enter a number');
 const BookSchema = z.object({
@@ -44,6 +45,7 @@ function entryName(entry: WorldbookEntryView): string {
 }
 
 export function WorldbookManagerPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const books = useQuery({ queryKey: ['worldbooks'], queryFn: api.listWorldbooks });
   const [detail, setDetail] = useState<WorldbookView>();
@@ -165,58 +167,58 @@ export function WorldbookManagerPage() {
   return (
     <main className="manager-page worldbook-manager">
       <aside className="manager-sidebar">
-        <h1>Worldbooks</h1>
+        <h1>{t('Worldbooks')}</h1>
         <div className="manager-list">
-          {(books.data ?? []).map((book) => <button type="button" key={book.id} aria-label={`Edit Worldbook ${book.name}`} onClick={() => void openBook(book.id)}>{book.name} · {book.entryCount}</button>)}
+          {(books.data ?? []).map((book) => <button type="button" key={book.id} aria-label={t('Edit Worldbook {{name}}', { name: book.name })} onClick={() => void openBook(book.id)}>{book.name} · {book.entryCount}</button>)}
         </div>
-        <button type="button" onClick={() => { setDetail(undefined); setCreating(true); setEditingEntryId(undefined); form.reset(emptyBook); }}>New Worldbook</button>
-        <button type="button" onClick={() => setImportOpen(true)}>Import Worldbook</button>
+        <button type="button" onClick={() => { setDetail(undefined); setCreating(true); setEditingEntryId(undefined); form.reset(emptyBook); }}>{t('New Worldbook')}</button>
+        <button type="button" onClick={() => setImportOpen(true)}>{t('Import Worldbook')}</button>
       </aside>
       <section className="manager-editor">
-        {!creating && detail === undefined ? <p>Select a Worldbook to edit.</p> : (
+        {!creating && detail === undefined ? <p>{t('Select a Worldbook to edit.')}</p> : (
           <>
             <form onSubmit={form.handleSubmit((values) => void saveBook(values))}>
-              <h2>{creating ? 'New Worldbook' : detail?.name}</h2>
+              <h2>{creating ? t('New Worldbook') : detail?.name}</h2>
               <CompatibilitySummary value={detail?.compatibilitySummary} />
-              <fieldset aria-label="Executable Worldbook settings">
-                <legend>Executable Worldbook settings</legend>
-                <label>Worldbook name<input {...form.register('name')} /></label>
-                <label>Worldbook description<textarea {...form.register('description')} /></label>
-                <label className="checkbox-label"><input type="checkbox" {...form.register('enabled')} />Worldbook enabled</label>
-                <label>Worldbook scan depth<input type="number" {...form.register('scanDepth')} /></label>
-                <label>Worldbook token budget<input type="number" {...form.register('tokenBudget')} /></label>
-                <label className="checkbox-label"><input type="checkbox" {...form.register('recursiveScanning')} />Recursive scanning</label>
+              <fieldset aria-label={t('Executable Worldbook settings')}>
+                <legend>{t('Executable Worldbook settings')}</legend>
+                <label>{t('Worldbook name')}<input {...form.register('name')} /></label>
+                <label>{t('Worldbook description')}<textarea {...form.register('description')} /></label>
+                <label className="checkbox-label"><input type="checkbox" {...form.register('enabled')} />{t('Worldbook enabled')}</label>
+                <label>{t('Worldbook scan depth')}<input type="number" {...form.register('scanDepth')} /></label>
+                <label>{t('Worldbook token budget')}<input type="number" {...form.register('tokenBudget')} /></label>
+                <label className="checkbox-label"><input type="checkbox" {...form.register('recursiveScanning')} />{t('Recursive scanning')}</label>
               </fieldset>
-              <p>Editable executable Worldbook extensions are unavailable in this MVP. Preserved compatibility extensions are inert and are not executed.</p>
-              <label className="checkbox-label"><input type="checkbox" {...form.register('isGlobal')} />Global Worldbook</label>
+              <p>{t('Editable executable Worldbook extensions are unavailable in this MVP. Preserved compatibility extensions are inert and are not executed.')}</p>
+              <label className="checkbox-label"><input type="checkbox" {...form.register('isGlobal')} />{t('Global Worldbook')}</label>
               {bookValidationMessages.length === 0 ? null : (
                 <div role="alert" tabIndex={-1}>
-                  <strong>Correct the Worldbook form</strong>
-                  <ul>{[...new Set(bookValidationMessages)].map((message) => <li key={message}>{message}</li>)}</ul>
+                  <strong>{t('Correct the Worldbook form')}</strong>
+                  <ul>{[...new Set(bookValidationMessages)].map((message) => <li key={message}>{t(message)}</li>)}</ul>
                 </div>
               )}
               {conflict === undefined ? null : (
                 <ConflictBanner revision={conflict.revision} onReload={() => { setDetail(conflict); form.reset(bookValues(conflict)); setConflict(undefined); }} onRetry={() => void form.handleSubmit((values) => saveBook(values, conflict.revision))()} />
               )}
               <div className="editor-actions">
-                <button type="submit" disabled={pending}>{creating ? 'Create Worldbook' : 'Save Worldbook'}</button>
+                <button type="submit" disabled={pending}>{t(creating ? 'Create Worldbook' : 'Save Worldbook')}</button>
                 {detail === undefined ? null : (
                   <>
-                    <button type="button" onClick={async () => { try { await api.exportWorldbook(detail.id); } catch (cause) { setError(errorCode(cause)); } }}>Export Worldbook</button>
-                    <button type="button" onClick={() => setDeleteOpen(true)}>Delete Worldbook</button>
+                    <button type="button" onClick={async () => { try { await api.exportWorldbook(detail.id); } catch (cause) { setError(errorCode(cause)); } }}>{t('Export Worldbook')}</button>
+                    <button type="button" onClick={() => setDeleteOpen(true)}>{t('Delete Worldbook')}</button>
                   </>
                 )}
               </div>
             </form>
             {detail === undefined ? null : (
-              <section className="entry-list" aria-label="Worldbook entries">
-                <header><h3>Entries</h3><button type="button" onClick={() => { setAddingEntry(true); setEditingEntryId(undefined); }}>Add Worldbook entry</button></header>
+              <section className="entry-list" aria-label={t('Worldbook entries')}>
+                <header><h3>{t('Entries')}</h3><button type="button" onClick={() => { setAddingEntry(true); setEditingEntryId(undefined); }}>{t('Add Worldbook entry')}</button></header>
                 {detail.entries.map((entry, index) => (
                   <div className="entry-row" key={entry.id}>
-                    <button type="button" aria-label={`Edit entry ${entryName(entry)}`} onClick={() => { setEditingEntryId(entry.id); setAddingEntry(false); }}>{entryName(entry)}</button>
-                    <button type="button" aria-label={`Move entry ${entryName(entry)} up`} disabled={index === 0 || pending} onClick={() => void reorder(index, index - 1)}>↑</button>
-                    <button type="button" aria-label={`Move entry ${entryName(entry)} down`} disabled={index === detail.entries.length - 1 || pending} onClick={() => void reorder(index, index + 1)}>↓</button>
-                    <button type="button" aria-label={`Delete entry ${entryName(entry)}`} disabled={pending} onClick={() => void deleteEntry(entry)}>Delete</button>
+                    <button type="button" aria-label={t('Edit entry {{name}}', { name: entryName(entry) })} onClick={() => { setEditingEntryId(entry.id); setAddingEntry(false); }}>{entryName(entry)}</button>
+                    <button type="button" aria-label={t('Move entry {{name}} up', { name: entryName(entry) })} disabled={index === 0 || pending} onClick={() => void reorder(index, index - 1)}>↑</button>
+                    <button type="button" aria-label={t('Move entry {{name}} down', { name: entryName(entry) })} disabled={index === detail.entries.length - 1 || pending} onClick={() => void reorder(index, index + 1)}>↓</button>
+                    <button type="button" aria-label={t('Delete entry {{name}}', { name: entryName(entry) })} disabled={pending} onClick={() => void deleteEntry(entry)}>{t('Delete')}</button>
                   </div>
                 ))}
               </section>
@@ -232,9 +234,9 @@ export function WorldbookManagerPage() {
             ) : null}
           </>
         )}
-        {error === undefined ? null : <p role="alert">Worldbook operation failed: {error}</p>}
+        {error === undefined ? null : <p role="alert">{t('Worldbook operation failed: {{error}}', { error: t(error) })}</p>}
       </section>
-      <ImportDialog open={importOpen} expectedKind="worldbook" title="Import Worldbook" onOpenChange={setImportOpen} onCommitted={async (receipt) => { await refreshList(); if (receipt.entityId !== undefined) await openBook(receipt.entityId); }} />
+      <ImportDialog open={importOpen} expectedKind="worldbook" title={t('Import Worldbook')} onOpenChange={setImportOpen} onCommitted={async (receipt) => { await refreshList(); if (receipt.entityId !== undefined) await openBook(receipt.entityId); }} />
       <DeleteConfirmation noun="Worldbook" open={deleteOpen} pending={pending} onOpenChange={setDeleteOpen} onConfirm={() => void removeBook()} />
     </main>
   );

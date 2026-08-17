@@ -9,8 +9,10 @@ import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
 import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
+import { useI18n } from '../../app/i18n.js';
 
 export function ChatPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const activeConversationId = useChatUi((state) => state.activeConversationId);
   const setActiveConversationId = useChatUi((state) => state.setActiveConversationId);
@@ -24,7 +26,7 @@ export function ChatPage() {
   const [instructPresetId, setInstructPresetId] = useState('');
   const [systemPresetId, setSystemPresetId] = useState('');
   const [chatImportOpen, setChatImportOpen] = useState(false);
-  const [chatImportTitle, setChatImportTitle] = useState('Imported chat');
+  const [chatImportTitle, setChatImportTitle] = useState(() => t('Imported chat'));
   const [chatTransferError, setChatTransferError] = useState<string>();
   const creatingConversation = useRef<Promise<Conversation> | null>(null);
   const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters });
@@ -176,44 +178,50 @@ export function ChatPage() {
   return (
     <main className="chat-page">
       <aside className="chat-sidebar">
-        <h1>TavernNext</h1>
+        <div className="chat-sidebar-brand">
+          <span className="chat-sidebar-sigil" aria-hidden="true">T</span>
+          <div>
+            <h1>TavernNext</h1>
+            <span>{t('Session setup')}</span>
+          </div>
+        </div>
         <label>
-          Conversation
+          {t('Conversation')}
           <select
             value={activeConversationId ?? ''}
             disabled={generation.isActive}
             onChange={(event) => selectConversation(event.target.value)}
           >
-            <option value="">New conversation</option>
+            <option value="">{t('New conversation')}</option>
             {(conversations.data ?? []).map((conversation) => (
               <option key={conversation.id} value={conversation.id}>{conversation.title}</option>
             ))}
           </select>
         </label>
         <label>
-          Character
+          {t('Character')}
           <select
             value={characterId}
             disabled={activeConversationId !== null || generation.isActive}
             onChange={(event) => setCharacterId(event.target.value)}
           >
-            <option value="">Choose Character</option>
+            <option value="">{t('Choose Character')}</option>
             {(characters.data ?? []).map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
           </select>
         </label>
         <label>
-          Persona
+          {t('Persona')}
           <select
             value={personaId}
             disabled={activeConversationId !== null || generation.isActive}
             onChange={(event) => setPersonaId(event.target.value)}
           >
-            <option value="">Choose Persona</option>
+            <option value="">{t('Choose Persona')}</option>
             {(personas.data ?? []).map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
           </select>
         </label>
         <label>
-          Provider
+          {t('Provider')}
           <select
             value={providerId}
             disabled={generation.isActive}
@@ -225,14 +233,14 @@ export function ChatPage() {
               setSystemPresetId('');
             }}
           >
-            <option value="">Choose Provider</option>
+            <option value="">{t('Choose Provider')}</option>
             {(providers.data ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
           </select>
         </label>
         <label>
-          {selectedProvider?.apiMode === 'text' ? 'Text preset' : 'Chat preset'}
+          {t(selectedProvider?.apiMode === 'text' ? 'Text preset' : 'Chat preset')}
           <select value={presetId} disabled={providerId === '' || generation.isActive} onChange={(event) => setPresetId(event.target.value)}>
-            <option value="">Choose {selectedProvider?.apiMode === 'text' ? 'Text' : 'Chat'} preset</option>
+            <option value="">{t(selectedProvider?.apiMode === 'text' ? 'Choose Text preset' : 'Choose Chat preset')}</option>
             {(presets.data ?? []).filter((preset) => preset.kind === requiredPrimaryKind)
               .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
           </select>
@@ -240,35 +248,35 @@ export function ChatPage() {
         {selectedProvider?.apiMode === 'text' ? (
           <>
             <label>
-              Context preset
+              {t('Context preset')}
               <select value={contextPresetId} disabled={generation.isActive} onChange={(event) => setContextPresetId(event.target.value)}>
-                <option value="">Choose Context preset</option>
+                <option value="">{t('Choose Context preset')}</option>
                 {(presets.data ?? []).filter((preset) => preset.kind === 'context')
                   .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
               </select>
             </label>
             <label>
-              Instruct preset
+              {t('Instruct preset')}
               <select value={instructPresetId} disabled={generation.isActive} onChange={(event) => setInstructPresetId(event.target.value)}>
-                <option value="">Choose Instruct preset</option>
+                <option value="">{t('Choose Instruct preset')}</option>
                 {(presets.data ?? []).filter((preset) => preset.kind === 'instruct')
                   .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
               </select>
             </label>
             <label>
-              System preset
+              {t('System preset')}
               <select value={systemPresetId} disabled={generation.isActive} onChange={(event) => setSystemPresetId(event.target.value)}>
-                <option value="">Choose System preset</option>
+                <option value="">{t('Choose System preset')}</option>
                 {(presets.data ?? []).filter((preset) => preset.kind === 'system')
                   .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
               </select>
             </label>
           </>
         ) : null}
-        <details><summary>Add Character</summary><CharacterQuickCreate /></details>
-        <details><summary>Add Persona</summary><PersonaQuickCreate /></details>
+        <details><summary>{t('Add Character')}</summary><CharacterQuickCreate /></details>
+        <details><summary>{t('Add Persona')}</summary><PersonaQuickCreate /></details>
         <label>
-          Imported chat title
+          {t('Imported chat title')}
           <input value={chatImportTitle} onChange={(event) => setChatImportTitle(event.target.value)} />
         </label>
         <div className="chat-transfer-actions">
@@ -276,7 +284,7 @@ export function ChatPage() {
             type="button"
             disabled={characterId === '' || personaId === '' || chatImportTitle.trim() === '' || generation.isActive}
             onClick={() => { setChatTransferError(undefined); setChatImportOpen(true); }}
-          >Import chat</button>
+          >{t('Import chat')}</button>
           <button
             type="button"
             disabled={activeConversationId === null || generation.isActive || exportChat.isPending}
@@ -285,12 +293,12 @@ export function ChatPage() {
               setChatTransferError(undefined);
               void exportChat.mutateAsync(activeConversationId).catch((error) => setChatTransferError(errorCode(error)));
             }}
-          >Export chat</button>
+          >{t('Export chat')}</button>
         </div>
         <ImportDialog
           open={chatImportOpen}
           expectedKind="chat"
-          title="Import solo chat JSONL"
+          title={t('Import solo chat JSONL')}
           onOpenChange={setChatImportOpen}
           commitImport={(inspectionToken) => api.commitChatImport(inspectionToken, {
             characterId,
@@ -308,26 +316,26 @@ export function ChatPage() {
         />
         {chatTransferError === undefined && exportChat.error === null
           ? null
-          : <p role="alert">Chat transfer error: {chatTransferError ?? errorCode(exportChat.error)}</p>}
+          : <p role="alert">{t('Chat transfer error: {{error}}', { error: chatTransferError ?? errorCode(exportChat.error) })}</p>}
       </aside>
       <section className="chat-main">
         <header className="chat-header">
-          <h2>{detail.data?.conversation.title ?? 'New conversation'}</h2>
+          <h2>{detail.data?.conversation.title ?? t('New conversation')}</h2>
           <div className="chat-header-actions">
             {activeConversationId === null ? (
               <button
                 type="button"
                 disabled={!prerequisitesReady || createConversation.isPending}
                 onClick={() => { void createSelectedConversation().catch(() => undefined); }}
-              >Start chat</button>
+              >{t('Start chat')}</button>
             ) : null}
             {detail.data?.conversation === undefined ? null : <PromptPreviewDialog conversation={detail.data.conversation} userText={draft} />}
-            <span className={`generation-status status-${generation.status}`}>{generation.status}</span>
+            <span className={`generation-status status-${generation.status}`}>{t(generation.status)}</span>
           </div>
         </header>
-        {detail.error ? <p role="alert">Unable to load this conversation.</p> : null}
-        {createConversation.error ? <p role="alert">Unable to create conversation: {errorCode(createConversation.error)}</p> : null}
-        {configureConversation.error ? <p role="alert">Unable to configure conversation: {errorCode(configureConversation.error)}</p> : null}
+        {detail.error ? <p role="alert">{t('Unable to load this conversation.')}</p> : null}
+        {createConversation.error ? <p role="alert">{t('Unable to create conversation: {{error}}', { error: errorCode(createConversation.error) })}</p> : null}
+        {configureConversation.error ? <p role="alert">{t('Unable to configure conversation: {{error}}', { error: errorCode(configureConversation.error) })}</p> : null}
         <MessageList
           conversationId={activeConversationId}
           messages={detail.data?.messages ?? []}
@@ -348,9 +356,9 @@ export function ChatPage() {
             })();
           }}
         />
-        {generation.error ? <p role="alert">Generation error: {generation.error}</p> : null}
+        {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: generation.error })}</p> : null}
         {characters.isLoading || personas.isLoading || providers.isLoading || presets.isLoading ? (
-          <p>Loading chat configuration…</p>
+          <p>{t('Loading chat configuration…')}</p>
         ) : (
           <Composer
             draft={draft}

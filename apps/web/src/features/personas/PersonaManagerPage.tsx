@@ -8,6 +8,7 @@ import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
+import { useI18n } from '../../app/i18n.js';
 
 const PersonaFormSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
@@ -18,6 +19,7 @@ type PersonaForm = z.infer<typeof PersonaFormSchema>;
 const emptyPersona: PersonaForm = { name: '', description: '', isDefault: false };
 
 export function PersonaManagerPage() {
+  const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const personas = useQuery({ queryKey: ['personas'], queryFn: api.listPersonas });
   const [selected, setSelected] = useState<PersonaView>();
@@ -101,26 +103,26 @@ export function PersonaManagerPage() {
   return (
     <main className="manager-page">
       <aside className="manager-sidebar">
-        <h1>Personas</h1>
+        <h1>{t('Personas')}</h1>
         <div className="manager-list">
           {(personas.data ?? []).map((persona) => (
-            <button type="button" key={persona.id} aria-label={`Edit persona ${persona.name}`} onClick={() => void openPersona(persona.id)}>
-              {persona.name}{persona.isDefault ? ' · Default' : ''}
+            <button type="button" key={persona.id} aria-label={t('Edit persona {{name}}', { name: persona.name })} onClick={() => void openPersona(persona.id)}>
+              {persona.name}{persona.isDefault ? ` · ${t('Default')}` : ''}
             </button>
           ))}
         </div>
-        <button type="button" onClick={() => { setSelected(undefined); setCreating(true); setConflict(undefined); form.reset(emptyPersona); }}>New Persona</button>
+        <button type="button" onClick={() => { setSelected(undefined); setCreating(true); setConflict(undefined); form.reset(emptyPersona); }}>{t('New Persona')}</button>
       </aside>
       <section className="manager-editor">
-        {!creating && selected === undefined ? <p>Select a Persona to edit.</p> : (
+        {!creating && selected === undefined ? <p>{t('Select a Persona to edit.')}</p> : (
           <form onSubmit={form.handleSubmit((values) => void persist(values))}>
-            <h2>{creating ? 'New Persona' : selected?.name}</h2>
+            <h2>{creating ? t('New Persona') : selected?.name}</h2>
             <CompatibilitySummary value={selected?.compatibilitySummary} />
-            {selected?.avatarUrl === undefined ? null : <img className="avatar-preview" src={selected.avatarUrl} alt={`${selected.name} avatar`} />}
-            <label>Name<input {...form.register('name')} /></label>
-            <label>Description<textarea {...form.register('description')} /></label>
-            <label className="checkbox-label"><input type="checkbox" {...form.register('isDefault')} />Default Persona</label>
-            {form.formState.errors.name ? <p role="alert">{form.formState.errors.name.message}</p> : null}
+            {selected?.avatarUrl === undefined ? null : <img className="avatar-preview" src={selected.avatarUrl} alt={language === 'en' ? `${selected.name} avatar` : `${selected.name} ${t('Persona avatar')}`} />}
+            <label>{t('Name')}<input {...form.register('name')} /></label>
+            <label>{t('Description')}<textarea {...form.register('description')} /></label>
+            <label className="checkbox-label"><input type="checkbox" {...form.register('isDefault')} />{t('Default Persona')}</label>
+            {form.formState.errors.name ? <p role="alert">{t(form.formState.errors.name.message ?? '')}</p> : null}
             {conflict === undefined ? null : (
               <ConflictBanner
                 revision={conflict.revision}
@@ -128,13 +130,13 @@ export function PersonaManagerPage() {
                 onRetry={() => void form.handleSubmit((values) => persist(values, conflict.revision))()}
               />
             )}
-            {error === undefined ? null : <p role="alert">Unable to save Persona: {error}</p>}
+            {error === undefined ? null : <p role="alert">{t('Unable to save Persona: {{error}}', { error })}</p>}
             <div className="editor-actions">
-              <button type="submit" disabled={pending}>{creating ? 'Create Persona' : 'Save Persona'}</button>
+              <button type="submit" disabled={pending}>{t(creating ? 'Create Persona' : 'Save Persona')}</button>
               {selected === undefined ? null : (
                 <>
-                  <label>Avatar file<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event.target.files?.[0])} /></label>
-                  <button type="button" onClick={() => setDeleteOpen(true)}>Delete Persona</button>
+                  <label>{t('Avatar file')}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event.target.files?.[0])} /></label>
+                  <button type="button" onClick={() => setDeleteOpen(true)}>{t('Delete Persona')}</button>
                 </>
               )}
             </div>
