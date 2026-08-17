@@ -515,7 +515,9 @@ describe('generation API', () => {
 
   it('streams and persists reasoning separately from the final answer', async () => {
     const client = mockClient(async function* () {
-      yield { type: 'reasoning_delta', text: 'Private working notes.' };
+      for (let index = 0; index < 200; index += 1) {
+        yield { type: 'reasoning_delta', text: `Private working note ${index}.` };
+      }
       yield { type: 'delta', text: 'Final answer.' };
       yield { type: 'completed', finishReason: 'stop' };
     });
@@ -524,12 +526,14 @@ describe('generation API', () => {
 
     const response = await generate(app);
 
-    expect(parseSse(response.payload).map(({ event }) => event)).toEqual([
-      'started', 'reasoning_delta', 'delta', 'completed',
-    ]);
+    const events = parseSse(response.payload);
+    expect(events[0]?.event).toBe('started');
+    expect(events.filter(({ event }) => event === 'reasoning_delta')).toHaveLength(200);
+    expect(events.slice(-2).map(({ event }) => event)).toEqual(['delta', 'completed']);
     expect(repositories.messageVariants.list()).toEqual([
       expect.objectContaining({
-        reasoning: 'Private working notes.', content: 'Final answer.', status: 'completed',
+        reasoning: expect.stringContaining('Private working note 199.'),
+        content: 'Final answer.', status: 'completed', revision: 1,
       }),
     ]);
   });

@@ -98,6 +98,7 @@ let generationAcceptedFailure = false;
 let messagePatchConflict = false;
 let messageDeleteFailure = false;
 let conversationConfigurationPatches = 0;
+let lastConversationConfigurationPatch: Record<string, unknown> | undefined;
 let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
 let promptPreviewRequests = 0;
@@ -140,6 +141,7 @@ const server = setupServer(
     const body = await request.json() as { revision: number; patch: Record<string, unknown> };
     expect(body.patch).toMatchObject({ providerId: ids.provider, presetId: ids.chatPreset });
     conversationConfigurationPatches += 1;
+    lastConversationConfigurationPatch = body.patch;
     conversationRevision += 1;
     const configured = { ...conversation, ...body.patch, revision: conversationRevision };
     conversations = conversations.map((item) => item.id === conversation.id ? configured : item);
@@ -361,6 +363,7 @@ afterEach(() => {
   messagePatchConflict = false;
   messageDeleteFailure = false;
   conversationConfigurationPatches = 0;
+  lastConversationConfigurationPatch = undefined;
   requestedGenerationModes = [];
   activeVariantSwitches = [];
   promptPreviewRequests = 0;
@@ -588,10 +591,20 @@ describe('ChatPage', () => {
     expect((composer as HTMLTextAreaElement).disabled).toBe(true);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
+    const promptBudget = screen.getByRole('spinbutton', { name: 'Maximum prompt tokens' });
+    const responseBudget = screen.getByRole('spinbutton', { name: 'Maximum response tokens' });
+    await user.clear(promptBudget);
+    await user.type(promptBudget, '200000');
+    await user.clear(responseBudget);
+    await user.type(responseBudget, '64000');
     await user.type(composer, 'Configure then send');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(conversationConfigurationPatches).toBe(1));
+    expect(lastConversationConfigurationPatch).toMatchObject({
+      maxPromptTokens: 200_000,
+      maxResponseTokens: 64_000,
+    });
     expect(generationCount).toBe(1);
   });
 

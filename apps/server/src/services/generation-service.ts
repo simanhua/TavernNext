@@ -183,7 +183,7 @@ export function createGenerationService(options: {
       persistedReasoning = reasoning;
     };
 
-    const beginPersistence = () => {
+    const beginPersistence = (startFlushTimer = true) => {
       database.transaction(() => {
         if (mode === 'normal') {
           const message = repositories.messages.create({
@@ -198,6 +198,7 @@ export function createGenerationService(options: {
             messageId: message.id,
             ordinal: 0,
             content,
+            ...(reasoning === '' ? {} : { reasoning }),
             status: 'streaming',
             continuationBoundaries: [],
           });
@@ -211,6 +212,7 @@ export function createGenerationService(options: {
             messageId: targetMessage!.id,
             ordinal,
             content,
+            ...(reasoning === '' ? {} : { reasoning }),
             status: 'streaming',
             continuationBoundaries: [],
           });
@@ -220,6 +222,7 @@ export function createGenerationService(options: {
       });
       persistedContent = content;
       persistedReasoning = reasoning;
+      if (!startFlushTimer) return;
       flushTimer = setInterval(() => {
         try {
           flush();
@@ -253,8 +256,10 @@ export function createGenerationService(options: {
           if (event.text === '') continue;
           reasoning += event.text;
           hasReasoningDelta = true;
-          if (variant === undefined || (mode === 'continue' && flushTimer === undefined)) beginPersistence();
-          else if (reasoning.length - persistedReasoning.length >= 256) flush();
+          // Reasoning streams can be very large. Keep them live in the SSE
+          // response, then persist once with the first final-content delta or
+          // terminal event instead of rewriting the full SQLite image for
+          // every reasoning chunk.
           yield { type: 'reasoning_delta', text: event.text };
           continue;
         }
@@ -305,6 +310,7 @@ export function createGenerationService(options: {
       if (outcome === 'aborted') controller.abort();
       try {
         database.transaction(() => {
+          if (variant === undefined && hasReasoningDelta) beginPersistence(false);
           if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
           if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);

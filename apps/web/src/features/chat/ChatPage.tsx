@@ -11,6 +11,11 @@ import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
 
+const MAX_PROMPT_TOKENS = 1_000_000;
+const MAX_RESPONSE_TOKENS = 384_000;
+const DEFAULT_PROMPT_TOKENS = 128_000;
+const DEFAULT_RESPONSE_TOKENS = 32_768;
+
 export function ChatPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -25,6 +30,8 @@ export function ChatPage() {
   const [contextPresetId, setContextPresetId] = useState('');
   const [instructPresetId, setInstructPresetId] = useState('');
   const [systemPresetId, setSystemPresetId] = useState('');
+  const [maxPromptTokens, setMaxPromptTokens] = useState(DEFAULT_PROMPT_TOKENS);
+  const [maxResponseTokens, setMaxResponseTokens] = useState(DEFAULT_RESPONSE_TOKENS);
   const [chatImportOpen, setChatImportOpen] = useState(false);
   const [chatImportTitle, setChatImportTitle] = useState(() => t('Imported chat'));
   const [chatTransferError, setChatTransferError] = useState<string>();
@@ -69,11 +76,19 @@ export function ChatPage() {
     && presets.data?.some((preset) => preset.id === instructPresetId && preset.kind === 'instruct') === true
     && presets.data?.some((preset) => preset.id === systemPresetId && preset.kind === 'system') === true
   );
-  const configurationReady = selectedProvider !== undefined && primaryPresetValid && textCompanionsValid;
+  const tokenBudgetsValid = Number.isInteger(maxPromptTokens)
+    && maxPromptTokens >= 1
+    && maxPromptTokens <= MAX_PROMPT_TOKENS
+    && Number.isInteger(maxResponseTokens)
+    && maxResponseTokens >= 1
+    && maxResponseTokens <= MAX_RESPONSE_TOKENS;
+  const configurationReady = selectedProvider !== undefined && primaryPresetValid && textCompanionsValid && tokenBudgetsValid;
 
   const selectedConfiguration = () => ({
     providerId,
     presetId,
+    maxPromptTokens,
+    maxResponseTokens,
     ...(selectedProvider?.apiMode !== 'text' ? {} : {
       contextPresetId,
       instructPresetId,
@@ -103,6 +118,8 @@ export function ChatPage() {
     const listed = conversations.data?.find((conversation) => conversation.id === target.id) ?? target;
     const differs = listed.providerId !== configuration.providerId
       || listed.presetId !== configuration.presetId
+      || listed.maxPromptTokens !== maxPromptTokens
+      || listed.maxResponseTokens !== maxResponseTokens
       || (selectedProvider?.apiMode === 'text' && (
         listed.contextPresetId !== contextPresetId
         || listed.instructPresetId !== instructPresetId
@@ -123,6 +140,8 @@ export function ChatPage() {
       setContextPresetId(active.contextPresetId ?? '');
       setInstructPresetId(active.instructPresetId ?? '');
       setSystemPresetId(active.systemPresetId ?? '');
+      setMaxPromptTokens(active.maxPromptTokens);
+      setMaxResponseTokens(active.maxResponseTokens);
     }
   }, [activeConversationId, conversations.data]);
 
@@ -144,6 +163,8 @@ export function ChatPage() {
       setContextPresetId(selected.contextPresetId ?? '');
       setInstructPresetId(selected.instructPresetId ?? '');
       setSystemPresetId(selected.systemPresetId ?? '');
+      setMaxPromptTokens(selected.maxPromptTokens);
+      setMaxResponseTokens(selected.maxResponseTokens);
     }
   };
 
@@ -273,6 +294,30 @@ export function ChatPage() {
             </label>
           </>
         ) : null}
+        <label>
+          {t('Maximum prompt tokens')}
+          <input
+            type="number"
+            min={1}
+            max={MAX_PROMPT_TOKENS}
+            step={1024}
+            value={maxPromptTokens}
+            disabled={generation.isActive}
+            onChange={(event) => setMaxPromptTokens(Number(event.target.value))}
+          />
+        </label>
+        <label>
+          {t('Maximum response tokens')}
+          <input
+            type="number"
+            min={1}
+            max={MAX_RESPONSE_TOKENS}
+            step={1024}
+            value={maxResponseTokens}
+            disabled={generation.isActive}
+            onChange={(event) => setMaxResponseTokens(Number(event.target.value))}
+          />
+        </label>
         <details><summary>{t('Add Character')}</summary><CharacterQuickCreate /></details>
         <details><summary>{t('Add Persona')}</summary><PersonaQuickCreate /></details>
         <label>

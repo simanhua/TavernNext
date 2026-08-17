@@ -224,6 +224,8 @@ const zhCN: Record<string, string> = {
   'Waiting for final response…': '正在等待最终回复…',
   'No final response was generated.': '模型未生成最终回复。',
   'empty_response': '模型只返回了推理过程，没有生成最终回复；请提高最大回复 Token 数后重试。',
+  'Maximum prompt tokens': '最大提示词 Token',
+  'Maximum response tokens': '最大回复 Token',
   '{{count}} tag': '{{count}} 个标签',
   '{{count}} auxiliary asset': '{{count}} 个辅助资源',
   '{{count}} recognized setting': '{{count}} 项已识别设置',

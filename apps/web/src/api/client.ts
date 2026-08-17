@@ -566,6 +566,8 @@ export const api = {
     contextPresetId?: string;
     instructPresetId?: string;
     systemPresetId?: string;
+    maxPromptTokens: number;
+    maxResponseTokens: number;
   }) => request<Conversation>('/api/conversations', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
   }),
@@ -575,6 +577,8 @@ export const api = {
     contextPresetId?: string;
     instructPresetId?: string;
     systemPresetId?: string;
+    maxPromptTokens: number;
+    maxResponseTokens: number;
   }) => request<Conversation>(`/api/conversations/${conversation.id}`, {
     method: 'PATCH', body: JSON.stringify({ revision: conversation.revision, patch }),
   }),
