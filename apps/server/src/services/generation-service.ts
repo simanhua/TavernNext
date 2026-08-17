@@ -284,6 +284,14 @@ export function createGenerationService(options: {
       if (outcome !== 'completed') {
         outcome = 'failed';
         failureCode = 'protocol';
+      } else if (!hasDelta && hasReasoningDelta) {
+        // Some reasoning-capable providers place the entire requested answer
+        // in reasoning_content and leave content empty. When the caller has
+        // explicitly streamed that visible reasoning, promote it to the final
+        // assistant response instead of treating a complete answer as empty.
+        content = reasoning;
+        reasoning = '';
+        hasDelta = true;
       } else if (!hasDelta) {
         outcome = 'failed';
         failureCode = 'empty_response';

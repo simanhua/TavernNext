@@ -538,7 +538,7 @@ describe('generation API', () => {
     ]);
   });
 
-  it('fails explicitly and retains reasoning when a provider completes without final content', async () => {
+  it('promotes visible reasoning when a provider completes without a separate final-content channel', async () => {
     const client = mockClient(async function* () {
       yield { type: 'reasoning_delta', text: 'The response budget was consumed by reasoning.' };
       yield { type: 'completed', finishReason: 'length' };
@@ -549,11 +549,10 @@ describe('generation API', () => {
     const response = await generate(app);
     const events = parseSse(response.payload);
 
-    expect(events.map(({ event }) => event)).toEqual(['started', 'reasoning_delta', 'failed']);
-    expect(events.at(-1)?.data).toEqual({ code: 'empty_response' });
+    expect(events.map(({ event }) => event)).toEqual(['started', 'reasoning_delta', 'completed']);
     expect(repositories.messageVariants.list()).toEqual([
       expect.objectContaining({
-        reasoning: 'The response budget was consumed by reasoning.', content: '', status: 'failed',
+        content: 'The response budget was consumed by reasoning.', status: 'completed',
       }),
     ]);
   });
