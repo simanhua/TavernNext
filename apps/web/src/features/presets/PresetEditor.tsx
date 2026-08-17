@@ -7,6 +7,7 @@ import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { hasPatchFields, minimalPatch, minimalRecordPatch } from '../shared/minimalPatch.js';
+import { useI18n } from '../../app/i18n.js';
 
 const kinds = ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'] as const;
 const ChatKeys = new Set([
@@ -189,25 +190,26 @@ function PromptOrderGroupEditor({ control, register, groupIndex, onRemove, onMov
   first: boolean;
   last: boolean;
 }) {
+  const { t } = useI18n();
   const items = useFieldArray({ control, name: `promptOrders.${groupIndex}.items` });
   return (
-    <fieldset aria-label={`Prompt order group ${groupIndex + 1}`}>
-      <legend>Prompt order group {groupIndex + 1}</legend>
+    <fieldset aria-label={t('Prompt order group {{group}}', { group: groupIndex + 1 })}>
+      <legend>{t('Prompt order group {{group}}', { group: groupIndex + 1 })}</legend>
       <input type="hidden" {...register(`promptOrders.${groupIndex}.characterIdKind`)} />
-      <label>Prompt order group {groupIndex + 1} character ID<input {...register(`promptOrders.${groupIndex}.characterId`)} /></label>
+      <label>{t('Prompt order group {{group}} character ID', { group: groupIndex + 1 })}<input {...register(`promptOrders.${groupIndex}.characterId`)} /></label>
       {items.fields.map((item, itemIndex) => (
         <div className="array-row" key={item.id}>
-          <label>Prompt order group {groupIndex + 1} item {itemIndex + 1} identifier<input {...register(`promptOrders.${groupIndex}.items.${itemIndex}.identifier`)} /></label>
-          <label className="checkbox-label"><input type="checkbox" {...register(`promptOrders.${groupIndex}.items.${itemIndex}.enabled`)} />Prompt order group {groupIndex + 1} item {itemIndex + 1} enabled</label>
-          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} up`} disabled={itemIndex === 0} onClick={() => items.move(itemIndex, itemIndex - 1)}>↑</button>
-          <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} item ${itemIndex + 1} down`} disabled={itemIndex === items.fields.length - 1} onClick={() => items.move(itemIndex, itemIndex + 1)}>↓</button>
-          <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1} item ${itemIndex + 1}`} onClick={() => items.remove(itemIndex)}>Remove item</button>
+          <label>{t('Prompt order group {{group}} item {{item}} identifier', { group: groupIndex + 1, item: itemIndex + 1 })}<input {...register(`promptOrders.${groupIndex}.items.${itemIndex}.identifier`)} /></label>
+          <label className="checkbox-label"><input type="checkbox" {...register(`promptOrders.${groupIndex}.items.${itemIndex}.enabled`)} />{t('Prompt order group {{group}} item {{item}} enabled', { group: groupIndex + 1, item: itemIndex + 1 })}</label>
+          <button type="button" aria-label={t('Move prompt order group {{group}} item {{item}} up', { group: groupIndex + 1, item: itemIndex + 1 })} disabled={itemIndex === 0} onClick={() => items.move(itemIndex, itemIndex - 1)}>↑</button>
+          <button type="button" aria-label={t('Move prompt order group {{group}} item {{item}} down', { group: groupIndex + 1, item: itemIndex + 1 })} disabled={itemIndex === items.fields.length - 1} onClick={() => items.move(itemIndex, itemIndex + 1)}>↓</button>
+          <button type="button" aria-label={t('Remove prompt order group {{group}} item {{item}}', { group: groupIndex + 1, item: itemIndex + 1 })} onClick={() => items.remove(itemIndex)}>{t('Remove item')}</button>
         </div>
       ))}
-      <button type="button" onClick={() => items.append({ identifier: '', enabled: true })}>Add order item</button>
-      <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} up`} disabled={first} onClick={onMoveUp}>Move group up</button>
-      <button type="button" aria-label={`Move prompt order group ${groupIndex + 1} down`} disabled={last} onClick={onMoveDown}>Move group down</button>
-      <button type="button" aria-label={`Remove prompt order group ${groupIndex + 1}`} onClick={onRemove}>Remove group</button>
+      <button type="button" onClick={() => items.append({ identifier: '', enabled: true })}>{t('Add order item')}</button>
+      <button type="button" aria-label={t('Move prompt order group {{group}} up', { group: groupIndex + 1 })} disabled={first} onClick={onMoveUp}>{t('Move group up')}</button>
+      <button type="button" aria-label={t('Move prompt order group {{group}} down', { group: groupIndex + 1 })} disabled={last} onClick={onMoveDown}>{t('Move group down')}</button>
+      <button type="button" aria-label={t('Remove prompt order group {{group}}', { group: groupIndex + 1 })} onClick={onRemove}>{t('Remove group')}</button>
     </fieldset>
   );
 }
@@ -218,6 +220,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
   onSaved: (preset: PresetView) => void;
   onDeleted: () => void;
 }) {
+  const { t } = useI18n();
   const initialKind = preset?.kind ?? 'chat';
   const [baseSettings, setBaseSettings] = useState<Record<string, unknown>>(sanitizeSettings(initialKind, preset?.settings ?? defaultSettings(initialKind)));
   const [baseline, setBaseline] = useState(preset);
@@ -359,43 +362,43 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
 
   return (
     <form onSubmit={form.handleSubmit((values) => void submit(values))}>
-      <h2>{creating ? 'New Preset' : preset?.name}</h2>
+      <h2>{creating ? t('New Preset') : preset?.name}</h2>
       <CompatibilitySummary value={preset?.compatibilitySummary} />
-      <label>Name<input {...form.register('name')} /></label>
-      {creating ? <label>Kind<select {...form.register('kind')}>{kinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></label> : <p>Family: {preset?.kind}</p>}
+      <label>{t('Name')}<input {...form.register('name')} /></label>
+      {creating ? <label>{t('Kind')}<select {...form.register('kind')}>{kinds.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label> : <p>{t('Family: {{kind}}', { kind: t(preset?.kind ?? '') })}</p>}
       {currentKind === 'chat' ? (
         <>
-          <label>Temperature<input inputMode="decimal" {...form.register('temperature')} /></label>
+          <label>{t('Temperature')}<input inputMode="decimal" {...form.register('temperature')} /></label>
           <fieldset>
-            <legend>Chat prompts</legend>
+            <legend>{t('Chat prompts')}</legend>
             {prompts.fields.map((field, index) => (
               <div className="array-row" key={field.id}>
-                <label>Prompt {index + 1} identifier<input {...form.register(`prompts.${index}.identifier`)} /></label>
-                <label>Prompt {index + 1} name<input {...form.register(`prompts.${index}.name`)} /></label>
-                <label>Prompt {index + 1} role<input {...form.register(`prompts.${index}.role`)} /></label>
-                <label>Prompt {index + 1} content<textarea {...form.register(`prompts.${index}.content`)} /></label>
-                <label className="checkbox-label"><input type="checkbox" {...form.register(`prompts.${index}.enabled`)} />Prompt {index + 1} enabled</label>
-                <label>Prompt {index + 1} system prompt<select {...form.register(`prompts.${index}.systemPrompt`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
-                <label>Prompt {index + 1} marker<select {...form.register(`prompts.${index}.marker`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
-                <label>Prompt {index + 1} injection position<input inputMode="numeric" {...form.register(`prompts.${index}.injectionPosition`)} /></label>
-                <label>Prompt {index + 1} injection depth<input inputMode="numeric" {...form.register(`prompts.${index}.injectionDepth`)} /></label>
-                <label>Prompt {index + 1} injection order<input inputMode="numeric" {...form.register(`prompts.${index}.injectionOrder`)} /></label>
-                <label>Prompt {index + 1} forbid overrides<select {...form.register(`prompts.${index}.forbidOverrides`)}><option value="">Unset</option><option value="true">True</option><option value="false">False</option></select></label>
-                <label>Prompt {index + 1} injection triggers<input {...form.register(`prompts.${index}.injectionTrigger`)} /></label>
-                <label>Prompt {index + 1} generation triggers<input {...form.register(`prompts.${index}.generationTrigger`)} /></label>
-                <button type="button" aria-label={`Move prompt ${index + 1} up`} disabled={index === 0} onClick={() => prompts.move(index, index - 1)}>↑</button>
-                <button type="button" aria-label={`Move prompt ${index + 1} down`} disabled={index === prompts.fields.length - 1} onClick={() => prompts.move(index, index + 1)}>↓</button>
-                <button type="button" onClick={() => prompts.remove(index)}>Remove prompt</button>
+                <label>{t('Prompt {{number}} identifier', { number: index + 1 })}<input {...form.register(`prompts.${index}.identifier`)} /></label>
+                <label>{t('Prompt {{number}} name', { number: index + 1 })}<input {...form.register(`prompts.${index}.name`)} /></label>
+                <label>{t('Prompt {{number}} role', { number: index + 1 })}<input {...form.register(`prompts.${index}.role`)} /></label>
+                <label>{t('Prompt {{number}} content', { number: index + 1 })}<textarea {...form.register(`prompts.${index}.content`)} /></label>
+                <label className="checkbox-label"><input type="checkbox" {...form.register(`prompts.${index}.enabled`)} />{t('Prompt {{number}} enabled', { number: index + 1 })}</label>
+                <label>{t('Prompt {{number}} system prompt', { number: index + 1 })}<select {...form.register(`prompts.${index}.systemPrompt`)}><option value="">{t('Unset')}</option><option value="true">{t('True')}</option><option value="false">{t('False')}</option></select></label>
+                <label>{t('Prompt {{number}} marker', { number: index + 1 })}<select {...form.register(`prompts.${index}.marker`)}><option value="">{t('Unset')}</option><option value="true">{t('True')}</option><option value="false">{t('False')}</option></select></label>
+                <label>{t('Prompt {{number}} injection position', { number: index + 1 })}<input inputMode="numeric" {...form.register(`prompts.${index}.injectionPosition`)} /></label>
+                <label>{t('Prompt {{number}} injection depth', { number: index + 1 })}<input inputMode="numeric" {...form.register(`prompts.${index}.injectionDepth`)} /></label>
+                <label>{t('Prompt {{number}} injection order', { number: index + 1 })}<input inputMode="numeric" {...form.register(`prompts.${index}.injectionOrder`)} /></label>
+                <label>{t('Prompt {{number}} forbid overrides', { number: index + 1 })}<select {...form.register(`prompts.${index}.forbidOverrides`)}><option value="">{t('Unset')}</option><option value="true">{t('True')}</option><option value="false">{t('False')}</option></select></label>
+                <label>{t('Prompt {{number}} injection triggers', { number: index + 1 })}<input {...form.register(`prompts.${index}.injectionTrigger`)} /></label>
+                <label>{t('Prompt {{number}} generation triggers', { number: index + 1 })}<input {...form.register(`prompts.${index}.generationTrigger`)} /></label>
+                <button type="button" aria-label={t('Move prompt {{number}} up', { number: index + 1 })} disabled={index === 0} onClick={() => prompts.move(index, index - 1)}>↑</button>
+                <button type="button" aria-label={t('Move prompt {{number}} down', { number: index + 1 })} disabled={index === prompts.fields.length - 1} onClick={() => prompts.move(index, index + 1)}>↓</button>
+                <button type="button" onClick={() => prompts.remove(index)}>{t('Remove prompt')}</button>
               </div>
             ))}
             <button type="button" onClick={() => prompts.append({
               identifier: crypto.randomUUID(), name: '', role: 'system', content: '', enabled: true,
               systemPrompt: '', marker: '', injectionPosition: '', injectionDepth: '', injectionOrder: '',
               forbidOverrides: '', injectionTrigger: '', generationTrigger: '', extras: {},
-            })}>Add prompt</button>
+            })}>{t('Add prompt')}</button>
           </fieldset>
           <fieldset>
-            <legend>Chat prompt order groups</legend>
+            <legend>{t('Chat prompt order groups')}</legend>
             {promptOrders.fields.map((group, groupIndex) => (
               <PromptOrderGroupEditor
                 key={group.id}
@@ -409,18 +412,18 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
                 onRemove={() => promptOrders.remove(groupIndex)}
               />
             ))}
-            <button type="button" onClick={() => promptOrders.append({ characterId: '', characterIdKind: 'string', items: [] })}>Add prompt order group</button>
+            <button type="button" onClick={() => promptOrders.append({ characterId: '', characterIdKind: 'string', items: [] })}>{t('Add prompt order group')}</button>
           </fieldset>
         </>
       ) : null}
-      <label>Executable settings JSON<textarea rows={12} {...form.register('executableSettings')} /></label>
-      {form.formState.errors.name ? <p role="alert">{form.formState.errors.name.message}</p> : null}
-      {form.formState.errors.temperature ? <p role="alert">{form.formState.errors.temperature.message}</p> : null}
-      {form.formState.errors.executableSettings ? <p role="alert">{form.formState.errors.executableSettings.message}</p> : null}
+      <label>{t('Executable settings JSON')}<textarea rows={12} {...form.register('executableSettings')} /></label>
+      {form.formState.errors.name ? <p role="alert">{t(form.formState.errors.name.message ?? '')}</p> : null}
+      {form.formState.errors.temperature ? <p role="alert">{t(form.formState.errors.temperature.message ?? '')}</p> : null}
+      {form.formState.errors.executableSettings ? <p role="alert">{t(form.formState.errors.executableSettings.message ?? '')}</p> : null}
       {promptValidationMessages.length === 0 ? null : (
         <div role="alert" tabIndex={-1}>
-          <strong>Correct the Chat prompt fields</strong>
-          <ul>{[...new Set(promptValidationMessages)].map((message) => <li key={message}>{message}</li>)}</ul>
+          <strong>{t('Correct the Chat prompt fields')}</strong>
+          <ul>{[...new Set(promptValidationMessages)].map((message) => <li key={message}>{t(message)}</li>)}</ul>
         </div>
       )}
       {conflict === undefined ? null : (
@@ -430,13 +433,13 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
           onRetry={() => void form.handleSubmit((values) => submit(values, conflict.revision))()}
         />
       )}
-      {error === undefined ? null : <p role="alert">Unable to save Preset: {error}</p>}
+      {error === undefined ? null : <p role="alert">{t('Unable to save Preset: {{error}}', { error })}</p>}
       <div className="editor-actions">
-        <button type="submit" disabled={pending}>{creating ? 'Create Preset' : 'Save Preset'}</button>
+        <button type="submit" disabled={pending}>{t(creating ? 'Create Preset' : 'Save Preset')}</button>
         {preset === undefined ? null : (
           <>
-            <button type="button" onClick={async () => { try { await api.exportPreset(preset.id); } catch (cause) { setError(errorCode(cause)); } }}>Export Preset</button>
-            <button type="button" onClick={() => setDeleteOpen(true)}>Delete Preset</button>
+            <button type="button" onClick={async () => { try { await api.exportPreset(preset.id); } catch (cause) { setError(errorCode(cause)); } }}>{t('Export Preset')}</button>
+            <button type="button" onClick={() => setDeleteOpen(true)}>{t('Delete Preset')}</button>
           </>
         )}
       </div>

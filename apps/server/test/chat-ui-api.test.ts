@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TokenizerId } from '@tavernnext/tokenizer-engine';
+import { ProviderError, type OpenAICompatibleProfile } from '@tavernnext/provider-openai-compatible';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -177,5 +178,63 @@ describe('chat UI API bindings', () => {
     });
     expect(generationAfterBaseUrlChange.statusCode).toBe(200);
     expect(authorization).toEqual([`Bearer ${rotatedApiKey}`, null]);
+  });
+
+  it('probes draft and saved provider credentials while returning only safe model metadata', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-provider-probe-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'test.sqlite'));
+    migrateDatabase(database);
+    const observedProfiles: OpenAICompatibleProfile[] = [];
+    const app = createApp({
+      database,
+      snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
+      config: { host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'test.sqlite') },
+      providerProbeFactory: (profile) => ({
+        async listModels() {
+          observedProfiles.push(profile);
+          if (profile.baseUrl.includes('offline')) throw new ProviderError('connection');
+          return [{ id: 'model-alpha', ownedBy: 'test' }, { id: 'model-beta' }];
+        },
+      }),
+    });
+    apps.push(app);
+    await app.ready();
+
+    const savedApiKey = 'saved-probe-key';
+    expect((await app.inject({
+      method: 'POST', url: '/api/providers',
+      payload: {
+        id: ids.provider, name: 'Saved provider', baseUrl: 'https://saved.example/v1',
+        model: 'model-alpha', apiMode: 'chat', apiKey: savedApiKey,
+      },
+    })).statusCode).toBe(201);
+
+    const connection = await app.inject({
+      method: 'POST', url: '/api/providers/probe',
+      payload: { id: ids.provider, baseUrl: 'https://saved.example/v1' },
+    });
+    expect(connection.statusCode).toBe(200);
+    expect(connection.json()).toEqual({ ok: true, modelCount: 2 });
+    expect(connection.payload).not.toContain(savedApiKey);
+    expect(observedProfiles[0]).toEqual({ baseUrl: 'https://saved.example/v1', apiKey: savedApiKey });
+
+    const draftApiKey = 'draft-probe-key';
+    const models = await app.inject({
+      method: 'POST', url: '/api/providers/models',
+      payload: { baseUrl: 'https://draft.example', apiKey: draftApiKey },
+    });
+    expect(models.statusCode).toBe(200);
+    expect(models.json()).toEqual({ models: [{ id: 'model-alpha', ownedBy: 'test' }, { id: 'model-beta' }] });
+    expect(models.payload).not.toContain(draftApiKey);
+    expect(observedProfiles[1]).toEqual({ baseUrl: 'https://draft.example', apiKey: draftApiKey });
+
+    const invalid = await app.inject({ method: 'POST', url: '/api/providers/probe', payload: { baseUrl: 'file:///secret' } });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toEqual({ error: 'invalid_request' });
+
+    const offline = await app.inject({ method: 'POST', url: '/api/providers/models', payload: { baseUrl: 'https://offline.example' } });
+    expect(offline.statusCode).toBe(502);
+    expect(offline.json()).toEqual({ error: 'provider_connection_failed' });
   });
 });

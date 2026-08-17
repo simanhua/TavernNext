@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api, errorCode, type MessageView } from '../../api/client.js';
 import type { ActiveGenerationTarget } from './useGeneration.js';
 import { SwipeControls } from './SwipeControls.js';
+import { useI18n } from '../../app/i18n.js';
 
 interface MessageListProps {
   conversationId: string | null;
@@ -29,6 +30,7 @@ export function MessageList({
   generationDisabled,
   onGenerate,
 }: MessageListProps) {
+  const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -47,27 +49,30 @@ export function MessageList({
   const lastMessage = messages.at(-1);
   const lastAssistantId = lastMessage?.role === 'assistant' ? lastMessage.id : undefined;
 
-  if (conversationId === null) return <div className="empty-state">Choose a Character and Persona to begin.</div>;
+  if (conversationId === null) return <div className="empty-state">{t('Choose a Character and Persona to begin.')}</div>;
   return (
-    <section className="messages" aria-label="Messages">
+    <section className="messages" aria-label={t('Messages')}>
       {messages.map((message) => {
         const baseContent = authoritativeContent(message);
         const content = generationTarget?.messageId === message.id && streamedText !== ''
           ? generationTarget.mode === 'continue' ? generationTarget.baseContent + streamedText : streamedText
           : baseContent;
-        const label = `${message.role} message ${content}`;
+        const role = language === 'en'
+          ? message.role
+          : t(message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : 'System');
+        const label = t('{{role}} message {{content}}', { role, content });
         return (
           <article className={`message message-${message.role}`} key={message.id}>
-            <header>{message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.speakerLabel ?? 'System'}</header>
+            <header>{message.role === 'assistant' ? t('Assistant') : message.role === 'user' ? t('You') : message.speakerLabel ?? t('System')}</header>
             {editingId === message.id ? (
               <form onSubmit={(event) => {
                 event.preventDefault();
                 void edit.mutateAsync({ message, content: editText }).catch(() => undefined);
               }}>
-                <label htmlFor={`edit-${message.id}`}>Edit message</label>
+                <label htmlFor={`edit-${message.id}`}>{t('Edit message')}</label>
                 <textarea id={`edit-${message.id}`} value={editText} onChange={(event) => setEditText(event.target.value)} />
-                <button type="submit" disabled={edit.isPending || editText.trim() === ''}>Save edit</button>
-                <button type="button" onClick={() => setEditingId(null)}>Cancel edit</button>
+                <button type="submit" disabled={edit.isPending || editText.trim() === ''}>{t('Save edit')}</button>
+                <button type="button" onClick={() => setEditingId(null)}>{t('Cancel edit')}</button>
               </form>
             ) : <p>{content}</p>}
             {message.id === lastAssistantId ? (
@@ -86,26 +91,26 @@ export function MessageList({
                 <button
                   type="button"
                   disabled={controlsDisabled}
-                  aria-label={`Edit ${label}`}
+                  aria-label={t('Edit {{label}}', { label })}
                   onClick={() => { setEditingId(message.id); setEditText(message.content); }}
-                >Edit</button>
+                >{t('Edit')}</button>
               ) : null}
               <button
                 type="button"
                 disabled={controlsDisabled || remove.isPending}
-                aria-label={`Delete ${label}`}
+                aria-label={t('Delete {{label}}', { label })}
                 onClick={() => { void remove.mutateAsync(message).catch(() => undefined); }}
-              >Delete</button>
+              >{t('Delete')}</button>
             </div>
           </article>
         );
       })}
-      {edit.error ? <p role="alert">Unable to edit message: {errorCode(edit.error)}</p> : null}
-      {remove.error ? <p role="alert">Unable to delete message: {errorCode(remove.error)}</p> : null}
-      {selectVariant.error ? <p role="alert">Unable to switch variant: {errorCode(selectVariant.error)}</p> : null}
+      {edit.error ? <p role="alert">{t('Unable to edit message: {{error}}', { error: errorCode(edit.error) })}</p> : null}
+      {remove.error ? <p role="alert">{t('Unable to delete message: {{error}}', { error: errorCode(remove.error) })}</p> : null}
+      {selectVariant.error ? <p role="alert">{t('Unable to switch variant: {{error}}', { error: errorCode(selectVariant.error) })}</p> : null}
       {generationTarget === null && streamedText !== '' ? (
         <article className="message message-assistant" aria-live="polite">
-          <header>Assistant</header>
+          <header>{t('Assistant')}</header>
           <p>{streamedText}</p>
         </article>
       ) : null}

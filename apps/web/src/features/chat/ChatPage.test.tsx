@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { ChatPage } from './ChatPage.js';
 import { useChatUi } from './chat-store.js';
 import type { Conversation } from '../../api/client.js';
+import { I18nProvider } from '../../app/i18n.js';
 
 const now = '2026-08-08T00:00:00.000Z';
 const ids = {
@@ -376,9 +377,11 @@ function renderChatPage() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={queryClient}>
-      <ChatPage />
-    </QueryClientProvider>,
+    <I18nProvider>
+      <QueryClientProvider client={queryClient}>
+        <ChatPage />
+      </QueryClientProvider>
+    </I18nProvider>,
   );
 }
 
@@ -598,16 +601,18 @@ describe('ChatPage', () => {
     useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/']}>
-          <Link to="/">Chat</Link>
-          <Link to="/away">Away</Link>
-          <Routes>
-            <Route path="/" element={<ChatPage />} />
-            <Route path="/away" element={<h1>Away</h1>} />
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/']}>
+            <Link to="/">Chat</Link>
+            <Link to="/away">Away</Link>
+            <Routes>
+              <Route path="/" element={<ChatPage />} />
+              <Route path="/away" element={<h1>Away</h1>} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </I18nProvider>,
     );
 
     await screen.findByRole('heading', { name: 'Aster chat' });

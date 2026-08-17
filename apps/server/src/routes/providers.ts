@@ -1,13 +1,19 @@
 import type { ProviderProfile } from '@tavernnext/domain';
+import { ProviderError, type ModelInfo, type OpenAICompatibleProfile } from '@tavernnext/provider-openai-compatible';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 
 interface ProviderCredentials {
   has(profile: ProviderProfile): boolean;
+  read(profile: ProviderProfile): string | undefined;
   put(profileId: string, baseUrl: string, apiKey: string): { secretRef: string; rollback(): void };
   remove(secretRef: string): { rollback(): void };
 }
+
+export type ProviderProbeFactory = (profile: OpenAICompatibleProfile) => {
+  listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
+};
 
 interface Body {
   revision?: unknown;
@@ -15,6 +21,12 @@ interface Body {
   patch?: unknown;
   apiKey?: unknown;
   [key: string]: unknown;
+}
+
+interface ProbeBody {
+  id?: unknown;
+  baseUrl?: unknown;
+  apiKey?: unknown;
 }
 
 const revisionFrom = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0
@@ -42,17 +54,70 @@ function rollbackCredential(change: { rollback(): void } | undefined): void {
   }
 }
 
+function validBaseUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? value.trim().replace(/\/+$/, '') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function probeError(error: unknown): { status: number; code: string } {
+  if (!(error instanceof ProviderError)) return { status: 502, code: 'provider_connection_failed' };
+  switch (error.code) {
+    case 'auth': return { status: 401, code: 'provider_auth_failed' };
+    case 'rate_limit': return { status: 429, code: 'provider_rate_limited' };
+    case 'protocol': return { status: 502, code: 'provider_protocol_error' };
+    case 'aborted': return { status: 504, code: 'provider_timeout' };
+    default: return { status: 502, code: 'provider_connection_failed' };
+  }
+}
+
 export function registerProviderRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
   credentials: ProviderCredentials,
+  probeFactory: ProviderProbeFactory,
 ): void {
   const repository = repositories.providerProfiles;
+  const runProbe = async (body: ProbeBody): Promise<ModelInfo[]> => {
+    const baseUrl = validBaseUrl(body.baseUrl);
+    if (baseUrl === undefined) throw new TypeError('invalid_request');
+    const current = typeof body.id === 'string' ? repository.get(body.id) : undefined;
+    const suppliedApiKey = typeof body.apiKey === 'string' && body.apiKey.trim() !== '' ? body.apiKey : undefined;
+    const apiKey = suppliedApiKey ?? (current === undefined || current.baseUrl.replace(/\/+$/, '') !== baseUrl
+      ? undefined
+      : credentials.read(current));
+    return probeFactory({ baseUrl, ...(apiKey === undefined ? {} : { apiKey }) })
+      .listModels(AbortSignal.timeout(10_000));
+  };
+
   app.get('/api/providers', async () => repository.list().map((profile) => safeView(profile, credentials)));
   app.get<{ Params: { id: string } }>('/api/providers/:id', async (request, reply) => {
     const profile = repository.get(request.params.id);
     return profile === undefined ? reply.status(404).send({ error: 'not_found' }) : safeView(profile, credentials);
+  });
+  app.post<{ Body: ProbeBody }>('/api/providers/probe', async (request, reply) => {
+    try {
+      const models = await runProbe(request.body ?? {});
+      return reply.send({ ok: true, modelCount: models.length });
+    } catch (error) {
+      if (error instanceof TypeError) return reply.status(400).send({ error: 'invalid_request' });
+      const failure = probeError(error);
+      return reply.status(failure.status).send({ error: failure.code });
+    }
+  });
+  app.post<{ Body: ProbeBody }>('/api/providers/models', async (request, reply) => {
+    try {
+      return reply.send({ models: await runProbe(request.body ?? {}) });
+    } catch (error) {
+      if (error instanceof TypeError) return reply.status(400).send({ error: 'invalid_request' });
+      const failure = probeError(error);
+      return reply.status(failure.status).send({ error: failure.code });
+    }
   });
   app.post<{ Body: Body }>('/api/providers', async (request, reply) => {
     const body = request.body ?? {};

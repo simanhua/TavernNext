@@ -1,5 +1,5 @@
 import multipart from '@fastify/multipart';
-import { createOpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
+import { createOpenAICompatibleClient, type OpenAICompatibleProfile } from '@tavernnext/provider-openai-compatible';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import { existsSync } from 'node:fs';
@@ -21,6 +21,7 @@ import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
 import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
+import type { ProviderProbeFactory } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
@@ -53,6 +54,7 @@ export interface CreateAppOptions {
   config?: ServerConfig;
   database?: TavernDatabase;
   providerClientFactory?: ProviderClientFactory;
+  providerProbeFactory?: ProviderProbeFactory;
   providerSecrets?: ProviderSecretMap;
   tokenizerRuntime?: ServerTokenizerRuntime;
   importHandlers?: readonly ImportHandler[];
@@ -285,6 +287,9 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       return profile.secretRef !== undefined
         && resolveSecret(profile.id, profile.baseUrl, profile.secretRef) !== undefined;
     },
+    read(profile) {
+      return profile.secretRef === undefined ? undefined : resolveSecret(profile.id, profile.baseUrl, profile.secretRef);
+    },
     put(profileId, baseUrl, apiKey) {
       const secretRef = `browser:${profileId}`;
       const previous = secretStore.get(secretRef);
@@ -306,7 +311,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
         },
       };
     },
-  });
+  }, options.providerProbeFactory ?? ((profile: OpenAICompatibleProfile) => createOpenAICompatibleClient(profile)));
   registerConversationRoutes(app, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);

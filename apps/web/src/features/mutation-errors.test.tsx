@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { I18nProvider } from '../app/i18n.js';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -24,7 +25,7 @@ afterAll(() => server.close());
 
 function renderWithQuery(component: ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
+  return render(<I18nProvider><QueryClientProvider client={queryClient}>{component}</QueryClientProvider></I18nProvider>);
 }
 
 describe('mutation error feedback', () => {

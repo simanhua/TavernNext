@@ -6,6 +6,7 @@ import { ApiError, api, errorCode, type WorldbookEntryView } from '../../api/cli
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
+import { useI18n } from '../../app/i18n.js';
 
 const numeric = z.string().refine((value) => value !== '' && Number.isFinite(Number(value)), 'Enter a number');
 const nullableNumeric = z.string().refine((value) => value === '' || Number.isFinite(Number(value)), 'Enter a number');
@@ -56,19 +57,21 @@ function StringArrayField({ formControl, register, name, label }: {
   name: StringArrayName;
   label: string;
 }) {
+  const { t } = useI18n();
+  const translatedLabel = t(label);
   const items = useFieldArray({ control: formControl, name });
   return (
-    <fieldset aria-label={label}>
-      <legend>{label}</legend>
+    <fieldset aria-label={translatedLabel}>
+      <legend>{translatedLabel}</legend>
       {items.fields.map((field, index) => (
         <div className="array-row" key={field.id}>
-          <label>{label} {index + 1}<input {...register(`${name}.${index}.value`)} /></label>
-          <button type="button" aria-label={`Move ${label} ${index + 1} up`} disabled={index === 0} onClick={() => items.move(index, index - 1)}>↑</button>
-          <button type="button" aria-label={`Move ${label} ${index + 1} down`} disabled={index === items.fields.length - 1} onClick={() => items.move(index, index + 1)}>↓</button>
-          <button type="button" aria-label={`Remove ${label} ${index + 1}`} onClick={() => items.remove(index)}>Remove</button>
+          <label>{t('{{label}} {{number}}', { label: translatedLabel, number: index + 1 })}<input {...register(`${name}.${index}.value`)} /></label>
+          <button type="button" aria-label={t('Move {{label}} {{number}} up', { label: translatedLabel, number: index + 1 })} disabled={index === 0} onClick={() => items.move(index, index - 1)}>↑</button>
+          <button type="button" aria-label={t('Move {{label}} {{number}} down', { label: translatedLabel, number: index + 1 })} disabled={index === items.fields.length - 1} onClick={() => items.move(index, index + 1)}>↓</button>
+          <button type="button" aria-label={t('Remove {{label}} {{number}}', { label: translatedLabel, number: index + 1 })} onClick={() => items.remove(index)}>{t('Remove')}</button>
         </div>
       ))}
-      <button type="button" onClick={() => items.append({ value: '' })}>Add {label}</button>
+      <button type="button" onClick={() => items.append({ value: '' })}>{t('Add {{label}}', { label: translatedLabel })}</button>
     </fieldset>
   );
 }
@@ -141,6 +144,7 @@ export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, lo
   onCancel: () => void;
   loadLatest: (entryId: string) => Promise<WorldbookEntryView | undefined>;
 }) {
+  const { t } = useI18n();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState<WorldbookEntryView>();
@@ -180,62 +184,62 @@ export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, lo
 
   return (
     <form className="worldbook-entry-editor" onSubmit={form.handleSubmit((values) => void save(values))}>
-      <h3>{entry === undefined ? 'New Worldbook entry' : entry.displayName || 'Worldbook entry'}</h3>
-      {entry?.sourceUid === undefined ? null : <p>Source UID: {typeof entry.sourceUid} {String(entry.sourceUid)} · ordinal {entry.sourceOrdinal}</p>}
+      <h3>{entry === undefined ? t('New Worldbook entry') : entry.displayName || t('Worldbook entry')}</h3>
+      {entry?.sourceUid === undefined ? null : <p>{t('Source UID: {{type}} {{uid}} · ordinal {{ordinal}}', { type: typeof entry.sourceUid, uid: String(entry.sourceUid), ordinal: entry.sourceOrdinal ?? '' })}</p>}
       <CompatibilitySummary value={entry?.compatibilitySummary} />
       <StringArrayField formControl={form.control} register={form.register} name="keys" label="Primary keys" />
       <StringArrayField formControl={form.control} register={form.register} name="secondaryKeys" label="Secondary keys" />
-      <label className="checkbox-label"><input type="checkbox" {...form.register('useRegex')} />Use regular expressions</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('selective')} />Selective activation</label>
-      <label>Selective logic<input type="number" {...form.register('selectiveLogic')} /></label>
-      <label>Entry content<textarea {...form.register('content')} /></label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('enabled')} />Entry enabled</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('constant')} />Constant activation</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('vectorized')} />Vectorized</label>
-      <label>Case sensitive<select {...form.register('caseSensitive')}><option value="default">Default</option><option value="true">Yes</option><option value="false">No</option></select></label>
-      <label>Whole-word matching<select {...form.register('matchWholeWords')}><option value="default">Default</option><option value="true">Yes</option><option value="false">No</option></select></label>
-      <label>Position<input {...form.register('position')} /></label>
-      <label>Order<input type="number" {...form.register('order')} /></label>
-      <label>Priority<input type="number" {...form.register('priority')} /></label>
-      <label>Probability<input type="number" {...form.register('probability')} /></label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('useProbability')} />Use probability</label>
-      <label>Group<input {...form.register('group')} /></label>
-      <label>Group weight<input type="number" {...form.register('groupWeight')} /></label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('groupOverride')} />Group override</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('ignoreBudget')} />Ignore token budget</label>
-      <label>Entry scan depth<input type="number" {...form.register('scanDepth')} /></label>
-      <label>Use group scoring<select {...form.register('useGroupScoring')}><option value="default">Default</option><option value="true">Yes</option><option value="false">No</option></select></label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('excludeRecursion')} />Exclude recursion</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('preventRecursion')} />Prevent recursion</label>
-      <label>Delay until recursion<input {...form.register('delayUntilRecursion')} /></label>
-      <label>Sticky<input type="number" {...form.register('sticky')} /></label>
-      <label>Cooldown<input type="number" {...form.register('cooldown')} /></label>
-      <label>Delay<input type="number" {...form.register('delay')} /></label>
-      <label>Depth<input type="number" {...form.register('depth')} /></label>
-      <label>Role<input type="number" {...form.register('role')} /></label>
-      <label>Outlet<input {...form.register('outletName')} /></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('useRegex')} />{t('Use regular expressions')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('selective')} />{t('Selective activation')}</label>
+      <label>{t('Selective logic')}<input type="number" {...form.register('selectiveLogic')} /></label>
+      <label>{t('Entry content')}<textarea {...form.register('content')} /></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('enabled')} />{t('Entry enabled')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('constant')} />{t('Constant activation')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('vectorized')} />{t('Vectorized')}</label>
+      <label>{t('Case sensitive')}<select {...form.register('caseSensitive')}><option value="default">{t('Default')}</option><option value="true">{t('Yes')}</option><option value="false">{t('No')}</option></select></label>
+      <label>{t('Whole-word matching')}<select {...form.register('matchWholeWords')}><option value="default">{t('Default')}</option><option value="true">{t('Yes')}</option><option value="false">{t('No')}</option></select></label>
+      <label>{t('Position')}<input {...form.register('position')} /></label>
+      <label>{t('Order')}<input type="number" {...form.register('order')} /></label>
+      <label>{t('Priority')}<input type="number" {...form.register('priority')} /></label>
+      <label>{t('Probability')}<input type="number" {...form.register('probability')} /></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('useProbability')} />{t('Use probability')}</label>
+      <label>{t('Group')}<input {...form.register('group')} /></label>
+      <label>{t('Group weight')}<input type="number" {...form.register('groupWeight')} /></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('groupOverride')} />{t('Group override')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('ignoreBudget')} />{t('Ignore token budget')}</label>
+      <label>{t('Entry scan depth')}<input type="number" {...form.register('scanDepth')} /></label>
+      <label>{t('Use group scoring')}<select {...form.register('useGroupScoring')}><option value="default">{t('Default')}</option><option value="true">{t('Yes')}</option><option value="false">{t('No')}</option></select></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('excludeRecursion')} />{t('Exclude recursion')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('preventRecursion')} />{t('Prevent recursion')}</label>
+      <label>{t('Delay until recursion')}<input {...form.register('delayUntilRecursion')} /></label>
+      <label>{t('Sticky')}<input type="number" {...form.register('sticky')} /></label>
+      <label>{t('Cooldown')}<input type="number" {...form.register('cooldown')} /></label>
+      <label>{t('Delay')}<input type="number" {...form.register('delay')} /></label>
+      <label>{t('Depth')}<input type="number" {...form.register('depth')} /></label>
+      <label>{t('Role')}<input type="number" {...form.register('role')} /></label>
+      <label>{t('Outlet')}<input {...form.register('outletName')} /></label>
       <StringArrayField formControl={form.control} register={form.register} name="characterFilterNames" label="Character filter names" />
       <StringArrayField formControl={form.control} register={form.register} name="characterFilterTags" label="Character filter tags" />
-      <label className="checkbox-label"><input type="checkbox" {...form.register('characterFilterExclude')} />Exclude Character filter</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('characterFilterExclude')} />{t('Exclude Character filter')}</label>
       <StringArrayField formControl={form.control} register={form.register} name="personaFilterNames" label="Persona filter names" />
       <StringArrayField formControl={form.control} register={form.register} name="personaFilterTags" label="Persona filter tags" />
-      <label className="checkbox-label"><input type="checkbox" {...form.register('personaFilterExclude')} />Exclude Persona filter</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('matchPersonaDescription')} />Match Persona description</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCharacterDescription')} />Match Character description</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCharacterPersonality')} />Match Character personality</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCharacterDepthPrompt')} />Match Character depth prompt</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('matchScenario')} />Match scenario</label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCreatorNotes')} />Match creator notes</label>
-      <label>Comment<input {...form.register('comment')} /></label>
-      <label>Display name<input {...form.register('displayName')} /></label>
-      <label className="checkbox-label"><input type="checkbox" {...form.register('addMemo')} />Add memo</label>
-      <label>Display index<input type="number" {...form.register('displayIndex')} /></label>
-      <label>Automation ID<input {...form.register('automationId')} /></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('personaFilterExclude')} />{t('Exclude Persona filter')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('matchPersonaDescription')} />{t('Match Persona description')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCharacterDescription')} />{t('Match Character description')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCharacterPersonality')} />{t('Match Character personality')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCharacterDepthPrompt')} />{t('Match Character depth prompt')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('matchScenario')} />{t('Match scenario')}</label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('matchCreatorNotes')} />{t('Match creator notes')}</label>
+      <label>{t('Comment')}<input {...form.register('comment')} /></label>
+      <label>{t('Display name')}<input {...form.register('displayName')} /></label>
+      <label className="checkbox-label"><input type="checkbox" {...form.register('addMemo')} />{t('Add memo')}</label>
+      <label>{t('Display index')}<input type="number" {...form.register('displayIndex')} /></label>
+      <label>{t('Automation ID')}<input {...form.register('automationId')} /></label>
       <StringArrayField formControl={form.control} register={form.register} name="triggers" label="Triggers" />
       {validationMessages.length === 0 ? null : (
         <div role="alert" tabIndex={-1}>
-          <strong>Correct the Worldbook entry form</strong>
-          <ul>{[...new Set(validationMessages)].map((message) => <li key={message}>{message}</li>)}</ul>
+          <strong>{t('Correct the Worldbook entry form')}</strong>
+          <ul>{[...new Set(validationMessages)].map((message) => <li key={message}>{t(message)}</li>)}</ul>
         </div>
       )}
       {conflict === undefined ? null : (
@@ -245,10 +249,10 @@ export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, lo
           onRetry={() => void form.handleSubmit((values) => save(values, conflict.revision))()}
         />
       )}
-      {error === undefined ? null : <p role="alert">Unable to save Worldbook entry: {error}</p>}
+      {error === undefined ? null : <p role="alert">{t('Unable to save Worldbook entry: {{error}}', { error })}</p>}
       <div className="editor-actions">
-        <button type="submit" disabled={pending}>{entry === undefined ? 'Create Worldbook entry' : 'Save Worldbook entry'}</button>
-        <button type="button" onClick={onCancel}>Close entry editor</button>
+        <button type="submit" disabled={pending}>{t(entry === undefined ? 'Create Worldbook entry' : 'Save Worldbook entry')}</button>
+        <button type="button" onClick={onCancel}>{t('Close entry editor')}</button>
       </div>
     </form>
   );
