@@ -372,6 +372,12 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
 .chat-sidebar summary:hover { color: #fff; background: rgb(111 158 134 / 8%); }
 .chat-sidebar details[open] summary { border-bottom: 1px solid var(--line); color: #e2c78f; }
 .chat-sidebar details > :not(summary) { margin-right: .75rem; margin-left: .75rem; }
+.chat-format-controls { display: grid; gap: .8rem; padding: .8rem 0; }
+.chat-format-controls label { gap: .4rem; }
+.chat-format-controls label > span { display: flex; justify-content: space-between; gap: .75rem; color: #aebeb4; font-size: .76rem; }
+.chat-format-controls output { color: #dfc891; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.chat-format-controls input[type="range"] { min-height: 1.25rem; margin: 0; padding: 0; accent-color: var(--vermilion-bright); }
+.chat-format-controls button { width: 100%; }
 
 .chat-transfer-actions,
 .message-actions,
@@ -416,12 +422,12 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
 
 @keyframes status-pulse { 50% { opacity: .45; transform: scale(.72); } }
 
-.messages { position: relative; z-index: 1; min-height: 0; overflow-y: auto; padding: 1.35rem clamp(1rem, 3vw, 3rem); }
+.messages { position: relative; z-index: 1; min-height: 0; overflow-y: auto; padding: 1.25rem var(--chat-page-margin, clamp(.75rem, 1.5vw, 1.5rem)); }
 
 .message {
   position: relative;
-  width: min(800px, 88%);
-  margin: 0 auto 1rem 0;
+  width: 100%;
+  margin: 0 0 var(--chat-message-gap, 1rem);
   border: 1px solid rgb(133 171 151 / 21%);
   border-left: 2px solid #648f78;
   border-radius: 3px;
@@ -430,10 +436,47 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
   box-shadow: 0 10px 24px rgb(0 0 0 / 12%), inset 0 1px 0 rgb(255 255 255 / 2.5%);
 }
 
-.message-user { margin-right: 0; margin-left: auto; border-right: 2px solid var(--vermilion); border-left: 1px solid rgb(196 83 66 / 19%); background: linear-gradient(245deg, rgb(68 28 24 / 72%), rgb(24 29 25 / 82%)); }
+.message-user { border-right: 2px solid var(--vermilion); border-left: 1px solid rgb(196 83 66 / 19%); background: linear-gradient(245deg, rgb(68 28 24 / 72%), rgb(24 29 25 / 82%)); }
 .message header { color: #8fb89f; font-size: .69rem; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
 .message-user header { color: #d08370; text-align: right; }
-.message p { margin: .58rem 0; color: #dce2dc; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message p { margin: .58rem 0; color: #dce2dc; font-size: var(--chat-font-size, 1rem); line-height: var(--chat-line-height, 1.72); white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-content { margin: .62rem 0; color: #dce2dc; font-size: var(--chat-font-size, 1rem); line-height: var(--chat-line-height, 1.72); overflow-wrap: anywhere; }
+.message-content > :first-child { margin-top: 0; }
+.message-content > :last-child { margin-bottom: 0; }
+.message-content p { margin: 0 0 .78rem; white-space: normal; }
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4,
+.message-content h5,
+.message-content h6 { margin: 1.15em 0 .55em; color: #f2eee2; font-family: Georgia, "Noto Serif SC", serif; line-height: 1.3; }
+.message-content h1 { font-size: 1.55em; }
+.message-content h2 { padding-bottom: .32rem; border-bottom: 1px solid var(--line); font-size: 1.34em; }
+.message-content h3 { font-size: 1.16em; }
+.message-content h4,
+.message-content h5,
+.message-content h6 { font-size: 1em; }
+.message-content ul,
+.message-content ol { margin: .45rem 0 .85rem; padding-left: 1.6rem; }
+.message-content li + li { margin-top: .22rem; }
+.message-content blockquote { margin: .75rem 0; border-left: 3px solid var(--gold); padding: .15rem .9rem; color: #b8c4bc; background: rgb(196 166 110 / 6%); }
+.message-content blockquote > :first-child { margin-top: 0; }
+.message-content blockquote > :last-child { margin-bottom: 0; }
+.message-content a { color: #91c8aa; text-decoration-color: rgb(145 200 170 / 48%); text-underline-offset: .2em; }
+.message-content a:hover { color: #b5dfc7; text-decoration-color: currentColor; }
+.message-content code { border: 1px solid rgb(133 171 151 / 18%); border-radius: 3px; padding: .12em .34em; color: #e7cf9b; background: rgb(3 13 11 / 72%); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; }
+.message-content pre { max-width: 100%; overflow-x: auto; margin: .8rem 0; border: 1px solid rgb(133 171 151 / 22%); border-radius: 3px; padding: .85rem 1rem; background: #050e0c; }
+.message-content pre code { border: 0; padding: 0; color: #d7e0da; background: transparent; font-size: .86rem; white-space: pre; }
+.message-content table { display: block; width: max-content; max-width: 100%; overflow-x: auto; margin: .8rem 0; border-spacing: 0; border-collapse: collapse; }
+.message-content th,
+.message-content td { border: 1px solid rgb(133 171 151 / 26%); padding: .45rem .68rem; text-align: left; }
+.message-content th { color: #e8d6ae; background: rgb(21 43 36 / 84%); }
+.message-content tr:nth-child(even) { background: rgb(133 171 151 / 4%); }
+.message-content img { display: block; max-width: 100%; height: auto; margin: .8rem 0; border-radius: 3px; }
+.message-content hr { margin: 1rem 0; border: 0; border-top: 1px solid var(--line); }
+.message-content input[type="checkbox"] { width: auto; margin: 0 .4rem 0 0; accent-color: var(--vermilion-bright); }
+.message-pending { opacity: .9; }
+.message-pending-indicator { display: block; color: #a87568; font-size: .7rem; letter-spacing: .08em; text-align: right; }
 .message-actions { justify-content: flex-end; opacity: .56; transition: opacity 120ms ease; }
 .message:hover .message-actions,
 .message:focus-within .message-actions { opacity: 1; }
@@ -735,7 +778,7 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
   .manager-editor { min-height: 60dvh; }
   .manager-list { max-height: 14rem; }
   .chat-header { align-items: flex-start; flex-direction: column; }
-  .message { width: 96%; }
+  .message { width: 100%; }
   .composer { grid-template-columns: 1fr; }
   .composer-actions { justify-content: flex-end; }
   .composer-actions button { height: auto; }

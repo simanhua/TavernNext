@@ -11,6 +11,7 @@ import { ChatPage } from './ChatPage.js';
 import { useChatUi } from './chat-store.js';
 import type { Conversation } from '../../api/client.js';
 import { I18nProvider } from '../../app/i18n.js';
+import { CHAT_FORMAT_STORAGE_KEY } from './ChatFormatSettings.js';
 
 const now = '2026-08-08T00:00:00.000Z';
 const ids = {
@@ -372,6 +373,7 @@ afterEach(() => {
   chatImportExpired = false;
   chatCommitBodies = [];
   chatExportRequests = 0;
+  window.localStorage.removeItem(CHAT_FORMAT_STORAGE_KEY);
   useChatUi.setState({ activeConversationId: null, draft: '' });
 });
 afterAll(() => server.close());
@@ -574,6 +576,55 @@ describe('ChatPage', () => {
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conversation' }), ids.otherConversation);
     expect(await screen.findByText('Old persisted answer')).not.toBeNull();
+  });
+
+  it('renders the submitted user message while the assistant is still streaming', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    holdFirstGeneration = true;
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    const composer = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(composer, '**Act now**');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    const optimisticContent = await screen.findByText('Act now');
+    expect(optimisticContent.tagName).toBe('STRONG');
+    expect(optimisticContent.closest('article')?.classList.contains('message-pending')).toBe(true);
+    expect(screen.getByText('Waiting for response…')).not.toBeNull();
+    expect((composer as HTMLTextAreaElement).value).toBe('');
+    expect(activeStream).toBeDefined();
+  });
+
+  it('applies, persists, and resets the chat formatting controls', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    const firstRender = renderChatPage();
+
+    await user.click(await screen.findByText('Format settings'));
+    fireEvent.change(screen.getByRole('slider', { name: /Line spacing/ }), { target: { value: '2' } });
+    fireEvent.change(screen.getByRole('slider', { name: /Page margins/ }), { target: { value: '48' } });
+
+    const firstChatMain = firstRender.container.querySelector<HTMLElement>('.chat-main')!;
+    await waitFor(() => expect(firstChatMain.style.getPropertyValue('--chat-line-height')).toBe('2'));
+    expect(firstChatMain.style.getPropertyValue('--chat-page-margin')).toBe('48px');
+    expect(JSON.parse(window.localStorage.getItem(CHAT_FORMAT_STORAGE_KEY) ?? '{}')).toMatchObject({
+      lineHeight: 2,
+      pageMargin: 48,
+    });
+
+    firstRender.unmount();
+    const secondRender = renderChatPage();
+    const secondChatMain = secondRender.container.querySelector<HTMLElement>('.chat-main')!;
+    expect(secondChatMain.style.getPropertyValue('--chat-line-height')).toBe('2');
+    expect(secondChatMain.style.getPropertyValue('--chat-page-margin')).toBe('48px');
+
+    await user.click(await screen.findByText('Format settings'));
+    await user.click(screen.getByRole('button', { name: 'Reset formatting' }));
+    expect(secondChatMain.style.getPropertyValue('--chat-line-height')).toBe('1.72');
+    expect(secondChatMain.style.getPropertyValue('--chat-page-margin')).toBe('20px');
   });
 
   it('configures a migrated conversation explicitly before its first generation', async () => {

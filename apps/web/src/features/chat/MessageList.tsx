@@ -1,13 +1,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, errorCode, type MessageView } from '../../api/client.js';
 import type { ActiveGenerationTarget } from './useGeneration.js';
 import { SwipeControls } from './SwipeControls.js';
 import { useI18n } from '../../app/i18n.js';
+import { MarkdownContent } from './MarkdownContent.js';
 
 interface MessageListProps {
   conversationId: string | null;
   messages: MessageView[];
+  optimisticUserText: string | null;
   streamedText: string;
   streamedReasoning: string;
   generationTarget: ActiveGenerationTarget | null;
@@ -25,6 +27,7 @@ function authoritativeContent(message: MessageView): string {
 export function MessageList({
   conversationId,
   messages,
+  optimisticUserText,
   streamedText,
   streamedReasoning,
   generationTarget,
@@ -36,6 +39,10 @@ export function MessageList({
   const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const messagesRef = useRef<HTMLElement>(null);
+  const stickToBottom = useRef(true);
+  const previousConversationId = useRef<string | null>(conversationId);
+  const previousOptimisticText = useRef<string | null>(null);
   const refresh = async () => queryClient.refetchQueries({ queryKey: ['conversation', conversationId] });
   const edit = useMutation({
     mutationFn: ({ message, content }: { message: MessageView; content: string }) => api.updateMessage(message, content),
@@ -51,9 +58,30 @@ export function MessageList({
   const lastMessage = messages.at(-1);
   const lastAssistantId = lastMessage?.role === 'assistant' ? lastMessage.id : undefined;
 
-  if (conversationId === null) return <div className="empty-state">{t('Choose a Character and Persona to begin.')}</div>;
+  useEffect(() => {
+    const element = messagesRef.current;
+    const conversationChanged = previousConversationId.current !== conversationId;
+    const optimisticMessageAdded = optimisticUserText !== null && previousOptimisticText.current !== optimisticUserText;
+    previousConversationId.current = conversationId;
+    previousOptimisticText.current = optimisticUserText;
+    if (element === null || (!stickToBottom.current && !conversationChanged && !optimisticMessageAdded)) return;
+    element.scrollTop = element.scrollHeight;
+    stickToBottom.current = true;
+  }, [conversationId, messages.length, optimisticUserText, streamedText, streamedReasoning]);
+
+  if (conversationId === null && optimisticUserText === null) {
+    return <div className="empty-state">{t('Choose a Character and Persona to begin.')}</div>;
+  }
   return (
-    <section className="messages" aria-label={t('Messages')}>
+    <section
+      className="messages"
+      aria-label={t('Messages')}
+      ref={messagesRef}
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+      }}
+    >
       {messages.map((message) => {
         const activeVariant = message.role === 'assistant'
           ? message.variants.find((variant) => variant.id === message.activeVariantId) ?? message.variants[0]
@@ -90,9 +118,11 @@ export function MessageList({
                     <p>{reasoning}</p>
                   </details>
                 )}
-                <p>{content || (activeVariant?.status === 'streaming'
-                  ? t('Waiting for final response…')
-                  : t('No final response was generated.'))}</p>
+                {content === '' ? (
+                  <p>{activeVariant?.status === 'streaming'
+                    ? t('Waiting for final response…')
+                    : t('No final response was generated.')}</p>
+                ) : <MarkdownContent content={content} />}
               </>
             )}
             {message.id === lastAssistantId ? (
@@ -125,13 +155,20 @@ export function MessageList({
           </article>
         );
       })}
+      {optimisticUserText === null ? null : (
+        <article className="message message-user message-pending" aria-live="polite">
+          <header>{t('You')}</header>
+          <MarkdownContent content={optimisticUserText} />
+          <span className="message-pending-indicator">{t('Waiting for response…')}</span>
+        </article>
+      )}
       {edit.error ? <p role="alert">{t('Unable to edit message: {{error}}', { error: errorCode(edit.error) })}</p> : null}
       {remove.error ? <p role="alert">{t('Unable to delete message: {{error}}', { error: errorCode(remove.error) })}</p> : null}
       {selectVariant.error ? <p role="alert">{t('Unable to switch variant: {{error}}', { error: errorCode(selectVariant.error) })}</p> : null}
       {generationTarget === null && streamedText !== '' ? (
         <article className="message message-assistant" aria-live="polite">
           <header>{t('Assistant')}</header>
-          <p>{streamedText}</p>
+          <MarkdownContent content={streamedText} />
         </article>
       ) : null}
       {generationTarget === null && streamedText === '' && streamedReasoning !== '' ? (

@@ -10,6 +10,7 @@ import { MessageList } from './MessageList.js';
 import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
+import { ChatFormatSettings, chatFormatStyle, useChatFormat } from './ChatFormatSettings.js';
 
 const MAX_PROMPT_TOKENS = 1_000_000;
 const MAX_RESPONSE_TOKENS = 384_000;
@@ -35,7 +36,10 @@ export function ChatPage() {
   const [chatImportOpen, setChatImportOpen] = useState(false);
   const [chatImportTitle, setChatImportTitle] = useState(() => t('Imported chat'));
   const [chatTransferError, setChatTransferError] = useState<string>();
+  const [optimisticUserText, setOptimisticUserText] = useState<string | null>(null);
   const creatingConversation = useRef<Promise<Conversation> | null>(null);
+  const sendingMessage = useRef(false);
+  const chatFormat = useChatFormat();
   const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters });
   const personas = useQuery({ queryKey: ['personas'], queryFn: api.listPersonas });
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.listProviders });
@@ -170,7 +174,9 @@ export function ChatPage() {
 
   const send = async () => {
     const text = draft.trim();
-    if (text === '' || generation.isActive) return;
+    if (text === '' || generation.isActive || sendingMessage.current) return;
+    sendingMessage.current = true;
+    setOptimisticUserText(text);
     let target: Conversation | undefined = detail.data?.conversation;
     try {
       if (target === undefined) {
@@ -182,6 +188,9 @@ export function ChatPage() {
       await generation.start(target, { mode: 'normal', userText: text }, { onAccepted: () => setDraft('') });
     } catch {
       // Mutation state owns accessible feedback; keep the draft for retry.
+    } finally {
+      sendingMessage.current = false;
+      setOptimisticUserText(null);
     }
   };
 
@@ -320,6 +329,7 @@ export function ChatPage() {
         </label>
         <details><summary>{t('Add Character')}</summary><CharacterQuickCreate /></details>
         <details><summary>{t('Add Persona')}</summary><PersonaQuickCreate /></details>
+        <ChatFormatSettings values={chatFormat.values} onChange={chatFormat.setValue} onReset={chatFormat.reset} />
         <label>
           {t('Imported chat title')}
           <input value={chatImportTitle} onChange={(event) => setChatImportTitle(event.target.value)} />
@@ -363,7 +373,7 @@ export function ChatPage() {
           ? null
           : <p role="alert">{t('Chat transfer error: {{error}}', { error: chatTransferError ?? errorCode(exportChat.error) })}</p>}
       </aside>
-      <section className="chat-main">
+      <section className="chat-main" style={chatFormatStyle(chatFormat.values)}>
         <header className="chat-header">
           <h2>{detail.data?.conversation.title ?? t('New conversation')}</h2>
           <div className="chat-header-actions">
@@ -384,6 +394,7 @@ export function ChatPage() {
         <MessageList
           conversationId={activeConversationId}
           messages={detail.data?.messages ?? []}
+          optimisticUserText={optimisticUserText}
           streamedText={generation.streamedText}
           streamedReasoning={generation.streamedReasoning}
           generationTarget={generation.target}
