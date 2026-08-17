@@ -149,20 +149,15 @@ export function createGenerationService(options: {
     }
     let content = mode === 'continue' ? variant?.content ?? '' : '';
     let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
-    let persistedContent = content;
-    let persistedReasoning = reasoning;
     let hasDelta = false;
     let hasReasoningDelta = false;
     let finishReason = 'stop';
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
-    let flushTimer: ReturnType<typeof setInterval> | undefined;
-    let timerError: unknown;
     let providerIterator: AsyncIterator<ProviderEvent> | undefined;
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
-      if (status === 'streaming' && persistedContent === content && persistedReasoning === reasoning) return;
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
         ...(reasoning === '' ? {} : { reasoning }),
@@ -179,11 +174,9 @@ export function createGenerationService(options: {
       });
       if (!updated.ok) throw new Error(`Unable to flush generation variant: ${updated.reason}`);
       variant = updated.value;
-      persistedContent = content;
-      persistedReasoning = reasoning;
     };
 
-    const beginPersistence = (startFlushTimer = true) => {
+    const beginPersistence = () => {
       database.transaction(() => {
         if (mode === 'normal') {
           const message = repositories.messages.create({
@@ -220,17 +213,6 @@ export function createGenerationService(options: {
           flush();
         }
       });
-      persistedContent = content;
-      persistedReasoning = reasoning;
-      if (!startFlushTimer) return;
-      flushTimer = setInterval(() => {
-        try {
-          flush();
-        } catch (error) {
-          timerError = error;
-          controller.abort();
-        }
-      }, 250);
     };
 
     const selectSibling = () => {
@@ -247,7 +229,6 @@ export function createGenerationService(options: {
       if (initializationError !== undefined) throw initializationError;
       providerIterator = providerEvents(prepared, controller.signal)[Symbol.asyncIterator]();
       for (;;) {
-        if (timerError !== undefined) throw timerError;
         if (controller.signal.aborted) throw new ProviderError('aborted');
         const next = await providerIterator.next();
         if (next.done) break;
@@ -267,8 +248,9 @@ export function createGenerationService(options: {
           if (event.text === '') continue;
           content += event.text;
           hasDelta = true;
-          if (variant === undefined || (mode === 'continue' && flushTimer === undefined)) beginPersistence();
-          else if (content.length - persistedContent.length >= 256) flush();
+          // The SSE response is the live source of truth. Persist once at the
+          // terminal boundary so large outputs do not repeatedly export the
+          // complete sql.js database while they are still streaming.
           yield { type: 'delta', text: event.text };
           continue;
         }
@@ -297,10 +279,7 @@ export function createGenerationService(options: {
         failureCode = 'empty_response';
       }
     } catch (error) {
-      if (timerError !== undefined) {
-        outcome = 'failed';
-        failureCode = safeFailureCode(timerError);
-      } else if (controller.signal.aborted || (error instanceof ProviderError && error.code === 'aborted')) {
+      if (controller.signal.aborted || (error instanceof ProviderError && error.code === 'aborted')) {
         outcome = 'aborted';
       } else {
         outcome = 'failed';
@@ -314,11 +293,10 @@ export function createGenerationService(options: {
           // Closing the provider transport must not replace the generation's primary outcome.
         }
       }
-      if (flushTimer !== undefined) clearInterval(flushTimer);
       if (outcome === 'aborted') controller.abort();
       try {
         database.transaction(() => {
-          if (variant === undefined && hasReasoningDelta) beginPersistence(false);
+          if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
           if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
           if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);

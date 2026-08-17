@@ -425,7 +425,7 @@ describe('generation API', () => {
     ]);
   });
 
-  it('flushes pending text after 250ms while the upstream stream remains open', async () => {
+  it('keeps streamed text in memory until the terminal persistence boundary', async () => {
     const waiting = deferred();
     const release = deferred();
     const client = mockClient(async function* () {
@@ -441,14 +441,15 @@ describe('generation API', () => {
     const response = generate(app);
     await waiting.promise;
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(repositories.messageVariants.list()).toEqual([
-      expect.objectContaining({ content: 'A timed flush', status: 'streaming' }),
-    ]);
+    expect(repositories.messageVariants.list()).toEqual([]);
     release.resolve();
     await response;
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: 'A timed flush', status: 'completed', revision: 1 }),
+    ]);
   });
 
-  it('flushes after 256 newly accumulated characters without waiting for the timer', async () => {
+  it('does not rewrite SQLite when a large content delta arrives mid-stream', async () => {
     const waiting = deferred();
     const release = deferred();
     const client = mockClient(async function* () {
@@ -463,11 +464,12 @@ describe('generation API', () => {
 
     const response = generate(app);
     await waiting.promise;
-    expect(repositories.messageVariants.list()).toEqual([
-      expect.objectContaining({ content: `A${'b'.repeat(256)}`, status: 'streaming' }),
-    ]);
+    expect(repositories.messageVariants.list()).toEqual([]);
     release.resolve();
     await response;
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: `A${'b'.repeat(256)}`, status: 'completed', revision: 1 }),
+    ]);
   });
 
   it('retains partial content and marks it aborted when cancellation is requested', async () => {
