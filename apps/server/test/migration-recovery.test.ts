@@ -7,13 +7,15 @@ import { Writable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
+import { migrateDatabase } from '../src/db/migrate.js';
+import { createRepositories } from '../src/db/repositories.js';
 import {
   BACKUP_METADATA_FILE,
   createPreMigrationBackup,
   type BackupMetadata,
 } from '../src/services/backup-service.js';
 import { SECRET_STORE_FILE } from '../src/services/secret-store.js';
-import { TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
+import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 
 const directories: string[] = [];
 const apps: Array<ReturnType<typeof createApp>> = [];
@@ -116,6 +118,139 @@ function committedWal(database: Uint8Array): Buffer {
 }
 
 describe('migration backup and recovery', () => {
+  it('backs up schema 10, removes every Conversation-owned row, and preserves the library', async () => {
+    const directory = await temporaryDirectory();
+    const config = {
+      host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'tavernnext.sqlite'),
+    };
+    const database = createDatabase(config.databasePath);
+    migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000001701', name: 'Kept Character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000001702', name: 'Kept Persona', description: '', isDefault: true,
+    });
+    const provider = repositories.providerProfiles.create({
+      id: '018f0000-0000-7000-8000-000000001703', name: 'Kept Provider', baseUrl: 'https://provider.example/v1', model: 'model', apiMode: 'chat',
+    });
+    const preset = repositories.presets.create({
+      id: '018f0000-0000-7000-8000-000000001704', name: 'Kept Preset', kind: 'chat', settings: { prompts: [], prompt_order: [] },
+    });
+    const worldbook = repositories.worldbooks.create({
+      id: '018f0000-0000-7000-8000-000000001705', name: 'Kept Worldbook', enabled: true,
+    });
+    repositories.worldbookEntries.create({
+      id: '018f0000-0000-7000-8000-000000001706', worldbookId: worldbook.id, keys: ['kept'], content: 'Kept entry',
+    });
+    repositories.importArtifacts.create({
+      id: '018f0000-0000-7000-8000-000000001707', kind: 'character', sourceName: 'kept.json', mediaType: 'application/json', rawArtifact: 'e30=', entityId: character.id,
+    });
+    expect(repositories.globalGenerationConfig.update(0, { providerId: provider.id, chatPresetId: preset.id }))
+      .toMatchObject({ ok: true });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000001708', characterId: character.id, personaId: persona.id,
+      title: 'Removed Conversation', worldbookIds: [worldbook.id],
+    });
+    const message = repositories.messages.create({
+      id: '018f0000-0000-7000-8000-000000001709', conversationId: conversation.id,
+      role: 'assistant', content: '', activeVariantId: null,
+    });
+    const variant = repositories.messageVariants.create({
+      id: '018f0000-0000-7000-8000-000000001710', messageId: message.id, content: 'Removed response', status: 'completed',
+    });
+    expect(repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id })).toMatchObject({ ok: true });
+    repositories.generationSnapshots.create({
+      id: '018f0000-0000-7000-8000-000000001711', conversationId: conversation.id,
+      conversationRevision: conversation.revision, payload: { schemaVersion: 1 },
+    });
+    repositories.worldbookRuntimeStates.create({
+      id: '018f0000-0000-7000-8000-000000001712', conversationId: conversation.id,
+      timedState: { messageIndex: null, sticky: [], cooldown: [] },
+    });
+    database.sqlite.pragma('foreign_keys = OFF');
+    database.sqlite.exec(`
+      INSERT INTO message_variants (id, revision, created_at, updated_at, payload, message_id, ordinal, status)
+      VALUES (
+        '018f0000-0000-7000-8000-000000001713', 0,
+        '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z',
+        '{"id":"018f0000-0000-7000-8000-000000001713"}',
+        '018f0000-0000-7000-8000-000000009999', 0, 'completed'
+      );
+      CREATE TABLE extension_states (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        owner_id TEXT,
+        payload TEXT NOT NULL
+      );
+      INSERT INTO extension_states VALUES
+        ('conversation-state', 'conversation', '${conversation.id}', '{}'),
+        ('message-state', 'message', '${message.id}', '{}'),
+        ('variant-state', 'message-variant', '${variant.id}', '{}'),
+        ('global-state', 'global', NULL, '{"kept":true}');
+    `);
+    database.sqlite.pragma('foreign_keys = ON');
+    const conversationColumns = new Set(database.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => String(column.name)));
+    for (const column of ['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']) {
+      if (!conversationColumns.has(column)) database.sqlite.exec(`ALTER TABLE conversations ADD COLUMN ${column} TEXT`);
+    }
+    database.sqlite.exec(`
+      UPDATE conversations SET provider_id = '${provider.id}', preset_id = '${preset.id}';
+      UPDATE tavernnext_schema_version SET version = 10;
+    `);
+    database.close();
+
+    const app = createApp({
+      config,
+      snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
+      backupClock: () => new Date('2026-08-22T00:00:00.000Z'),
+    });
+    apps.push(app);
+    await app.ready();
+
+    expect(app.startupMigrationResult).toBe('writable');
+    expect((await app.inject({ method: 'GET', url: '/api/conversations' })).json()).toEqual([]);
+    expect((await app.inject({ method: 'GET', url: '/api/characters' })).json()).toHaveLength(1);
+    expect((await app.inject({ method: 'GET', url: '/api/providers' })).json()).toHaveLength(1);
+    expect((await app.inject({ method: 'GET', url: '/api/presets' })).json()).toHaveLength(1);
+    const health = (await app.inject({ method: 'GET', url: '/api/health' })).json();
+    expect(health).toMatchObject({ status: 'ok', backup: { kind: 'pre_migration', path: expect.any(String) } });
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+
+    const backups = await backupDirectories(directory);
+    expect(backups).toHaveLength(1);
+    expect(health.backup.path).toBe(backups[0]);
+    const metadata = JSON.parse(await readFile(join(backups[0]!, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
+    expect(metadata).toMatchObject({ schemaVersion: 10, integrityCheck: 'ok' });
+    const backupDatabase = createDatabase(join(backups[0]!, basename(config.databasePath)));
+    expect(backupDatabase.sqlite.prepare('SELECT COUNT(*) AS count FROM conversations').get()).toEqual({ count: 1 });
+    expect(backupDatabase.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get()).toEqual({ count: 1 });
+    backupDatabase.close();
+
+    const migrated = createDatabase(config.databasePath);
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM conversations').get()).toEqual({ count: 0 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get()).toEqual({ count: 0 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM message_variants').get()).toEqual({ count: 0 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM generation_snapshots').get()).toEqual({ count: 0 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbook_runtime_states').get()).toEqual({ count: 0 });
+    expect(migrated.sqlite.prepare('SELECT id, scope FROM extension_states ORDER BY id').all()).toEqual([
+      { id: 'global-state', scope: 'global' },
+    ]);
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM characters').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM personas').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM provider_profiles').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM presets').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbooks').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbook_entries').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM import_artifacts').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).not.toEqual(
+      expect.arrayContaining(['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']),
+    );
+    migrated.close();
+  });
+
   it('publishes a verified pre-migration DB/WAL/schema backup and retains only the five newest successes', async () => {
     const directory = await temporaryDirectory();
     const config = await seedDatabase(directory);
@@ -147,7 +282,7 @@ describe('migration backup and recovery', () => {
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
-          schemaVersion: 10,
+          schemaVersion: 11,
           checkpoint: 'wal_checkpointed',
           database: {
             bytes: checkpointedDatabase.byteLength,
@@ -188,7 +323,7 @@ describe('migration backup and recovery', () => {
     expect(newest).toMatchObject({
       formatVersion: 1,
       kind: 'pre_migration',
-      schemaVersion: 10,
+      schemaVersion: 11,
       database: {
         file: basename(config.databasePath),
       },
@@ -266,8 +401,10 @@ describe('migration backup and recovery', () => {
       status: 'warning',
       app: 'TavernNext',
       mode: 'read_only_migration_failed',
+      backup: { kind: 'pre_migration', path: expect.any(String) },
       warning: { code: 'migration_failed' },
     });
+    expect(health.json().backup.path).toBe((await backupDirectories(directory))[0]);
     const readable = await app.inject({ method: 'GET', url: '/api/characters' });
     expect(readable.statusCode).toBe(200);
     expect(readable.json()).toEqual([expect.objectContaining({ id: characterId, name: 'Recovery witness' })]);

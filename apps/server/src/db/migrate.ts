@@ -1,7 +1,18 @@
 import type { TavernDatabase } from './client.js';
 import { GLOBAL_GENERATION_CONFIG_ID } from '@tavernnext/domain';
 
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 11;
+
+const conversationTableColumns = `(
+  id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  character_id TEXT NOT NULL REFERENCES characters(id),
+  persona_id TEXT NOT NULL REFERENCES personas(id),
+  title TEXT NOT NULL
+)`;
 
 export function readSchemaVersion(database: TavernDatabase): number | null {
   try {
@@ -27,7 +38,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS worldbooks (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, is_global INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS worldbook_entries (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id));
   CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, character_id TEXT NOT NULL REFERENCES characters(id), persona_id TEXT NOT NULL REFERENCES personas(id), provider_id TEXT REFERENCES provider_profiles(id), preset_id TEXT REFERENCES presets(id), context_preset_id TEXT REFERENCES presets(id), instruct_preset_id TEXT REFERENCES presets(id), system_preset_id TEXT REFERENCES presets(id), title TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS conversations ${conversationTableColumns};
   CREATE TABLE IF NOT EXISTS conversation_worldbooks (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id), PRIMARY KEY (conversation_id, worldbook_id));
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, active_variant_id TEXT REFERENCES message_variants(id), role TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
@@ -46,7 +57,6 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_id_idx ON worldbook_entries(worldbook_id);
   CREATE INDEX IF NOT EXISTS conversations_character_id_idx ON conversations(character_id);
   CREATE INDEX IF NOT EXISTS conversations_persona_id_idx ON conversations(persona_id);
-  CREATE INDEX IF NOT EXISTS conversations_provider_id_idx ON conversations(provider_id);
   CREATE INDEX IF NOT EXISTS conversation_worldbooks_worldbook_id_idx ON conversation_worldbooks(worldbook_id);
   CREATE INDEX IF NOT EXISTS messages_conversation_created_id_idx ON messages(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
@@ -61,6 +71,12 @@ const indexes = `
 
 function columnNames(database: TavernDatabase, table: string): string[] {
   return database.sqlite.prepare(`PRAGMA table_info(${table})`).all().map((column) => String(column.name));
+}
+
+function tableExists(database: TavernDatabase, table: string): boolean {
+  return database.sqlite.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+  ).get(table) !== undefined;
 }
 
 function hasCascadeWorldbookEntries(database: TavernDatabase): boolean {
@@ -108,19 +124,10 @@ function addColumn(database: TavernDatabase, table: string, name: string, defini
 
 function addPromptSnapshotColumns(database: TavernDatabase): void {
   addColumn(database, 'worldbooks', 'is_global', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(database, 'conversations', 'provider_id', 'TEXT REFERENCES provider_profiles(id)');
-  addColumn(database, 'conversations', 'context_preset_id', 'TEXT REFERENCES presets(id)');
-  addColumn(database, 'conversations', 'instruct_preset_id', 'TEXT REFERENCES presets(id)');
-  addColumn(database, 'conversations', 'system_preset_id', 'TEXT REFERENCES presets(id)');
   addColumn(database, 'generation_snapshots', 'integrity_tag', 'TEXT');
   database.sqlite.exec(`
     UPDATE worldbooks SET is_global = CASE
       WHEN json_valid(payload) AND json_extract(payload, '$.isGlobal') = 1 THEN 1 ELSE 0 END;
-    UPDATE conversations SET
-      provider_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.providerId') ELSE NULL END,
-      context_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.contextPresetId') ELSE NULL END,
-      instruct_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.instructPresetId') ELSE NULL END,
-      system_preset_id = CASE WHEN json_valid(payload) THEN json_extract(payload, '$.systemPresetId') ELSE NULL END;
   `);
 }
 
@@ -234,6 +241,45 @@ function backfillCharacterDepthPrompt(database: TavernDatabase): void {
   `);
 }
 
+function hasConversationGenerationBindings(database: TavernDatabase): boolean {
+  const columns = columnNames(database, 'conversations');
+  return ['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']
+    .some((column) => columns.includes(column));
+}
+
+function resetConversationExtensionStates(database: TavernDatabase): void {
+  if (!tableExists(database, 'extension_states')) return;
+  const columns = new Set(columnNames(database, 'extension_states'));
+  const scopeColumn = ['scope', 'scope_type', 'scope_kind'].find((column) => columns.has(column));
+  if (scopeColumn !== undefined) {
+    database.sqlite.prepare(`
+      DELETE FROM extension_states
+      WHERE ${scopeColumn} IN ('conversation', 'message', 'message-variant', 'message_variant', 'messageVariant')
+    `).run();
+    return;
+  }
+
+  const ownerColumns = ['conversation_id', 'message_id', 'message_variant_id']
+    .filter((column) => columns.has(column));
+  if (ownerColumns.length > 0) {
+    database.sqlite.exec(`DELETE FROM extension_states WHERE ${ownerColumns.map((column) => `${column} IS NOT NULL`).join(' OR ')}`);
+  }
+}
+
+function resetConversationGraph(database: TavernDatabase): void {
+  resetConversationExtensionStates(database);
+  database.sqlite.exec(`
+    DELETE FROM message_variants;
+    DELETE FROM generation_snapshots;
+    DELETE FROM worldbook_runtime_states;
+    DELETE FROM messages;
+    DELETE FROM conversation_worldbooks;
+    DELETE FROM conversations;
+    DROP TABLE conversations;
+    CREATE TABLE conversations ${conversationTableColumns};
+  `);
+}
+
 function seedGlobalGenerationConfig(database: TavernDatabase): void {
   const now = new Date().toISOString();
   const payload = JSON.stringify({
@@ -266,6 +312,7 @@ export function migrateDatabase(database: TavernDatabase): void {
 
       if (hasCascadeWorldbookEntries(database)) rebuildWorldbookEntries(database);
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
+      if (hasConversationGenerationBindings(database)) resetConversationGraph(database);
 
       addPromptSnapshotColumns(database);
       addVariantColumns(database);

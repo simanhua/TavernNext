@@ -480,27 +480,23 @@ function runtimeStateFor(repositories: Repositories, conversationId: string): Wo
 
 function resolveGenerationBinding(
   configuration: ReturnType<Repositories['globalGenerationConfig']['get']>,
-  conversation: Conversation,
   providerMode?: ProviderProfile['apiMode'],
 ): {
   providerId: string | undefined;
   presets: Array<{ id: string | undefined; kind: PresetKind }>;
 } {
-  const usesGlobalConfiguration = configuration.providerId !== null;
-  const providerId = usesGlobalConfiguration ? configuration.providerId ?? undefined : conversation.providerId;
-  const selected = (globalId: string | null, legacyId: string | undefined) => (
-    usesGlobalConfiguration ? globalId ?? undefined : legacyId
-  );
+  const providerId = configuration.providerId ?? undefined;
+  const selected = (id: string | null) => id ?? undefined;
   if (providerMode === undefined) return { providerId, presets: [] };
   return {
     providerId,
     presets: providerMode === 'chat'
-      ? [{ id: selected(configuration.chatPresetId, conversation.presetId), kind: 'chat' }]
+      ? [{ id: selected(configuration.chatPresetId), kind: 'chat' }]
       : [
-        { id: selected(configuration.textPresetId, conversation.presetId), kind: 'text' },
-        { id: selected(configuration.contextPresetId, conversation.contextPresetId), kind: 'context' },
-        { id: selected(configuration.instructPresetId, conversation.instructPresetId), kind: 'instruct' },
-        { id: selected(configuration.systemPresetId, conversation.systemPresetId), kind: 'system' },
+        { id: selected(configuration.textPresetId), kind: 'text' },
+        { id: selected(configuration.contextPresetId), kind: 'context' },
+        { id: selected(configuration.instructPresetId), kind: 'instruct' },
+        { id: selected(configuration.systemPresetId), kind: 'system' },
       ],
   };
 }
@@ -517,7 +513,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   const persona = repositories.personas.get(conversation.personaId);
   if (character === undefined || persona === undefined) throw new PromptSnapshotError('not_found');
   const globalGenerationConfig = repositories.globalGenerationConfig.get();
-  const providerId = resolveGenerationBinding(globalGenerationConfig, conversation).providerId;
+  const providerId = resolveGenerationBinding(globalGenerationConfig).providerId;
   if (providerId === undefined) throw new PromptSnapshotError('provider_not_configured');
   const provider = repositories.providerProfiles.get(providerId);
   if (provider === undefined) throw new PromptSnapshotError('provider_not_configured');
@@ -528,7 +524,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
-  const binding = resolveGenerationBinding(globalGenerationConfig, conversation, provider.apiMode);
+  const binding = resolveGenerationBinding(globalGenerationConfig, provider.apiMode);
   const presets = binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings));
 
   const seen = new Set<string>();
@@ -660,8 +656,8 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   if (conversation === undefined || character === undefined || provider === undefined
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
-    || resolveGenerationBinding(globalGenerationConfig, conversation).providerId !== manifest.provider.id) stale();
-  const configuredPresets = resolveGenerationBinding(globalGenerationConfig, conversation, provider.apiMode).presets;
+    || resolveGenerationBinding(globalGenerationConfig).providerId !== manifest.provider.id) stale();
+  const configuredPresets = resolveGenerationBinding(globalGenerationConfig, provider.apiMode).presets;
   if (configuredPresets.some(({ id }) => id === undefined)
     || !sameCanonical(
       manifest.presets.map(({ id, kind }) => ({ id, kind })),

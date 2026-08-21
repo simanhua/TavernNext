@@ -4,10 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, type Conversation } from './client.js';
 
 const now = '2026-08-08T00:00:00.000Z';
+const providerId = '018f0000-0000-7000-8000-000000000904';
+const presetId = '018f0000-0000-7000-8000-000000000905';
 const conversation: Conversation = {
   id: '018f0000-0000-7000-8000-000000000901', revision: 3, createdAt: now, updatedAt: now,
   characterId: '018f0000-0000-7000-8000-000000000902', personaId: '018f0000-0000-7000-8000-000000000903',
-  providerId: '018f0000-0000-7000-8000-000000000904', presetId: '018f0000-0000-7000-8000-000000000905',
   title: 'Projection test', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
@@ -39,11 +40,12 @@ describe('prompt preview client boundary', () => {
       },
       warnings: [],
       entityRevisions: {
+        globalGenerationConfig: { id: '018f0000-0000-7000-8000-000000000001', revision: 0 },
         conversation: { id: conversation.id, revision: 3 },
         character: { id: conversation.characterId, revision: 2 },
         persona: { id: conversation.personaId, revision: 1 },
-        provider: { id: conversation.providerId, revision: 0 },
-        presets: [{ id: conversation.presetId, revision: 4, kind: 'chat' }],
+        provider: { id: providerId, revision: 0 },
+        presets: [{ id: presetId, revision: 4, kind: 'chat' }],
       },
       payloadHash: 'must-not-cross-ui-boundary',
       compiledRequestHash: 'must-not-cross-ui-boundary',

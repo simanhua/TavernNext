@@ -36,6 +36,9 @@ describe('global generation configuration prompt binding', () => {
   it('reports a stable configuration error when a new Conversation has no global or legacy Provider', async () => {
     const { app, repositories } = await createPromptIntegrationContext();
     seedFullPromptGraph(repositories, 'chat');
+    const current = repositories.globalGenerationConfig.get();
+    expect(repositories.globalGenerationConfig.update(current.revision, { providerId: null }))
+      .toMatchObject({ ok: true });
     const conversation = await createUnconfiguredConversation(
       app,
       '018f1000-0000-7000-8000-000000000204',
@@ -54,7 +57,8 @@ describe('global generation configuration prompt binding', () => {
   it('does not fill a missing global Preset from an old Conversation', async () => {
     const { app, repositories } = await createPromptIntegrationContext();
     const graph = seedFullPromptGraph(repositories, 'chat');
-    expect(repositories.globalGenerationConfig.update(0, { providerId: graph.provider.id }))
+    const current = repositories.globalGenerationConfig.get();
+    expect(repositories.globalGenerationConfig.update(current.revision, { chatPresetId: null }))
       .toMatchObject({ ok: true });
 
     const preview = await app.inject({
@@ -78,15 +82,7 @@ describe('global generation configuration prompt binding', () => {
         },
       })).toMatchObject({ ok: true });
     }
-    const configured = repositories.globalGenerationConfig.update(0, {
-      providerId: graph.provider.id,
-      chatPresetId: graph.chatPreset.id,
-      textPresetId: graph.textPreset.id,
-      contextPresetId: graph.contextPreset.id,
-      instructPresetId: graph.instructPreset.id,
-      systemPresetId: graph.systemPreset.id,
-    });
-    expect(configured).toMatchObject({ ok: true, value: { revision: 1 } });
+    expect(repositories.globalGenerationConfig.get()).toMatchObject({ revision: 1, providerId: graph.provider.id });
     const conversation = await createUnconfiguredConversation(
       app,
       mode === 'chat'
@@ -143,10 +139,7 @@ describe('global generation configuration prompt binding', () => {
     const context = await createPromptIntegrationContext({ tokenizerRuntime: tokenizer });
     repositories = context.repositories;
     const graph = seedFullPromptGraph(repositories, 'chat');
-    expect(repositories.globalGenerationConfig.update(0, {
-      providerId: graph.provider.id,
-      chatPresetId: graph.chatPreset.id,
-    })).toMatchObject({ ok: true });
+    expect(repositories.globalGenerationConfig.get()).toMatchObject({ revision: 1, providerId: graph.provider.id });
     const conversation = await createUnconfiguredConversation(
       context.app,
       '018f1000-0000-7000-8000-000000000203',

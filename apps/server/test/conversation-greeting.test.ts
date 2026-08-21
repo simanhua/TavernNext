@@ -57,6 +57,10 @@ describe('new conversation Character greetings', () => {
         prompt_order: [{ character_id: 100000, order: [{ identifier: 'chatHistory', enabled: true }] }],
       },
     });
+    expect(repositories.globalGenerationConfig.update(0, {
+      providerId: ids.provider,
+      chatPresetId: ids.preset,
+    })).toMatchObject({ ok: true });
     const app = createApp({
       database,
       snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
@@ -66,7 +70,7 @@ describe('new conversation Character greetings', () => {
     await app.ready();
     const payload = {
       id: ids.conversation, characterId: ids.character, personaId: ids.persona,
-      providerId: ids.provider, presetId: ids.preset, title: 'Seeded chat',
+      title: 'Seeded chat',
     };
 
     expect((await app.inject({ method: 'POST', url: '/api/conversations', payload })).statusCode).toBe(201);

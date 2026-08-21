@@ -82,11 +82,13 @@ function startupDatabase(config: ServerConfig, options: CreateAppOptions): {
   database: TavernDatabase;
   result: StartupMigrationResult;
   ownership?: DatabaseOwnership;
+  backupPath?: string;
 } {
   const ownership = options.database === undefined
     ? acquireDatabaseOwnership(config.databasePath, options.databaseOwnershipTimeoutMs)
     : undefined;
   try {
+    let backupPath: string | undefined;
     ownership?.assertHeld(config.databasePath);
     if (options.database === undefined && existsSync(config.databasePath)) {
       const closedConnection = createDatabase(config.databasePath);
@@ -98,21 +100,31 @@ function startupDatabase(config: ServerConfig, options: CreateAppOptions): {
         // connection is its boundary before WAL validation/checkpoint backup.
         closedConnection.close();
       }
-      createPreMigrationBackup({
+      backupPath = createPreMigrationBackup({
         dataDir: config.dataDir,
         databasePath: config.databasePath,
         schemaVersion,
         ...(ownership === undefined ? {} : { databaseOwnership: ownership }),
         ...(options.backupClock === undefined ? {} : { clock: options.backupClock }),
-      });
+      }).path;
     }
 
     const database = options.database ?? createDatabase(config.databasePath);
     try {
       (options.migrationRunner ?? migrateDatabase)(database);
-      return { database, result: 'writable', ...(ownership === undefined ? {} : { ownership }) };
+      return {
+        database,
+        result: 'writable',
+        ...(ownership === undefined ? {} : { ownership }),
+        ...(backupPath === undefined ? {} : { backupPath }),
+      };
     } catch {
-      return { database, result: 'read_only_migration_failed', ...(ownership === undefined ? {} : { ownership }) };
+      return {
+        database,
+        result: 'read_only_migration_failed',
+        ...(ownership === undefined ? {} : { ownership }),
+        ...(backupPath === undefined ? {} : { backupPath }),
+      };
     }
   } catch {
     ownership?.release();
@@ -255,11 +267,20 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     throwFileSizeLimit: true,
   });
   app.get('/api/health', async () => startup.result === 'writable'
-    ? { status: 'ok', app: 'TavernNext' }
+    ? {
+        status: 'ok',
+        app: 'TavernNext',
+        ...(startup.backupPath === undefined ? {} : {
+          backup: { kind: 'pre_migration', path: startup.backupPath },
+        }),
+      }
     : {
         status: 'warning',
         app: 'TavernNext',
         mode: 'read_only_migration_failed',
+        ...(startup.backupPath === undefined ? {} : {
+          backup: { kind: 'pre_migration', path: startup.backupPath },
+        }),
         warning: {
           code: 'migration_failed',
           message: 'A database migration failed. Reads remain available; all mutations are disabled.',

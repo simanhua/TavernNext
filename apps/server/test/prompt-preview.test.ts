@@ -157,14 +157,14 @@ describe('full prompt preview', () => {
   ] as const)('rejects Text execution without an explicitly selected %s companion', async (_label, field) => {
     const { app, repositories } = await createPromptIntegrationContext();
     seedFullPromptGraph(repositories, 'text');
-    const conversation = repositories.conversations.get(integrationIds.conversation)!;
+    const configuration = repositories.globalGenerationConfig.get();
     const patch = field === 'instructPresetId'
-      ? { instructPresetId: undefined }
-      : { systemPresetId: undefined };
-    expect(repositories.conversations.update(conversation.id, conversation.revision, patch))
+      ? { instructPresetId: null }
+      : { systemPresetId: null };
+    expect(repositories.globalGenerationConfig.update(configuration.revision, patch))
       .toMatchObject({ ok: true });
 
-    const response = await requestPreview(app, { conversationRevision: 1 });
+    const response = await requestPreview(app);
 
     expect(response.statusCode).toBe(422);
     expect(response.json()).toEqual({ error: 'preset_not_configured' });

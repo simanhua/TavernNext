@@ -76,7 +76,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 10 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 11 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -423,7 +423,7 @@ describe('SQLite repositories', () => {
     });
   });
 
-  it('upgrades the b87d7f7 legacy schema without losing payloads or relationships', async () => {
+  it('upgrades the b87d7f7 legacy schema while preserving library payloads and resetting chats', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-legacy-'));
     testDirectories.push(directory);
     const path = join(directory, 'tavernnext.sqlite');
@@ -476,30 +476,23 @@ describe('SQLite repositories', () => {
       revision: 0,
       compatibility: { compatWarnings: ['character_depth_prompt_invalid'] },
     });
-    expect(repositories.messages.get(ids.message)).toMatchObject({ activeVariantId: ids.variant });
+    expect(repositories.conversations.get(ids.conversation)).toBeUndefined();
+    expect(repositories.messages.get(ids.message)).toBeUndefined();
+    expect(repositories.messageVariants.get(ids.variant)).toBeUndefined();
     expect(database.sqlite.prepare('PRAGMA table_info(messages)').all().map((column) => column.name)).toContain('active_variant_id');
     expect(database.sqlite.prepare('PRAGMA index_list(messages)').all().map((index) => index.name)).toContain('messages_active_variant_id_idx');
-    expect(database.sqlite.prepare('SELECT worldbook_id FROM conversation_worldbooks WHERE conversation_id = ?').all(ids.conversation)).toEqual([{ worldbook_id: ids.worldbook }]);
+    expect(database.sqlite.prepare('SELECT worldbook_id FROM conversation_worldbooks WHERE conversation_id = ?').all(ids.conversation)).toEqual([]);
     expect(() => repositories.worldbooks.delete(ids.worldbook, 0)).toThrow(/FOREIGN KEY constraint failed/);
-
-    const insertedMessage = repositories.messages.create({
-      id: '018f0000-0000-7000-8000-000000000037', conversationId: ids.conversation, role: 'user', content: 'Current write', activeVariantId: null,
-    });
-    expect(insertedMessage.id).toBe('018f0000-0000-7000-8000-000000000037');
-    expect(database.sqlite.prepare('SELECT active_variant_id FROM messages WHERE id = ?').get(insertedMessage.id)).toEqual({ active_variant_id: null });
     expect(database.sqlite.prepare('PRAGMA table_info(worldbooks)').all().map((column) => column.name)).toContain('is_global');
-    expect(database.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).toEqual(expect.arrayContaining([
-      'provider_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id',
+    expect(database.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).not.toEqual(expect.arrayContaining([
+      'provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id',
     ]));
     expect(database.sqlite.prepare('PRAGMA table_info(generation_snapshots)').all().map((column) => column.name))
       .toContain('integrity_tag');
     expect(database.sqlite.prepare('PRAGMA table_info(message_variants)').all().map((column) => column.name))
       .toContain('ordinal');
     expect(repositories.worldbooks.get(ids.worldbook)).toMatchObject({ isGlobal: false });
-    expect(repositories.conversations.get(ids.conversation)).toMatchObject({
-      maxPromptTokens: 128_000, maxResponseTokens: 32_768,
-    });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 10 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 11 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

@@ -109,12 +109,14 @@ describe('chat UI API bindings', () => {
     }]);
     expect(listedPresets.payload).not.toContain('MUST-NOT-LEAVE-SERVER');
     expect(listedPresets.payload).not.toContain('secret_warning_sentinel');
+    expect(repositories.globalGenerationConfig.update(0, {
+      providerId: ids.provider,
+      chatPresetId: ids.preset,
+    })).toMatchObject({ ok: true });
     repositories.conversations.create({
       id: ids.conversation,
       characterId: ids.character,
       personaId: ids.persona,
-      providerId: ids.provider,
-      presetId: ids.preset,
       title: 'Chat',
     });
     const userMessage = repositories.messages.create({

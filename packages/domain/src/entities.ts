@@ -141,12 +141,7 @@ export const GlobalGenerationConfigSchema = MutableEntitySchema
 export const ConversationSchema = MutableEntitySchema.extend({
   characterId: DomainIdSchema,
   personaId: DomainIdSchema,
-  providerId: DomainIdSchema.optional(),
   title: z.string().min(1),
-  presetId: DomainIdSchema.optional(),
-  contextPresetId: DomainIdSchema.optional(),
-  instructPresetId: DomainIdSchema.optional(),
-  systemPresetId: DomainIdSchema.optional(),
   worldbookIds: z.array(DomainIdSchema).default([]),
   maxPromptTokens: z.number().int().nonnegative().max(1_000_000).default(128_000),
   maxResponseTokens: z.number().int().nonnegative().max(384_000).default(32_768),

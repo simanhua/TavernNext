@@ -53,13 +53,13 @@ const globalGenerationConfig = {
 };
 const otherConversation: Conversation = {
   id: ids.otherConversation, revision: 0, createdAt: now, updatedAt: now,
-  characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
+  characterId: ids.character, personaId: ids.persona,
   title: 'Saved chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
 const conversation: Conversation = {
   id: ids.conversation, revision: 0, createdAt: now, updatedAt: now,
-  characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
+  characterId: ids.character, personaId: ids.persona,
   title: 'Aster chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };

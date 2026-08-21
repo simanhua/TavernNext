@@ -711,11 +711,6 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       ...baseRow(value),
       characterId: value.characterId,
       personaId: value.personaId,
-      providerId: value.providerId ?? null,
-      presetId: value.presetId ?? null,
-      contextPresetId: value.contextPresetId ?? null,
-      instructPresetId: value.instructPresetId ?? null,
-      systemPresetId: value.systemPresetId ?? null,
       title: value.title,
     }), syncRelationships: syncConversationWorldbooks,
   });

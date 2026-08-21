@@ -10,10 +10,11 @@ import { renderWithApp } from '../../test/render.js';
 import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 
 const now = '2026-08-08T00:00:00.000Z';
+const providerId = '018f0000-0000-7000-8000-000000000944';
+const presetId = '018f0000-0000-7000-8000-000000000945';
 const conversation: Conversation = {
   id: '018f0000-0000-7000-8000-000000000941', revision: 7, createdAt: now, updatedAt: now,
   characterId: '018f0000-0000-7000-8000-000000000942', personaId: '018f0000-0000-7000-8000-000000000943',
-  providerId: '018f0000-0000-7000-8000-000000000944', presetId: '018f0000-0000-7000-8000-000000000945',
   title: 'Preview chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
@@ -66,8 +67,8 @@ const server = setupServer(
         conversation: { id: conversation.id, revision: 7 },
         character: { id: conversation.characterId, revision: 2 },
         persona: { id: conversation.personaId, revision: 1 },
-        provider: { id: conversation.providerId, revision: 0 },
-        presets: [{ id: conversation.presetId, revision: 4, kind: 'chat' }],
+        provider: { id: providerId, revision: 0 },
+        presets: [{ id: presetId, revision: 4, kind: 'chat' }],
         globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
       },
       payloadHash: 'must-not-render-payload-hash',

@@ -53,16 +53,10 @@ export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),
   personaId: text('persona_id').notNull().references(() => personas.id),
-  providerId: text('provider_id').references(() => providerProfiles.id),
-  presetId: text('preset_id').references(() => presets.id),
-  contextPresetId: text('context_preset_id').references(() => presets.id),
-  instructPresetId: text('instruct_preset_id').references(() => presets.id),
-  systemPresetId: text('system_preset_id').references(() => presets.id),
   title: text('title').notNull(),
 }, (table) => [
   index('conversations_character_id_idx').on(table.characterId),
   index('conversations_persona_id_idx').on(table.personaId),
-  index('conversations_provider_id_idx').on(table.providerId),
 ]);
 export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
