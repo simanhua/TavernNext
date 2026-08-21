@@ -17,6 +17,11 @@ const server = setupServer(
   http.get('/api/worldbooks', () => HttpResponse.json([])),
   http.get('/api/providers', () => HttpResponse.json([])),
   http.get('/api/conversations', () => HttpResponse.json([])),
+  http.get('/api/settings/generation', () => HttpResponse.json({
+    id: '018f0000-0000-7000-8000-000000000001', revision: 0,
+    providerId: null, chatPresetId: null, textPresetId: null,
+    contextPresetId: null, instructPresetId: null, systemPresetId: null, selectionNotice: null,
+  })),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -24,7 +29,7 @@ afterEach(() => cleanup());
 afterAll(() => server.close());
 
 describe('application routes', () => {
-  it('navigates to all six final MVP destinations', async () => {
+  it('navigates to all product destinations', async () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/characters'] });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -36,6 +41,7 @@ describe('application routes', () => {
       ['Personas', 'Personas'],
       ['Presets', 'Presets'],
       ['Worldbooks', 'Worldbooks'],
+      ['Attached Resources', 'Attached Resources'],
       ['Connection Settings', 'Connection'],
     ] as const;
     for (const [linkName, headingName] of destinations) {

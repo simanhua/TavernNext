@@ -245,14 +245,15 @@ export function summarizeSPreset(extensions: unknown): SPresetSummary {
 export function overlayAttachedExtensionAssets(
   extensions: unknown,
   assets: readonly AssetSource[],
+  options: { replaceKinds?: boolean } = {},
 ): Record<string, unknown> {
   const normalized = normalizeAttachedExtensions(extensions).extensions;
   const regex = assets.filter((asset) => asset.kind === 'regex').sort((a, b) => a.ordinal - b.ordinal);
   const scripts = assets.filter((asset) => asset.kind === 'tavern_helper').sort((a, b) => a.ordinal - b.ordinal);
-  if (regex.length > 0) {
+  if (regex.length > 0 || (options.replaceKinds === true && Object.hasOwn(normalized, 'regex_scripts'))) {
     normalized.regex_scripts = regex.map((asset) => structuredClone(asset.payload));
   }
-  if (scripts.length > 0) {
+  if (scripts.length > 0 || (options.replaceKinds === true && Object.hasOwn(normalized, 'tavern_helper'))) {
     normalized.tavern_helper = {
       ...(record(normalized.tavern_helper) ?? {}),
       scripts: scripts.map((asset) => structuredClone(asset.payload)),

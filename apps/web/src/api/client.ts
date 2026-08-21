@@ -44,6 +44,20 @@ export interface AttachedExtensionOverviewView {
   diagnostics: string[];
 }
 
+export interface EditableExtensionAssetView {
+  kind: 'regex' | 'tavern_helper';
+  sourceKey: string;
+  ordinal: number;
+  enabled: boolean;
+  payload: unknown;
+  diagnostics: string[];
+}
+
+export interface ExtensionAssetCollectionView {
+  owner: { kind: 'character' | 'preset'; id: string; revision: number; name: string };
+  assets: EditableExtensionAssetView[];
+}
+
 export interface CharacterView extends CharacterSummaryView {
   description: string;
   personality: string;
@@ -292,7 +306,7 @@ export interface ConversationDetail {
 }
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, public readonly code: string) {
+  constructor(public readonly status: number, public readonly code: string, public readonly details: Record<string, unknown> = {}) {
     super(code);
   }
 }
@@ -307,8 +321,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body !== undefined && !(init.body instanceof FormData)) headers.set('content-type', 'application/json');
   const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new ApiError(response.status, payload.error ?? `http_${response.status}`);
+    const payload = await response.json().catch(() => ({})) as { error?: string } & Record<string, unknown>;
+    throw new ApiError(response.status, payload.error ?? `http_${response.status}`, payload);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -545,6 +559,18 @@ export const api = {
   }),
   deletePreset: (id: string, revision: number) => request<void>(`/api/presets/${id}?revision=${revision}`, { method: 'DELETE' }),
   exportPreset: (id: string) => download(`/api/presets/${id}/export`),
+  getExtensionAssets: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionAssetCollectionView>(
+    `/api/extension-assets?ownerKind=${encodeURIComponent(ownerKind)}&ownerId=${encodeURIComponent(ownerId)}`,
+  ),
+  saveExtensionAssets: (
+    ownerKind: 'character' | 'preset',
+    ownerId: string,
+    ownerRevision: number,
+    assets: EditableExtensionAssetView[],
+  ) => request<ExtensionAssetCollectionView>(
+    `/api/extension-assets?ownerKind=${encodeURIComponent(ownerKind)}&ownerId=${encodeURIComponent(ownerId)}`,
+    { method: 'PUT', body: JSON.stringify({ ownerRevision, assets }) },
+  ),
   listWorldbooks: () => request<WorldbookSummaryView[]>('/api/worldbooks'),
   getWorldbook: (id: string) => request<WorldbookView>(`/api/worldbooks/${id}`),
   createWorldbook: (input: Pick<WorldbookView, 'name' | 'description' | 'enabled' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning' | 'isGlobal'>) => request<WorldbookView>('/api/worldbooks', {
