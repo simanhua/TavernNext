@@ -5,6 +5,8 @@ export type Language = 'en' | 'zh-CN';
 const STORAGE_KEY = 'tavernnext.language';
 
 const zhCN: Record<string, string> = {
+  'Delete Conversation': '删除对话',
+  'Unable to delete conversation: {{error}}': '无法删除对话：{{error}}',
   'Language': '语言',
   'English': 'English',
   'Simplified Chinese': '简体中文',

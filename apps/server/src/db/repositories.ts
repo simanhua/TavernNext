@@ -116,9 +116,11 @@ export interface ImmutableRepository<T extends MutableEntity> {
 
 export interface WorldbookEntryRepository extends Repository<WorldbookEntry> {
   listByWorldbookId(worldbookId: string): WorldbookEntry[];
+  deleteByWorldbookId(worldbookId: string): void;
 }
 
 export interface WorldbookRepository extends Repository<Worldbook> {
+  hasExternalReferences(worldbookId: string): boolean;
   listGlobal(): Worldbook[];
 }
 
@@ -349,6 +351,10 @@ function createWorldbookEntryRepository(database: TavernDatabase): WorldbookEntr
   });
   return {
     ...base,
+    deleteByWorldbookId(worldbookId: string) {
+      database.orm.delete(worldbookEntries).where(eq(worldbookEntries.worldbookId, worldbookId)).run();
+      database.persist();
+    },
     listByWorldbookId(worldbookId: string) {
       const rows = database.orm.select({ payload: worldbookEntries.payload })
         .from(worldbookEntries)
@@ -454,6 +460,15 @@ function createWorldbookRepository(database: TavernDatabase): WorldbookRepositor
   });
   return {
     ...base,
+    hasExternalReferences(worldbookId: string) {
+      const characterReference = database.sqlite.prepare(
+        "SELECT 1 AS present FROM characters WHERE json_extract(payload, '$.worldbookId') = ? LIMIT 1",
+      ).get(worldbookId);
+      if (characterReference !== undefined) return true;
+      return database.sqlite.prepare(
+        'SELECT 1 AS present FROM conversation_worldbooks WHERE worldbook_id = ? LIMIT 1',
+      ).get(worldbookId) !== undefined;
+    },
     listGlobal() {
       const rows = database.orm.select({ payload: worldbooks.payload })
         .from(worldbooks)
