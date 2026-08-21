@@ -4,6 +4,7 @@ import { api, errorCode, type Conversation } from '../../api/client.js';
 import { CharacterQuickCreate } from '../characters/CharacterQuickCreate.js';
 import { PersonaQuickCreate } from '../personas/PersonaQuickCreate.js';
 import { ImportDialog } from '../imports/ImportDialog.js';
+import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
@@ -36,6 +37,7 @@ export function ChatPage() {
   const [chatImportOpen, setChatImportOpen] = useState(false);
   const [chatImportTitle, setChatImportTitle] = useState(() => t('Imported chat'));
   const [chatTransferError, setChatTransferError] = useState<string>();
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [optimisticUserText, setOptimisticUserText] = useState<string | null>(null);
   const creatingConversation = useRef<Promise<Conversation> | null>(null);
   const sendingMessage = useRef(false);
@@ -69,6 +71,16 @@ export function ChatPage() {
       ));
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
+  });
+  const deleteConversation = useMutation({
+    mutationFn: api.deleteConversation,
+    onSuccess: async (_, deleted) => {
+      setDeleteOpen(false);
+      queryClient.removeQueries({ queryKey: ['conversation', deleted.id], exact: true });
+      if (activeConversationId === deleted.id) setActiveConversationId(null);
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    },
+    onError: () => setDeleteOpen(false),
   });
   const exportChat = useMutation({ mutationFn: api.exportChat });
 
@@ -385,12 +397,20 @@ export function ChatPage() {
               >{t('Start chat')}</button>
             ) : null}
             {detail.data?.conversation === undefined ? null : <PromptPreviewDialog conversation={detail.data.conversation} userText={draft} />}
+            {detail.data?.conversation === undefined ? null : (
+              <button
+                type="button"
+                disabled={generation.isActive || deleteConversation.isPending}
+                onClick={() => { deleteConversation.reset(); setDeleteOpen(true); }}
+              >{t('Delete Conversation')}</button>
+            )}
             <span className={`generation-status status-${generation.status}`}>{t(generation.status)}</span>
           </div>
         </header>
         {detail.error ? <p role="alert">{t('Unable to load this conversation.')}</p> : null}
         {createConversation.error ? <p role="alert">{t('Unable to create conversation: {{error}}', { error: errorCode(createConversation.error) })}</p> : null}
         {configureConversation.error ? <p role="alert">{t('Unable to configure conversation: {{error}}', { error: errorCode(configureConversation.error) })}</p> : null}
+        {deleteConversation.error ? <p role="alert">{t('Unable to delete conversation: {{error}}', { error: errorCode(deleteConversation.error) })}</p> : null}
         <MessageList
           conversationId={activeConversationId}
           messages={detail.data?.messages ?? []}
@@ -428,6 +448,15 @@ export function ChatPage() {
           />
         )}
       </section>
+      <DeleteConfirmation
+        noun="Conversation"
+        open={deleteOpen}
+        pending={deleteConversation.isPending}
+        onOpenChange={setDeleteOpen}
+        onConfirm={() => {
+          if (detail.data?.conversation !== undefined) deleteConversation.mutate(detail.data.conversation);
+        }}
+      />
     </main>
   );
 }

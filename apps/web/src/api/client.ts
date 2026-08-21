@@ -582,6 +582,10 @@ export const api = {
   }) => request<Conversation>(`/api/conversations/${conversation.id}`, {
     method: 'PATCH', body: JSON.stringify({ revision: conversation.revision, patch }),
   }),
+  deleteConversation: (conversation: Conversation) => request<void>(
+    `/api/conversations/${conversation.id}?revision=${conversation.revision}`,
+    { method: 'DELETE' },
+  ),
   getConversationMessages: (id: string) => request<ConversationDetail>(`/api/conversations/${id}/messages`),
   previewPrompt: async (conversation: Conversation, userText: string) => projectPromptPreview(await request<PromptPreviewResponse>(
     `/api/conversations/${conversation.id}/prompt-preview`,

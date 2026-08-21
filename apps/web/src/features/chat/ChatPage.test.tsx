@@ -93,6 +93,8 @@ let stopRequests = 0;
 let abortedRequests = 0;
 let holdFirstGeneration = false;
 let conversationCreateFailure = false;
+let conversationDeleteFailure = false;
+let conversationDeleteCount = 0;
 let generationNetworkFailure = false;
 let generationStartupFailureStatus: 409 | 422 | undefined;
 let generationAcceptedFailure = false;
@@ -147,6 +149,15 @@ const server = setupServer(
     const configured = { ...conversation, ...body.patch, revision: conversationRevision };
     conversations = conversations.map((item) => item.id === conversation.id ? configured : item);
     return HttpResponse.json(configured);
+  }),
+  http.delete('/api/conversations/:id', ({ params, request }) => {
+    conversationDeleteCount += 1;
+    if (conversationDeleteFailure) {
+      return HttpResponse.json({ error: 'constraint_conflict' }, { status: 409 });
+    }
+    expect(new URL(request.url).searchParams.get('revision')).toBe('0');
+    conversations = conversations.filter((item) => item.id !== params.id);
+    return new HttpResponse(null, { status: 204 });
   }),
   http.get('/api/conversations/:id/messages', ({ params }) => {
     if (params.id === ids.otherConversation) {
@@ -358,6 +369,8 @@ afterEach(() => {
   abortedRequests = 0;
   holdFirstGeneration = false;
   conversationCreateFailure = false;
+  conversationDeleteFailure = false;
+  conversationDeleteCount = 0;
   generationNetworkFailure = false;
   generationStartupFailureStatus = undefined;
   generationAcceptedFailure = false;
@@ -392,6 +405,40 @@ function renderChatPage() {
 }
 
 describe('ChatPage', () => {
+  it('confirms deletion of the active conversation, then clears the selection and refreshes the list', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation, otherConversation];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: 'unsent draft' });
+    renderChatPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete Conversation' }));
+    expect(screen.getByRole('heading', { name: 'Delete Conversation?' })).not.toBeNull();
+    expect(conversationDeleteCount).toBe(0);
+
+    await user.click(screen.getByRole('button', { name: 'Confirm delete Conversation' }));
+
+    await waitFor(() => expect(useChatUi.getState().activeConversationId).toBeNull());
+    expect(conversationDeleteCount).toBe(1);
+    expect(screen.queryByRole('option', { name: 'Aster chat' })).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'New conversation' })).not.toBeNull();
+  });
+
+  it('keeps the active conversation selected and reports an API deletion failure', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    conversationDeleteFailure = true;
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete Conversation' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm delete Conversation' }));
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Unable to delete conversation: constraint_conflict');
+    expect(useChatUi.getState().activeConversationId).toBe(conversation.id);
+    expect(screen.getByRole('option', { name: 'Aster chat' })).not.toBeNull();
+  });
+
   it('starts one persisted chat, shows and switches its greeting before the first provider request, then sends in place', async () => {
     const user = userEvent.setup();
     seedGreetingOnCreate = true;
