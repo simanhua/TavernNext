@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -68,7 +69,110 @@ async function inspectAndCommit(app: ReturnType<typeof createApp>, path: string,
   return inspectAndCommitBytes(app, await fixture(path), fileName);
 }
 
+function attachedPresetBytes(): Uint8Array {
+  return encoder.encode(JSON.stringify({
+    name: 'Attached Preset fixture', prompts: [], prompt_order: [], temperature: 0.7,
+    unknown_root: { keep: 42 },
+    extensions: {
+      unknown_extension: { keep: ['preset'] },
+      SPreset: {
+        ChatSquash: { enabled: true, squashed_post_script_enable: true, squashed_post_script: 'value => value' },
+        RegexBinding: { regexes: [{ id: 'bound-regex' }] },
+        MacroNest: false,
+        ToolBindings: { enabled: false, bindings: [{ name: 'retained-disabled-binding' }] },
+      },
+      regex_scripts: Array.from({ length: 9 }, (_, ordinal) => ({
+        id: `preset-regex-${ordinal}`, scriptName: `Preset regex ${ordinal}`,
+        findRegex: '/x/g', replaceString: 'y', disabled: ordinal === 8,
+      })),
+      tavern_helper: [
+        ['scripts', [
+          { type: 'folder', id: 'preset-folder', name: 'Preset folder', enabled: true, children: [
+            { type: 'script', id: 'nested-preset-script', name: 'Nested preset script', enabled: true, content: 'globalThis.__presetImportExecuted = true;' },
+          ] },
+          { type: 'script', id: 'preset-script', name: 'Preset script', enabled: false, content: 'globalThis.__presetImportExecuted = true;' },
+        ]],
+        ['variables', {}],
+      ],
+    },
+  }));
+}
+
 describe('typed SillyTavern Preset import and export API', () => {
+  it('normalizes Preset extensions, keeps SPreset data, and round-trips after settings edits without execution', async () => {
+    const { app, repositories } = await context();
+    delete (globalThis as Record<string, unknown>).__presetImportExecuted;
+    const { inspected, committed } = await inspectAndCommitBytes(app, attachedPresetBytes(), 'attached-preset.json');
+
+    expect(inspected.json().normalizedPreview).toMatchObject({
+      kind: 'chat',
+      attachedExtensions: {
+        execution: 'not_executed',
+        counts: { regex: 9, scripts: 2, folders: 1, variableContainers: 1 },
+      },
+      spreset: {
+        present: true,
+        features: { ChatSquash: true, RegexBinding: true, MacroNest: false, ToolBindings: false },
+      },
+    });
+    expect(committed.statusCode).toBe(201);
+    expect((globalThis as Record<string, unknown>).__presetImportExecuted).toBeUndefined();
+    const id = committed.json().entityId as string;
+    expect(repositories.presets.get(id)).toMatchObject({
+      extensions: { unknown_extension: { keep: ['preset'] }, SPreset: { MacroNest: false } },
+    });
+    expect(repositories.extensionAssets.listByOwner('preset', id)).toHaveLength(11);
+    const detail = (await app.inject({ method: 'GET', url: `/api/presets/${id}` })).json();
+    expect(detail).toMatchObject({
+      attachedExtensions: { counts: { regex: 9, scripts: 2, folders: 1, variableContainers: 1 } },
+      spreset: { present: true, features: { ChatSquash: true, RegexBinding: true } },
+    });
+    expect(JSON.stringify(detail)).not.toContain('__presetImportExecuted');
+
+    const edited = await app.inject({
+      method: 'PATCH', url: `/api/presets/${id}`,
+      payload: { revision: 0, patch: { settings: { temperature: 0.93 } } },
+    });
+    expect(edited.statusCode).toBe(200);
+    const exported = await app.inject({ method: 'GET', url: `/api/presets/${id}/export` });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject({
+      temperature: 0.93,
+      unknown_root: { keep: 42 },
+      extensions: {
+        unknown_extension: { keep: ['preset'] },
+        SPreset: { ChatSquash: { enabled: true }, RegexBinding: { regexes: [{ id: 'bound-regex' }] } },
+        tavern_helper: { variables: {} },
+      },
+    });
+    expect(Array.isArray(exported.json().extensions.tavern_helper)).toBe(false);
+    const roundTrip = await inspectAndCommitBytes(app, exported.rawPayload, 'round-trip-preset.json');
+    expect(roundTrip.inspected.json().normalizedPreview.attachedExtensions)
+      .toEqual(inspected.json().normalizedPreview.attachedExtensions);
+    expect(roundTrip.inspected.json().normalizedPreview.spreset).toEqual(inspected.json().normalizedPreview.spreset);
+    expect((globalThis as Record<string, unknown>).__presetImportExecuted).toBeUndefined();
+
+    const removed = await app.inject({ method: 'DELETE', url: `/api/presets/${id}?revision=1` });
+    expect(removed.statusCode).toBe(204);
+    expect(repositories.extensionAssets.listByOwner('preset', id)).toEqual([]);
+  });
+
+  it.runIf(existsSync('F:/SillyTavern-release/data/default-user/OpenAI Settings/命定之诗Kemini5-3.8.json'))(
+    'recognizes the local 命定之诗Kemini5-3.8 acceptance Preset',
+    async () => {
+      const { app } = await context();
+      const source = await readFile('F:/SillyTavern-release/data/default-user/OpenAI Settings/命定之诗Kemini5-3.8.json');
+      const { inspected, committed } = await inspectAndCommitBytes(app, source, '命定之诗Kemini5-3.8.json');
+      expect(inspected.json().normalizedPreview).toMatchObject({
+        kind: 'chat',
+        attachedExtensions: { execution: 'not_executed', counts: { regex: 9, scripts: 3, variableContainers: 1 } },
+        spreset: { present: true, features: { ChatSquash: true, RegexBinding: true, MacroNest: false, ToolBindings: false } },
+      });
+      expect(committed.statusCode).toBe(201);
+    },
+    30_000,
+  );
+
   it('uses the default handler to reparse staged bytes into a fresh Preset plus one ImportArtifact without merging same-name imports', async () => {
     const { app, repositories } = await context();
     const first = await inspectAndCommit(app, 'chat/synthetic-chat.settings', 'first-rename.bin');

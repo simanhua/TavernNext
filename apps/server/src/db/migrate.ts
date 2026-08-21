@@ -4,7 +4,7 @@ import { normalizeAttachedExtensions } from '@tavernnext/st-compat';
 import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -307,49 +307,100 @@ function seedGlobalGenerationConfig(database: TavernDatabase): void {
   `).run(GLOBAL_GENERATION_CONFIG_ID, now, now, payload);
 }
 
+function insertExtensionAssets(
+  database: TavernDatabase,
+  ownerKind: 'character' | 'preset',
+  ownerId: string,
+  assets: ReturnType<typeof normalizeAttachedExtensions>['assets'],
+  now: string,
+): void {
+  assertExtensionAssetLimit(assets.length);
+  for (const asset of assets) {
+    const id = randomUUID();
+    const payload = {
+      id,
+      revision: 0,
+      createdAt: now,
+      updatedAt: now,
+      ownerKind,
+      ownerId,
+      kind: asset.kind,
+      sourceKey: asset.sourceKey,
+      ordinal: asset.ordinal,
+      enabled: asset.enabled,
+      payload: asset.payload,
+      diagnostics: asset.diagnostics,
+    };
+    database.sqlite.prepare(`
+      INSERT INTO extension_assets (
+        id, revision, created_at, updated_at, payload,
+        owner_kind, owner_id, kind, source_key, ordinal, enabled
+      ) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, now, now, JSON.stringify(payload), ownerKind, ownerId,
+      asset.kind, asset.sourceKey, asset.ordinal, asset.enabled ? 1 : 0,
+    );
+  }
+}
+
+function parsedEntityPayload(payload: unknown): Record<string, unknown> | undefined {
+  if (typeof payload !== 'string') return undefined;
+  try {
+    const value = JSON.parse(payload) as unknown;
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function backfillCharacterExtensionAssets(database: TavernDatabase): void {
   const rows = database.sqlite.prepare('SELECT id, payload FROM characters').all();
   const now = new Date().toISOString();
   for (const row of rows) {
-    if (typeof row.id !== 'string' || typeof row.payload !== 'string') continue;
-    let character: unknown;
-    try {
-      character = JSON.parse(row.payload);
-    } catch {
-      continue;
-    }
-    if (typeof character !== 'object' || character === null || Array.isArray(character)) continue;
-    const value = character as Record<string, unknown>;
+    if (typeof row.id !== 'string') continue;
+    const value = parsedEntityPayload(row.payload);
+    if (value === undefined) continue;
     const attached = normalizeAttachedExtensions(value.extensions);
-    assertExtensionAssetLimit(attached.assets.length);
     database.sqlite.prepare('UPDATE characters SET payload = ? WHERE id = ?')
       .run(JSON.stringify({ ...value, extensions: attached.extensions }), row.id);
-    for (const asset of attached.assets) {
-      const id = randomUUID();
-      const payload = {
-        id,
-        revision: 0,
-        createdAt: now,
-        updatedAt: now,
-        ownerKind: 'character',
-        ownerId: row.id,
-        kind: asset.kind,
-        sourceKey: asset.sourceKey,
-        ordinal: asset.ordinal,
-        enabled: asset.enabled,
-        payload: asset.payload,
-        diagnostics: asset.diagnostics,
-      };
-      database.sqlite.prepare(`
-        INSERT INTO extension_assets (
-          id, revision, created_at, updated_at, payload,
-          owner_kind, owner_id, kind, source_key, ordinal, enabled
-        ) VALUES (?, 0, ?, ?, ?, 'character', ?, ?, ?, ?, ?)
-      `).run(
-        id, now, now, JSON.stringify(payload), row.id,
-        asset.kind, asset.sourceKey, asset.ordinal, asset.enabled ? 1 : 0,
-      );
-    }
+    insertExtensionAssets(database, 'character', row.id, attached.assets, now);
+  }
+}
+
+function presetSourceExtensions(value: Record<string, unknown>): unknown {
+  if (value.extensions !== undefined) return value.extensions;
+  const compatibility = typeof value.compatibility === 'object' && value.compatibility !== null
+    ? value.compatibility as Record<string, unknown>
+    : undefined;
+  const stored = typeof compatibility?.rawPayload === 'object' && compatibility.rawPayload !== null
+    ? compatibility.rawPayload as Record<string, unknown>
+    : undefined;
+  const raw = typeof stored?.rawDocument === 'object' && stored.rawDocument !== null
+    ? stored.rawDocument as Record<string, unknown>
+    : undefined;
+  if (raw === undefined) return undefined;
+  const wrapper = stored?.wrapperKey === 'preset' || stored?.wrapperKey === 'settings'
+    ? stored.wrapperKey
+    : undefined;
+  const body = wrapper === undefined ? raw : raw[wrapper];
+  return typeof body === 'object' && body !== null && !Array.isArray(body)
+    ? (body as Record<string, unknown>).extensions
+    : undefined;
+}
+
+function backfillPresetExtensionAssets(database: TavernDatabase): void {
+  const rows = database.sqlite.prepare('SELECT id, payload FROM presets').all();
+  const now = new Date().toISOString();
+  for (const row of rows) {
+    if (typeof row.id !== 'string') continue;
+    const value = parsedEntityPayload(row.payload);
+    if (value === undefined) continue;
+    const attached = normalizeAttachedExtensions(presetSourceExtensions(value));
+    database.sqlite.prepare('UPDATE presets SET payload = ? WHERE id = ?')
+      .run(JSON.stringify({ ...value, extensions: attached.extensions }), row.id);
+    insertExtensionAssets(database, 'preset', row.id, attached.assets, now);
   }
 }
 
@@ -371,6 +422,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       addVariantColumns(database);
       backfillCharacterDepthPrompt(database);
       if ((startingVersion ?? 0) < 12) backfillCharacterExtensionAssets(database);
+      if ((startingVersion ?? 0) < 13) backfillPresetExtensionAssets(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
       database.sqlite.exec(indexes);

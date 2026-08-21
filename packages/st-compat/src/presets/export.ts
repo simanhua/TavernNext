@@ -16,6 +16,7 @@ export interface PresetExportSource {
   name: string;
   kind: PresetKind;
   settings: Record<string, unknown>;
+  extensions?: Record<string, unknown>;
   rawPayload?: Record<string, unknown>;
   wrapperKey?: 'preset' | 'settings';
   compatibility?: { rawPayload: unknown };
@@ -287,6 +288,9 @@ export async function exportPreset(source: PresetExportInput): Promise<ExportArt
   };
   if (source.kind === 'text') body = overlayTextSettings(body, source.settings, context);
   else body = deepOverlay(body, source.settings, context) as Record<string, unknown>;
+  if (source.extensions !== undefined && (
+    Object.keys(source.extensions).length > 0 || Object.hasOwn(body, 'extensions')
+  )) body.extensions = structuredClone(source.extensions);
   body.name = source.name;
   if (document.wrapperKey !== undefined) document.root[document.wrapperKey] = body;
   else document.root = body;

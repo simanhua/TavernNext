@@ -292,6 +292,7 @@ function safePreset(preset: Preset, expectedKind: PresetKind): Preset {
       name: preset.name,
       kind: preset.kind,
       settings: deepJson(settings),
+      extensions: {},
     };
   } catch (error) {
     if (error instanceof PromptSnapshotError) throw error;

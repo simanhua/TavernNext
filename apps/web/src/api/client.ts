@@ -82,6 +82,11 @@ export interface PresetSelectorView {
 
 export interface PresetView extends PresetSelectorView, MutableView {
   settings: Record<string, unknown>;
+  attachedExtensions: AttachedExtensionOverviewView;
+  spreset: {
+    present: boolean;
+    features: { ChatSquash: boolean; RegexBinding: boolean; MacroNest: boolean; ToolBindings: boolean };
+  };
   compatibilitySummary?: CompatibilitySummary;
 }
 

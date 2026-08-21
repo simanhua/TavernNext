@@ -32,6 +32,11 @@ export interface NormalizedAttachedExtensions {
   overview: AttachedExtensionOverview;
 }
 
+export interface SPresetSummary {
+  present: boolean;
+  features: { ChatSquash: boolean; RegexBinding: boolean; MacroNest: boolean; ToolBindings: boolean };
+}
+
 type AssetSource = Pick<ExtensionAsset, 'kind' | 'sourceKey' | 'ordinal' | 'enabled' | 'payload' | 'diagnostics'>
   | ExtractedAttachedExtensionAsset;
 
@@ -212,6 +217,28 @@ export function normalizeAttachedExtensions(extensions: unknown): NormalizedAtta
     extensions: normalized,
     assets,
     overview: { ...overview, diagnostics: [...new Set([...rootDiagnostics, ...overview.diagnostics])] },
+  };
+}
+
+function featureEnabled(value: unknown): boolean {
+  if (value === true) return true;
+  const object = record(value);
+  if (object === undefined) return false;
+  if (typeof object.enabled === 'boolean') return object.enabled;
+  return Object.keys(object).length > 0;
+}
+
+export function summarizeSPreset(extensions: unknown): SPresetSummary {
+  const object = record(extensions) ?? {};
+  const value = record(object.SPreset ?? object.spreset);
+  return {
+    present: value !== undefined,
+    features: {
+      ChatSquash: featureEnabled(value?.ChatSquash),
+      RegexBinding: featureEnabled(value?.RegexBinding),
+      MacroNest: featureEnabled(value?.MacroNest),
+      ToolBindings: featureEnabled(value?.ToolBindings),
+    },
   };
 }
 

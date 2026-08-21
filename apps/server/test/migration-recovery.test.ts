@@ -143,6 +143,22 @@ describe('migration backup and recovery', () => {
     });
     const preset = repositories.presets.create({
       id: '018f0000-0000-7000-8000-000000001704', name: 'Kept Preset', kind: 'chat', settings: { prompts: [], prompt_order: [] },
+      compatibility: {
+        sourceFormat: 'preset:json',
+        rawPayload: {
+          rawDocument: {
+            prompts: [], prompt_order: [],
+            extensions: {
+              regex_scripts: [{ id: 'preset-regex', scriptName: 'Preset regex', findRegex: '/x/g', replaceString: 'y' }],
+              tavern_helper: [['scripts', [{
+                id: 'preset-script', type: 'script', name: 'Preset script', enabled: true, content: 'return 1;',
+              }]], ['variables', {}]],
+            },
+          },
+          associationEnvelope: { type: 'tavernnext:preset-source-associations', version: 1, kind: 'chat', entries: [] },
+        },
+        unknownFields: {}, compatWarnings: [], parserVersion: '1',
+      },
     });
     const worldbook = repositories.worldbooks.create({
       id: '018f0000-0000-7000-8000-000000001705', name: 'Kept Worldbook', enabled: true,
@@ -203,6 +219,7 @@ describe('migration backup and recovery', () => {
     }
     database.sqlite.exec(`
       UPDATE conversations SET provider_id = '${provider.id}', preset_id = '${preset.id}';
+      UPDATE presets SET payload = json_remove(payload, '$.extensions') WHERE id = '${preset.id}';
       UPDATE tavernnext_schema_version SET version = 10;
     `);
     database.close();
@@ -251,11 +268,15 @@ describe('migration backup and recovery', () => {
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbooks').get()).toEqual({ count: 1 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbook_entries').get()).toEqual({ count: 1 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM import_artifacts').get()).toEqual({ count: 1 });
-    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM extension_assets').get()).toEqual({ count: 2 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM extension_assets').get()).toEqual({ count: 4 });
     const migratedCharacter = JSON.parse(String(
       migrated.sqlite.prepare('SELECT payload FROM characters WHERE id = ?').get(character.id)!.payload,
     )) as Record<string, unknown>;
     expect(Array.isArray((migratedCharacter.extensions as Record<string, unknown>).tavern_helper)).toBe(false);
+    const migratedPreset = JSON.parse(String(
+      migrated.sqlite.prepare('SELECT payload FROM presets WHERE id = ?').get(preset.id)!.payload,
+    )) as Record<string, unknown>;
+    expect(Array.isArray((migratedPreset.extensions as Record<string, unknown>).tavern_helper)).toBe(false);
     expect(migrated.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).not.toEqual(
       expect.arrayContaining(['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']),
     );
@@ -293,7 +314,7 @@ describe('migration backup and recovery', () => {
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
-          schemaVersion: 12,
+          schemaVersion: 13,
           checkpoint: 'wal_checkpointed',
           database: {
             bytes: checkpointedDatabase.byteLength,
@@ -334,7 +355,7 @@ describe('migration backup and recovery', () => {
     expect(newest).toMatchObject({
       formatVersion: 1,
       kind: 'pre_migration',
-      schemaVersion: 12,
+      schemaVersion: 13,
       database: {
         file: basename(config.databasePath),
       },

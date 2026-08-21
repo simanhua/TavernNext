@@ -118,6 +118,7 @@ export const PresetSchema = MutableEntitySchema.extend({
   name: z.string().min(1),
   kind: PresetKindSchema,
   settings: z.record(z.string(), z.unknown()).default({}),
+  extensions: z.record(z.string(), z.unknown()).default({}),
 }).extend(WithCompatibilitySchema.shape);
 
 export const ExtensionOwnerKindSchema = z.enum(['character', 'preset']);

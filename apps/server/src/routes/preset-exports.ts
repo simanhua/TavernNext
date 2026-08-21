@@ -1,4 +1,4 @@
-import { exportPreset, type PresetExportSource } from '@tavernnext/st-compat';
+import { exportPreset, overlayAttachedExtensionAssets, type PresetExportSource } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import type { Repositories } from '../db/repositories.js';
 
@@ -34,6 +34,10 @@ export function registerPresetExportRoutes(app: FastifyInstance, repositories: R
           name: preset.name,
           kind: preset.kind,
           settings: preset.settings,
+          extensions: overlayAttachedExtensionAssets(
+            preset.extensions,
+            repositories.extensionAssets.listByOwner('preset', preset.id),
+          ),
           compatibility: preset.compatibility,
         } satisfies PresetExportSource);
         reply.header('Content-Type', artifact.contentType);

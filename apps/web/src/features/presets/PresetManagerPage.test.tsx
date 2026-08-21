@@ -35,6 +35,19 @@ let chatDetail = {
   compatibilitySummary: {
     sourceFormat: 'preset:chat', warnings: ['provider_field_preserved_not_executable'], unknownFieldCount: 7,
   },
+  attachedExtensions: {
+    execution: 'not_executed' as const,
+    counts: { regex: 9, scripts: 3, folders: 0, variableContainers: 1 },
+    resources: [
+      { type: 'regex' as const, order: [0], sourceKey: 'preset-regex', name: 'Preset cleanup', enabled: true, diagnostics: [] },
+      { type: 'script' as const, order: [0], sourceKey: 'preset-script', name: 'SPreset bridge', enabled: true, diagnostics: [] },
+    ],
+    variables: [{ source: 'tavern_helper.variables', keyCount: 0, diagnostics: [] }], diagnostics: [],
+  },
+  spreset: {
+    present: true,
+    features: { ChatSquash: true, RegexBinding: true, MacroNest: false, ToolBindings: false },
+  },
 };
 let patchCalls = 0;
 let conflictOnce = false;
@@ -101,6 +114,19 @@ afterEach(() => {
     compatibilitySummary: {
       sourceFormat: 'preset:chat', warnings: ['provider_field_preserved_not_executable'], unknownFieldCount: 7,
     },
+    attachedExtensions: {
+      execution: 'not_executed' as const,
+      counts: { regex: 9, scripts: 3, folders: 0, variableContainers: 1 },
+      resources: [
+        { type: 'regex' as const, order: [0], sourceKey: 'preset-regex', name: 'Preset cleanup', enabled: true, diagnostics: [] },
+        { type: 'script' as const, order: [0], sourceKey: 'preset-script', name: 'SPreset bridge', enabled: true, diagnostics: [] },
+      ],
+      variables: [{ source: 'tavern_helper.variables', keyCount: 0, diagnostics: [] }], diagnostics: [],
+    },
+    spreset: {
+      present: true,
+      features: { ChatSquash: true, RegexBinding: true, MacroNest: false, ToolBindings: false },
+    },
   };
   patchCalls = 0;
   conflictOnce = false;
@@ -111,6 +137,22 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('PresetManagerPage', () => {
+  it('shows the safe Preset resource inventory and SPreset feature summary', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
+
+    expect(screen.getByRole('heading', { name: 'Attached Extension Resources' })).not.toBeNull();
+    expect(screen.getByText('9 regexes')).not.toBeNull();
+    expect(screen.getByText('3 scripts')).not.toBeNull();
+    expect(screen.getByText('1 variable container')).not.toBeNull();
+    expect(screen.getByText('SPreset compatibility data')).not.toBeNull();
+    expect(screen.getByText('ChatSquash: Enabled')).not.toBeNull();
+    expect(screen.getByText('RegexBinding: Enabled')).not.toBeNull();
+    expect(screen.getByText('MacroNest: Disabled')).not.toBeNull();
+    expect(screen.queryByText(/squashed_post_script|globalThis|function\s*\(/)).toBeNull();
+  });
+
   it('renders independently expandable Prompt, order-group, and advanced-settings cards', async () => {
     const user = userEvent.setup();
     renderWithApp(<PresetManagerPage />);

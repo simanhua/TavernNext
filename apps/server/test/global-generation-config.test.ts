@@ -173,4 +173,50 @@ describe('global generation configuration API', () => {
       selectionNotice: { kind: 'preset', deletedId: chat.id },
     });
   });
+
+  it('resolves only the Provider-mode primary Preset resources and excludes companions', async () => {
+    const { app, repositories } = await context();
+    const provider = repositories.providerProfiles.create({
+      id: '018f0000-0000-7000-8000-000000000131', name: 'Mode owner',
+      baseUrl: 'https://provider.example/v1', model: 'model', apiMode: 'chat',
+    });
+    const chat = repositories.presets.create({
+      id: '018f0000-0000-7000-8000-000000000132', name: 'Chat primary', kind: 'chat',
+      settings: { prompts: [], prompt_order: [] },
+    });
+    const text = repositories.presets.create({
+      id: '018f0000-0000-7000-8000-000000000133', name: 'Text primary', kind: 'text', settings: {},
+    });
+    const companion = repositories.presets.create({
+      id: '018f0000-0000-7000-8000-000000000134', name: 'Context companion', kind: 'context',
+      settings: { story_string: '{{description}}' },
+    });
+    for (const [owner, name] of [[chat.id, 'chat-only'], [text.id, 'text-only'], [companion.id, 'companion-must-not-appear']] as const) {
+      repositories.extensionAssets.create({
+        id: crypto.randomUUID(), ownerKind: 'preset', ownerId: owner, kind: 'regex', sourceKey: name,
+        ordinal: 0, enabled: true,
+        payload: { id: name, scriptName: name, findRegex: '/x/g', replaceString: 'y' },
+      });
+    }
+    expect(repositories.globalGenerationConfig.update(0, {
+      providerId: provider.id, chatPresetId: chat.id, textPresetId: text.id, contextPresetId: companion.id,
+    })).toMatchObject({ ok: true });
+
+    let active = (await app.inject({ method: 'GET', url: '/api/settings/generation/active-extension-resources' })).json();
+    expect(active).toMatchObject({
+      mode: 'chat', primaryPreset: { id: chat.id, kind: 'chat' },
+      attachedExtensions: { resources: [{ sourceKey: 'chat-only' }] },
+    });
+    expect(JSON.stringify(active)).not.toContain('text-only');
+    expect(JSON.stringify(active)).not.toContain('companion-must-not-appear');
+
+    expect(repositories.providerProfiles.update(provider.id, provider.revision, { apiMode: 'text' })).toMatchObject({ ok: true });
+    active = (await app.inject({ method: 'GET', url: '/api/settings/generation/active-extension-resources' })).json();
+    expect(active).toMatchObject({
+      mode: 'text', primaryPreset: { id: text.id, kind: 'text' },
+      attachedExtensions: { resources: [{ sourceKey: 'text-only' }] },
+    });
+    expect(JSON.stringify(active)).not.toContain('chat-only');
+    expect(JSON.stringify(active)).not.toContain('companion-must-not-appear');
+  });
 });

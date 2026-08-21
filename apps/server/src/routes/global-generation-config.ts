@@ -1,7 +1,9 @@
 import { GlobalGenerationSelectionSchema, PresetKindSchema } from '@tavernnext/domain';
+import { attachedExtensionOverview } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Repositories } from '../db/repositories.js';
+import { resolveActivePresetExtensionResources } from '../services/active-extension-resources.js';
 
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -18,6 +20,21 @@ const presetKinds = {
 
 export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repositories: Repositories): void {
   app.get('/api/settings/generation', async () => repositories.globalGenerationConfig.get());
+  app.get('/api/settings/generation/active-extension-resources', async () => {
+    const active = resolveActivePresetExtensionResources(repositories);
+    return {
+      mode: active.mode,
+      primaryPreset: active.primaryPreset === null ? null : {
+        id: active.primaryPreset.id,
+        revision: active.primaryPreset.revision,
+        name: active.primaryPreset.name,
+        kind: active.primaryPreset.kind,
+      },
+      attachedExtensions: active.primaryPreset === null
+        ? attachedExtensionOverview([], {})
+        : attachedExtensionOverview(active.assets, active.primaryPreset.extensions),
+    };
+  });
   app.patch<{ Body: unknown }>('/api/settings/generation', async (request, reply) => {
     const parsed = PatchSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
