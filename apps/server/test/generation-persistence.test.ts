@@ -120,7 +120,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     const malformedPreview = (await requestPreview(app)).json();
     const malformedSnapshot = createSignedPayload(
       repositories, malformedPreview.snapshotId,
-      '018f1000-0000-7000-8000-000000000303', { schemaVersion: 3 },
+      '018f1000-0000-7000-8000-000000000303', { schemaVersion: 4 },
     );
     const malformed = await requestGeneration(app, malformedSnapshot.id);
     expect(malformed.statusCode).toBe(409);
@@ -138,7 +138,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(runtimeStates(repositories)).toEqual([]);
   });
 
-  it('replays the self-contained v3 artifact after tokenizer/compiler runtime becomes unavailable', async () => {
+  it('replays the self-contained v4 artifact after tokenizer/compiler runtime becomes unavailable', async () => {
     const provider = capturedProvider([{ type: 'completed', finishReason: 'stop' }]);
     let runtimeAvailable = true;
     let runtimeCalls = 0;
@@ -163,7 +163,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     const { app, repositories } = await createPromptIntegrationContext({ provider, tokenizerRuntime });
     seedFullPromptGraph(repositories, 'chat');
     const preview = (await requestPreview(app)).json();
-    expect(preview.schemaVersion).toBe(3);
+    expect(preview.schemaVersion).toBe(4);
     const callsAfterPreview = runtimeCalls;
     runtimeAvailable = false;
 

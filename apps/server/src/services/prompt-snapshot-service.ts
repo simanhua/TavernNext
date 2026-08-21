@@ -51,8 +51,8 @@ import {
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 3 as const;
-const EXECUTABLE_AUDIT_SCHEMA_VERSION = 3 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
 
 export interface ServerTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
@@ -91,6 +91,7 @@ export interface MessageRevisionRef extends RevisionRef {
 }
 
 export interface PromptEntityRevisionManifest {
+  globalGenerationConfig: RevisionRef;
   conversation: RevisionRef;
   character: RevisionRef;
   persona: RevisionRef;
@@ -194,6 +195,7 @@ type LoadedBook = LoadedPersistedBook | LoadedEmbeddedBook;
 
 interface LoadedAggregate {
   input: SnapshotInputPayload;
+  globalGenerationConfig: ReturnType<Repositories['globalGenerationConfig']['get']>;
   conversation: Conversation;
   character: Character;
   persona: Persona;
@@ -476,6 +478,33 @@ function runtimeStateFor(repositories: Repositories, conversationId: string): Wo
   }
 }
 
+function resolveGenerationBinding(
+  configuration: ReturnType<Repositories['globalGenerationConfig']['get']>,
+  conversation: Conversation,
+  providerMode?: ProviderProfile['apiMode'],
+): {
+  providerId: string | undefined;
+  presets: Array<{ id: string | undefined; kind: PresetKind }>;
+} {
+  const usesGlobalConfiguration = configuration.providerId !== null;
+  const providerId = usesGlobalConfiguration ? configuration.providerId ?? undefined : conversation.providerId;
+  const selected = (globalId: string | null, legacyId: string | undefined) => (
+    usesGlobalConfiguration ? globalId ?? undefined : legacyId
+  );
+  if (providerMode === undefined) return { providerId, presets: [] };
+  return {
+    providerId,
+    presets: providerMode === 'chat'
+      ? [{ id: selected(configuration.chatPresetId, conversation.presetId), kind: 'chat' }]
+      : [
+        { id: selected(configuration.textPresetId, conversation.presetId), kind: 'text' },
+        { id: selected(configuration.contextPresetId, conversation.contextPresetId), kind: 'context' },
+        { id: selected(configuration.instructPresetId, conversation.instructPresetId), kind: 'instruct' },
+        { id: selected(configuration.systemPresetId, conversation.systemPresetId), kind: 'system' },
+      ],
+  };
+}
+
 function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): LoadedAggregate {
   if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
     throw new PromptSnapshotError('invalid_user_text');
@@ -487,8 +516,10 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   const character = repositories.characters.get(conversation.characterId);
   const persona = repositories.personas.get(conversation.personaId);
   if (character === undefined || persona === undefined) throw new PromptSnapshotError('not_found');
-  if (conversation.providerId === undefined) throw new PromptSnapshotError('provider_not_configured');
-  const provider = repositories.providerProfiles.get(conversation.providerId);
+  const globalGenerationConfig = repositories.globalGenerationConfig.get();
+  const providerId = resolveGenerationBinding(globalGenerationConfig, conversation).providerId;
+  if (providerId === undefined) throw new PromptSnapshotError('provider_not_configured');
+  const provider = repositories.providerProfiles.get(providerId);
   if (provider === undefined) throw new PromptSnapshotError('provider_not_configured');
 
   const compatibilityWarnings: PromptWarning[] = [];
@@ -497,14 +528,8 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
-  const presets = provider.apiMode === 'chat'
-    ? [requestedPreset(repositories, conversation.presetId, 'chat', compatibilityWarnings)]
-    : [
-      requestedPreset(repositories, conversation.presetId, 'text', compatibilityWarnings),
-      requestedPreset(repositories, conversation.contextPresetId, 'context', compatibilityWarnings),
-      requestedPreset(repositories, conversation.instructPresetId, 'instruct', compatibilityWarnings),
-      requestedPreset(repositories, conversation.systemPresetId, 'system', compatibilityWarnings),
-    ];
+  const binding = resolveGenerationBinding(globalGenerationConfig, conversation, provider.apiMode);
+  const presets = binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings));
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -575,6 +600,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   };
   const globalWorldbooks = globalBooks.map(ref);
   const manifest: PromptEntityRevisionManifest = {
+    globalGenerationConfig: ref(globalGenerationConfig),
     conversation: ref(conversation),
     character: ref(character),
     persona: ref(persona),
@@ -592,6 +618,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
 
   return {
     input: snapshotInput,
+    globalGenerationConfig: deepJson(globalGenerationConfig),
     conversation: deepJson(conversation),
     character: deepJson(character),
     persona: deepJson(persona),
@@ -621,6 +648,8 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   const exact = (current: { id: string; revision: number } | undefined, expected: RevisionRef) => {
     if (current === undefined || current.id !== expected.id || current.revision !== expected.revision) stale();
   };
+  const globalGenerationConfig = repositories.globalGenerationConfig.get();
+  exact(globalGenerationConfig, manifest.globalGenerationConfig);
   const conversation = repositories.conversations.get(manifest.conversation.id);
   exact(conversation, manifest.conversation);
   const character = repositories.characters.get(manifest.character.id);
@@ -631,15 +660,8 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   if (conversation === undefined || character === undefined || provider === undefined
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
-    || conversation.providerId !== manifest.provider.id) stale();
-  const configuredPresets: Array<{ id: string | undefined; kind: PresetKind }> = provider.apiMode === 'chat'
-    ? [{ id: conversation.presetId, kind: 'chat' }]
-    : [
-      { id: conversation.presetId, kind: 'text' },
-      { id: conversation.contextPresetId, kind: 'context' },
-      { id: conversation.instructPresetId, kind: 'instruct' },
-      { id: conversation.systemPresetId, kind: 'system' },
-    ];
+    || resolveGenerationBinding(globalGenerationConfig, conversation).providerId !== manifest.provider.id) stale();
+  const configuredPresets = resolveGenerationBinding(globalGenerationConfig, conversation, provider.apiMode).presets;
   if (configuredPresets.some(({ id }) => id === undefined)
     || !sameCanonical(
       manifest.presets.map(({ id, kind }) => ({ id, kind })),
@@ -1066,6 +1088,7 @@ function isRevisionRef(value: unknown): value is RevisionRef {
 
 function isManifest(value: unknown): value is PromptEntityRevisionManifest {
   if (!record(value)
+    || !isRevisionRef(value.globalGenerationConfig)
     || !isRevisionRef(value.conversation)
     || !isRevisionRef(value.character)
     || !isRevisionRef(value.persona)
@@ -1075,7 +1098,7 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     || !Array.isArray(value.worldbooks)
     || !Array.isArray(value.messages)
     || !hasOnlyKeys(value, [
-      'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
+      'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
       'worldbooks', 'messages', 'runtimeState',
     ])) return false;
   if (!value.presets.every((item) => record(item)

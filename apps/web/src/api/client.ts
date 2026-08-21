@@ -198,6 +198,7 @@ export interface PromptPreviewView {
   previousTimedState?: PromptTimedStateView;
   warnings: Array<{ code: string; message: string; source?: string }>;
   entityRevisions: {
+    globalGenerationConfig: { revision: number };
     conversation: { revision: number };
     character: { revision: number };
     persona: { revision: number };
@@ -220,6 +221,7 @@ interface PromptPreviewResponse extends Omit<PromptPreviewView, 'worldbook' | 'p
   worldbook: Omit<PromptPreviewView['worldbook'], 'timedState'> & { timedState: PromptTimedStateResponse };
   previousTimedState?: PromptTimedStateResponse;
   entityRevisions: {
+    globalGenerationConfig: { id?: string; revision: number };
     conversation: { id?: string; revision: number };
     character: { id?: string; revision: number };
     persona: { id?: string; revision: number };
@@ -459,6 +461,7 @@ function projectPromptPreview(response: PromptPreviewResponse): PromptPreviewVie
     ...(response.previousTimedState === undefined ? {} : { previousTimedState: projectTimedState(response.previousTimedState) }),
     warnings: response.warnings.map(({ code, message, source }) => ({ code, message, ...(source === undefined ? {} : { source }) })),
     entityRevisions: {
+      globalGenerationConfig: { revision: revisions.globalGenerationConfig.revision },
       conversation: { revision: revisions.conversation.revision },
       character: { revision: revisions.character.revision },
       persona: { revision: revisions.persona.revision },
@@ -576,22 +579,12 @@ export const api = {
     characterId: string;
     personaId: string;
     title: string;
-    providerId: string;
-    presetId: string;
-    contextPresetId?: string;
-    instructPresetId?: string;
-    systemPresetId?: string;
     maxPromptTokens: number;
     maxResponseTokens: number;
   }) => request<Conversation>('/api/conversations', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
   }),
-  updateConversationConfiguration: (conversation: Conversation, patch: {
-    providerId: string;
-    presetId: string;
-    contextPresetId?: string;
-    instructPresetId?: string;
-    systemPresetId?: string;
+  updateConversationSettings: (conversation: Conversation, patch: {
     maxPromptTokens: number;
     maxResponseTokens: number;
   }) => request<Conversation>(`/api/conversations/${conversation.id}`, {

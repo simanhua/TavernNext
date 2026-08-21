@@ -62,6 +62,7 @@ const server = setupServer(
       },
       warnings: [{ code: 'compatibility_warning', message: 'A future field is preserved.', source: 'character' }],
       entityRevisions: {
+        globalGenerationConfig: { id: '018f0000-0000-7000-8000-000000000001', revision: 0 },
         conversation: { id: conversation.id, revision: 7 },
         character: { id: conversation.characterId, revision: 2 },
         persona: { id: conversation.personaId, revision: 1 },
