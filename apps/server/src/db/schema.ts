@@ -49,6 +49,20 @@ export const providerProfiles = sqliteTable('provider_profiles', {
 export const globalGenerationConfigurations = sqliteTable('global_generation_config', {
   ...entityColumns,
 });
+export const extensionAssets = sqliteTable('extension_assets', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+  kind: text('kind').notNull(),
+  sourceKey: text('source_key').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+}, (table) => [
+  index('extension_assets_owner_kind_id_idx').on(table.ownerKind, table.ownerId),
+  index('extension_assets_owner_kind_id_kind_ordinal_idx').on(
+    table.ownerKind, table.ownerId, table.kind, table.ordinal,
+  ),
+]);
 export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),

@@ -5,6 +5,7 @@ import type { ZodType } from 'zod';
 import {
   CharacterSchema,
   ConversationSchema,
+  ExtensionAssetSchema,
   GenerationSnapshotSchema,
   GLOBAL_GENERATION_CONFIG_ID,
   GlobalGenerationConfigSchema,
@@ -19,6 +20,8 @@ import {
   WorldbookSchema,
   type Character,
   type Conversation,
+  type ExtensionAsset,
+  type ExtensionOwnerKind,
   type GenerationSnapshot,
   type GlobalGenerationConfig,
   type GlobalGenerationSelection,
@@ -36,6 +39,7 @@ import {
   characters,
   conversationWorldbooks,
   conversations,
+  extensionAssets,
   generationSnapshots,
   globalGenerationConfigurations,
   importArtifacts,
@@ -54,6 +58,7 @@ import {
   createSnapshotIntegrityTag,
   verifySnapshotIntegrityTag,
 } from './snapshot-integrity.js';
+import { assertExtensionAssetLimit, MAX_EXTENSION_ASSETS_PER_OWNER } from '../extension-assets.js';
 
 export const MAX_MESSAGES_PER_CONVERSATION = 2048;
 export const MAX_VARIANTS_PER_RELATION = 4096;
@@ -64,7 +69,8 @@ export type RelationshipLimitCode =
   | 'message_relation_limit'
   | 'variant_relation_limit'
   | 'worldbook_entry_relation_limit'
-  | 'global_worldbook_relation_limit';
+  | 'global_worldbook_relation_limit'
+  | 'extension_asset_relation_limit';
 
 export class RelationshipLimitError extends Error {
   constructor(readonly code: RelationshipLimitCode) {
@@ -98,7 +104,8 @@ type DefaultedField =
   | 'characterFilter' | 'personaFilter' | 'matchPersonaDescription' | 'matchCharacterDescription'
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
-  | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries';
+  | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
+  | 'diagnostics';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -148,6 +155,11 @@ export interface AvatarAssetRepository {
   put(value: AvatarAsset): void;
   deleteOwned(path: string, kind: AvatarAssetKind, ownerId: string): boolean;
   deleteByOwner(kind: AvatarAssetKind, ownerId: string): number;
+}
+
+export interface ExtensionAssetRepository extends Repository<ExtensionAsset> {
+  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionAsset[];
+  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
 }
 
 export interface MessageRepository extends Repository<Message> {
@@ -351,6 +363,51 @@ function createAvatarAssetRepository(database: TavernDatabase): AvatarAssetRepos
       return database.sqlite.prepare(
         'DELETE FROM avatar_assets WHERE kind = ? AND owner_id = ?',
       ).run(kind, ownerId).changes;
+    },
+  };
+}
+
+function createExtensionAssetRepository(database: TavernDatabase): ExtensionAssetRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionAssets),
+    schema: ExtensionAssetSchema,
+    toRow: (value: ExtensionAsset) => ({
+      ...baseRow(value),
+      ownerKind: value.ownerKind,
+      ownerId: value.ownerId,
+      kind: value.kind,
+      sourceKey: value.sourceKey,
+      ordinal: value.ordinal,
+      enabled: value.enabled,
+    }),
+  });
+  return {
+    ...base,
+    create(input) {
+      const current = database.sqlite.prepare(
+        'SELECT COUNT(*) AS count FROM extension_assets WHERE owner_kind = ? AND owner_id = ?',
+      ).get(input.ownerKind, input.ownerId);
+      assertExtensionAssetLimit(Number(current?.count ?? 0) + 1);
+      return base.create(input);
+    },
+    listByOwner(ownerKind, ownerId) {
+      const rows = database.orm.select({ payload: extensionAssets.payload })
+        .from(extensionAssets)
+        .where(and(eq(extensionAssets.ownerKind, ownerKind), eq(extensionAssets.ownerId, ownerId)))
+        .orderBy(asc(extensionAssets.kind), asc(extensionAssets.ordinal), asc(extensionAssets.id))
+        .limit(MAX_EXTENSION_ASSETS_PER_OWNER + 1)
+        .all();
+      if (rows.length > MAX_EXTENSION_ASSETS_PER_OWNER) {
+        throw new RelationshipLimitError('extension_asset_relation_limit');
+      }
+      return rows.map((row) => ExtensionAssetSchema.parse(row.payload));
+    },
+    deleteByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_assets WHERE owner_kind = ? AND owner_id = ?',
+      ).run(ownerKind, ownerId).changes;
+      database.persist();
+      return changes;
     },
   };
 }
@@ -625,6 +682,7 @@ export interface Repositories {
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
   avatarAssets: AvatarAssetRepository;
+  extensionAssets: ExtensionAssetRepository;
 }
 
 export interface CreateRepositoriesOptions {
@@ -754,5 +812,6 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
     avatarAssets: createAvatarAssetRepository(database),
+    extensionAssets: createExtensionAssetRepository(database),
   };
 }

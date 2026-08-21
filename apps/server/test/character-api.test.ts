@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -70,6 +71,61 @@ async function v3Bytes(): Promise<Uint8Array> {
   }));
 }
 
+function attachedResourceCardBytes(): Uint8Array {
+  return encoder.encode(JSON.stringify({
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    untouched_top_level: { keep: 'top' },
+    data: {
+      name: 'Attached resource fixture',
+      description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '',
+      alternate_greetings: [], tags: [], creator: '', character_version: '',
+      extensions: {
+        untouched_extension: { keep: ['unknown', 42] },
+        regex_scripts: [
+          { id: 'regex-one', scriptName: 'First regex', disabled: false, findRegex: '/one/g', replaceString: '1' },
+          { id: 'regex-two', scriptName: 'Second regex', disabled: true, findRegex: '/two/g', replaceString: '2' },
+        ],
+        tavern_helper: [
+          ['scripts', [
+            {
+              type: 'folder', id: 'folder-one', name: 'Folder one', enabled: true,
+              children: [{
+                type: 'script', id: 'nested-script', name: 'Nested script', enabled: false,
+                content: 'globalThis.__tavernNextImportExecuted = true;', info: 'nested', button: {}, data: {},
+              }],
+            },
+            {
+              type: 'script', id: 'top-script', name: 'Top script', enabled: true,
+              content: 'globalThis.__tavernNextImportExecuted = true;', info: 'top', button: {}, data: {},
+            },
+          ]],
+          ['variables', { seed: { value: 7 } }],
+        ],
+      },
+    },
+  }));
+}
+
+function regexLimitCardBytes(name: string, count: number): Uint8Array {
+  return encoder.encode(JSON.stringify({
+    spec: 'chara_card_v3', spec_version: '3.0',
+    data: {
+      name,
+      description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '',
+      alternate_greetings: [], tags: [], creator: '', character_version: '',
+      extensions: {
+        regex_scripts: Array.from({ length: count }, (_, ordinal) => ({
+          id: `limit-regex-${ordinal}`, scriptName: `Limit regex ${ordinal}`,
+          findRegex: '/x/g', replaceString: 'y', disabled: false,
+        })),
+      },
+    },
+  }));
+}
+
 async function inspectAndCommit(app: ReturnType<typeof createApp>) {
   const inspected = await app.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('aster.v3.json', await v3Bytes()) });
   expect(inspected.statusCode).toBe(200);
@@ -91,6 +147,139 @@ async function inspectAndCommit(app: ReturnType<typeof createApp>) {
 }
 
 describe('typed Character import and export API', () => {
+  it('normalizes attached resources without executing code and round-trips unknown extensions', async () => {
+    const { app, repositories } = await context();
+    delete (globalThis as Record<string, unknown>).__tavernNextImportExecuted;
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('attached.v3.json', attachedResourceCardBytes()),
+    });
+
+    expect(inspected.statusCode).toBe(200);
+    expect(inspected.json().normalizedPreview.attachedExtensions).toMatchObject({
+      execution: 'not_executed',
+      counts: { regex: 2, scripts: 2, folders: 1, variableContainers: 1 },
+      variables: [{ source: 'tavern_helper.variables', keyCount: 1, diagnostics: [] }],
+    });
+    const committed = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+    });
+    expect(committed.statusCode).toBe(201);
+    expect((globalThis as Record<string, unknown>).__tavernNextImportExecuted).toBeUndefined();
+
+    const id = committed.json().entityId as string;
+    const detail = (await app.inject({ method: 'GET', url: `/api/characters/${id}` })).json();
+    expect(detail.attachedExtensions).toMatchObject({
+      execution: 'not_executed',
+      counts: { regex: 2, scripts: 2, folders: 1, variableContainers: 1 },
+      resources: [
+        { type: 'regex', order: [0], name: 'First regex', enabled: true, diagnostics: [] },
+        { type: 'regex', order: [1], name: 'Second regex', enabled: false, diagnostics: [] },
+        { type: 'folder', order: [0], name: 'Folder one', enabled: true, diagnostics: [] },
+        { type: 'script', order: [0, 0], name: 'Nested script', enabled: false, diagnostics: [] },
+        { type: 'script', order: [1], name: 'Top script', enabled: true, diagnostics: [] },
+      ],
+    });
+    expect(repositories.extensionAssets.listByOwner('character', id)).toHaveLength(4);
+
+    const exported = await app.inject({ method: 'GET', url: `/api/characters/${id}/export?format=json-v3` });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject({
+      untouched_top_level: { keep: 'top' },
+      data: { extensions: {
+        untouched_extension: { keep: ['unknown', 42] },
+        tavern_helper: {
+          scripts: [
+            { type: 'folder', name: 'Folder one', children: [{ type: 'script', name: 'Nested script' }] },
+            { type: 'script', name: 'Top script' },
+          ],
+          variables: { seed: { value: 7 } },
+        },
+      } },
+    });
+    expect(Array.isArray(exported.json().data.extensions.tavern_helper)).toBe(false);
+
+    const reinspected = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('round-trip.v3.json', exported.rawPayload),
+    });
+    expect(reinspected.statusCode).toBe(200);
+    expect(reinspected.json().normalizedPreview.attachedExtensions).toEqual(
+      inspected.json().normalizedPreview.attachedExtensions,
+    );
+    const recommitted = await app.inject({
+      method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: reinspected.json().inspectionToken },
+    });
+    const secondDetail = (await app.inject({
+      method: 'GET', url: `/api/characters/${recommitted.json().entityId as string}`,
+    })).json();
+    expect(secondDetail.attachedExtensions).toEqual(detail.attachedExtensions);
+    expect((globalThis as Record<string, unknown>).__tavernNextImportExecuted).toBeUndefined();
+
+    const removed = await app.inject({ method: 'DELETE', url: `/api/characters/${id}?revision=0` });
+    expect(removed.statusCode).toBe(204);
+    expect(repositories.extensionAssets.listByOwner('character', id)).toEqual([]);
+  });
+
+  it('accepts 2,048 resources and atomically rejects 2,049 with a stable limit error', async () => {
+    const { app, repositories } = await context();
+    const acceptedInspection = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('accepted-limit.v3.json', regexLimitCardBytes('Accepted limit', 2_048)),
+    });
+    expect(acceptedInspection.statusCode).toBe(200);
+    const accepted = await app.inject({
+      method: 'POST', url: '/api/imports/commit',
+      payload: { inspectionToken: acceptedInspection.json().inspectionToken },
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(repositories.extensionAssets.listByOwner('character', accepted.json().entityId as string)).toHaveLength(2_048);
+
+    const rejectedInspection = await app.inject({
+      method: 'POST', url: '/api/imports/inspect',
+      ...multipart('rejected-limit.v3.json', regexLimitCardBytes('Rejected limit', 2_049)),
+    });
+    expect(rejectedInspection.statusCode).toBe(200);
+    const rejected = await app.inject({
+      method: 'POST', url: '/api/imports/commit',
+      payload: { inspectionToken: rejectedInspection.json().inspectionToken },
+    });
+    expect(rejected.statusCode).toBe(422);
+    expect(rejected.json()).toEqual({ error: 'extension_asset_relation_limit' });
+    expect(repositories.characters.list().map((character) => character.name)).toEqual(['Accepted limit']);
+    expect(repositories.extensionAssets.list()).toHaveLength(2_048);
+    expect(repositories.importArtifacts.list()).toHaveLength(1);
+  }, 30_000);
+
+  it.runIf(existsSync(join(import.meta.dirname, '..', '..', '..', 'example-role-card', 'v4.2.1.png')))(
+    'recognizes the local v4.2.1 acceptance card without executing its scripts',
+    async () => {
+      const { app } = await context();
+      const path = join(import.meta.dirname, '..', '..', '..', 'example-role-card', 'v4.2.1.png');
+      const inspected = await app.inject({
+        method: 'POST', url: '/api/imports/inspect',
+        ...multipart('v4.2.1.png', await readFile(path), 'image/png'),
+      });
+      expect(inspected.statusCode).toBe(200);
+      expect(inspected.json().normalizedPreview.attachedExtensions).toMatchObject({
+        execution: 'not_executed',
+        counts: { regex: 12, scripts: 6, variableContainers: 1 },
+      });
+      const committed = await app.inject({
+        method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: inspected.json().inspectionToken },
+      });
+      expect(committed.statusCode).toBe(201);
+      const detail = (await app.inject({
+        method: 'GET', url: `/api/characters/${committed.json().entityId as string}`,
+      })).json();
+      expect(detail.attachedExtensions).toMatchObject({
+        execution: 'not_executed',
+        counts: { regex: 12, scripts: 6, variableContainers: 1 },
+      });
+    },
+    30_000,
+  );
+
   it('registers the Character handler by default and atomically commits a normalized row plus source artifact', async () => {
     const { app, repositories } = await context();
     const { committed } = await inspectAndCommit(app);

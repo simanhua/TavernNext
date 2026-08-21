@@ -36,6 +36,10 @@ function revisionFrom(value: unknown): number | undefined {
 }
 
 export function registerCharacterRoutes(app: FastifyInstance, database: TavernDatabase, repositories: Repositories): void {
+  const detail = (character: Parameters<typeof characterDetail>[0]) => characterDetail(
+    character,
+    repositories.extensionAssets.listByOwner('character', character.id),
+  );
   app.get('/api/characters', async (_request, reply) => {
     const rows = repositories.characters.list(MAX_MANAGER_ROWS + 1);
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
@@ -43,13 +47,13 @@ export function registerCharacterRoutes(app: FastifyInstance, database: TavernDa
   });
   app.get<{ Params: { id: string } }>('/api/characters/:id', async (request, reply) => {
     const value = repositories.characters.get(request.params.id);
-    return value === undefined ? reply.status(404).send({ error: 'not_found' }) : characterDetail(value);
+    return value === undefined ? reply.status(404).send({ error: 'not_found' }) : detail(value);
   });
   app.post<{ Body: unknown }>('/api/characters', async (request, reply) => {
     const parsed = CharacterCreateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     try {
-      return reply.status(201).send(characterDetail(repositories.characters.create(parsed.data)));
+      return reply.status(201).send(detail(repositories.characters.create(parsed.data)));
     } catch {
       return reply.status(400).send({ error: 'invalid_request' });
     }
@@ -63,7 +67,7 @@ export function registerCharacterRoutes(app: FastifyInstance, database: TavernDa
         ? { ...fields, worldbookId: undefined }
         : worldbookId === undefined ? fields : { ...fields, worldbookId };
       const result = repositories.characters.update(request.params.id, parsed.data.revision, patch);
-      if (result.ok) return reply.send(characterDetail(result.value));
+      if (result.ok) return reply.send(detail(result.value));
       return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
     } catch {
       return reply.status(400).send({ error: 'invalid_request' });
@@ -80,7 +84,10 @@ export function registerCharacterRoutes(app: FastifyInstance, database: TavernDa
       try {
         const result = database.transaction(() => {
           const deletion = repositories.characters.delete(request.params.id, revision);
-          if (deletion.ok) repositories.avatarAssets.deleteByOwner('characters', request.params.id);
+          if (deletion.ok) {
+            repositories.avatarAssets.deleteByOwner('characters', request.params.id);
+            repositories.extensionAssets.deleteByOwner('character', request.params.id);
+          }
           return deletion;
         });
         if (result.ok) return reply.status(204).send();

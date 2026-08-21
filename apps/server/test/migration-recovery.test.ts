@@ -128,6 +128,12 @@ describe('migration backup and recovery', () => {
     const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
     const character = repositories.characters.create({
       id: '018f0000-0000-7000-8000-000000001701', name: 'Kept Character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+      extensions: {
+        regex_scripts: [{ id: 'kept-regex', scriptName: 'Kept regex', findRegex: '/x/g', replaceString: 'y' }],
+        tavern_helper: [['scripts', [{
+          id: 'kept-script', type: 'script', name: 'Kept script', enabled: true, content: 'return 1;',
+        }]], ['variables', { kept: true }]],
+      },
     });
     const persona = repositories.personas.create({
       id: '018f0000-0000-7000-8000-000000001702', name: 'Kept Persona', description: '', isDefault: true,
@@ -245,6 +251,11 @@ describe('migration backup and recovery', () => {
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbooks').get()).toEqual({ count: 1 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbook_entries').get()).toEqual({ count: 1 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM import_artifacts').get()).toEqual({ count: 1 });
+    expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM extension_assets').get()).toEqual({ count: 2 });
+    const migratedCharacter = JSON.parse(String(
+      migrated.sqlite.prepare('SELECT payload FROM characters WHERE id = ?').get(character.id)!.payload,
+    )) as Record<string, unknown>;
+    expect(Array.isArray((migratedCharacter.extensions as Record<string, unknown>).tavern_helper)).toBe(false);
     expect(migrated.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => column.name)).not.toEqual(
       expect.arrayContaining(['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']),
     );
@@ -282,7 +293,7 @@ describe('migration backup and recovery', () => {
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
-          schemaVersion: 11,
+          schemaVersion: 12,
           checkpoint: 'wal_checkpointed',
           database: {
             bytes: checkpointedDatabase.byteLength,
@@ -323,7 +334,7 @@ describe('migration backup and recovery', () => {
     expect(newest).toMatchObject({
       formatVersion: 1,
       kind: 'pre_migration',
-      schemaVersion: 11,
+      schemaVersion: 12,
       database: {
         file: basename(config.databasePath),
       },
@@ -471,6 +482,52 @@ describe('migration backup and recovery', () => {
     const [backup] = await backupDirectories(directory);
     const metadata = JSON.parse(await readFile(join(backup!, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
     expect(metadata.schemaVersion).toBeNull();
+  });
+
+  it('keeps the verified backup and rolls back schema 11 when Character resources exceed the owner limit', async () => {
+    const directory = await temporaryDirectory();
+    const config = {
+      host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'tavernnext.sqlite'),
+    };
+    const database = createDatabase(config.databasePath);
+    migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000001799',
+      name: 'Oversized attached resources', description: '', personality: '', scenario: '', firstMessage: '',
+      alternateGreetings: [], tags: [],
+      extensions: {
+        regex_scripts: Array.from({ length: 2_049 }, (_, ordinal) => ({
+          id: `oversized-${ordinal}`, scriptName: `Oversized ${ordinal}`,
+          findRegex: '/x/g', replaceString: 'y',
+        })),
+      },
+    });
+    database.sqlite.exec('DELETE FROM extension_assets; UPDATE tavernnext_schema_version SET version = 11;');
+    database.close();
+
+    const app = createApp({
+      config,
+      snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
+      backupClock: () => new Date('2026-08-22T00:30:00.000Z'),
+    });
+    apps.push(app);
+    await app.ready();
+
+    expect(app.startupMigrationResult).toBe('read_only_migration_failed');
+    expect((await app.inject({ method: 'GET', url: '/api/health' })).json()).toMatchObject({
+      status: 'warning',
+      backup: { kind: 'pre_migration', path: expect.any(String) },
+    });
+    expect(await backupDirectories(directory)).toHaveLength(1);
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+
+    const rolledBack = createDatabase(config.databasePath);
+    expect(rolledBack.sqlite.prepare('SELECT version FROM tavernnext_schema_version').get()).toEqual({ version: 11 });
+    expect(rolledBack.sqlite.prepare('SELECT COUNT(*) AS count FROM extension_assets').get()).toEqual({ count: 0 });
+    expect(rolledBack.sqlite.prepare('SELECT COUNT(*) AS count FROM characters').get()).toEqual({ count: 1 });
+    rolledBack.close();
   });
 
   it('holds exclusive application ownership from startup until close', async () => {

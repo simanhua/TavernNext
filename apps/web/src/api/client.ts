@@ -29,6 +29,21 @@ export interface CharacterSummaryView extends MutableView {
   compatibilitySummary?: CompatibilitySummary;
 }
 
+export interface AttachedExtensionOverviewView {
+  execution: 'not_executed';
+  counts: { regex: number; scripts: number; folders: number; variableContainers: number };
+  resources: Array<{
+    type: 'regex' | 'script' | 'folder' | 'unknown';
+    order: number[];
+    sourceKey: string;
+    name: string;
+    enabled: boolean;
+    diagnostics: string[];
+  }>;
+  variables: Array<{ source: string; keyCount: number; diagnostics: string[] }>;
+  diagnostics: string[];
+}
+
 export interface CharacterView extends CharacterSummaryView {
   description: string;
   personality: string;
@@ -44,9 +59,10 @@ export interface CharacterView extends CharacterSummaryView {
   alternateGreetings: string[];
   tags: string[];
   worldbookId?: string;
+  attachedExtensions: AttachedExtensionOverviewView;
 }
 
-type CharacterWritableView = Omit<CharacterView, keyof MutableView | 'avatarUrl' | 'compatibilitySummary'>;
+type CharacterWritableView = Omit<CharacterView, keyof MutableView | 'avatarUrl' | 'compatibilitySummary' | 'attachedExtensions'>;
 type CharacterPatchView = Partial<Omit<CharacterWritableView, 'worldbookId'>> & { worldbookId?: string | null };
 
 export interface PersonaView extends MutableView {

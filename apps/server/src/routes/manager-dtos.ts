@@ -1,13 +1,16 @@
 import type {
   Character,
   CompatibilityMetadata,
+  ExtensionAsset,
   Persona,
   Preset,
   Worldbook,
   WorldbookEntry,
 } from '@tavernnext/domain';
 import {
+  attachedExtensionOverview,
   executablePresetFields,
+  normalizeAttachedExtensions,
   presetSettingsForExecution,
   validatePresetFamily,
 } from '@tavernnext/st-compat';
@@ -49,7 +52,18 @@ export function characterSummary(character: Character) {
   };
 }
 
-export function characterDetail(character: Character) {
+export function characterDetail(character: Character, extensionAssets: readonly ExtensionAsset[] = []) {
+  const normalizedExtensions = normalizeAttachedExtensions(character.extensions);
+  const persistedOverview = extensionAssets.length === 0
+    ? normalizedExtensions.overview
+    : attachedExtensionOverview(extensionAssets, normalizedExtensions.extensions);
+  const attachedExtensions = {
+    ...persistedOverview,
+    diagnostics: [...new Set([
+      ...normalizedExtensions.overview.diagnostics,
+      ...persistedOverview.diagnostics,
+    ])],
+  };
   return {
     ...characterSummary(character),
     description: character.description,
@@ -65,6 +79,7 @@ export function characterDetail(character: Character) {
     depthPrompt: character.depthPrompt,
     alternateGreetings: [...character.alternateGreetings],
     tags: [...character.tags],
+    attachedExtensions,
     ...(character.worldbookId === undefined ? {} : { worldbookId: character.worldbookId }),
   };
 }

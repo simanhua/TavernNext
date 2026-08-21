@@ -120,6 +120,19 @@ export const PresetSchema = MutableEntitySchema.extend({
   settings: z.record(z.string(), z.unknown()).default({}),
 }).extend(WithCompatibilitySchema.shape);
 
+export const ExtensionOwnerKindSchema = z.enum(['character', 'preset']);
+export const ExtensionAssetKindSchema = z.enum(['regex', 'tavern_helper']);
+export const ExtensionAssetSchema = MutableEntitySchema.extend({
+  ownerKind: ExtensionOwnerKindSchema,
+  ownerId: DomainIdSchema,
+  kind: ExtensionAssetKindSchema,
+  sourceKey: z.string().min(1),
+  ordinal: z.number().int().nonnegative(),
+  enabled: z.boolean(),
+  payload: z.unknown(),
+  diagnostics: z.array(z.string()).default([]),
+});
+
 export const GLOBAL_GENERATION_CONFIG_ID = '018f0000-0000-7000-8000-000000000001' as const;
 export const GlobalGenerationSelectionSchema = z.object({
   providerId: DomainIdSchema.nullable(),
@@ -206,6 +219,9 @@ export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
 });
 
 export type Character = z.infer<typeof CharacterSchema>;
+export type ExtensionOwnerKind = z.infer<typeof ExtensionOwnerKindSchema>;
+export type ExtensionAssetKind = z.infer<typeof ExtensionAssetKindSchema>;
+export type ExtensionAsset = z.infer<typeof ExtensionAssetSchema>;
 export type Persona = z.infer<typeof PersonaSchema>;
 export type Worldbook = z.infer<typeof WorldbookSchema>;
 export type WorldbookEntry = z.infer<typeof WorldbookEntrySchema>;

@@ -3,11 +3,13 @@ import {
   decodeEmbeddedCharacterBook,
   decodeInspectedCharacter,
   diagnostic,
+  normalizeAttachedExtensions,
   type DecodedWorldbookArtifact,
   WorldbookCodecError,
   WorldbookValidationError,
 } from '@tavernnext/st-compat';
 import type { ImportHandler } from './import-service.js';
+import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { persistDecodedWorldbook } from './worldbook-import-handler.js';
 import { sanitizePublicPng, validatePngRaster } from './avatar-png.js';
 
@@ -72,10 +74,17 @@ export function createCharacterImportHandler(): ImportHandler {
         const avatarBytes = decoded.avatar?.bytes ?? decoded.sourcePng;
         if (avatarBytes !== undefined && avatarExtension(avatarBytes) === 'png') validatePngRaster(avatarBytes);
         const worldbook = decoded.character === null ? undefined : embeddedWorldbook(decoded.character);
+        const attached = decoded.character === null ? undefined : normalizeAttachedExtensions(decoded.character.extensions);
+        const normalizedCharacter = decoded.character === null || attached === undefined
+          ? null
+          : {
+              ...decoded.character,
+              extensions: attached.extensions,
+              attachedExtensions: attached.overview,
+              ...(worldbook === undefined ? {} : { characterBook: worldbook.worldbook }),
+            };
         return {
-          normalizedPreview: decoded.character === null || worldbook === undefined
-            ? decoded.character
-            : { ...decoded.character, characterBook: worldbook.worldbook },
+          normalizedPreview: normalizedCharacter,
           warnings: worldbook?.warnings ?? [],
           blockingErrors: decoded.character === null
             ? [diagnostic('character_card_invalid', 'Character Card has no normalized fields.')]
@@ -107,6 +116,8 @@ export function createCharacterImportHandler(): ImportHandler {
       );
       const character = decoded.character;
       if (character === null) throw new Error('Character Card has no normalized fields');
+      const attached = normalizeAttachedExtensions(character.extensions);
+      assertExtensionAssetLimit(attached.assets.length);
       const embedded = embeddedWorldbook(character);
       const worldbook = embedded === undefined
         ? undefined
@@ -153,10 +164,10 @@ export function createCharacterImportHandler(): ImportHandler {
         creatorNotes: character.creatorNotes,
         creator: character.creator,
         characterVersion: character.characterVersion,
-        depthPrompt: characterDepthPrompt(character.extensions),
+        depthPrompt: characterDepthPrompt(attached.extensions),
         alternateGreetings: character.alternateGreetings,
         tags: character.tags,
-        extensions: structuredClone(character.extensions),
+        extensions: structuredClone(attached.extensions),
         ...(character.characterBook === undefined ? {} : { characterBook: character.characterBook }),
         ...(worldbook === undefined ? {} : { worldbookId: worldbook.id }),
         ...(avatarStoredPath === undefined ? {} : { avatarPath: avatarStoredPath }),
@@ -171,6 +182,19 @@ export function createCharacterImportHandler(): ImportHandler {
           parserVersion: '1',
         },
       });
+      for (const asset of attached.assets) {
+        context.repositories.extensionAssets.create({
+          id: randomUUID(),
+          ownerKind: 'character',
+          ownerId: value.id,
+          kind: asset.kind,
+          sourceKey: asset.sourceKey,
+          ordinal: asset.ordinal,
+          enabled: asset.enabled,
+          payload: asset.payload,
+          diagnostics: asset.diagnostics,
+        });
+      }
       return {
         entityId: value.id,
         ...(sourcePngPath === undefined ? {} : { preservedArtifactPath: sourcePngPath }),
