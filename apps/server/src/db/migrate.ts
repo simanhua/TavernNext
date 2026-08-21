@@ -1,6 +1,7 @@
 import type { TavernDatabase } from './client.js';
+import { GLOBAL_GENERATION_CONFIG_ID } from '@tavernnext/domain';
 
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 export function readSchemaVersion(database: TavernDatabase): number | null {
   try {
@@ -31,6 +32,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, active_variant_id TEXT REFERENCES message_variants(id), role TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS global_generation_config (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
@@ -232,6 +234,27 @@ function backfillCharacterDepthPrompt(database: TavernDatabase): void {
   `);
 }
 
+function seedGlobalGenerationConfig(database: TavernDatabase): void {
+  const now = new Date().toISOString();
+  const payload = JSON.stringify({
+    id: GLOBAL_GENERATION_CONFIG_ID,
+    revision: 0,
+    createdAt: now,
+    updatedAt: now,
+    providerId: null,
+    chatPresetId: null,
+    textPresetId: null,
+    contextPresetId: null,
+    instructPresetId: null,
+    systemPresetId: null,
+    selectionNotice: null,
+  });
+  database.sqlite.prepare(`
+    INSERT OR IGNORE INTO global_generation_config (id, revision, created_at, updated_at, payload)
+    VALUES (?, 0, ?, ?, ?)
+  `).run(GLOBAL_GENERATION_CONFIG_ID, now, now, payload);
+}
+
 export function migrateDatabase(database: TavernDatabase): void {
   // SQLite requires this pragma to be changed outside a transaction. It is restored in finally,
   // while all schema/data changes and the schema-version write happen in one durable transaction.
@@ -248,6 +271,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       addVariantColumns(database);
       backfillCharacterDepthPrompt(database);
       backfillConversationWorldbooks(database);
+      seedGlobalGenerationConfig(database);
       database.sqlite.exec(indexes);
       database.sqlite.exec(`DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION});`);
     });

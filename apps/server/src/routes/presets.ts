@@ -3,6 +3,7 @@ import { PresetKindSchema } from '@tavernnext/domain';
 import { executablePresetFields, textSettingAliases, validatePresetFamily } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { presetDetail, presetSummary, safePresetSettings } from './manager-dtos.js';
 
@@ -115,7 +116,7 @@ function revisionFrom(value: unknown): number | undefined {
   return undefined;
 }
 
-export function registerPresetRoutes(app: FastifyInstance, repositories: Repositories): void {
+export function registerPresetRoutes(app: FastifyInstance, database: TavernDatabase, repositories: Repositories): void {
   app.get('/api/presets', async (_request, reply) => {
     const rows = repositories.presets.list(MAX_MANAGER_ROWS + 1);
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
@@ -191,7 +192,11 @@ export function registerPresetRoutes(app: FastifyInstance, repositories: Reposit
       const revision = revisionFrom(request.query.revision ?? bodyRevision);
       if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
       try {
-        const result = repositories.presets.delete(request.params.id, revision);
+        const result = database.transaction(() => {
+          const deleted = repositories.presets.delete(request.params.id, revision);
+          if (deleted.ok) repositories.globalGenerationConfig.clearPreset(request.params.id);
+          return deleted;
+        });
         if (result.ok) return reply.status(204).send();
         return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
       } catch {

@@ -6,6 +6,8 @@ import {
   CharacterSchema,
   ConversationSchema,
   GenerationSnapshotSchema,
+  GLOBAL_GENERATION_CONFIG_ID,
+  GlobalGenerationConfigSchema,
   ImportArtifactSchema,
   MessageSchema,
   MessageVariantSchema,
@@ -18,6 +20,8 @@ import {
   type Character,
   type Conversation,
   type GenerationSnapshot,
+  type GlobalGenerationConfig,
+  type GlobalGenerationSelection,
   type ImportArtifact,
   type Message,
   type MessageVariant,
@@ -33,6 +37,7 @@ import {
   conversationWorldbooks,
   conversations,
   generationSnapshots,
+  globalGenerationConfigurations,
   importArtifacts,
   messages,
   messageVariants,
@@ -156,6 +161,13 @@ export interface MessageVariantRepository extends Repository<MessageVariant> {
 
 export interface ConversationRepository extends Repository<Conversation> {
   createWithGreeting(input: CreateInput<Conversation>): Conversation;
+}
+
+export interface GlobalGenerationConfigRepository {
+  get(): GlobalGenerationConfig;
+  update(expectedRevision: number, patch: Partial<GlobalGenerationSelection>): UpdateResult<GlobalGenerationConfig>;
+  clearProvider(providerId: string): GlobalGenerationConfig;
+  clearPreset(presetId: string): GlobalGenerationConfig;
 }
 
 type EntityRow = Record<string, unknown>;
@@ -608,6 +620,7 @@ export interface Repositories {
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
+  globalGenerationConfig: GlobalGenerationConfigRepository;
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
@@ -617,6 +630,74 @@ export interface Repositories {
 export interface CreateRepositoriesOptions {
   snapshotIntegrityKey: Uint8Array;
   createId?: () => string;
+}
+
+function emptyGlobalGenerationConfig(): GlobalGenerationConfig {
+  return GlobalGenerationConfigSchema.parse({
+    id: GLOBAL_GENERATION_CONFIG_ID,
+    revision: 0,
+    createdAt: '1970-01-01T00:00:00.000Z',
+    updatedAt: '1970-01-01T00:00:00.000Z',
+    providerId: null,
+    chatPresetId: null,
+    textPresetId: null,
+    contextPresetId: null,
+    instructPresetId: null,
+    systemPresetId: null,
+    selectionNotice: null,
+  });
+}
+
+function createGlobalGenerationConfigRepository(database: TavernDatabase): GlobalGenerationConfigRepository {
+  const table = database.sqlite.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'global_generation_config'",
+  ).get();
+  if (table === undefined) {
+    const fallback = emptyGlobalGenerationConfig();
+    return {
+      get: () => structuredClone(fallback),
+      update: () => ({ ok: false, reason: 'not_found' }),
+      clearProvider: () => structuredClone(fallback),
+      clearPreset: () => structuredClone(fallback),
+    };
+  }
+  const base = createRepository(database, {
+    table: entityTable(globalGenerationConfigurations),
+    schema: GlobalGenerationConfigSchema,
+    toRow: (value) => baseRow(value),
+  });
+  const get = () => base.get(GLOBAL_GENERATION_CONFIG_ID) ?? emptyGlobalGenerationConfig();
+  return {
+    get,
+    update(expectedRevision, patch) {
+      return base.update(GLOBAL_GENERATION_CONFIG_ID, expectedRevision, { ...patch, selectionNotice: null });
+    },
+    clearProvider(providerId) {
+      const current = get();
+      if (current.providerId !== providerId) return current;
+      const result = base.update(current.id, current.revision, {
+        providerId: null,
+        selectionNotice: { kind: 'provider', deletedId: providerId, createdAt: new Date().toISOString() },
+      });
+      if (!result.ok) throw new Error('global_generation_config_conflict');
+      return result.value;
+    },
+    clearPreset(presetId) {
+      const current = get();
+      const patch = Object.fromEntries(
+        (['chatPresetId', 'textPresetId', 'contextPresetId', 'instructPresetId', 'systemPresetId'] as const)
+          .filter((key) => current[key] === presetId)
+          .map((key) => [key, null]),
+      );
+      if (Object.keys(patch).length === 0) return current;
+      const result = base.update(current.id, current.revision, {
+        ...patch,
+        selectionNotice: { kind: 'preset', deletedId: presetId, createdAt: new Date().toISOString() },
+      });
+      if (!result.ok) throw new Error('global_generation_config_conflict');
+      return result.value;
+    },
+  };
 }
 
 export function createRepositories(database: TavernDatabase, options: CreateRepositoriesOptions): Repositories {
@@ -662,6 +743,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       });
     },
   };
+  const globalGenerationConfig = createGlobalGenerationConfigRepository(database);
   return {
     characters: charactersRepository,
     personas: createPersonaRepository(database),
@@ -672,6 +754,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     messages: messagesRepository,
     messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
+    globalGenerationConfig,
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),

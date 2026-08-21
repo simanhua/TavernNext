@@ -46,6 +46,9 @@ export const providerProfiles = sqliteTable('provider_profiles', {
   ...entityColumns,
   name: text('name').notNull(),
 });
+export const globalGenerationConfigurations = sqliteTable('global_generation_config', {
+  ...entityColumns,
+});
 export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),

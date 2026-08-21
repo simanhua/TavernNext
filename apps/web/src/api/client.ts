@@ -1,4 +1,12 @@
-import type { Conversation, GenerationMode, Message, MessageVariant, PresetKind } from '@tavernnext/domain';
+import type {
+  Conversation,
+  GenerationMode,
+  GlobalGenerationConfig,
+  GlobalGenerationSelection,
+  Message,
+  MessageVariant,
+  PresetKind,
+} from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind };
 
@@ -240,6 +248,9 @@ export interface ProviderModelView {
   id: string;
   ownedBy?: string;
 }
+
+export type GlobalGenerationConfigView = GlobalGenerationConfig;
+export type GlobalGenerationConfigPatch = GlobalGenerationSelection;
 
 export interface ProviderProbeInput {
   id?: string;
@@ -490,6 +501,10 @@ export const api = {
   deletePersona: (id: string, revision: number) => request<void>(`/api/personas/${id}?revision=${revision}`, { method: 'DELETE' }),
   uploadPersonaAvatar: (id: string, revision: number, file: File) => uploadAvatar<PersonaView>('personas', id, revision, file),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
+  getGlobalGenerationConfig: () => request<GlobalGenerationConfigView>('/api/settings/generation'),
+  saveGlobalGenerationConfig: (revision: number, patch: GlobalGenerationConfigPatch) => request<GlobalGenerationConfigView>(
+    '/api/settings/generation', { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
   probeProvider: (input: ProviderProbeInput) => request<{ ok: true; modelCount: number }>('/api/providers/probe', {
     method: 'POST', body: JSON.stringify(input),
   }),

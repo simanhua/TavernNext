@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { api, errorCode, type ProviderModelView, type ProviderProbeInput } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
+import { ActiveGenerationConfiguration } from './GlobalGenerationConfiguration.js';
 
 const schema = z.object({
   name: z.string().trim().min(1, 'Display name is required'),
@@ -152,6 +153,7 @@ export function ConnectionPage() {
         <span className="settings-security-note">{t('API keys stay on this device')}</span>
       </header>
       <p>{t("Configure the local server's OpenAI-compatible provider. The saved key is never returned to this browser.")}</p>
+      <ActiveGenerationConfiguration providers={providers.data ?? []} />
       <section className="saved-connections" aria-labelledby="saved-connections-heading">
         <div className="section-heading">
           <div>

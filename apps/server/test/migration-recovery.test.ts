@@ -147,7 +147,7 @@ describe('migration backup and recovery', () => {
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
-          schemaVersion: 9,
+          schemaVersion: 10,
           checkpoint: 'wal_checkpointed',
           database: {
             bytes: checkpointedDatabase.byteLength,
@@ -188,7 +188,7 @@ describe('migration backup and recovery', () => {
     expect(newest).toMatchObject({
       formatVersion: 1,
       kind: 'pre_migration',
-      schemaVersion: 9,
+      schemaVersion: 10,
       database: {
         file: basename(config.databasePath),
       },

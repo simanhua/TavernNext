@@ -14,6 +14,7 @@ import { registerAvatarRoutes } from './routes/avatars.js';
 import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
+import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
 import { registerMessageRoutes } from './routes/messages.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
@@ -278,7 +279,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   );
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
-  registerPresetRoutes(app, repositories);
+  registerPresetRoutes(app, database, repositories);
   registerWorldbookRoutes(app, database, repositories);
   registerWorldbookExportRoutes(app, repositories);
   registerPersonaRoutes(app, database, repositories);
@@ -312,6 +313,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       };
     },
   }, options.providerProbeFactory ?? ((profile: OpenAICompatibleProfile) => createOpenAICompatibleClient(profile)));
+  registerGlobalGenerationConfigRoutes(app, repositories);
   registerConversationRoutes(app, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);

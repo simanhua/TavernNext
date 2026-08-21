@@ -44,6 +44,18 @@ function createLegacySchema(database: ReturnType<typeof createDatabase>): void {
 }
 
 describe('SQLite repositories', () => {
+  it('exposes an immutable empty global configuration when recovery opens a pre-feature schema', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-global-config-recovery-'));
+    testDirectories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    createLegacySchema(database);
+
+    const repository = createRepositories(database, TEST_REPOSITORY_OPTIONS).globalGenerationConfig;
+    expect(repository.get()).toMatchObject({ revision: 0, providerId: null, selectionNotice: null });
+    expect(repository.update(0, { providerId: '018f0000-0000-7000-8000-000000000999' }))
+      .toEqual({ ok: false, reason: 'not_found' });
+  });
+
   it('creates every planned persistence table', async () => {
     const { database } = await createTestRepositories();
     const tables = database.sqlite.prepare("select name from sqlite_master where type = 'table'").all() as Array<{ name: string }>;
@@ -52,7 +64,7 @@ describe('SQLite repositories', () => {
       'characters', 'personas', 'worldbooks', 'worldbook_entries', 'presets',
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
-      'conversation_worldbooks', 'worldbook_runtime_states', 'avatar_assets',
+      'conversation_worldbooks', 'worldbook_runtime_states', 'avatar_assets', 'global_generation_config',
     ]));
   });
 
@@ -64,7 +76,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 9 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 10 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -487,7 +499,7 @@ describe('SQLite repositories', () => {
     expect(repositories.conversations.get(ids.conversation)).toMatchObject({
       maxPromptTokens: 128_000, maxResponseTokens: 32_768,
     });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 9 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 10 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

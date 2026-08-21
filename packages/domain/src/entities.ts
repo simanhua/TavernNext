@@ -120,6 +120,24 @@ export const PresetSchema = MutableEntitySchema.extend({
   settings: z.record(z.string(), z.unknown()).default({}),
 }).extend(WithCompatibilitySchema.shape);
 
+export const GLOBAL_GENERATION_CONFIG_ID = '018f0000-0000-7000-8000-000000000001' as const;
+export const GlobalGenerationSelectionSchema = z.object({
+  providerId: DomainIdSchema.nullable(),
+  chatPresetId: DomainIdSchema.nullable(),
+  textPresetId: DomainIdSchema.nullable(),
+  contextPresetId: DomainIdSchema.nullable(),
+  instructPresetId: DomainIdSchema.nullable(),
+  systemPresetId: DomainIdSchema.nullable(),
+});
+export const GlobalGenerationSelectionNoticeSchema = z.object({
+  kind: z.enum(['provider', 'preset']),
+  deletedId: DomainIdSchema,
+  createdAt: TimestampSchema,
+});
+export const GlobalGenerationConfigSchema = MutableEntitySchema
+  .extend(GlobalGenerationSelectionSchema.shape)
+  .extend({ selectionNotice: GlobalGenerationSelectionNoticeSchema.nullable() });
+
 export const ConversationSchema = MutableEntitySchema.extend({
   characterId: DomainIdSchema,
   personaId: DomainIdSchema,
@@ -198,6 +216,8 @@ export type Worldbook = z.infer<typeof WorldbookSchema>;
 export type WorldbookEntry = z.infer<typeof WorldbookEntrySchema>;
 export type PresetKind = z.infer<typeof PresetKindSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
+export type GlobalGenerationConfig = z.infer<typeof GlobalGenerationConfigSchema>;
+export type GlobalGenerationSelection = z.infer<typeof GlobalGenerationSelectionSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageVariant = z.infer<typeof MessageVariantSchema>;
