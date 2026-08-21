@@ -201,6 +201,8 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
           if (deleted.ok) {
             repositories.globalGenerationConfig.clearPreset(request.params.id);
             repositories.extensionAssets.deleteByOwner('preset', request.params.id);
+            repositories.extensionStates.deleteByScope('preset', request.params.id);
+            repositories.extensionStates.deleteScriptStatesByOwner('preset', request.params.id);
           }
           return deleted;
         });

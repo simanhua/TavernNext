@@ -63,6 +63,13 @@ export const extensionAssets = sqliteTable('extension_assets', {
     table.ownerKind, table.ownerId, table.kind, table.ordinal,
   ),
 ]);
+export const extensionStates = sqliteTable('extension_states', {
+  ...entityColumns,
+  scope: text('scope').notNull(),
+  scopeId: text('scope_id').notNull(),
+}, (table) => [
+  index('extension_states_scope_id_idx').on(table.scope, table.scopeId),
+]);
 export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),

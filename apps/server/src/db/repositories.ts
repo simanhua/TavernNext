@@ -6,6 +6,7 @@ import {
   CharacterSchema,
   ConversationSchema,
   ExtensionAssetSchema,
+  ExtensionStateSchema,
   GenerationSnapshotSchema,
   GLOBAL_GENERATION_CONFIG_ID,
   GlobalGenerationConfigSchema,
@@ -22,6 +23,8 @@ import {
   type Conversation,
   type ExtensionAsset,
   type ExtensionOwnerKind,
+  type ExtensionState,
+  type ExtensionStateScope,
   type GenerationSnapshot,
   type GlobalGenerationConfig,
   type GlobalGenerationSelection,
@@ -40,6 +43,7 @@ import {
   conversationWorldbooks,
   conversations,
   extensionAssets,
+  extensionStates,
   generationSnapshots,
   globalGenerationConfigurations,
   importArtifacts,
@@ -59,6 +63,7 @@ import {
   verifySnapshotIntegrityTag,
 } from './snapshot-integrity.js';
 import { assertExtensionAssetLimit, MAX_EXTENSION_ASSETS_PER_OWNER } from '../extension-assets.js';
+import { assertRuntimeStateValue } from '../runtime-state-validation.js';
 
 export const MAX_MESSAGES_PER_CONVERSATION = 2048;
 export const MAX_VARIANTS_PER_RELATION = 4096;
@@ -160,6 +165,12 @@ export interface AvatarAssetRepository {
 export interface ExtensionAssetRepository extends Repository<ExtensionAsset> {
   listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionAsset[];
   deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
+}
+
+export interface ExtensionStateRepository extends Repository<ExtensionState> {
+  getByScope(scope: ExtensionStateScope, scopeId: string): ExtensionState | undefined;
+  deleteByScope(scope: ExtensionStateScope, scopeId: string): number;
+  deleteScriptStatesByOwner(ownerKind: 'character' | 'preset', ownerId: string): number;
 }
 
 export interface MessageRepository extends Repository<Message> {
@@ -406,6 +417,48 @@ function createExtensionAssetRepository(database: TavernDatabase): ExtensionAsse
       const changes = database.sqlite.prepare(
         'DELETE FROM extension_assets WHERE owner_kind = ? AND owner_id = ?',
       ).run(ownerKind, ownerId).changes;
+      database.persist();
+      return changes;
+    },
+  };
+}
+
+function createExtensionStateRepository(database: TavernDatabase): ExtensionStateRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionStates),
+    schema: ExtensionStateSchema,
+    toRow: (value: ExtensionState) => ({
+      ...baseRow(value), scope: value.scope, scopeId: value.scopeId,
+    }),
+  });
+  return {
+    ...base,
+    create(input) {
+      assertRuntimeStateValue(input.value);
+      return base.create(input);
+    },
+    update(id, expectedRevision, patch) {
+      if (patch.value !== undefined) assertRuntimeStateValue(patch.value);
+      return base.update(id, expectedRevision, patch);
+    },
+    getByScope(scope, scopeId) {
+      const row = database.orm.select({ payload: extensionStates.payload })
+        .from(extensionStates)
+        .where(and(eq(extensionStates.scope, scope), eq(extensionStates.scopeId, scopeId)))
+        .get();
+      return row === undefined ? undefined : ExtensionStateSchema.parse(row.payload);
+    },
+    deleteByScope(scope, scopeId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_states WHERE scope = ? AND scope_id = ?',
+      ).run(scope, scopeId).changes;
+      database.persist();
+      return changes;
+    },
+    deleteScriptStatesByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        "DELETE FROM extension_states WHERE scope = 'script' AND scope_id LIKE ?",
+      ).run(`${ownerKind}:${ownerId}:%`).changes;
       database.persist();
       return changes;
     },
@@ -683,6 +736,7 @@ export interface Repositories {
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
   avatarAssets: AvatarAssetRepository;
   extensionAssets: ExtensionAssetRepository;
+  extensionStates: ExtensionStateRepository;
 }
 
 export interface CreateRepositoriesOptions {
@@ -813,5 +867,6 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
     avatarAssets: createAvatarAssetRepository(database),
     extensionAssets: createExtensionAssetRepository(database),
+    extensionStates: createExtensionStateRepository(database),
   };
 }

@@ -6,6 +6,7 @@ import {
   exportCharacter,
   exportCharacterBook,
   overlayAttachedExtensionAssets,
+  overlayAttachedVariables,
   type CharacterAuxiliaryAsset,
   type CharacterExportFormat,
   type CharacterUnknownFields,
@@ -141,10 +142,14 @@ export function registerCharacterExportRoutes(
         const withDepthPrompt = character.depthPrompt !== '' || Object.hasOwn(mergedExtensions, 'depth_prompt')
           ? { ...mergedExtensions, depth_prompt: { ...existingDepthPrompt, prompt: character.depthPrompt } }
           : mergedExtensions;
-        const exportExtensions = overlayAttachedExtensionAssets(
+        const assetExtensions = overlayAttachedExtensionAssets(
           withDepthPrompt,
           repositories.extensionAssets.listByOwner('character', character.id),
         );
+        const runtimeState = repositories.extensionStates.getByScope('character', character.id);
+        const exportExtensions = runtimeState === undefined
+          ? assetExtensions
+          : overlayAttachedVariables(assetExtensions, runtimeState.value);
         const artifact = await exportCharacter({
           character: {
             name: character.name,

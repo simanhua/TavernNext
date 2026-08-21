@@ -4,6 +4,7 @@ import {
   decodeInspectedCharacter,
   diagnostic,
   normalizeAttachedExtensions,
+  attachedVariableValue,
   type DecodedWorldbookArtifact,
   WorldbookCodecError,
   WorldbookValidationError,
@@ -193,6 +194,12 @@ export function createCharacterImportHandler(): ImportHandler {
           enabled: asset.enabled,
           payload: asset.payload,
           diagnostics: asset.diagnostics,
+        });
+      }
+      const variables = attachedVariableValue(attached.extensions);
+      if (variables !== undefined) {
+        context.repositories.extensionStates.create({
+          id: randomUUID(), scope: 'character', scopeId: value.id, value: variables,
         });
       }
       return {

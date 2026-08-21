@@ -133,6 +133,14 @@ export const ExtensionAssetSchema = MutableEntitySchema.extend({
   payload: z.unknown(),
   diagnostics: z.array(z.string()).default([]),
 });
+export const ExtensionStateScopeSchema = z.enum([
+  'global', 'character', 'preset', 'conversation', 'message-variant', 'script',
+]);
+export const ExtensionStateSchema = MutableEntitySchema.extend({
+  scope: ExtensionStateScopeSchema,
+  scopeId: z.string().min(1).max(1024),
+  value: z.record(z.string(), z.unknown()).default({}),
+});
 
 export const GLOBAL_GENERATION_CONFIG_ID = '018f0000-0000-7000-8000-000000000001' as const;
 export const GlobalGenerationSelectionSchema = z.object({
@@ -223,6 +231,8 @@ export type Character = z.infer<typeof CharacterSchema>;
 export type ExtensionOwnerKind = z.infer<typeof ExtensionOwnerKindSchema>;
 export type ExtensionAssetKind = z.infer<typeof ExtensionAssetKindSchema>;
 export type ExtensionAsset = z.infer<typeof ExtensionAssetSchema>;
+export type ExtensionStateScope = z.infer<typeof ExtensionStateScopeSchema>;
+export type ExtensionState = z.infer<typeof ExtensionStateSchema>;
 export type Persona = z.infer<typeof PersonaSchema>;
 export type Worldbook = z.infer<typeof WorldbookSchema>;
 export type WorldbookEntry = z.infer<typeof WorldbookEntrySchema>;

@@ -200,17 +200,11 @@ describe('migration backup and recovery', () => {
         '{"id":"018f0000-0000-7000-8000-000000001713"}',
         '018f0000-0000-7000-8000-000000009999', 0, 'completed'
       );
-      CREATE TABLE extension_states (
-        id TEXT PRIMARY KEY,
-        scope TEXT NOT NULL,
-        owner_id TEXT,
-        payload TEXT NOT NULL
-      );
-      INSERT INTO extension_states VALUES
-        ('conversation-state', 'conversation', '${conversation.id}', '{}'),
-        ('message-state', 'message', '${message.id}', '{}'),
-        ('variant-state', 'message-variant', '${variant.id}', '{}'),
-        ('global-state', 'global', NULL, '{"kept":true}');
+      INSERT INTO extension_states (id, revision, created_at, updated_at, payload, scope, scope_id) VALUES
+        ('conversation-state', 0, '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z', '{}', 'conversation', '${conversation.id}'),
+        ('message-state', 0, '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z', '{}', 'message', '${message.id}'),
+        ('variant-state', 0, '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z', '{}', 'message-variant', '${variant.id}'),
+        ('global-state', 0, '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z', '{}', 'global', 'global');
     `);
     database.sqlite.pragma('foreign_keys = ON');
     const conversationColumns = new Set(database.sqlite.prepare('PRAGMA table_info(conversations)').all().map((column) => String(column.name)));
@@ -258,8 +252,10 @@ describe('migration backup and recovery', () => {
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM message_variants').get()).toEqual({ count: 0 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM generation_snapshots').get()).toEqual({ count: 0 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM worldbook_runtime_states').get()).toEqual({ count: 0 });
-    expect(migrated.sqlite.prepare('SELECT id, scope FROM extension_states ORDER BY id').all()).toEqual([
-      { id: 'global-state', scope: 'global' },
+    expect(migrated.sqlite.prepare('SELECT scope, COUNT(*) AS count FROM extension_states GROUP BY scope ORDER BY scope').all()).toEqual([
+      { scope: 'character', count: 1 },
+      { scope: 'global', count: 1 },
+      { scope: 'preset', count: 1 },
     ]);
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM characters').get()).toEqual({ count: 1 });
     expect(migrated.sqlite.prepare('SELECT COUNT(*) AS count FROM personas').get()).toEqual({ count: 1 });
@@ -314,7 +310,7 @@ describe('migration backup and recovery', () => {
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
-          schemaVersion: 13,
+          schemaVersion: 14,
           checkpoint: 'wal_checkpointed',
           database: {
             bytes: checkpointedDatabase.byteLength,
@@ -355,7 +351,7 @@ describe('migration backup and recovery', () => {
     expect(newest).toMatchObject({
       formatVersion: 1,
       kind: 'pre_migration',
-      schemaVersion: 13,
+      schemaVersion: 14,
       database: {
         file: basename(config.databasePath),
       },
@@ -549,6 +545,53 @@ describe('migration backup and recovery', () => {
     expect(rolledBack.sqlite.prepare('SELECT COUNT(*) AS count FROM extension_assets').get()).toEqual({ count: 0 });
     expect(rolledBack.sqlite.prepare('SELECT COUNT(*) AS count FROM characters').get()).toEqual({ count: 1 });
     rolledBack.close();
+  });
+
+  it('upgrades the prototype extension_states shape while dropping its chat-owned rows', async () => {
+    const directory = await temporaryDirectory();
+    const config = {
+      host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'tavernnext.sqlite'),
+    };
+    const database = createDatabase(config.databasePath);
+    migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000001798', name: 'Prototype state owner',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    database.sqlite.exec(`
+      DROP TABLE extension_states;
+      CREATE TABLE extension_states (id TEXT PRIMARY KEY, scope TEXT NOT NULL, owner_id TEXT, payload TEXT NOT NULL);
+      INSERT INTO extension_states VALUES
+        ('legacy-global', 'global', NULL, '{"global":true}'),
+        ('legacy-character', 'character', '${character.id}', '{"character":true}'),
+        ('legacy-conversation', 'conversation', '018f0000-0000-7000-8000-000000009999', '{"discard":true}');
+      UPDATE tavernnext_schema_version SET version = 13;
+    `);
+    database.close();
+
+    const app = createApp({
+      config, snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
+      backupClock: () => new Date('2026-08-22T00:45:00.000Z'),
+    });
+    apps.push(app);
+    await app.ready();
+    expect(app.startupMigrationResult).toBe('writable');
+    expect((await app.inject({ method: 'GET', url: '/api/health' })).json()).toMatchObject({
+      backup: { kind: 'pre_migration', path: expect.any(String) },
+    });
+    expect((await app.inject({ method: 'GET', url: '/api/runtime-states/global/global' })).json())
+      .toMatchObject({ value: { global: true } });
+    expect((await app.inject({ method: 'GET', url: `/api/runtime-states/character/${character.id}` })).json())
+      .toMatchObject({ value: { character: true } });
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+    const migrated = createDatabase(config.databasePath);
+    expect(migrated.sqlite.prepare("SELECT COUNT(*) AS count FROM extension_states WHERE scope = 'conversation'").get())
+      .toEqual({ count: 0 });
+    expect(migrated.sqlite.prepare('PRAGMA table_info(extension_states)').all().map((column) => column.name))
+      .toEqual(expect.arrayContaining(['revision', 'created_at', 'updated_at', 'scope_id']));
+    migrated.close();
   });
 
   it('holds exclusive application ownership from startup until close', async () => {

@@ -122,6 +122,11 @@ describe('typed SillyTavern Preset import and export API', () => {
       extensions: { unknown_extension: { keep: ['preset'] }, SPreset: { MacroNest: false } },
     });
     expect(repositories.extensionAssets.listByOwner('preset', id)).toHaveLength(11);
+    expect(repositories.extensionStates.getByScope('preset', id)).toMatchObject({ revision: 0, value: {} });
+    expect((await app.inject({
+      method: 'POST', url: `/api/runtime-states/preset/${id}`,
+      payload: { expectedRevision: 0, operation: 'replace', value: { presetFlag: true } },
+    })).statusCode).toBe(200);
     const detail = (await app.inject({ method: 'GET', url: `/api/presets/${id}` })).json();
     expect(detail).toMatchObject({
       attachedExtensions: { counts: { regex: 9, scripts: 2, folders: 1, variableContainers: 1 } },
@@ -142,19 +147,24 @@ describe('typed SillyTavern Preset import and export API', () => {
       extensions: {
         unknown_extension: { keep: ['preset'] },
         SPreset: { ChatSquash: { enabled: true }, RegexBinding: { regexes: [{ id: 'bound-regex' }] } },
-        tavern_helper: { variables: {} },
+        tavern_helper: { variables: { presetFlag: true } },
       },
     });
     expect(Array.isArray(exported.json().extensions.tavern_helper)).toBe(false);
     const roundTrip = await inspectAndCommitBytes(app, exported.rawPayload, 'round-trip-preset.json');
-    expect(roundTrip.inspected.json().normalizedPreview.attachedExtensions)
-      .toEqual(inspected.json().normalizedPreview.attachedExtensions);
+    expect(roundTrip.inspected.json().normalizedPreview.attachedExtensions.resources)
+      .toEqual(inspected.json().normalizedPreview.attachedExtensions.resources);
+    expect(roundTrip.inspected.json().normalizedPreview.attachedExtensions.variables)
+      .toEqual([{ source: 'tavern_helper.variables', keyCount: 1, diagnostics: [] }]);
     expect(roundTrip.inspected.json().normalizedPreview.spreset).toEqual(inspected.json().normalizedPreview.spreset);
+    expect(repositories.extensionStates.getByScope('preset', roundTrip.committed.json().entityId as string))
+      .toMatchObject({ value: { presetFlag: true } });
     expect((globalThis as Record<string, unknown>).__presetImportExecuted).toBeUndefined();
 
     const removed = await app.inject({ method: 'DELETE', url: `/api/presets/${id}?revision=1` });
     expect(removed.statusCode).toBe(204);
     expect(repositories.extensionAssets.listByOwner('preset', id)).toEqual([]);
+    expect(repositories.extensionStates.getByScope('preset', id)).toBeUndefined();
   });
 
   it.runIf(existsSync('F:/SillyTavern-release/data/default-user/OpenAI Settings/命定之诗Kemini5-3.8.json'))(

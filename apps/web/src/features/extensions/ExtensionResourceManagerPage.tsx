@@ -9,6 +9,7 @@ import {
 } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
+import { RuntimeStateManager } from './RuntimeStateManager.js';
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -315,6 +316,7 @@ export function ExtensionResourceManagerPage() {
         )}
         {error === undefined ? null : <p role="alert">{t('Unable to save resources: {{error}}', { error })}</p>}
         <button type="button" disabled={pending || collection === undefined || invalidJsonFields.size > 0} onClick={() => void save()}>{t('Save resources')}</button>
+        <RuntimeStateManager />
       </section>
     </main>
   );

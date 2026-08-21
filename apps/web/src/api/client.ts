@@ -58,6 +58,14 @@ export interface ExtensionAssetCollectionView {
   assets: EditableExtensionAssetView[];
 }
 
+export type RuntimeStateScopeView = 'global' | 'character' | 'preset' | 'conversation' | 'message-variant' | 'script';
+export interface RuntimeStateView {
+  scope: RuntimeStateScopeView;
+  scopeId: string;
+  revision: number | null;
+  value: Record<string, unknown>;
+}
+
 export interface CharacterView extends CharacterSummaryView {
   description: string;
   personality: string;
@@ -570,6 +578,20 @@ export const api = {
   ) => request<ExtensionAssetCollectionView>(
     `/api/extension-assets?ownerKind=${encodeURIComponent(ownerKind)}&ownerId=${encodeURIComponent(ownerId)}`,
     { method: 'PUT', body: JSON.stringify({ ownerRevision, assets }) },
+  ),
+  getRuntimeState: (scope: RuntimeStateScopeView, scopeId: string) => request<RuntimeStateView>(
+    `/api/runtime-states/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}`,
+  ),
+  operateRuntimeState: (
+    scope: RuntimeStateScopeView,
+    scopeId: string,
+    input: { expectedRevision: number | null } & (
+      { operation: 'replace' | 'merge' | 'insert'; value: Record<string, unknown> }
+      | { operation: 'delete'; keys: string[] }
+    ),
+  ) => request<RuntimeStateView>(
+    `/api/runtime-states/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}`,
+    { method: 'POST', body: JSON.stringify(input) },
   ),
   listWorldbooks: () => request<WorldbookSummaryView[]>('/api/worldbooks'),
   getWorldbook: (id: string) => request<WorldbookView>(`/api/worldbooks/${id}`),

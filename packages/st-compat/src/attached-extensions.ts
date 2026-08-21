@@ -242,6 +242,33 @@ export function summarizeSPreset(extensions: unknown): SPresetSummary {
   };
 }
 
+export function attachedVariableValue(extensions: unknown): Record<string, unknown> | undefined {
+  const object = record(extensions);
+  if (object === undefined) return undefined;
+  const helper = record(object.tavern_helper);
+  const helperPresent = helper !== undefined && Object.hasOwn(helper, 'variables');
+  const rootPresent = Object.hasOwn(object, 'variables');
+  if (!helperPresent && !rootPresent) return undefined;
+  return {
+    ...(record(object.variables) ?? {}),
+    ...(record(helper?.variables) ?? {}),
+  };
+}
+
+export function overlayAttachedVariables(
+  extensions: unknown,
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = normalizeAttachedExtensions(extensions).extensions;
+  const helper = record(normalized.tavern_helper);
+  if (helper !== undefined || !Object.hasOwn(normalized, 'variables')) {
+    normalized.tavern_helper = { ...(helper ?? {}), variables: structuredClone(value) };
+  } else {
+    normalized.variables = structuredClone(value);
+  }
+  return normalized;
+}
+
 export function overlayAttachedExtensionAssets(
   extensions: unknown,
   assets: readonly AssetSource[],

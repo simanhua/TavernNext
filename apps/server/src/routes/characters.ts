@@ -87,6 +87,8 @@ export function registerCharacterRoutes(app: FastifyInstance, database: TavernDa
           if (deletion.ok) {
             repositories.avatarAssets.deleteByOwner('characters', request.params.id);
             repositories.extensionAssets.deleteByOwner('character', request.params.id);
+            repositories.extensionStates.deleteByScope('character', request.params.id);
+            repositories.extensionStates.deleteScriptStatesByOwner('character', request.params.id);
           }
           return deletion;
         });

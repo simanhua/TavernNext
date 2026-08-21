@@ -1,4 +1,9 @@
-import { exportPreset, overlayAttachedExtensionAssets, type PresetExportSource } from '@tavernnext/st-compat';
+import {
+  exportPreset,
+  overlayAttachedExtensionAssets,
+  overlayAttachedVariables,
+  type PresetExportSource,
+} from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import type { Repositories } from '../db/repositories.js';
 
@@ -30,14 +35,19 @@ export function registerPresetExportRoutes(app: FastifyInstance, repositories: R
       if (preset === undefined) return reply.code(404).send({ error: 'not_found' });
       if (preset.compatibility === undefined) return reply.code(400).send({ error: 'preset_export_unavailable' });
       try {
+        const assetExtensions = overlayAttachedExtensionAssets(
+          preset.extensions,
+          repositories.extensionAssets.listByOwner('preset', preset.id),
+        );
+        const runtimeState = repositories.extensionStates.getByScope('preset', preset.id);
+        const extensions = runtimeState === undefined
+          ? assetExtensions
+          : overlayAttachedVariables(assetExtensions, runtimeState.value);
         const artifact = await exportPreset({
           name: preset.name,
           kind: preset.kind,
           settings: preset.settings,
-          extensions: overlayAttachedExtensionAssets(
-            preset.extensions,
-            repositories.extensionAssets.listByOwner('preset', preset.id),
-          ),
+          extensions,
           compatibility: preset.compatibility,
         } satisfies PresetExportSource);
         reply.header('Content-Type', artifact.contentType);

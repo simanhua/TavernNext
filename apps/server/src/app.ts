@@ -16,6 +16,7 @@ import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
 import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
 import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
+import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
 import { registerMessageRoutes } from './routes/messages.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
@@ -337,7 +338,8 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   }, options.providerProbeFactory ?? ((profile: OpenAICompatibleProfile) => createOpenAICompatibleClient(profile)));
   registerGlobalGenerationConfigRoutes(app, repositories);
   registerExtensionAssetRoutes(app, database, repositories);
-  registerConversationRoutes(app, repositories, generations);
+  registerRuntimeStateRoutes(app, database, repositories);
+  registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationRoutes(app, generations);

@@ -29,6 +29,8 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const runtimeStateKey = 'tavernnext_runtime_state';
+
 function optionsFrom(value: unknown): ChatImportOptions {
   if (!record(value) || typeof value.characterId !== 'string' || typeof value.personaId !== 'string') {
     throw new ChatImportError('chat_import_target_required', 400);
@@ -105,6 +107,16 @@ function createMessage(context: ImportCommitContext, id: string, conversationId:
   const variants = source.variants.map((variant, index) => (
     context.repositories.messageVariants.create(variantInput(variantIds[index]!, message.id, variant))
   ));
+  for (const [index, variant] of variants.entries()) {
+    const variables = record(source.variants[index]?.swipeInfo?.[runtimeStateKey])
+      ? source.variants[index]!.swipeInfo[runtimeStateKey] as Record<string, unknown>
+      : undefined;
+    if (variables !== undefined) {
+      context.repositories.extensionStates.create({
+        id: randomUUID(), scope: 'message-variant', scopeId: variant.id, value: variables,
+      });
+    }
+  }
   const active = variants[source.activeVariantIndex];
   if (active === undefined) throw new Error('Imported chat active variant is not aligned.');
   const linked = context.repositories.messages.update(message.id, message.revision, { activeVariantId: active.id });
@@ -140,6 +152,14 @@ export function createChatImportHandler(): ImportHandler {
         title: options.title,
         compatibility: compatibility(chat.header, chat.header.raw),
       });
+      const conversationVariables = record(chat.header.chatMetadata[runtimeStateKey])
+        ? chat.header.chatMetadata[runtimeStateKey] as Record<string, unknown>
+        : undefined;
+      if (conversationVariables !== undefined) {
+        context.repositories.extensionStates.create({
+          id: randomUUID(), scope: 'conversation', scopeId: conversation.id, value: conversationVariables,
+        });
+      }
       const messageIds = chat.messages.map(() => randomUUID()).sort();
       for (const [index, message] of chat.messages.entries()) {
         createMessage(context, messageIds[index]!, conversation.id, message);

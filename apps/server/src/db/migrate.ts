@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { GLOBAL_GENERATION_CONFIG_ID } from '@tavernnext/domain';
-import { normalizeAttachedExtensions } from '@tavernnext/st-compat';
+import { attachedVariableValue, normalizeAttachedExtensions } from '@tavernnext/st-compat';
 import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
+import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -48,6 +49,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS global_generation_config (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_assets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, kind TEXT NOT NULL, source_key TEXT NOT NULL, ordinal INTEGER NOT NULL, enabled INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS extension_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL, UNIQUE (scope, scope_id));
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
@@ -73,6 +75,7 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS avatar_assets_owner_idx ON avatar_assets(kind, owner_id);
   CREATE INDEX IF NOT EXISTS extension_assets_owner_kind_id_idx ON extension_assets(owner_kind, owner_id);
   CREATE INDEX IF NOT EXISTS extension_assets_owner_kind_id_kind_ordinal_idx ON extension_assets(owner_kind, owner_id, kind, ordinal);
+  CREATE INDEX IF NOT EXISTS extension_states_scope_id_idx ON extension_states(scope, scope_id);
 `;
 
 function columnNames(database: TavernDatabase, table: string): string[] {
@@ -83,6 +86,48 @@ function tableExists(database: TavernDatabase, table: string): boolean {
   return database.sqlite.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
   ).get(table) !== undefined;
+}
+
+function normalizeExtensionStatesTable(database: TavernDatabase): void {
+  if (!tableExists(database, 'extension_states')) return;
+  const columns = new Set(columnNames(database, 'extension_states'));
+  if (['revision', 'created_at', 'updated_at', 'scope_id'].every((column) => columns.has(column))) return;
+  database.sqlite.exec(`
+    DROP INDEX IF EXISTS extension_states_scope_id_idx;
+    ALTER TABLE extension_states RENAME TO extension_states_legacy;
+    CREATE TABLE extension_states (
+      id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL, UNIQUE (scope, scope_id)
+    );
+  `);
+  const now = new Date().toISOString();
+  for (const row of database.sqlite.prepare('SELECT * FROM extension_states_legacy').all()) {
+    const scope = typeof row.scope === 'string' ? row.scope : '';
+    if (!['global', 'character', 'preset', 'script'].includes(scope)) continue;
+    const scopeId = scope === 'global'
+      ? 'global'
+      : typeof row.scope_id === 'string' ? row.scope_id
+        : typeof row.owner_id === 'string' ? row.owner_id : '';
+    if (scopeId === '' || (scope === 'script' && parseScriptStateScopeId(scopeId) === undefined)) continue;
+    const decoded = parsedEntityPayload(row.payload);
+    const value = decoded !== undefined && typeof decoded.value === 'object' && decoded.value !== null && !Array.isArray(decoded.value)
+      ? decoded.value as Record<string, unknown>
+      : decoded ?? {};
+    assertRuntimeStateValue(value);
+    const id = typeof row.id === 'string'
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(row.id)
+      ? row.id
+      : randomUUID();
+    const revision = typeof row.revision === 'number' && Number.isSafeInteger(row.revision) && row.revision >= 0 ? row.revision : 0;
+    const createdAt = typeof row.created_at === 'string' ? row.created_at : now;
+    const updatedAt = typeof row.updated_at === 'string' ? row.updated_at : now;
+    const payload = { id, revision, createdAt, updatedAt, scope, scopeId, value };
+    database.sqlite.prepare(`
+      INSERT OR REPLACE INTO extension_states (id, revision, created_at, updated_at, payload, scope, scope_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, revision, createdAt, updatedAt, JSON.stringify(payload), scope, scopeId);
+  }
+  database.sqlite.exec('DROP TABLE extension_states_legacy');
 }
 
 function hasCascadeWorldbookEntries(database: TavernDatabase): boolean {
@@ -404,6 +449,30 @@ function backfillPresetExtensionAssets(database: TavernDatabase): void {
   }
 }
 
+function backfillOwnerExtensionStates(database: TavernDatabase): void {
+  const now = new Date().toISOString();
+  for (const [table, scope] of [['characters', 'character'], ['presets', 'preset']] as const) {
+    for (const row of database.sqlite.prepare(`SELECT id, payload FROM ${table}`).all()) {
+      if (typeof row.id !== 'string') continue;
+      const value = parsedEntityPayload(row.payload);
+      if (value === undefined) continue;
+      const variables = attachedVariableValue(value.extensions);
+      if (variables === undefined) continue;
+      assertRuntimeStateValue(variables);
+      const id = randomUUID();
+      const payload = {
+        id, revision: 0, createdAt: now, updatedAt: now,
+        scope, scopeId: row.id, value: variables,
+      };
+      database.sqlite.prepare(`
+        INSERT OR IGNORE INTO extension_states (
+          id, revision, created_at, updated_at, payload, scope, scope_id
+        ) VALUES (?, 0, ?, ?, ?, ?, ?)
+      `).run(id, now, now, JSON.stringify(payload), scope, row.id);
+    }
+  }
+}
+
 export function migrateDatabase(database: TavernDatabase): void {
   // SQLite requires this pragma to be changed outside a transaction. It is restored in finally,
   // while all schema/data changes and the schema-version write happen in one durable transaction.
@@ -412,6 +481,7 @@ export function migrateDatabase(database: TavernDatabase): void {
     const startingVersion = readSchemaVersion(database);
     database.transaction(() => {
       database.sqlite.exec('CREATE TABLE IF NOT EXISTS tavernnext_schema_version (version INTEGER NOT NULL)');
+      normalizeExtensionStatesTable(database);
       database.sqlite.exec(tables);
 
       if (hasCascadeWorldbookEntries(database)) rebuildWorldbookEntries(database);
@@ -423,6 +493,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       backfillCharacterDepthPrompt(database);
       if ((startingVersion ?? 0) < 12) backfillCharacterExtensionAssets(database);
       if ((startingVersion ?? 0) < 13) backfillPresetExtensionAssets(database);
+      if ((startingVersion ?? 0) < 14) backfillOwnerExtensionStates(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
       database.sqlite.exec(indexes);

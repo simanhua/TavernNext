@@ -76,7 +76,7 @@ describe('SQLite repositories', () => {
     migrateDatabase(database);
     migrateDatabase(database);
 
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 13 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 14 }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
   });
 
@@ -492,7 +492,7 @@ describe('SQLite repositories', () => {
     expect(database.sqlite.prepare('PRAGMA table_info(message_variants)').all().map((column) => column.name))
       .toContain('ordinal');
     expect(repositories.worldbooks.get(ids.worldbook)).toMatchObject({ isGlobal: false });
-    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 13 }]);
+    expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: 14 }]);
   });
 
   it('cascades deleted conversations to messages and variants without deleting their character or persona', async () => {

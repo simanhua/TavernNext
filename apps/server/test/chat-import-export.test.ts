@@ -55,6 +55,63 @@ async function context() {
 }
 
 describe('ST chat import/export API', () => {
+  it('round-trips Conversation and per-variant Runtime State mappings', async () => {
+    const { app, repositories } = await context();
+    const bytes = encoder.encode([
+      JSON.stringify({
+        user_name: 'Traveler', character_name: 'Aster',
+        chat_metadata: { tavernnext_runtime_state: { chapter: 1 } },
+      }),
+      JSON.stringify({
+        name: 'Aster', is_user: false, is_system: false, mes: 'Second',
+        swipes: ['First', 'Second'], swipe_id: 1,
+        swipe_info: [
+          { tavernnext_runtime_state: { swipe: 'first' }, extra: {} },
+          { tavernnext_runtime_state: { swipe: 'second' }, extra: {} },
+        ], extra: {},
+      }),
+    ].join('\n'));
+    const inspected = await app.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('state.jsonl', bytes) });
+    const committed = await app.inject({
+      method: 'POST', url: '/api/chats/imports/commit',
+      payload: { inspectionToken: inspected.json().inspectionToken, characterId: ids.character, personaId: ids.persona, title: 'State chat' },
+    });
+    expect(committed.statusCode).toBe(201);
+    const conversationId = committed.json().entityId as string;
+    const message = repositories.messages.listByConversationId(conversationId)[0]!;
+    const variants = repositories.messageVariants.listByMessageId(message.id);
+    expect(repositories.extensionStates.getByScope('conversation', conversationId)).toMatchObject({ value: { chapter: 1 } });
+    expect(variants.map((variant) => repositories.extensionStates.getByScope('message-variant', variant.id)?.value))
+      .toEqual([{ swipe: 'first' }, { swipe: 'second' }]);
+
+    await app.inject({
+      method: 'POST', url: `/api/runtime-states/message-variant/${variants[0]!.id}`,
+      payload: { expectedRevision: 0, operation: 'replace', value: { swipe: 'edited-first' } },
+    });
+    const exported = await app.inject({ method: 'GET', url: `/api/conversations/${conversationId}/export?format=st-jsonl` });
+    const decoded = decodeStChatJsonl(exported.rawPayload);
+    expect(decoded.header.chatMetadata.tavernnext_runtime_state).toEqual({ chapter: 1 });
+    expect(decoded.messages[0]!.variants.map((variant) => variant.swipeInfo.tavernnext_runtime_state))
+      .toEqual([{ swipe: 'edited-first' }, { swipe: 'second' }]);
+
+    const reinspected = await app.inject({ method: 'POST', url: '/api/imports/inspect', ...multipart('state-export.jsonl', exported.rawPayload) });
+    const recommitted = await app.inject({
+      method: 'POST', url: '/api/chats/imports/commit',
+      payload: { inspectionToken: reinspected.json().inspectionToken, characterId: ids.character, personaId: ids.persona, title: 'State reimport' },
+    });
+    const secondConversation = recommitted.json().entityId as string;
+    const secondMessage = repositories.messages.listByConversationId(secondConversation)[0]!;
+    const secondVariants = repositories.messageVariants.listByMessageId(secondMessage.id);
+    expect(repositories.extensionStates.getByScope('conversation', secondConversation)).toMatchObject({ value: { chapter: 1 } });
+    expect(secondVariants.map((variant) => repositories.extensionStates.getByScope('message-variant', variant.id)?.value))
+      .toEqual([{ swipe: 'edited-first' }, { swipe: 'second' }]);
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/conversations/${conversationId}?revision=0` })).statusCode).toBe(204);
+    expect(repositories.extensionStates.getByScope('conversation', conversationId)).toBeUndefined();
+    expect(variants.map((variant) => repositories.extensionStates.getByScope('message-variant', variant.id)))
+      .toEqual([undefined, undefined]);
+  });
+
   it('inspects without mutation, atomically commits one Conversation with ordered variants, and exports it', async () => {
     const { app, database, repositories } = await context();
     const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'chats', 'swipes.jsonl'));

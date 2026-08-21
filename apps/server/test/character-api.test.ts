@@ -181,6 +181,14 @@ describe('typed Character import and export API', () => {
       ],
     });
     expect(repositories.extensionAssets.listByOwner('character', id)).toHaveLength(4);
+    expect(repositories.extensionStates.getByScope('character', id)).toMatchObject({
+      revision: 0, value: { seed: { value: 7 } },
+    });
+    const variablesUpdated = await app.inject({
+      method: 'POST', url: `/api/runtime-states/character/${id}`,
+      payload: { expectedRevision: 0, operation: 'replace', value: { seed: { value: 8 }, added: true } },
+    });
+    expect(variablesUpdated.statusCode).toBe(200);
 
     const exported = await app.inject({ method: 'GET', url: `/api/characters/${id}/export?format=json-v3` });
     expect(exported.statusCode).toBe(200);
@@ -193,7 +201,7 @@ describe('typed Character import and export API', () => {
             { type: 'folder', name: 'Folder one', children: [{ type: 'script', name: 'Nested script' }] },
             { type: 'script', name: 'Top script' },
           ],
-          variables: { seed: { value: 7 } },
+          variables: { seed: { value: 8 }, added: true },
         },
       } },
     });
@@ -204,21 +212,27 @@ describe('typed Character import and export API', () => {
       ...multipart('round-trip.v3.json', exported.rawPayload),
     });
     expect(reinspected.statusCode).toBe(200);
-    expect(reinspected.json().normalizedPreview.attachedExtensions).toEqual(
-      inspected.json().normalizedPreview.attachedExtensions,
+    expect(reinspected.json().normalizedPreview.attachedExtensions.resources).toEqual(
+      inspected.json().normalizedPreview.attachedExtensions.resources,
     );
+    expect(reinspected.json().normalizedPreview.attachedExtensions.variables)
+      .toEqual([{ source: 'tavern_helper.variables', keyCount: 2, diagnostics: [] }]);
     const recommitted = await app.inject({
       method: 'POST', url: '/api/imports/commit', payload: { inspectionToken: reinspected.json().inspectionToken },
     });
     const secondDetail = (await app.inject({
       method: 'GET', url: `/api/characters/${recommitted.json().entityId as string}`,
     })).json();
-    expect(secondDetail.attachedExtensions).toEqual(detail.attachedExtensions);
+    expect(secondDetail.attachedExtensions.resources).toEqual(detail.attachedExtensions.resources);
+    expect(repositories.extensionStates.getByScope('character', recommitted.json().entityId as string)).toMatchObject({
+      value: { seed: { value: 8 }, added: true },
+    });
     expect((globalThis as Record<string, unknown>).__tavernNextImportExecuted).toBeUndefined();
 
     const removed = await app.inject({ method: 'DELETE', url: `/api/characters/${id}?revision=0` });
     expect(removed.statusCode).toBe(204);
     expect(repositories.extensionAssets.listByOwner('character', id)).toEqual([]);
+    expect(repositories.extensionStates.getByScope('character', id)).toBeUndefined();
   });
 
   it('accepts 2,048 resources and atomically rejects 2,049 with a stable limit error', async () => {

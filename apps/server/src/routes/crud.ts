@@ -32,6 +32,7 @@ export function registerCrudRoutes<T extends MutableEntity>(
   serialize: (value: T) => unknown = (value) => value,
   mutationGuard?: (value: T) => string | undefined,
   createValue: (input: CreateInput<T>) => T = (input) => repository.create(input),
+  deleteValue: (id: string, revision: number) => ReturnType<Repository<T>['delete']> = (id, revision) => repository.delete(id, revision),
 ): void {
   app.get(path, async () => repository.list().map(serialize));
   app.get<{ Params: IdParameters }>(`${path}/:id`, async (request, reply) => {
@@ -76,7 +77,7 @@ export function registerCrudRoutes<T extends MutableEntity>(
     const revision = revisionFrom(request.query.revision ?? request.body?.revision ?? request.body?.expectedRevision);
     if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
     try {
-      const result = repository.delete(request.params.id, revision);
+      const result = deleteValue(request.params.id, revision);
       if (result.ok) return reply.status(204).send();
       return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
     } catch {

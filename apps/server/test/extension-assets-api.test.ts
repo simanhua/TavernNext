@@ -69,6 +69,10 @@ describe('Attached Extension Resource API', () => {
       kind: 'tavern_helper', sourceKey: 'old-script', ordinal: 0, enabled: true,
       payload: { id: 'old-script', type: 'script', name: 'Old script', enabled: true, content: 'old();' },
     });
+    repositories.extensionStates.create({
+      id: '018f0000-0000-7000-8000-000000002104', scope: 'script',
+      scopeId: `preset:${preset.id}:old-script`, value: { retainedUntilRemoval: true },
+    });
 
     const loaded = await app.inject({
       method: 'GET', url: `/api/extension-assets?ownerKind=preset&ownerId=${preset.id}`,
@@ -96,6 +100,7 @@ describe('Attached Extension Resource API', () => {
     });
     expect(saved.statusCode).toBe(200);
     expect(saved.json()).toMatchObject({ owner: { revision: 1 }, assets: draft });
+    expect(repositories.extensionStates.getByScope('script', `preset:${preset.id}:old-script`)).toBeUndefined();
 
     const conflict = await app.inject({
       method: 'PUT', url: `/api/extension-assets?ownerKind=preset&ownerId=${preset.id}`,

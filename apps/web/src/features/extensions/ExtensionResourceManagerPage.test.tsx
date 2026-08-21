@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { renderWithApp } from '../../test/render.js';
 import type { EditableExtensionAssetView } from '../../api/client.js';
 import { ExtensionResourceManagerPage } from './ExtensionResourceManagerPage.js';
@@ -14,6 +14,8 @@ const presetId = '018f0000-0000-7000-8000-000000002202';
 let conflictOnce = true;
 let savedAssets: EditableExtensionAssetView[] = [];
 let putCalls = 0;
+let runtimeValue: Record<string, unknown> = { count: 1 };
+let runtimeRevision = 0;
 
 const presetAssets: EditableExtensionAssetView[] = [{
   kind: 'regex', sourceKey: 'regex-one', ordinal: 0, enabled: true, diagnostics: [],
@@ -59,10 +61,23 @@ const server = setupServer(
       assets: body.assets,
     });
   }),
+  http.get('/api/runtime-states/:scope/:scopeId', ({ params }) => HttpResponse.json({
+    scope: params.scope, scopeId: params.scopeId, revision: runtimeRevision, value: runtimeValue,
+  })),
+  http.post('/api/runtime-states/:scope/:scopeId', async ({ request, params }) => {
+    const body = await request.json() as { expectedRevision: number; operation: string; value: Record<string, unknown> };
+    expect(body.expectedRevision).toBe(runtimeRevision);
+    expect(body.operation).toBe('replace');
+    runtimeRevision += 1; runtimeValue = body.value;
+    return HttpResponse.json({ scope: params.scope, scopeId: params.scopeId, revision: runtimeRevision, value: runtimeValue });
+  }),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
-afterEach(() => { cleanup(); conflictOnce = true; savedAssets = []; putCalls = 0; });
+afterEach(() => {
+  cleanup(); conflictOnce = true; savedAssets = []; putCalls = 0;
+  runtimeValue = { count: 1 }; runtimeRevision = 0; vi.restoreAllMocks();
+});
 afterAll(() => server.close());
 
 describe('ExtensionResourceManagerPage', () => {
@@ -139,5 +154,43 @@ describe('ExtensionResourceManagerPage', () => {
     await waitFor(() => expect(savedAssets).toHaveLength(2));
     expect(savedAssets.map((asset) => asset.enabled)).toEqual([true, false]);
     expect(savedAssets.map((asset) => asset.payload)).toEqual(['opaque-regex', ['opaque-script']]);
+  });
+
+  it('validates, copies, saves, and resets scoped variable JSON', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    renderWithApp(<ExtensionResourceManagerPage />);
+
+    await user.click(screen.getByRole('button', { name: 'Load variables' }));
+    const editor = await screen.findByLabelText('Variables JSON');
+    expect((editor as HTMLTextAreaElement).value).toContain('"count": 1');
+    await user.click(screen.getByRole('button', { name: 'Copy variables' }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"count": 1'));
+
+    fireEvent.change(editor, { target: { value: '[]' } });
+    expect((screen.getByRole('button', { name: 'Save variables' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toContain('invalid_json');
+    fireEvent.change(editor, { target: { value: '{"edited":true}' } });
+    await user.click(screen.getByRole('button', { name: 'Save variables' }));
+    await waitFor(() => expect(runtimeValue).toEqual({ edited: true }));
+    await user.click(screen.getByRole('button', { name: 'Reset variables' }));
+    await waitFor(() => expect(runtimeValue).toEqual({}));
+  });
+
+  it('requires loading after a Scope ID change and clears the previous owner JSON', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<ExtensionResourceManagerPage />);
+    await user.selectOptions(screen.getByLabelText('Runtime State scope'), 'character');
+    const scopeId = screen.getByLabelText('Scope ID');
+    await user.type(scopeId, characterId);
+    await user.click(screen.getByRole('button', { name: 'Load variables' }));
+    const editor = await screen.findByLabelText('Variables JSON');
+    expect((editor as HTMLTextAreaElement).value).toContain('"count": 1');
+
+    fireEvent.change(scopeId, { target: { value: '018f0000-0000-7000-8000-000000009999' } });
+    expect((editor as HTMLTextAreaElement).value).toBe('{}');
+    expect((screen.getByRole('button', { name: 'Save variables' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Reset variables' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

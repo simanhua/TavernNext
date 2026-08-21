@@ -3,6 +3,7 @@ import {
   decodeInspectedPreset,
   diagnostic,
   normalizeAttachedExtensions,
+  attachedVariableValue,
   persistPresetSourceAssociations,
   presetWarnings,
   summarizeSPreset,
@@ -92,6 +93,12 @@ export function createPresetImportHandler(): ImportHandler {
           id: randomUUID(), ownerKind: 'preset', ownerId: value.id,
           kind: asset.kind, sourceKey: asset.sourceKey, ordinal: asset.ordinal,
           enabled: asset.enabled, payload: asset.payload, diagnostics: asset.diagnostics,
+        });
+      }
+      const variables = attachedVariableValue(attached.extensions);
+      if (variables !== undefined) {
+        context.repositories.extensionStates.create({
+          id: randomUUID(), scope: 'preset', scopeId: value.id, value: variables,
         });
       }
       return { entityId: value.id };

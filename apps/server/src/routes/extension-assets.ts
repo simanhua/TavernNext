@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { MAX_EXTENSION_ASSETS_PER_OWNER } from '../extension-assets.js';
+import { attachedScriptKeys, scriptStateScopeId } from '../runtime-state-validation.js';
 
 const QuerySchema = z.object({
   ownerKind: ExtensionOwnerKindSchema,
@@ -95,6 +96,11 @@ export function registerExtensionAssetRoutes(
       return reply.status(409).send({ error: 'conflict', ownerRevision: current.revision });
     }
     const assets = sorted(body.data.assets.map(canonicalEnabled));
+    const currentScriptKeys = repositories.extensionAssets.listByOwner(query.data.ownerKind, current.id)
+      .filter((asset) => asset.kind === 'tavern_helper')
+      .flatMap((asset) => [asset.sourceKey, ...attachedScriptKeys(asset.payload)]);
+    const nextScriptKeys = new Set(assets.filter((asset) => asset.kind === 'tavern_helper')
+      .flatMap((asset) => [asset.sourceKey, ...attachedScriptKeys(asset.payload)]));
     const extensions = overlayAttachedExtensionAssets(current.extensions, assets, { replaceKinds: true });
     const result = database.transaction(() => {
       const updated = query.data.ownerKind === 'character'
@@ -102,6 +108,13 @@ export function registerExtensionAssetRoutes(
         : repositories.presets.update(current.id, current.revision, { extensions });
       if (!updated.ok) return updated;
       repositories.extensionAssets.deleteByOwner(query.data.ownerKind, current.id);
+      for (const scriptKey of currentScriptKeys) {
+        if (!nextScriptKeys.has(scriptKey)) {
+          repositories.extensionStates.deleteByScope(
+            'script', scriptStateScopeId(query.data.ownerKind, current.id, scriptKey),
+          );
+        }
+      }
       for (const asset of assets) {
         repositories.extensionAssets.create({
           id: randomUUID(), ownerKind: query.data.ownerKind, ownerId: current.id,
