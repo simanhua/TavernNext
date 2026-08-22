@@ -33,6 +33,22 @@ const opaqueAssets: EditableExtensionAssetView[] = [{
 }];
 
 const server = setupServer(
+  http.get('/api/settings/generation', () => HttpResponse.json({
+    id: '018f0000-0000-7000-8000-000000000001', revision: 1,
+    providerId: '018f0000-0000-7000-8000-000000002203', chatPresetId: presetId,
+    textPresetId: null, contextPresetId: null, instructPresetId: null, systemPresetId: null,
+  })),
+  http.get('/api/settings/generation/active-resource-context', () => HttpResponse.json({
+    globalGenerationConfigRevision: 1,
+    mode: 'chat',
+    primaryPreset: { id: presetId, revision: 0, name: 'Preset owner', kind: 'chat' },
+    conversation: null,
+    character: { id: characterId, revision: 1, name: 'Character owner' },
+    owners: [
+      { kind: 'preset', id: presetId, revision: 0, name: 'Preset owner' },
+      { kind: 'character', id: characterId, revision: 1, name: 'Character owner' },
+    ],
+  })),
   http.get('/api/characters', () => HttpResponse.json([{ id: characterId, revision: 0, name: 'Character owner' }])),
   http.get('/api/presets', () => HttpResponse.json([{ id: presetId, revision: 0, name: 'Preset owner', kind: 'chat' }])),
   http.get('/api/extension-assets', ({ request }) => {
@@ -90,9 +106,7 @@ describe('ExtensionResourceManagerPage', () => {
     const user = userEvent.setup();
     renderWithApp(<ExtensionResourceManagerPage />);
 
-    await user.selectOptions(await screen.findByLabelText('Owner type'), 'preset');
-    await user.selectOptions(await screen.findByLabelText('Resource owner'), presetId);
-    await user.click(screen.getByRole('button', { name: 'Load resources' }));
+    await user.click(await screen.findByRole('button', { name: /Existing script.*Preset owner/ }));
     expect(await screen.findByText(/Regex #1 · Preset regex/)).not.toBeNull();
     expect(screen.getByText(/Script #1 · Existing script/)).not.toBeNull();
 
@@ -119,25 +133,20 @@ describe('ExtensionResourceManagerPage', () => {
       expect.objectContaining({ type: 'script', content: 'draftCode();', info: 'draft notes' }),
     ]);
 
-    await user.selectOptions(screen.getByLabelText('Owner type'), 'character');
-    await user.selectOptions(screen.getByLabelText('Resource owner'), characterId);
-    await user.click(screen.getByRole('button', { name: 'Load resources' }));
+    await user.click(screen.getByRole('button', { name: /opaque-script.*Character owner/ }));
     expect(await screen.findByRole('heading', { name: 'Character owner' })).not.toBeNull();
   });
 
   it('clears a conflict when switching owners so stale retry cannot overwrite the new owner', async () => {
     const user = userEvent.setup();
     renderWithApp(<ExtensionResourceManagerPage />);
-    await user.selectOptions(await screen.findByLabelText('Owner type'), 'preset');
-    await user.selectOptions(screen.getByLabelText('Resource owner'), presetId);
-    await user.click(screen.getByRole('button', { name: 'Load resources' }));
+    await user.click(await screen.findByRole('button', { name: /Existing script.*Preset owner/ }));
     await screen.findByText(/Script #1 · Existing script/);
     await user.click(screen.getByRole('button', { name: 'Save resources' }));
     expect(await screen.findByRole('button', { name: 'Retry with server revision' })).not.toBeNull();
     expect(putCalls).toBe(1);
 
-    await user.selectOptions(screen.getByLabelText('Owner type'), 'character');
-    await user.selectOptions(screen.getByLabelText('Resource owner'), characterId);
+    await user.click(screen.getByRole('button', { name: /opaque-script.*Character owner/ }));
     expect(screen.queryByRole('button', { name: 'Retry with server revision' })).toBeNull();
     expect(putCalls).toBe(1);
   });
@@ -146,9 +155,7 @@ describe('ExtensionResourceManagerPage', () => {
     conflictOnce = false;
     const user = userEvent.setup();
     renderWithApp(<ExtensionResourceManagerPage />);
-    await screen.findByRole('option', { name: 'Character owner' });
-    await user.selectOptions(screen.getByLabelText('Resource owner'), characterId);
-    await user.click(screen.getByRole('button', { name: 'Load resources' }));
+    await user.click(await screen.findByRole('button', { name: /opaque-script.*Character owner/ }));
     expect(await screen.findByLabelText('Opaque node JSON')).not.toBeNull();
     expect(screen.getByLabelText('Regex payload JSON')).not.toBeNull();
     const enabled = screen.getAllByLabelText('Enabled');

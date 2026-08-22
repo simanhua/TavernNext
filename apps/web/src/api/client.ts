@@ -58,6 +58,15 @@ export interface ExtensionAssetCollectionView {
   assets: EditableExtensionAssetView[];
 }
 
+export interface ActiveResourceContextView {
+  globalGenerationConfigRevision: number;
+  mode: 'chat' | 'text' | null;
+  primaryPreset: ({ id: string; revision: number; name: string; kind: 'chat' | 'text' }) | null;
+  conversation: ({ id: string; revision: number }) | null;
+  character: ({ id: string; revision: number; name: string }) | null;
+  owners: Array<{ kind: 'character' | 'preset'; id: string; revision: number; name: string }>;
+}
+
 export type RuntimeStateScopeView = 'global' | 'character' | 'preset' | 'conversation' | 'message-variant' | 'script';
 export interface RuntimeStateView {
   scope: RuntimeStateScopeView;
@@ -585,6 +594,9 @@ export const api = {
   exportPreset: (id: string) => download(`/api/presets/${id}/export`),
   getExtensionAssets: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionAssetCollectionView>(
     `/api/extension-assets?ownerKind=${encodeURIComponent(ownerKind)}&ownerId=${encodeURIComponent(ownerId)}`,
+  ),
+  getActiveResourceContext: (conversationId: string | null) => request<ActiveResourceContextView>(
+    `/api/settings/generation/active-resource-context${conversationId === null ? '' : `?conversationId=${encodeURIComponent(conversationId)}`}`,
   ),
   saveExtensionAssets: (
     ownerKind: 'character' | 'preset',

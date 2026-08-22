@@ -219,4 +219,64 @@ describe('global generation configuration API', () => {
     expect(JSON.stringify(active)).not.toContain('chat-only');
     expect(JSON.stringify(active)).not.toContain('companion-must-not-appear');
   });
+
+  it('resolves one revisioned active resource context from Provider mode and Conversation identity', async () => {
+    const { app, repositories } = await context();
+    const provider = repositories.providerProfiles.create({
+      id: '018f0000-0000-7000-8000-000000000141', name: 'Context provider',
+      baseUrl: 'https://provider.example/v1', model: 'model', apiMode: 'chat',
+    });
+    const chat = repositories.presets.create({
+      id: '018f0000-0000-7000-8000-000000000142', name: 'Chat context', kind: 'chat',
+      settings: { prompts: [], prompt_order: [] },
+    });
+    const text = repositories.presets.create({
+      id: '018f0000-0000-7000-8000-000000000143', name: 'Text context', kind: 'text', settings: {},
+    });
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000144', name: 'Context character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000145', name: 'Context persona', description: '', isDefault: false,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000146', characterId: character.id, personaId: persona.id, title: 'Context chat',
+    });
+    expect(repositories.globalGenerationConfig.update(0, {
+      providerId: provider.id, chatPresetId: chat.id, textPresetId: text.id,
+    })).toMatchObject({ ok: true });
+
+    const url = `/api/settings/generation/active-resource-context?conversationId=${conversation.id}`;
+    let active = (await app.inject({ method: 'GET', url })).json();
+    expect(active).toMatchObject({
+      mode: 'chat',
+      globalGenerationConfigRevision: 1,
+      primaryPreset: { id: chat.id, revision: chat.revision, name: chat.name, kind: 'chat' },
+      conversation: { id: conversation.id, revision: conversation.revision },
+      character: { id: character.id, revision: character.revision, name: character.name },
+      owners: [
+        { kind: 'preset', id: chat.id, revision: chat.revision },
+        { kind: 'character', id: character.id, revision: character.revision },
+      ],
+    });
+
+    expect(repositories.providerProfiles.update(provider.id, provider.revision, { apiMode: 'text' })).toMatchObject({ ok: true });
+    active = (await app.inject({ method: 'GET', url })).json();
+    expect(active).toMatchObject({ mode: 'text', primaryPreset: { id: text.id, kind: 'text' } });
+
+    const updatedCharacter = repositories.characters.update(character.id, character.revision, { name: 'Updated character' });
+    expect(updatedCharacter).toMatchObject({ ok: true });
+    active = (await app.inject({ method: 'GET', url })).json();
+    expect(active.character).toMatchObject({ revision: 1, name: 'Updated character' });
+
+    const missingConversation = (await app.inject({
+      method: 'GET',
+      url: '/api/settings/generation/active-resource-context?conversationId=018f0000-0000-7000-8000-000000000999',
+    })).json();
+    expect(missingConversation).toMatchObject({
+      mode: 'text', primaryPreset: { id: text.id }, conversation: null, character: null,
+      owners: [{ kind: 'preset', id: text.id }],
+    });
+  });
 });

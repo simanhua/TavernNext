@@ -3,12 +3,16 @@ import { attachedExtensionOverview } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Repositories } from '../db/repositories.js';
-import { resolveActivePresetExtensionResources } from '../services/active-extension-resources.js';
+import {
+  resolveActivePresetExtensionResources,
+  resolveActiveResourceContext,
+} from '../services/active-extension-resources.js';
 
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
   patch: GlobalGenerationSelectionSchema.partial().strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
+const ActiveResourceContextQuerySchema = z.object({ conversationId: z.string().uuid().optional() }).strict();
 
 const presetKinds = {
   chatPresetId: 'chat',
@@ -20,6 +24,11 @@ const presetKinds = {
 
 export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repositories: Repositories): void {
   app.get('/api/settings/generation', async () => repositories.globalGenerationConfig.get());
+  app.get<{ Querystring: unknown }>('/api/settings/generation/active-resource-context', async (request, reply) => {
+    const parsed = ActiveResourceContextQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
+    return resolveActiveResourceContext(repositories, parsed.data.conversationId);
+  });
   app.get('/api/settings/generation/active-extension-resources', async () => {
     const active = resolveActivePresetExtensionResources(repositories);
     return {

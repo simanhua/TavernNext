@@ -1,19 +1,25 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { ApiError, api, errorCode, type ExtensionTrustReviewView } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
 
 export function ExtensionTrustPanel({ ownerKind, ownerId }: { ownerKind: 'character' | 'preset'; ownerId: string }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const [review, setReview] = useState<ExtensionTrustReviewView>();
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const publish = (next: ExtensionTrustReviewView) => {
+    setReview(next);
+    queryClient.setQueriesData({ queryKey: ['extension-trust', ownerKind, ownerId] }, next);
+  };
   const run = async (operation: () => Promise<ExtensionTrustReviewView>) => {
     setPending(true); setError(undefined);
-    try { setReview(await operation()); }
+    try { publish(await operation()); }
     catch (cause) {
       const failedReview = cause instanceof ApiError ? cause.details.review : undefined;
       if (typeof failedReview === 'object' && failedReview !== null) {
-        setReview(failedReview as ExtensionTrustReviewView);
+        publish(failedReview as ExtensionTrustReviewView);
       }
       setError(errorCode(cause));
     }

@@ -1,13 +1,16 @@
-import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import {
   ApiError,
   api,
   errorCode,
+  type ActiveResourceContextView,
   type EditableExtensionAssetView,
   type ExtensionAssetCollectionView,
+  type ExtensionTrustReviewView,
 } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
+import { useChatUi } from '../chat/chat-store.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { RuntimeStateManager } from './RuntimeStateManager.js';
 import { ExtensionTrustPanel } from './ExtensionTrustPanel.js';
@@ -34,6 +37,56 @@ function parseJson(value: string): unknown {
 }
 
 type JsonUpdater = (field: string, source: string, apply: (value: unknown) => void) => void;
+
+interface ResourceCatalogItem {
+  key: string;
+  owner: ActiveResourceContextView['owners'][number];
+  collection: ExtensionAssetCollectionView;
+  asset: EditableExtensionAssetView;
+  name: string;
+  nodeType: 'script' | 'folder' | 'regex';
+  nodeEnabled: boolean;
+}
+
+function helperChildren(value: Record<string, unknown>): unknown[] {
+  for (const key of ['children', 'scripts', 'value']) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+}
+
+function helperCatalogNodes(
+  value: unknown,
+  base: Omit<ResourceCatalogItem, 'key' | 'name' | 'nodeType' | 'nodeEnabled'>,
+  path = 'root',
+  inheritedEnabled = base.asset.enabled,
+): ResourceCatalogItem[] {
+  if (!isRecord(value)) return [{
+    ...base,
+    key: `${base.owner.kind}:${base.owner.id}:${base.asset.sourceKey}:${path}`,
+    name: base.asset.sourceKey,
+    nodeType: 'script',
+    nodeEnabled: inheritedEnabled,
+  }];
+  const nodeType = value.type === 'folder' ? 'folder' : 'script';
+  const nodeEnabled = inheritedEnabled && value.enabled !== false;
+  const current: ResourceCatalogItem = {
+    ...base,
+    key: `${base.owner.kind}:${base.owner.id}:${base.asset.sourceKey}:${path}`,
+    name: String(value.name ?? value.id ?? base.asset.sourceKey),
+    nodeType,
+    nodeEnabled,
+  };
+  return [
+    current,
+    ...helperChildren(value).flatMap((child, ordinal) => helperCatalogNodes(child, base, `${path}.${ordinal}`, nodeEnabled)),
+  ];
+}
+
+function regexName(asset: EditableExtensionAssetView): string {
+  const payload = record(asset.payload);
+  return String(payload.scriptName ?? payload.id ?? asset.sourceKey);
+}
 
 function ScriptTreeNodeEditor({ value, path, onChange, onDelete, onMoveUp, onMoveDown, first, last, updateJson }: {
   value: unknown;
@@ -145,10 +198,32 @@ function ScriptTreeNodeEditor({ value, path, onChange, onDelete, onMoveUp, onMov
 
 export function ExtensionResourceManagerPage() {
   const { t } = useI18n();
-  const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters });
-  const presets = useQuery({ queryKey: ['presets'], queryFn: api.listPresets });
+  const queryClient = useQueryClient();
+  const activeConversationId = useChatUi((state) => state.activeConversationId);
+  const generationConfig = useQuery({ queryKey: ['global-generation-config'], queryFn: api.getGlobalGenerationConfig });
+  const activeContext = useQuery({
+    queryKey: ['active-resource-context', activeConversationId, generationConfig.data?.revision ?? null],
+    queryFn: () => api.getActiveResourceContext(activeConversationId),
+  });
+  const contextOwners = activeContext.data?.owners ?? [];
+  const assetQueries = useQueries({
+    queries: contextOwners.map((owner) => ({
+      queryKey: ['extension-assets', owner.kind, owner.id, owner.revision],
+      queryFn: () => api.getExtensionAssets(owner.kind, owner.id),
+    })),
+  });
+  const assetsLoading = assetQueries.some((query) => query.isLoading);
+  const trustQueries = useQueries({
+    queries: contextOwners.map((owner) => ({
+      queryKey: ['extension-trust', owner.kind, owner.id, owner.revision],
+      queryFn: () => api.getExtensionTrust(owner.kind, owner.id),
+    })),
+  });
   const [ownerKind, setOwnerKind] = useState<'character' | 'preset'>('character');
   const [ownerId, setOwnerId] = useState('');
+  const [activeKind, setActiveKind] = useState<'tavern_helper' | 'regex'>('tavern_helper');
+  const [selectedKey, setSelectedKey] = useState<string>();
+  const [selectionNotice, setSelectionNotice] = useState<string>();
   const [collection, setCollection] = useState<ExtensionAssetCollectionView>();
   const [draft, setDraft] = useState<EditableExtensionAssetView[]>([]);
   const [pending, setPending] = useState(false);
@@ -156,13 +231,66 @@ export function ExtensionResourceManagerPage() {
   const [conflict, setConflict] = useState<{ ownerKind: 'character' | 'preset'; ownerId: string; revision: number }>();
   const [invalidJsonFields, setInvalidJsonFields] = useState<Set<string>>(() => new Set());
 
-  const owners = ownerKind === 'character' ? characters.data ?? [] : presets.data ?? [];
+  const catalog = contextOwners.flatMap((owner, ownerIndex): ResourceCatalogItem[] => {
+    const ownerCollection = assetQueries[ownerIndex]?.data;
+    if (ownerCollection === undefined) return [];
+    return ownerCollection.assets.flatMap((asset) => {
+      const base = { owner, collection: ownerCollection, asset };
+      return asset.kind === 'regex'
+        ? [{
+            ...base,
+            key: `${owner.kind}:${owner.id}:${asset.sourceKey}`,
+            name: regexName(asset),
+            nodeType: 'regex' as const,
+            nodeEnabled: asset.enabled,
+          }]
+        : helperCatalogNodes(asset.payload, base);
+    });
+  });
+  const visibleCatalog = catalog.filter((item) => item.asset.kind === activeKind);
+  const selectedCatalogItem = catalog.find((item) => item.key === selectedKey);
+  const trustFor = (owner: ResourceCatalogItem['owner']): ExtensionTrustReviewView | undefined => {
+    const index = contextOwners.findIndex((candidate) => candidate.kind === owner.kind && candidate.id === owner.id);
+    return index < 0 ? undefined : trustQueries[index]?.data;
+  };
+  const statusesFor = (item: ResourceCatalogItem) => [
+    item.nodeEnabled ? 'Enabled' : 'Disabled',
+    ...(item.asset.kind === 'tavern_helper'
+      ? [trustFor(item.owner)?.trusted === true ? 'Trusted' : 'Untrusted']
+      : []),
+  ];
+  const selectResource = (item: ResourceCatalogItem) => {
+    const sameOwner = collection?.owner.kind === item.owner.kind && collection.owner.id === item.owner.id;
+    setOwnerKind(item.owner.kind);
+    setOwnerId(item.owner.id);
+    if (!sameOwner) {
+      setCollection(item.collection);
+      setDraft(normalizedOrder(item.collection.assets));
+      setConflict(undefined);
+      setInvalidJsonFields(new Set());
+      setError(undefined);
+    }
+    setSelectedKey(item.key);
+    setSelectionNotice(undefined);
+  };
+  useEffect(() => {
+    if (selectedKey === undefined || activeContext.isFetching || assetsLoading) return;
+    if (catalog.some((item) => item.key === selectedKey)) return;
+    setSelectedKey(undefined);
+    setOwnerId('');
+    setCollection(undefined);
+    setDraft([]);
+    setConflict(undefined);
+    setSelectionNotice('The selected resource left the current context.');
+  }, [activeContext.isFetching, assetsLoading, catalog, selectedKey]);
+
   const load = async () => {
     if (ownerId === '') return;
     setPending(true);
     setError(undefined);
     try {
       const value = await api.getExtensionAssets(ownerKind, ownerId);
+      queryClient.setQueryData(['extension-assets', ownerKind, ownerId, value.owner.revision], value);
       setCollection(value);
       setDraft(normalizedOrder(value.assets));
       setConflict(undefined);
@@ -183,6 +311,8 @@ export function ExtensionResourceManagerPage() {
       setCollection(value);
       setDraft(normalizedOrder(value.assets));
       setConflict(undefined);
+      await queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
+      await queryClient.invalidateQueries({ queryKey: ['extension-assets', ownerKind, ownerId] });
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) {
         const revisionValue = cause.details.ownerRevision;
@@ -262,18 +392,44 @@ export function ExtensionResourceManagerPage() {
     <main className="manager-page">
       <aside className="manager-sidebar">
         <h1>{t('Attached Resources')}</h1>
-        <label>{t('Owner type')}<select value={ownerKind} onChange={(event) => {
-          setOwnerKind(event.target.value as 'character' | 'preset');
-          setOwnerId(''); setCollection(undefined); setDraft([]); setConflict(undefined); setInvalidJsonFields(new Set());
-        }}><option value="character">{t('Character')}</option><option value="preset">{t('Preset')}</option></select></label>
-        <label>{t('Resource owner')}<select value={ownerId} onChange={(event) => { setOwnerId(event.target.value); setCollection(undefined); setDraft([]); setConflict(undefined); setInvalidJsonFields(new Set()); }}>
-          <option value="">{t('Select owner')}</option>
-          {owners.map((owner) => <option value={owner.id} key={owner.id}>{owner.name}</option>)}
-        </select></label>
-        <button type="button" disabled={pending || ownerId === ''} onClick={() => void load()}>{t('Load resources')}</button>
+        <div role="tablist" aria-label={t('Resource context')}>
+          <button type="button" role="tab" aria-selected="true">{t('Current Context')}</button>
+        </div>
+        <div role="tablist" aria-label={t('Resource type')}>
+          <button type="button" role="tab" aria-selected={activeKind === 'tavern_helper'} onClick={() => setActiveKind('tavern_helper')}>
+            {t('Scripts')} {catalog.filter((item) => item.asset.kind === 'tavern_helper').length}
+          </button>
+          <button type="button" role="tab" aria-selected={activeKind === 'regex'} onClick={() => setActiveKind('regex')}>
+            {t('Regexes')} {catalog.filter((item) => item.asset.kind === 'regex').length}
+          </button>
+        </div>
+        {activeContext.data?.primaryPreset !== null ? null : (
+          <p>{t('No primary Preset is configured for the active Provider mode.')}</p>
+        )}
+        {activeContext.data?.character !== null ? null : (
+          <p>{t('No active Conversation Character is selected.')}</p>
+        )}
+        <div role="tabpanel" aria-label={t(activeKind === 'tavern_helper' ? 'Scripts' : 'Regexes')}>
+          {visibleCatalog.map((item) => (
+            <button
+              type="button"
+              key={item.key}
+              aria-pressed={selectedKey === item.key}
+              onClick={() => selectResource(item)}
+            >
+              <strong>{item.name}</strong>
+              <span>{t(item.owner.kind === 'character' ? 'Character' : 'Preset')} · {item.owner.name}</span>
+              {statusesFor(item).map((status) => <span key={status}>{t(status)}</span>)}
+            </button>
+          ))}
+          {activeContext.isLoading || assetsLoading ? <p>{t('Loading resources…')}</p> : null}
+          {!activeContext.isLoading && !assetsLoading && visibleCatalog.length === 0
+            ? <p>{t('No resources of this type.')}</p> : null}
+        </div>
       </aside>
       <section className="manager-editor">
         <h2>{collection?.owner.name ?? t('Attached Extension Resource manager')}</h2>
+        {selectionNotice === undefined ? null : <p role="status">{t(selectionNotice)}</p>}
         <div className="editor-actions">
           <button type="button" disabled={collection === undefined} onClick={() => add('regex')}>{t('Add regex')}</button>
           <button type="button" disabled={collection === undefined} onClick={() => add('script')}>{t('Add script')}</button>

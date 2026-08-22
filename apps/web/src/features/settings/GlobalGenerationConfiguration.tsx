@@ -35,6 +35,7 @@ export function ActiveGenerationConfiguration({ providers }: { providers: Provid
     mutationFn: () => api.saveGlobalGenerationConfig(configuration.data!.revision, selection),
     onSuccess: (saved) => {
       queryClient.setQueryData(['global-generation-config'], saved);
+      void queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
       const { providerId, chatPresetId, textPresetId, contextPresetId, instructPresetId, systemPresetId } = saved;
       setSelection({ providerId, chatPresetId, textPresetId, contextPresetId, instructPresetId, systemPresetId });
     },
