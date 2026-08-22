@@ -1,4 +1,5 @@
 import {
+  MUTATING_TAVERN_HELPER_METHODS,
   TAVERN_HELPER_BRIDGED_METHODS,
   type TrustedRuntimeScript,
   type TrustedScriptManifest,
@@ -24,6 +25,7 @@ export class ScriptCompatibilityEnvironment {
   private parentListeners: ParentListenerRecord[] = [];
   private restoreParentTargets: Array<() => void> = [];
   private sourceOwners = new Map<string, Set<string>>();
+  private promptHooks = new Set<symbol>();
 
   constructor(
     private readonly document: Document,
@@ -167,10 +169,19 @@ export class ScriptCompatibilityEnvironment {
     runtimeWindow.eventClearAll = () => this.listeners.clear();
     runtimeWindow.getScriptId = () => this.activeSourceId;
     runtimeWindow.getButtonEvent = (first: string, second?: string) => second === undefined ? buttonEvent(this.activeScriptId, first) : buttonEvent(first, second);
-    runtimeWindow.event_types = Object.freeze({ APP_READY: 'tavernnext:runtime:start', CHAT_CHANGED: 'tavernnext:conversation:changed', RUNTIME_STOP: 'tavernnext:runtime:stop' });
+    runtimeWindow.event_types = Object.freeze({
+      APP_READY: 'tavernnext:runtime:start', CHAT_CHANGED: 'tavernnext:conversation:changed', RUNTIME_STOP: 'tavernnext:runtime:stop',
+      CHAT_COMPLETION_PROMPT_READY: 'tavernnext:chat-completion-prompt-ready',
+      GENERATE_AFTER_COMBINE_PROMPTS: 'tavernnext:generate-after-combine-prompts',
+      TRUSTED_PROMPT_HOOK: 'tavernnext:trusted-prompt-hook',
+    });
     const unsupported = (method: PropertyKey) => async () => { throw Object.assign(new Error(`${String(method)} is not supported`), { code: 'not_supported' }); };
     const bridged = new Set<string>(TAVERN_HELPER_BRIDGED_METHODS);
-    const bridge = (method: string) => (...args: unknown[]) => this.callApi(this.activeScriptId, method, args);
+    const bridge = (method: string) => (...args: unknown[]) => (
+      this.promptHooks.size > 0 && MUTATING_TAVERN_HELPER_METHODS.has(method)
+        ? Promise.resolve(undefined)
+        : this.callApi(this.activeScriptId, method, args)
+    );
     const api = new Proxy({}, { get: (_target, method) => (
       typeof method === 'string' && bridged.has(method) ? bridge(method) : unsupported(method)
     ) });
@@ -187,6 +198,30 @@ export class ScriptCompatibilityEnvironment {
     return this.isDisabled(scriptId) ? Promise.resolve(false) : this.emit(buttonEvent(scriptId, name));
   }
 
+  async runPromptHook(candidate: {
+    kind: 'chat' | 'text'; messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string; name?: string }>;
+    text?: string; stop: string[];
+  }, dryRun: boolean) {
+    const patch = structuredClone({ messages: candidate.messages, text: candidate.text, stop: candidate.stop });
+    const hook = Symbol('prompt-hook');
+    this.promptHooks.add(hook);
+    try {
+      if (candidate.kind === 'chat') {
+        const eventData = { chat: patch.messages!, stop: patch.stop, dryRun };
+        await this.emit('tavernnext:chat-completion-prompt-ready', eventData);
+        patch.messages = eventData.chat; patch.stop = eventData.stop;
+      } else {
+        const eventData = { prompt: patch.text!, stop: patch.stop, dryRun };
+        await this.emit('tavernnext:generate-after-combine-prompts', eventData);
+        patch.text = eventData.prompt; patch.stop = eventData.stop;
+      }
+      await this.emit('tavernnext:trusted-prompt-hook', { candidate, patch, dryRun });
+      return patch;
+    } finally {
+      this.promptHooks.delete(hook);
+    }
+  }
+
   destroy(manifest?: TrustedScriptManifest): void {
     if (manifest !== undefined) void this.emit('tavernnext:runtime:stop', manifest);
     this.listeners.clear();
@@ -196,5 +231,6 @@ export class ScriptCompatibilityEnvironment {
     this.restoreParentTargets = [];
     this.disabledScripts.clear(); this.scripts.clear(); this.sourceOwners.clear(); this.deactivate();
     this.currentMessageId = undefined;
+    this.promptHooks.clear();
   }
 }

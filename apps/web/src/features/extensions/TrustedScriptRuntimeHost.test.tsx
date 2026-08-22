@@ -9,6 +9,7 @@ import type { TrustedScriptManifest } from '@tavernnext/extension-runtime';
 import { renderWithApp } from '../../test/render.js';
 import type { ScriptRuntimeDiagnostic, ScriptRuntimeFrame } from './SameOriginScriptRuntime.js';
 import { TrustedScriptRuntimeHost, type ScriptRuntimeFrameFactory } from './TrustedScriptRuntimeHost.js';
+import { runTrustedPromptHooks } from './TrustedPromptHooks.js';
 
 const presetId = '018f0000-0000-7000-8000-000000004001';
 const characterId = '018f0000-0000-7000-8000-000000004002';
@@ -58,17 +59,61 @@ afterEach(() => { cleanup(); presetDigest = 'a'.repeat(64); characterTrusted = t
 afterAll(() => server.close());
 
 describe('TrustedScriptRuntimeHost', () => {
+  it('rejects a queued hook when the trusted runtime epoch changes before readiness', async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstReady = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const hookCalls: number[] = [];
+    const frames: ScriptRuntimeFrame[] = [];
+    const createFrame: ScriptRuntimeFrameFactory = () => {
+      const index = frames.length;
+      const frame: ScriptRuntimeFrame = {
+        start: async () => index === 0 ? firstReady : undefined,
+        invoke: async () => true,
+        runPromptHook: async (candidate) => {
+          hookCalls.push(index);
+          return { messages: candidate.messages, text: candidate.text, stop: candidate.stop };
+        },
+        destroy() {},
+      };
+      frames.push(frame);
+      return frame;
+    };
+    const { queryClient } = renderWithApp(
+      <TrustedScriptRuntimeHost conversationId="conversation-1" createFrame={createFrame} />,
+    );
+    await waitFor(() => expect(frames).toHaveLength(1));
+    const hook = runTrustedPromptHooks({
+      kind: 'chat', messages: [{ role: 'user', content: 'queued' }], stop: [],
+    }, false);
+    const rejection = expect(hook).rejects.toThrow('runtime_epoch_changed');
+
+    presetDigest = 'c'.repeat(64);
+    await queryClient.invalidateQueries({ queryKey: ['extension-trust', 'preset'] });
+    await waitFor(() => expect(frames).toHaveLength(2));
+    releaseFirst?.();
+    await rejection;
+    expect(hookCalls).toEqual([]);
+  });
+
   it('restarts on digest/trust changes, routes owning buttons, and surfaces fail-open errors', async () => {
-    const frames: Array<ScriptRuntimeFrame & { manifest?: TrustedScriptManifest; destroyed: boolean; invoked: string[] }> = [];
+    const frames: Array<ScriptRuntimeFrame & { manifest?: TrustedScriptManifest; destroyed: boolean; invoked: string[]; hookCalls: boolean[] }> = [];
     let diagnostic: ((value: ScriptRuntimeDiagnostic) => void) | undefined;
     const createFrame: ScriptRuntimeFrameFactory = (_document, _mount, onDiagnostic) => {
       diagnostic = onDiagnostic;
       const frame = {
         destroyed: false,
         invoked: [] as string[],
+        hookCalls: [] as boolean[],
         manifest: undefined as TrustedScriptManifest | undefined,
         async start(manifest: TrustedScriptManifest) { frame.manifest = manifest; },
         async invoke(scriptId: string, name: string) { frame.invoked.push(`${scriptId}:${name}`); return true; },
+        async runPromptHook(candidate: Parameters<ScriptRuntimeFrame['runPromptHook']>[0], dryRun: boolean) {
+          frame.hookCalls.push(dryRun);
+          return {
+            messages: candidate.messages?.map((message) => ({ ...message, content: `${message.content}-hooked` })),
+            text: candidate.text === undefined ? undefined : `${candidate.text}-hooked`, stop: [...candidate.stop, 'HOOK'],
+          };
+        },
         destroy() { frame.destroyed = true; },
       };
       frames.push(frame);
@@ -82,6 +127,12 @@ describe('TrustedScriptRuntimeHost', () => {
     expect(frames[0]!.manifest?.scripts.map(({ owner }) => owner.kind)).toEqual(['preset', 'character']);
     await user.click(screen.getByRole('button', { name: 'character button' }));
     expect(frames[0]!.invoked).toEqual([`character:${characterId}:character-script:character button`]);
+    await expect(runTrustedPromptHooks({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, true)).resolves.toEqual({
+      messages: [{ role: 'user', content: 'input-hooked' }], text: undefined, stop: ['HOOK'],
+    });
+    expect(frames[0]!.hookCalls).toEqual([true]);
 
     presetDigest = 'c'.repeat(64);
     await queryClient.invalidateQueries({ queryKey: ['extension-trust', 'preset'] });

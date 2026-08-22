@@ -148,6 +148,30 @@ export function createExtensionRuntimeRpcService(
       };
 
       const value = await (async () => {
+        if (input.method === 'generate' || input.method === 'generateRaw' || input.method === 'triggerSlash') {
+          const raw = input.args[0];
+          const object = record(raw);
+          const supplied = typeof raw === 'string'
+            ? raw
+            : typeof object?.prompt === 'string' ? object.prompt
+              : typeof object?.user_input === 'string' ? object.user_input : undefined;
+          const prompt = input.method === 'triggerSlash' && supplied?.startsWith('/trigger')
+            ? supplied.slice('/trigger'.length).trim()
+            : supplied;
+          if (prompt === undefined || prompt === '') throw new RpcError('invalid_request', 400);
+          const conversation = repositories.conversations.get(conversationId);
+          if (conversation === undefined) throw new RpcError('not_found', 404);
+          const started = await generations.start({
+            conversationId, conversationRevision: conversation.revision, mode: 'normal', userText: prompt,
+          });
+          if (!started.ok) throw new RpcError(started.reason, started.reason === 'generation_active' ? 409 : 422);
+          let output = '';
+          for await (const event of started.events) {
+            if (event.type === 'delta') output += event.text;
+            if (event.type === 'failed') throw new RpcError(event.code, 422);
+          }
+          return output;
+        }
         if (input.method === 'getChatMessages') return messageView(repositories, conversationId);
         if (input.method === 'getLastMessageId') return messageView(repositories, conversationId).length - 1;
         if (input.method === 'setChatMessages') {

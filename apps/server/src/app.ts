@@ -14,6 +14,7 @@ import { registerAvatarRoutes } from './routes/avatars.js';
 import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
+import { registerGenerationCandidateRoutes } from './routes/generation-candidates.js';
 import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
 import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
 import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
@@ -33,6 +34,7 @@ import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
+import { createGenerationCandidateService } from './services/generation-candidate-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
@@ -250,6 +252,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   };
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
   const promptPreviews = createPromptPreviewService(promptSnapshots);
+  const generationCandidates = createGenerationCandidateService(promptSnapshots);
   const generations = createGenerationService({
     database,
     repositories,
@@ -356,6 +359,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);
+  registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);
 
   app.addHook('onClose', async () => {

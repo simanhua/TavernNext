@@ -5,9 +5,9 @@ import {
   capturedProvider,
   closePromptIntegrationContexts,
   createPromptIntegrationContext,
+  integrationIds,
   previewPayload,
   requestGeneration,
-  requestPreview,
   seedFullPromptGraph,
   unitTokenizerRuntime,
 } from './prompt-integration-fixtures.js';
@@ -42,6 +42,16 @@ function createSignedPayload(
   });
 }
 
+async function requestSealedCandidate(app: Awaited<ReturnType<typeof createPromptIntegrationContext>>['app']) {
+  const candidate = (await app.inject({
+    method: 'POST', url: `/api/conversations/${integrationIds.conversation}/generation-candidates`,
+    payload: previewPayload(),
+  })).json();
+  return app.inject({
+    method: 'POST', url: `/api/generation-candidates/${candidate.candidateId}/seal`, payload: { patch: {} },
+  });
+}
+
 describe('generation persistence and snapshot trust boundary', () => {
   it('rolls back terminal completion when timed-state persistence faults in the same durable transaction', async () => {
     const provider = capturedProvider([
@@ -50,7 +60,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     ]);
     const { app, database, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, 'chat');
-    const preview = (await requestPreview(app)).json();
+    const preview = (await requestSealedCandidate(app)).json();
     database.sqlite.exec(`
       CREATE TABLE terminal_status_audit (status TEXT NOT NULL);
       CREATE TRIGGER audit_terminal_status AFTER UPDATE OF status ON message_variants
@@ -75,12 +85,12 @@ describe('generation persistence and snapshot trust boundary', () => {
     const provider = capturedProvider();
     const { app, database, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, 'chat');
-    const mismatchPreview = (await requestPreview(app)).json();
+    const mismatchPreview = (await requestSealedCandidate(app)).json();
     const mismatch = await requestGeneration(app, mismatchPreview.snapshotId, { userText: 'Different input' });
     expect(mismatch.statusCode).toBe(409);
     expect(mismatch.json()).toEqual({ error: 'snapshot_mismatch' });
 
-    const tamperedPreview = (await requestPreview(app)).json();
+    const tamperedPreview = (await requestSealedCandidate(app)).json();
     const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(tamperedPreview.snapshotId);
     const entity = JSON.parse(String(row?.payload));
     entity.payload.compiledRequest.messages[0].content = 'TAMPERED';
@@ -90,7 +100,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(tampered.statusCode).toBe(409);
     expect(tampered.json()).toEqual({ error: 'snapshot_invalid' });
 
-    const unsupportedPreview = (await requestPreview(app)).json();
+    const unsupportedPreview = (await requestSealedCandidate(app)).json();
     const unsupportedPayload = structuredClone(unsupportedPreview) as Record<string, unknown>;
     delete unsupportedPayload.snapshotId;
     unsupportedPayload.schemaVersion = 999;
@@ -102,7 +112,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(unsupported.statusCode).toBe(409);
     expect(unsupported.json()).toEqual({ error: 'snapshot_unsupported' });
 
-    const legacyPreview = (await requestPreview(app)).json();
+    const legacyPreview = (await requestSealedCandidate(app)).json();
     const legacyPayload = structuredClone(legacyPreview) as Record<string, unknown>;
     delete legacyPayload.snapshotId;
     legacyPayload.schemaVersion = 1;
@@ -117,7 +127,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(legacy.statusCode).toBe(409);
     expect(legacy.json()).toEqual({ error: 'snapshot_unsupported' });
 
-    const malformedPreview = (await requestPreview(app)).json();
+    const malformedPreview = (await requestSealedCandidate(app)).json();
     const malformedSnapshot = createSignedPayload(
       repositories, malformedPreview.snapshotId,
       '018f1000-0000-7000-8000-000000000303', { schemaVersion: 4 },
@@ -126,7 +136,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     expect(malformed.statusCode).toBe(409);
     expect(malformed.json()).toEqual({ error: 'snapshot_invalid' });
 
-    const malformedEntityPreview = (await requestPreview(app)).json();
+    const malformedEntityPreview = (await requestSealedCandidate(app)).json();
     database.sqlite.prepare('UPDATE generation_snapshots SET payload = ? WHERE id = ?')
       .run('{}', malformedEntityPreview.snapshotId);
     const malformedEntityResponse = await requestGeneration(app, malformedEntityPreview.snapshotId);
@@ -162,7 +172,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     });
     const { app, repositories } = await createPromptIntegrationContext({ provider, tokenizerRuntime });
     seedFullPromptGraph(repositories, 'chat');
-    const preview = (await requestPreview(app)).json();
+    const preview = (await requestSealedCandidate(app)).json();
     expect(preview.schemaVersion).toBe(4);
     const callsAfterPreview = runtimeCalls;
     runtimeAvailable = false;
@@ -205,7 +215,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     const provider = capturedProvider();
     const { app, database, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, 'chat');
-    const preview = (await requestPreview(app)).json();
+    const preview = (await requestSealedCandidate(app)).json();
     const payload = structuredClone(preview) as Record<string, unknown>;
     delete payload.snapshotId;
     mutate(payload);
@@ -231,7 +241,7 @@ describe('generation persistence and snapshot trust boundary', () => {
     const provider = capturedProvider();
     const { app, database, repositories } = await createPromptIntegrationContext({ provider });
     seedFullPromptGraph(repositories, 'chat');
-    const preview = (await requestPreview(app)).json();
+    const preview = (await requestSealedCandidate(app)).json();
     const payload = structuredClone(preview) as Record<string, unknown>;
     delete payload.snapshotId;
     const manifest = payload.entityRevisions as Record<string, unknown>;

@@ -239,6 +239,13 @@ export interface AcceptedPromptSnapshot {
 }
 
 export interface PromptSnapshotService {
+  createCandidate(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
+  sealCandidate(
+    input: PromptSnapshotInput,
+    snapshotId: string,
+    candidate: PromptSnapshotPayload,
+    patch: { messages?: PromptChatMessage[]; text?: string; stop?: string[] },
+  ): Promise<PromptSnapshotPreview>;
   createPreview(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
   createAndAccept(input: PromptSnapshotInput, snapshotId: string): Promise<AcceptedPromptSnapshot>;
   acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): Promise<AcceptedPromptSnapshot>;
@@ -1747,24 +1754,100 @@ export function createPromptSnapshotService(options: {
   tokenizerRuntime: ServerTokenizerRuntime;
 }): PromptSnapshotService {
   const { database, repositories, tokenizerRuntime } = options;
+  const transientPreviews = new Map<string, { payload: PromptSnapshotPayload; expiresAt: number }>();
+  const isConsumed = (snapshotId: string) => database.sqlite.prepare(`
+    SELECT snapshot_id FROM consumed_generation_snapshots WHERE snapshot_id = ?
+  `).get(snapshotId) !== undefined;
+  const consume = (snapshotId: string) => {
+    try {
+      database.sqlite.prepare(`
+        INSERT INTO consumed_generation_snapshots (snapshot_id, consumed_at) VALUES (?, ?)
+      `).run(snapshotId, new Date().toISOString());
+    } catch {
+      throw new PromptSnapshotError('snapshot_mismatch');
+    }
+  };
   return {
-    async createPreview(input) {
+    async createCandidate(input) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
-      return database.transaction(() => {
-        revalidateManifest(repositories, built.manifest);
-        const id = randomUUID();
+      return { snapshotId: randomUUID(), ...deepJson(built.payload) };
+    },
+    async sealCandidate(input, snapshotId, candidate, patch) {
+      assertSnapshotInput(candidate, input);
+      revalidateManifest(repositories, candidate.entityRevisions);
+      const stop = patch.stop ?? candidate.stop;
+      if (!isStop(stop)) throw new PromptSnapshotError('snapshot_invalid');
+      const decision = deepJson(candidate.tokenizerDecision);
+      const messages = candidate.kind === 'chat' ? patch.messages ?? candidate.messages : undefined;
+      const text = candidate.kind === 'text' ? patch.text ?? candidate.text : undefined;
+      if ((candidate.kind === 'chat' && !isChatMessages(messages))
+        || (candidate.kind === 'text' && typeof text !== 'string')
+        || (candidate.kind === 'chat' && patch.text !== undefined)
+        || (candidate.kind === 'text' && patch.messages !== undefined)) {
+        throw new PromptSnapshotError('snapshot_invalid');
+      }
+      let totalTokens: number;
+      let stopTokens: number;
+      try {
+        totalTokens = candidate.kind === 'chat'
+          ? validCount(await tokenizerRuntime.countMessages(messages!, decision))
+          : validCount(await tokenizerRuntime.countText(text!, decision));
+        stopTokens = 0;
+        for (const value of stop) stopTokens += validCount(await tokenizerRuntime.countText(value, decision));
+      } catch {
+        throw new PromptSnapshotError('tokenizer_error');
+      }
+      const auditedConversation = record(candidate.executable.conversation)
+        ? candidate.executable.conversation
+        : undefined;
+      const maxPromptTokens = finiteNumber(auditedConversation?.maxPromptTokens)
+        ? auditedConversation.maxPromptTokens
+        : undefined;
+      if (maxPromptTokens === undefined || totalTokens + stopTokens > maxPromptTokens) {
+        throw new PromptSnapshotError('context_overflow');
+      }
+      const compiledRequest: ChatRequest | TextRequest = candidate.kind === 'chat'
+        ? { ...deepJson(candidate.compiledRequest as ChatRequest), messages: deepJson(messages!), stop: [...stop] }
+        : { ...deepJson(candidate.compiledRequest as TextRequest), prompt: text!, stop: [...stop] };
+      const { payloadHash: _candidatePayloadHash, ...candidateWithoutPayloadHash } = deepJson(candidate);
+      const withoutPayloadHash: Omit<PromptSnapshotPayload, 'payloadHash'> = {
+        ...candidateWithoutPayloadHash,
+        ...(candidate.kind === 'chat' ? { messages: deepJson(messages!) } : { text }),
+        stop: [...stop],
+        tokenBreakdown: [
+          { source: 'trusted-prompt-hook-final', includedTokens: totalTokens, omittedTokens: 0 },
+          { source: 'trusted-prompt-hook-stop', includedTokens: stopTokens, omittedTokens: 0 },
+        ],
+        totalTokens: totalTokens + stopTokens,
+        compiledRequest: deepJson(compiledRequest),
+        compiledRequestHash: canonicalHash(compiledRequest),
+      };
+      const sealed = parseStoredPayload(deepJson({
+        ...withoutPayloadHash,
+        payloadHash: canonicalHash(withoutPayloadHash),
+      }));
+      database.transaction(() => {
+        revalidateManifest(repositories, sealed.entityRevisions);
         repositories.generationSnapshots.create({
-          id,
-          conversationId: built.payload.input.conversationId,
-          conversationRevision: built.payload.input.conversationRevision,
-          payload: Object.fromEntries(Object.entries(deepJson(built.payload))),
+          id: snapshotId,
+          conversationId: sealed.input.conversationId,
+          conversationRevision: sealed.input.conversationRevision,
+          payload: Object.fromEntries(Object.entries(deepJson(sealed))),
         });
-        return { snapshotId: id, ...deepJson(built.payload) };
       });
+      return { snapshotId, ...deepJson(sealed) };
+    },
+    async createPreview(input) {
+      for (const [id, preview] of transientPreviews) if (preview.expiresAt <= Date.now()) transientPreviews.delete(id);
+      const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
+      revalidateManifest(repositories, built.manifest);
+      const snapshotId = randomUUID();
+      transientPreviews.set(snapshotId, { payload: deepJson(built.payload), expiresAt: Date.now() + 60_000 });
+      return { snapshotId, ...deepJson(built.payload) };
     },
     async createAndAccept(input, snapshotId) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
-      return database.transaction(() => {
+      const accepted = database.transaction(() => {
         revalidateManifest(repositories, built.manifest);
         repositories.generationSnapshots.create({
           id: snapshotId,
@@ -1772,11 +1855,14 @@ export function createPromptSnapshotService(options: {
           conversationRevision: built.payload.input.conversationRevision,
           payload: Object.fromEntries(Object.entries(deepJson(built.payload))),
         });
+        consume(snapshotId);
         const provider = acceptUserTurn(repositories, built.payload);
         return { snapshotId, payload: deepJson(built.payload), provider: deepJson(provider) };
       });
+      return accepted;
     },
     async acceptExisting(input) {
+      if (isConsumed(input.snapshotId)) throw new PromptSnapshotError('snapshot_mismatch');
       const getStoredSnapshot = () => {
         try {
           return repositories.generationSnapshots.get(input.snapshotId);
@@ -1784,17 +1870,36 @@ export function createPromptSnapshotService(options: {
           throw new PromptSnapshotError('snapshot_invalid');
         }
       };
+      const transient = transientPreviews.get(input.snapshotId);
+      if (transient !== undefined && transient.expiresAt <= Date.now()) transientPreviews.delete(input.snapshotId);
+      const liveTransient = transient !== undefined && transient.expiresAt > Date.now() ? transient : undefined;
       const snapshot = getStoredSnapshot();
-      if (snapshot === undefined) throw new PromptSnapshotError('not_found');
+      if (snapshot === undefined && liveTransient === undefined) throw new PromptSnapshotError('not_found');
       let payload: PromptSnapshotPayload;
       try {
-        payload = parseStoredPayload(snapshot.payload);
+        payload = parseStoredPayload(liveTransient?.payload ?? snapshot!.payload);
       } catch (error) {
         if (error instanceof PromptSnapshotError) throw error;
         throw new PromptSnapshotError('snapshot_invalid');
       }
       assertSnapshotInput(payload, input);
-      return database.transaction(() => {
+      const accepted = database.transaction(() => {
+        if (liveTransient !== undefined) {
+          const currentTransient = transientPreviews.get(input.snapshotId);
+          if (currentTransient === undefined || !sameCanonical(currentTransient.payload, payload)) {
+            throw new PromptSnapshotError('snapshot_invalid');
+          }
+          transientPreviews.delete(input.snapshotId);
+          repositories.generationSnapshots.create({
+            id: input.snapshotId,
+            conversationId: payload.input.conversationId,
+            conversationRevision: payload.input.conversationRevision,
+            payload: Object.fromEntries(Object.entries(deepJson(payload))),
+          });
+          consume(input.snapshotId);
+          const provider = acceptUserTurn(repositories, payload);
+          return { snapshotId: input.snapshotId, payload, provider: deepJson(provider) };
+        }
         const current = getStoredSnapshot();
         if (current === undefined) throw new PromptSnapshotError('not_found');
         let currentPayload: PromptSnapshotPayload;
@@ -1806,9 +1911,11 @@ export function createPromptSnapshotService(options: {
         }
         if (!sameCanonical(currentPayload, payload)) throw new PromptSnapshotError('snapshot_invalid');
         assertSnapshotInput(currentPayload, input);
+        consume(input.snapshotId);
         const provider = acceptUserTurn(repositories, currentPayload);
         return { snapshotId: input.snapshotId, payload: currentPayload, provider: deepJson(provider) };
       });
+      return accepted;
     },
     commitTimedState(payload) {
       if (payload.input.mode !== 'normal') return;

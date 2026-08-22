@@ -27,6 +27,7 @@ export const MUTATING_TAVERN_HELPER_METHODS = new Set<string>([
   'setChatMessages', 'createChatMessages', 'deleteChatMessages',
   'replaceVariables', 'updateVariablesWith', 'insertVariables', 'deleteVariable',
   'replaceTavernRegexes', 'updateLorebookEntriesWith', 'injectPrompts', 'uninjectPrompts',
+  'generate', 'generateRaw', 'triggerSlash',
 ]);
 export const GENERATION_BLOCKED_TAVERN_HELPER_METHODS = new Set<string>([
   'setChatMessages', 'createChatMessages', 'deleteChatMessages',

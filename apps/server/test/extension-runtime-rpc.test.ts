@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closePromptIntegrationContexts,
+  capturedProvider,
   createPromptIntegrationContext,
   integrationIds,
   requestPreview,
@@ -142,5 +143,38 @@ describe('trusted TavernHelper runtime RPC', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: 'stale_runtime' });
+  });
+
+  it('routes generateRaw and /trigger through the configured global Provider without secrets', async () => {
+    const providerFixture = capturedProvider([
+      { type: 'delta', text: 'Nested answer' },
+      { type: 'completed', finishReason: 'stop' },
+    ]);
+    const { app, repositories, provider } = await createPromptIntegrationContext({ provider: providerFixture });
+    seedFullPromptGraph(repositories, 'chat');
+    repositories.extensionAssets.create({
+      id: '018f1000-0000-7000-8000-000000000302', ownerKind: 'preset', ownerId: integrationIds.chatPreset,
+      kind: 'tavern_helper', sourceKey: 'nested-generation', ordinal: 0, enabled: true,
+      payload: { id: 'nested-generation', type: 'script', name: 'Nested', enabled: true, content: '', button: {} },
+    });
+    const trust = (await app.inject({
+      method: 'POST', url: `/api/extension-trust/preset/${integrationIds.chatPreset}/grant`,
+    })).json();
+    const call = (method: string, args: unknown[]) => app.inject({
+      method: 'POST', url: `/api/conversations/${integrationIds.conversation}/extension-runtime/rpc`,
+      payload: {
+        ownerKind: 'preset', ownerId: integrationIds.chatPreset, ownerRevision: 0,
+        bundleDigest: trust.bundleDigest, scriptId: 'nested-generation', method, args,
+      },
+    });
+
+    const generated = await call('generateRaw', ['Nested global-provider request']);
+    const triggered = await call('triggerSlash', ['/trigger Nested slash request']);
+
+    expect(generated.json()).toEqual({ value: 'Nested answer' });
+    expect(generated.statusCode).toBe(200);
+    expect(triggered.statusCode).toBe(200);
+    expect(provider.chat).toHaveLength(2);
+    expect(JSON.stringify(generated.json())).not.toContain('TOP-SECRET');
   });
 });

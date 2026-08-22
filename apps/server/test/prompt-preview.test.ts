@@ -174,7 +174,7 @@ describe('full prompt preview', () => {
     expect(repositories.messageVariants.list()).toEqual(before.variants);
     expect(repositories.worldbookRuntimeStates.list())
       .toEqual(before.timedState);
-    expect(repositories.generationSnapshots.list()).toHaveLength(2);
+    expect(repositories.generationSnapshots.list()).toEqual([]);
 
     const serialized = JSON.stringify({ response: first, rows: repositories.generationSnapshots.list() });
     for (const secret of [
@@ -286,9 +286,7 @@ describe('full prompt preview', () => {
         expect.objectContaining({ code: 'tokenizer_fallback' }),
       ]),
     });
-    expect(repositories.generationSnapshots.list()[0]?.payload).toMatchObject({
-      tokenizerDecision: { tokenizerId: TokenizerId.LLAMA3 },
-    });
+    expect(repositories.generationSnapshots.list()).toEqual([]);
   });
 
   it('rejects a tokenizer runtime that leaves BEST_MATCH unresolved', async () => {

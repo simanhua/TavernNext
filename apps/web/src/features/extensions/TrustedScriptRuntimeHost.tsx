@@ -12,6 +12,7 @@ import {
   type ScriptRuntimeFrame,
 } from './SameOriginScriptRuntime.js';
 import { useActiveExtensionAssetCollections } from './useActiveExtensionAssetCollections.js';
+import type { TrustedPromptHookRequest } from './TrustedPromptHooks.js';
 
 export type ScriptRuntimeFrameFactory = (
   document: Document,
@@ -41,6 +42,7 @@ export function TrustedScriptRuntimeHost({
   });
   const mountRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<ScriptRuntimeFrame | undefined>(undefined);
+  const runtimeReadyRef = useRef<Promise<void>>(Promise.resolve());
   const [diagnostics, setDiagnostics] = useState<ScriptRuntimeDiagnostic[]>([]);
   useEffect(() => {
     const refresh = () => {
@@ -52,6 +54,31 @@ export function TrustedScriptRuntimeHost({
     window.addEventListener('tavernnext:runtime-mutated', refresh);
     return () => window.removeEventListener('tavernnext:runtime-mutated', refresh);
   }, [conversationId, queryClient]);
+  useEffect(() => {
+    const run = (event: Event) => {
+      const detail = (event as CustomEvent<TrustedPromptHookRequest>).detail;
+      if (detail === undefined) return;
+      detail.handled = true;
+      const runtime = runtimeRef.current;
+      if (runtime === undefined) {
+        detail.resolve(structuredClone({
+          messages: detail.candidate.messages, text: detail.candidate.text, stop: detail.candidate.stop,
+        }));
+        return;
+      }
+      const ready = runtimeReadyRef.current;
+      void ready
+        .then(() => {
+          if (runtimeRef.current !== runtime || runtimeReadyRef.current !== ready) {
+            throw new Error('runtime_epoch_changed');
+          }
+          return runtime.runPromptHook(detail.candidate, detail.dryRun);
+        })
+        .then(detail.resolve, detail.reject);
+    };
+    window.addEventListener('tavernnext:run-prompt-hooks', run);
+    return () => window.removeEventListener('tavernnext:run-prompt-hooks', run);
+  }, []);
   const inputs = active.owners.flatMap((owner, index): TrustedScriptOwnerInput[] => {
     const collection = active.assetQueries[index]?.data;
     const trust = trustQueries[index]?.data;
@@ -83,13 +110,15 @@ export function TrustedScriptRuntimeHost({
       if (runtimeRef.current === runtime) setDiagnostics((current) => [...current, diagnostic]);
     });
     runtimeRef.current = runtime;
-    void runtime.start(manifest).catch((cause) => {
+    runtimeReadyRef.current = runtime.start(manifest);
+    void runtimeReadyRef.current.catch((cause) => {
       if (runtimeRef.current === runtime) setDiagnostics((current) => [...current, {
         scriptId: 'runtime', scriptName: 'Runtime', message: cause instanceof Error ? cause.message : String(cause),
       }]);
     });
     return () => {
       runtime.destroy();
+      runtimeReadyRef.current = Promise.resolve();
       if (runtimeRef.current === runtime) runtimeRef.current = undefined;
     };
   }, [conversationId, createFrame, manifest.runtimeKey]);

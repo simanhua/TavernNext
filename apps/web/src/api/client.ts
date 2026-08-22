@@ -1,11 +1,14 @@
+import { GenerationCandidateTransportSchema } from '@tavernnext/domain';
 import type {
   Conversation,
   GenerationMode,
+  GenerationCandidateTransport,
   GlobalGenerationConfig,
   GlobalGenerationSelection,
   Message,
   MessageVariant,
   PresetKind,
+  TrustedPromptPatch,
 } from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind };
@@ -279,6 +282,8 @@ export interface PromptPreviewView {
   };
 }
 
+export type GenerationCandidateView = GenerationCandidateTransport & { preview: PromptPreviewView };
+
 interface PromptTimedStateResponse {
   messageIndex: number | null;
   sticky: unknown[];
@@ -300,6 +305,13 @@ interface PromptPreviewResponse extends Omit<PromptPreviewView, 'worldbook' | 'p
     messages?: Array<{ id?: string; revision: number }>;
     runtimeState?: { id?: string; revision: number } | null;
   };
+}
+interface GenerationCandidateResponse extends Omit<PromptPreviewResponse, 'snapshotId' | 'messages'> {
+  candidateId: string;
+  expiresAt: string;
+  executableDigest: string;
+  compiledRequestHash: string;
+  messages?: GenerationCandidateTransport['messages'];
 }
 
 export interface ProviderProfileView {
@@ -708,6 +720,29 @@ export const api = {
     `/api/conversations/${conversation.id}/prompt-preview`,
     { method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, mode: 'normal', userText }) },
   )),
+  createGenerationCandidate: (
+    conversation: Conversation,
+    input: { mode: GenerationMode; userText?: string },
+    signal?: AbortSignal,
+  ) => request<unknown>(`/api/conversations/${conversation.id}/generation-candidates`, {
+    method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, ...input }), signal,
+  }).then((raw): GenerationCandidateView => {
+    const response = GenerationCandidateTransportSchema.parse(raw) as unknown as GenerationCandidateResponse;
+    return {
+      ...response,
+      preview: projectPromptPreview({ ...response, snapshotId: response.candidateId }),
+    };
+  }),
+  sealGenerationCandidate: (
+    candidateId: string,
+    patch: TrustedPromptPatch,
+    signal?: AbortSignal,
+  ) => request<{ snapshotId: string }>(`/api/generation-candidates/${candidateId}/seal`, {
+    method: 'POST', body: JSON.stringify({ patch }), signal,
+  }),
+  discardGenerationCandidate: (candidateId: string) => request<void>(`/api/generation-candidates/${candidateId}`, {
+    method: 'DELETE',
+  }),
   updateMessage: (message: Message, content: string) => request<Message>(`/api/messages/${message.id}`, {
     method: 'PATCH', body: JSON.stringify({ revision: message.revision, patch: { content } }),
   }),
@@ -717,7 +752,7 @@ export const api = {
   }),
   startGeneration: async (
     conversation: Conversation,
-    input: { mode: GenerationMode; userText?: string },
+    input: { mode: GenerationMode; userText?: string; snapshotId?: string },
     signal?: AbortSignal,
   ) => {
     const response = await fetch(`/api/conversations/${conversation.id}/generations`, {

@@ -119,6 +119,60 @@ describe('same-origin trusted script iframe', () => {
     expect(calls).toEqual([expect.objectContaining({ currentMessageId: 3 })]);
   });
 
+  it('runs trusted prompt hooks in manifest order and exposes dry-run state', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const input = manifest(`
+      eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => {
+        event.chat[0].content += event.dryRun ? '-preset-dry' : '-preset';
+      });
+    `);
+    input.scripts.push({
+      ...input.scripts[0]!,
+      owner: { kind: 'character', id: 'character-1' },
+      id: 'character:character-1:script-2', sourceId: 'script-2', name: 'Character hook',
+      content: `eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => { event.chat[0].content += '-character'; });`,
+    });
+    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined);
+    await runtime.start(input);
+
+    const patch = await runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, true);
+
+    expect(patch.messages).toEqual([{ role: 'user', content: 'input-preset-dry-character' }]);
+  });
+
+  it('enforces prompt hooks as read-only even when a script ignores dry-run state', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const calls: string[] = [];
+    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, async (input) => {
+      calls.push(input.method);
+      return { value: input.args[0] };
+    });
+    await runtime.start(manifest(`
+      eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, async event => {
+        await replaceVariables({ leaked: event.dryRun });
+        await generateRaw('must-not-call-provider');
+        setTimeout(() => replaceVariables({ delayed: true }), 0);
+        event.chat[0].content += event.dryRun ? '-dry' : '-formal';
+      });
+    `));
+
+    const dry = await runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, true);
+    const formal = await runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(dry.messages?.[0]?.content).toBe('input-dry');
+    expect(formal.messages?.[0]?.content).toBe('input-formal');
+    expect(calls).toEqual([]);
+  });
+
   it('attributes lifecycle registrations and removes direct parent listeners on destroy', async () => {
     const mount = document.createElement('div');
     document.body.append(mount);
