@@ -326,10 +326,23 @@ export function createGenerationService(options: {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (variant !== undefined && (hasDelta || hasReasoningDelta)) {
-            variant = repositories.messageVariants.get(variant.id);
-            if (variant !== undefined && variant.status !== 'failed') {
+          if (hasDelta || hasReasoningDelta) {
+            const persisted = variant === undefined ? undefined : repositories.messageVariants.get(variant.id);
+            if (persisted !== undefined) {
+              variant = persisted;
+              if (siblingMode) targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
+              if (variant.status !== 'failed') database.transaction(() => {
+                flush('failed');
+                selectSibling();
+              });
+            } else if (mode === 'normal' || siblingMode) {
+              variant = undefined;
+              if (siblingMode) {
+                targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
+                if (targetMessage === undefined) throw new Error('recovery_target_missing');
+              }
               database.transaction(() => {
+                beginPersistence();
                 flush('failed');
                 selectSibling();
               });

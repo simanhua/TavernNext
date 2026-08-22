@@ -41,8 +41,9 @@ The complete release command is:
 $env:SILLYTAVERN_ORACLE_DIR='D:\CodeX\SillyTavern'
 $env:TAVERNNEXT_REGEX_CARD_PATH='D:\path\to\exact-example-card.png'
 $env:TAVERNNEXT_REGEX_PRESET_PATH='D:\path\to\exact-target-preset.json'
+$env:TAVERNNEXT_APPROVED_REMOTE_CACHE_MANIFEST='D:\path\to\approved-cache.json'
 npm run verify
 npm run smoke:local
 ```
 
-The two regex artifact variables are mandatory when the SillyTavern oracle is enabled. They must identify the reviewed 12-rule example card and 9-rule target Preset; the gate reads them in place, records the pinned SillyTavern revision, and does not modify any of the three inputs.
+The two regex artifact variables and approved-cache manifest are mandatory when the SillyTavern oracle is enabled. The artifacts must identify the reviewed 12-rule example card and 9-rule target Preset. The manifest is versioned JSON with exact artifact hashes plus a non-empty `entries` array of `{ "url", "sha256", "path" }`; relative entry paths resolve beside the manifest. The gate hashes every cached entry before and after the oracle run, binds the manifest to the exact Character and Preset bytes, records the pinned SillyTavern revision, performs no download, and does not modify any input.

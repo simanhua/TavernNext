@@ -30,11 +30,14 @@ const timed = {
 };
 
 const server = setupServer(
-  http.post('/api/conversations/:id/prompt-preview', async ({ request }) => {
+  http.post('/api/conversations/:id/generation-candidates', async ({ request }) => {
     previewCalls += 1;
     expect(await request.json()).toEqual({ conversationRevision: 7, mode: 'normal', userText: 'Draft turn' });
     return HttpResponse.json({
-      snapshotId: '018f0000-0000-7000-8000-000000000946',
+      candidateId: '018f0000-0000-7000-8000-000000000946',
+      expiresAt: '2026-08-08T00:01:00.000Z',
+      executableDigest: 'a'.repeat(64),
+      compiledRequestHash: 'b'.repeat(64),
       kind: previewKind,
       ...(previewKind === 'chat'
         ? { messages: [{ role: 'system', content: 'You are Aster.' }, { role: 'user', content: 'Draft turn' }] }
@@ -72,10 +75,10 @@ const server = setupServer(
         globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
       },
       payloadHash: 'must-not-render-payload-hash',
-      compiledRequestHash: 'must-not-render-request-hash',
       executable: { apiKey: 'must-not-render-secret' },
     }, { status: 201 });
   }),
+  http.delete('/api/generation-candidates/:id', () => new HttpResponse(null, { status: 204 })),
   http.post('/api/conversations/:id/generations', () => {
     generationCalls += 1;
     return HttpResponse.json({ error: 'must_not_call' }, { status: 500 });

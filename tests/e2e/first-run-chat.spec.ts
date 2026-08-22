@@ -64,11 +64,15 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await importThroughDialog(page, 'Import Worldbook', 'worldbooks/native.json');
   await expect(page.getByRole('heading', { name: 'Native Synthetic Lore' })).toBeVisible();
 
+  await page.getByRole('link', { name: 'Connection' }).click();
+  await page.getByLabel('Active Provider').selectOption({ label: 'Local Mock' });
+  await page.getByLabel('Chat Preset').selectOption({ label: 'Synthetic Chat Settings' });
+  await page.getByRole('button', { name: 'Save active generation configuration' }).click();
+  await expect(page.getByRole('status')).toContainText('Active generation configuration saved.');
+
   await page.getByRole('link', { name: 'Chat' }).click();
   await page.getByLabel('Character').selectOption({ label: 'E2E Aster' });
   await page.getByLabel('Persona').selectOption({ label: 'E2E Traveler' });
-  await page.getByLabel('Provider').selectOption({ label: 'Local Mock' });
-  await page.getByLabel('Chat preset').selectOption({ label: 'Synthetic Chat Settings' });
   await page.getByRole('button', { name: 'Start chat' }).click();
   await expect(page.locator('article.message-assistant')).toHaveCount(1);
   await expect(page.locator('article.message-assistant').first()).toContainText('Ready for the local test.');
