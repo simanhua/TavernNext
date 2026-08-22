@@ -124,6 +124,17 @@ const server = setupServer(
   http.get('/api/providers', () => HttpResponse.json([provider])),
   http.get('/api/presets', () => HttpResponse.json([chatPreset])),
   http.get('/api/settings/generation', () => HttpResponse.json(globalGenerationConfig)),
+  http.get('/api/settings/generation/active-resource-context', ({ request }) => {
+    const conversationId = new URL(request.url).searchParams.get('conversationId');
+    return HttpResponse.json({
+      globalGenerationConfigRevision: globalGenerationConfig.revision,
+      mode: 'chat',
+      primaryPreset: null,
+      conversation: conversationId === null ? null : { id: conversationId, revision: 0 },
+      character: null,
+      owners: [],
+    });
+  }),
   http.get('/api/conversations', () => HttpResponse.json(conversations)),
   http.post('/api/conversations', async ({ request }) => {
     if (conversationCreateFailure) return HttpResponse.error();

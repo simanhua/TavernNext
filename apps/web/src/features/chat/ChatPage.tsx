@@ -13,6 +13,7 @@ import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
 import { ChatFormatSettings, chatFormatStyle, useChatFormat } from './ChatFormatSettings.js';
 import { useGlobalGenerationConfiguration } from './useGlobalGenerationConfiguration.js';
+import { TrustedScriptRuntimeHost } from '../extensions/TrustedScriptRuntimeHost.js';
 
 const MAX_PROMPT_TOKENS = 1_000_000;
 const MAX_RESPONSE_TOKENS = 384_000;
@@ -347,6 +348,7 @@ export function ChatPage() {
             })();
           }}
         />
+        <TrustedScriptRuntimeHost conversationId={activeConversationId} />
         {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: t(generation.error) })}</p> : null}
         {characters.isLoading || personas.isLoading || globalGeneration.isLoading ? (
           <p>{t('Loading chat configuration…')}</p>
