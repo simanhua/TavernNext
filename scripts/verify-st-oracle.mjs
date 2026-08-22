@@ -68,6 +68,12 @@ if (oracleInput === undefined || oracleInput.trim() === '') {
 }
 
 const oracleRoot = resolve(oracleInput);
+for (const variable of ['TAVERNNEXT_REGEX_CARD_PATH', 'TAVERNNEXT_REGEX_PRESET_PATH']) {
+  const path = process.env[variable];
+  if (path === undefined || path.trim() === '' || !existsSync(resolve(path))) {
+    fail(`${variable} must name an existing exact regex acceptance artifact`);
+  }
+}
 const oraclePackagePath = join(oracleRoot, 'package.json');
 if (!existsSync(oraclePackagePath)) fail(`oracle package.json not found at ${oracleRoot}`);
 const oraclePackage = JSON.parse(readFileSync(oraclePackagePath, 'utf8'));
@@ -94,11 +100,15 @@ const oracleTests = [
   'packages/prompt-engine/test/oracle.test.ts',
   'packages/prompt-engine/test/worldbook/oracle.test.ts',
   'tests/oracle/st-export-acceptance.test.ts',
+  'tests/oracle/regex-oracle.test.ts',
 ];
 const vitest = join(root, 'node_modules', 'vitest', 'vitest.mjs');
 const verification = spawnSync(process.execPath, [vitest, 'run', ...oracleTests], {
   cwd: root,
-  env: { ...process.env, TAVERNNEXT_ST_ORACLE_ROOT: oracleRoot },
+  env: {
+    ...process.env,
+    TAVERNNEXT_ST_ORACLE_ROOT: oracleRoot,
+  },
   stdio: 'inherit',
 });
 if (verification.error !== undefined) throw verification.error;

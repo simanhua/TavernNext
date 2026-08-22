@@ -330,6 +330,10 @@ export function ChatPage() {
           generationTarget={generation.target}
           controlsDisabled={generation.isActive || updateConversationSettings.isPending}
           generationDisabled={generation.isActive || updateConversationSettings.isPending || !configurationReady}
+          macroValues={{
+            char: characters.data?.find((candidate) => candidate.id === detail.data?.conversation.characterId)?.name ?? '',
+            user: personas.data?.find((candidate) => candidate.id === detail.data?.conversation.personaId)?.name ?? '',
+          }}
           onGenerate={(mode, message, baseContent) => {
             const target = detail.data?.conversation;
             if (target === undefined || generation.isActive) return;

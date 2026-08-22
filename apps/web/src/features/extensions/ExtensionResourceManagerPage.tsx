@@ -1,5 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import type { RegexWorkerFactory } from '@tavernnext/extension-runtime';
+import { createBrowserRegexWorker } from '@tavernnext/extension-runtime/browser';
 import {
   ApiError,
   api,
@@ -11,6 +13,7 @@ import { useI18n } from '../../app/i18n.js';
 import { useChatUi } from '../chat/chat-store.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { RuntimeStateManager } from './RuntimeStateManager.js';
+import { RegexAssetEditor } from './RegexAssetEditor.js';
 import { ExtensionTrustPanel } from './ExtensionTrustPanel.js';
 import { asRecord, isRecord } from './extension-resource-utils.js';
 import {
@@ -141,7 +144,9 @@ function ScriptTreeNodeEditor({ value, path, onChange, onDelete, onMoveUp, onMov
   );
 }
 
-export function ExtensionResourceManagerPage() {
+export function ExtensionResourceManagerPage({
+  regexWorkerFactory = createBrowserRegexWorker,
+}: { regexWorkerFactory?: RegexWorkerFactory } = {}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const activeConversationId = useChatUi((state) => state.activeConversationId);
@@ -378,9 +383,19 @@ export function ExtensionResourceManagerPage() {
               <summary>{t(type)} #{asset.ordinal + 1} · {String(payload.scriptName ?? payload.name ?? asset.sourceKey)}</summary>
               <label>{t('Enabled')}<input type="checkbox" checked={asset.enabled} onChange={(event) => setEnabled(index, event.target.checked)} /></label>
               {asset.kind === 'regex' ? (
-                <label>{t('Regex payload JSON')}<textarea rows={12} defaultValue={JSON.stringify(asset.payload, null, 2)} onBlur={(event) => {
-                  updateJson(`${asset.sourceKey}:payload`, event.target.value, (payloadValue) => update(index, { ...asset, payload: payloadValue }));
-                }} /></label>
+                <>
+                  <RegexAssetEditor
+                    payload={asset.payload}
+                    ownerKind={collection?.owner.kind ?? ownerKind}
+                    createWorker={regexWorkerFactory}
+                    onChange={(payloadValue) => update(index, { ...asset, payload: payloadValue, sourceKey: payloadValue.id })}
+                  />
+                  <details><summary>{t('Advanced regex JSON')}</summary>
+                    <label>{t('Regex payload JSON')}<textarea rows={12} defaultValue={JSON.stringify(asset.payload, null, 2)} onBlur={(event) => {
+                      updateJson(`${asset.sourceKey}:payload`, event.target.value, (payloadValue) => update(index, { ...asset, payload: payloadValue }));
+                    }} /></label>
+                  </details>
+                </>
               ) : (
                 <ScriptTreeNodeEditor
                   value={asset.payload}

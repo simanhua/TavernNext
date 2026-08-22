@@ -16,6 +16,15 @@ import {
   type WorldbookTimedState,
 } from '@tavernnext/domain';
 import {
+  parsedRegexAssets,
+  regexWorkerLimitsForProjection,
+  REGEX_PLACEMENT,
+  runOwnedRegexModeProjectionInWorker,
+  type OwnedRegexTraceEntry,
+  type TavernRegex,
+} from '@tavernnext/extension-runtime';
+import { createNodeRegexWorker } from '@tavernnext/extension-runtime/node';
+import {
   compileChatPrompt,
   compileTextPrompt,
   evaluateWorldbooks,
@@ -206,6 +215,7 @@ interface LoadedAggregate {
   previousTimedState: WorldbookTimedState;
   manifest: PromptEntityRevisionManifest;
   compatibilityWarnings: PromptWarning[];
+  regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
 }
 
 interface BuiltSnapshot {
@@ -630,6 +640,10 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     ),
     manifest: deepJson(manifest),
     compatibilityWarnings: deepJson(compatibilityWarnings),
+    regexScripts: {
+      preset: parsedRegexAssets(repositories.extensionAssets.listByOwner('preset', presets[0]!.id)),
+      character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
+    },
   };
 }
 
@@ -897,6 +911,59 @@ function compilerError(code: string): never {
   throw new PromptSnapshotError('invalid_preset');
 }
 
+async function projectPromptHistory(
+  aggregate: LoadedAggregate,
+  history: LoadedAggregate['history'],
+): Promise<{ history: LoadedAggregate['history']; warnings: PromptWarning[] }> {
+  const warnings: PromptWarning[] = [];
+  const projected: LoadedAggregate['history'] = [];
+  const limits = regexWorkerLimitsForProjection();
+  for (const [index, message] of history.entries()) {
+    if (message.role !== 'user' && message.role !== 'assistant') {
+      projected.push(message);
+      continue;
+    }
+    const context = {
+      placement: message.role === 'user' ? REGEX_PLACEMENT.USER_INPUT : REGEX_PLACEMENT.AI_OUTPUT,
+      depth: history.length - index - 1,
+      values: {
+        user: aggregate.persona.name,
+        char: aggregate.character.name,
+        group: aggregate.character.name,
+        charIfNotGroup: aggregate.character.name,
+        notChar: aggregate.persona.name,
+        model: aggregate.provider.model,
+        description: aggregate.character.description,
+        personality: aggregate.character.personality,
+        scenario: aggregate.character.scenario,
+        persona: aggregate.persona.description,
+        mesExamplesRaw: aggregate.character.examples,
+        charVersion: aggregate.character.characterVersion,
+        char_version: aggregate.character.characterVersion,
+        creatorNotes: aggregate.character.creatorNotes,
+        charPrompt: aggregate.character.systemPrompt,
+        charInstruction: aggregate.character.postHistoryInstructions,
+        charJailbreak: aggregate.character.postHistoryInstructions,
+        charDepthPrompt: aggregate.character.depthPrompt,
+      },
+      characterName: aggregate.character.name,
+    } as const;
+    const prompt = await runOwnedRegexModeProjectionInWorker(
+      message.content, aggregate.regexScripts, context, 'prompt', createNodeRegexWorker, limits,
+    );
+    const failed = prompt.trace.filter((entry) => (
+      entry.reason === 'timeout' || entry.reason === 'aggregate_timeout' || entry.reason === 'error'
+    ));
+    warnings.push(...failed.map((entry: OwnedRegexTraceEntry) => ({
+      code: `regex_${entry.reason}`,
+      message: `${entry.owner} regex ${entry.scriptName || entry.scriptId} failed open (${entry.reason}).`,
+      source: `${entry.owner}-regex:${entry.scriptId}`,
+    })));
+    projected.push({ ...message, content: prompt.value });
+  }
+  return { history: projected, warnings };
+}
+
 async function compileAggregate(
   aggregate: LoadedAggregate,
   runtime: ServerTokenizerRuntime,
@@ -908,19 +975,21 @@ async function compileAggregate(
     throw new PromptSnapshotError('tokenizer_error');
   }
   if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
-  const history = aggregate.input.mode === 'normal'
+  const rawHistory = aggregate.input.mode === 'normal'
     ? [...aggregate.history, {
       id: `proposed:${canonicalHash(aggregate.input)}`,
       role: 'user',
       content: aggregate.input.userText!,
     }]
     : [...aggregate.history];
+  const promptProjection = await projectPromptHistory(aggregate, rawHistory);
+  const history = promptProjection.history;
   const books: WorldbookRuntimeBook[] = aggregate.books.map((book) => ({ id: book.id, book: book.book }));
   const bookBudgets = aggregate.books.map((book) => book.book.tokenBudget)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
   const tokenBudget = Math.min(aggregate.conversation.maxPromptTokens, ...bookBudgets);
   const scanSources = {
-    messages: [...history].reverse().map((message) => message.content),
+    messages: [...rawHistory].reverse().map((message) => message.content),
     additional: [],
     trigger: aggregate.input.mode,
     character: {
@@ -1032,6 +1101,7 @@ async function compileAggregate(
       })),
       ...compilation.warnings,
       ...aggregate.compatibilityWarnings,
+      ...promptProjection.warnings,
       ...(decision.warning === undefined ? [] : [{
         code: 'tokenizer_fallback',
         message: decision.warning,

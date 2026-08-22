@@ -10,7 +10,8 @@
     "types": ["vite/client"]
   },
   "references": [
-    { "path": "../../packages/domain" }
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/extension-runtime" }
   ],
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
 }

@@ -9,6 +9,7 @@
 - `packages/tokenizer-engine` selects tokenizer IDs, loads bounded local/cache models, and performs token counting.
 - `packages/prompt-engine` compiles Chat and Text prompts and evaluates Worldbooks. It has no network or database ownership.
 - `packages/provider-openai-compatible` is the server-side OpenAI-compatible HTTP/SSE client.
+- `packages/extension-runtime` consumes normalized attached assets and owns pure regex execution plus shared Worker timeout orchestration. It depends inward on `packages/domain`; SillyTavern artifact extraction/export stays in `packages/st-compat`, while browser and Node Worker adapters are exposed as separate package entry points.
 - `tests/fixtures` contains deterministic compatibility and golden inputs. `tests/e2e` owns the restartable local stack and real-browser release scenarios.
 - `scripts/verify-st-oracle.mjs` and `scripts/smoke-local.mjs` are release gates, not runtime dependencies.
 
@@ -38,6 +39,10 @@ The complete release command is:
 
 ```powershell
 $env:SILLYTAVERN_ORACLE_DIR='D:\CodeX\SillyTavern'
+$env:TAVERNNEXT_REGEX_CARD_PATH='D:\path\to\exact-example-card.png'
+$env:TAVERNNEXT_REGEX_PRESET_PATH='D:\path\to\exact-target-preset.json'
 npm run verify
 npm run smoke:local
 ```
+
+The two regex artifact variables are mandatory when the SillyTavern oracle is enabled. They must identify the reviewed 12-rule example card and 9-rule target Preset; the gate reads them in place, records the pinned SillyTavern revision, and does not modify any of the three inputs.

@@ -8,6 +8,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { renderWithApp } from '../../test/render.js';
 import type { EditableExtensionAssetView } from '../../api/client.js';
 import { ExtensionResourceManagerPage } from './ExtensionResourceManagerPage.js';
+import { runRegexScripts, type RegexWorkerFactory } from '@tavernnext/extension-runtime';
+
+const regexWorkerFactory: RegexWorkerFactory = (request) => ({
+  result: Promise.resolve(runRegexScripts(request.raw, [request.script], request.context)),
+  terminate: () => undefined,
+});
 
 const characterId = '018f0000-0000-7000-8000-000000002201';
 const presetId = '018f0000-0000-7000-8000-000000002202';
@@ -102,6 +108,38 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('ExtensionResourceManagerPage', () => {
+  it('edits every regex compatibility field and tests one rule with trace output', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<ExtensionResourceManagerPage regexWorkerFactory={regexWorkerFactory} />);
+
+    await user.click(screen.getByRole('tab', { name: /Regexes/ }));
+    await user.click(await screen.findByRole('button', { name: /Preset regex.*Preset owner/ }));
+    expect(await screen.findByLabelText('Regex ID')).not.toBeNull();
+    expect(screen.getByLabelText('Regex name')).not.toBeNull();
+    expect(screen.getByLabelText('Find expression')).not.toBeNull();
+    expect(screen.getByLabelText('Replacement')).not.toBeNull();
+    expect(screen.getByLabelText('Trim strings (one per line)')).not.toBeNull();
+    expect(screen.getByLabelText('Markdown/display only')).not.toBeNull();
+    expect(screen.getByLabelText('Prompt only')).not.toBeNull();
+    expect(screen.getByLabelText('Run on edit')).not.toBeNull();
+    expect(screen.getByLabelText('Find macro substitution')).not.toBeNull();
+    expect(screen.getByLabelText('Minimum depth')).not.toBeNull();
+    expect(screen.getByLabelText('Maximum depth')).not.toBeNull();
+    expect(screen.getByLabelText('AI output')).not.toBeNull();
+    expect(screen.getByLabelText('Regex test placement')).not.toBeNull();
+    expect(screen.getByLabelText('Regex test mode')).not.toBeNull();
+    expect(screen.getByLabelText('Regex test depth')).not.toBeNull();
+    expect(screen.getByLabelText('Regex test is edit')).not.toBeNull();
+    expect(screen.getByLabelText('Regex test user macro')).not.toBeNull();
+    expect(screen.getByLabelText('Regex test character macro')).not.toBeNull();
+
+    await user.click(screen.getByLabelText('AI output'));
+    await user.type(screen.getByLabelText('Regex test input'), 'x');
+    await user.click(screen.getByRole('button', { name: 'Test regex' }));
+    await waitFor(() => expect((screen.getByLabelText('Regex test output') as HTMLTextAreaElement).value).toBe('y'));
+    expect((screen.getByLabelText('Regex test trace') as HTMLTextAreaElement).value).toContain('preset:Preset regex — applied');
+  });
+
   it('switches owners, edits script fields and folders, and retains its draft across a revision conflict', async () => {
     const user = userEvent.setup();
     renderWithApp(<ExtensionResourceManagerPage />);

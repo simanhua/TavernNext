@@ -7,6 +7,7 @@ import {
   type ExtensionTrustReviewView,
 } from '../../api/client.js';
 import { asRecord, isRecord } from './extension-resource-utils.js';
+import { useActiveExtensionAssetCollections } from './useActiveExtensionAssetCollections.js';
 
 export type ResourceCatalogView = 'current' | 'all';
 export type ResourceSourceFilter = 'all' | 'character' | 'preset';
@@ -64,11 +65,8 @@ export function useExtensionResourceCatalog(input: {
   search: string;
   sourceFilter: ResourceSourceFilter;
 }) {
-  const generationConfig = useQuery({ queryKey: ['global-generation-config'], queryFn: api.getGlobalGenerationConfig });
-  const activeContext = useQuery({
-    queryKey: ['active-resource-context', input.activeConversationId, generationConfig.data?.revision ?? null],
-    queryFn: () => api.getActiveResourceContext(input.activeConversationId),
-  });
+  const active = useActiveExtensionAssetCollections(input.activeConversationId);
+  const { activeContext } = active;
   const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters, enabled: input.view === 'all' });
   const presets = useQuery({ queryKey: ['presets'], queryFn: api.listPresets, enabled: input.view === 'all' });
   const contextOwners = activeContext.data?.owners ?? [];
@@ -78,12 +76,14 @@ export function useExtensionResourceCatalog(input: {
   ];
   const owners = input.view === 'current' ? contextOwners : allOwners;
   const activeOwnerKeys = new Set(contextOwners.map((owner) => `${owner.kind}:${owner.id}`));
-  const assetQueries = useQueries({
-    queries: owners.map((owner) => ({
+  const allAssetQueries = useQueries({
+    queries: allOwners.map((owner) => ({
       queryKey: ['extension-assets', owner.kind, owner.id, owner.revision],
       queryFn: () => api.getExtensionAssets(owner.kind, owner.id),
+      enabled: input.view === 'all',
     })),
   });
+  const assetQueries = input.view === 'current' ? active.assetQueries : allAssetQueries;
   const trustQueries = useQueries({
     queries: owners.map((owner) => ({
       queryKey: ['extension-trust', owner.kind, owner.id, owner.revision],
@@ -91,7 +91,9 @@ export function useExtensionResourceCatalog(input: {
     })),
   });
   const assetsLoading = assetQueries.some((query) => query.isLoading);
-  const loading = assetsLoading || (input.view === 'all' && (characters.isLoading || presets.isLoading));
+  const loading = input.view === 'current'
+    ? active.loading
+    : assetsLoading || characters.isLoading || presets.isLoading;
   const catalog = owners.flatMap((owner, ownerIndex): ResourceCatalogItem[] => {
     const collection = assetQueries[ownerIndex]?.data;
     if (collection === undefined) return [];
