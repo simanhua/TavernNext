@@ -97,4 +97,31 @@ describe('RegexProjectedMarkdownContent', () => {
     />);
     await waitFor(() => expect(screen.getByText('Status').tagName).toBe('STRONG'));
   });
+
+  it('iframes only HTML produced by an applied display rule, never a raw assistant fence', async () => {
+    const rawFence = '```html\n<body>raw model html</body>\n```';
+    const context = { conversationId: 'conversation-1', messageId: 1, variantId: 'variant-1', hasReasoning: false };
+    const { container, rerender } = render(<RegexProjectedMarkdownContent
+      content={rawFence} role="assistant" depth={0}
+      scripts={{ preset: [rule({ findRegex: '/never-matches/g' })], character: [] }}
+      createWorker={factory} interactive={context}
+    />);
+    await waitFor(() => expect(container.textContent).toContain('raw model html'));
+    expect(container.querySelector('iframe')).toBeNull();
+
+    rerender(<RegexProjectedMarkdownContent
+      content={`marker\n${rawFence}`} role="assistant" depth={0}
+      scripts={{ preset: [rule({ findRegex: '/marker/g', replaceString: 'changed' })], character: [] }}
+      createWorker={factory} interactive={context}
+    />);
+    await waitFor(() => expect(container.textContent).toContain('changed'));
+    expect(container.querySelector('iframe')).toBeNull();
+
+    rerender(<RegexProjectedMarkdownContent
+      content="<panel>" role="assistant" depth={0}
+      scripts={{ preset: [rule({ replaceString: '```html\n<body>projected frontend</body>\n```' })], character: [] }}
+      createWorker={factory} interactive={context}
+    />);
+    await waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('projected frontend'));
+  });
 });

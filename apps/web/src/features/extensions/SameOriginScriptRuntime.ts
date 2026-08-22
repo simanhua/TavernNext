@@ -24,6 +24,7 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
   private manifest?: TrustedScriptManifest;
   private pendingLoads = new Set<() => void>();
   private readonly environment: ScriptCompatibilityEnvironment;
+  private readonly runtimeCaller: (scriptId: string, method: string, args: unknown[], currentMessageId?: number) => Promise<unknown>;
 
   constructor(
     document: Document,
@@ -35,7 +36,7 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
     const caller = callApi ?? createExtensionRuntimeRpcClient(fetch, (input) => {
       this.document.defaultView?.dispatchEvent(new CustomEvent('tavernnext:runtime-mutated', { detail: input }));
     });
-    this.environment = new ScriptCompatibilityEnvironment(document, onDiagnostic, async (scriptId, method, args) => {
+    this.runtimeCaller = async (scriptId, method, args, currentMessageId) => {
       const script = this.manifest?.scripts.find((candidate) => candidate.id === scriptId);
       if (script === undefined || this.manifest === undefined) throw Object.assign(new Error('runtime_not_authorized'), { code: 'runtime_not_authorized' });
       const value = await caller({
@@ -47,10 +48,13 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
         ownerId: script.owner.id,
         ownerRevision: script.ownerRevision,
         bundleDigest: script.bundleDigest,
-        currentMessageId: this.environment.getCurrentMessageId(),
+        currentMessageId,
       });
       return value;
-    });
+    };
+    this.environment = new ScriptCompatibilityEnvironment(document, onDiagnostic, (scriptId, method, args) => (
+      this.runtimeCaller(scriptId, method, args, this.environment.getCurrentMessageId())
+    ));
   }
   private readonly document: Document;
 

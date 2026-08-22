@@ -60,7 +60,7 @@ export function MessageList({
     onSuccess: refresh,
   });
   const lastMessage = messages.at(-1);
-  const regexScripts = useActiveRegexScripts(conversationId);
+  const { scripts: regexScripts, ready: regexScriptsReady } = useActiveRegexScripts(conversationId);
   const regexScriptsKey = JSON.stringify(regexScripts);
   const regexMacroKey = JSON.stringify(macroValues ?? {});
   const regexProjectionLimits = useMemo(
@@ -149,6 +149,16 @@ export function MessageList({
                   scripts={regexScripts}
                   limits={regexProjectionLimits}
                   macroValues={macroValues}
+                  interactive={regexScriptsReady && message.role === 'assistant'
+                    && activeVariant?.status === 'completed'
+                    && generationTarget?.messageId !== message.id
+                    ? {
+                        conversationId: conversationId!,
+                        messageId: messageIndex,
+                        variantId: activeVariant.id,
+                        hasReasoning: reasoning !== '',
+                      }
+                    : undefined}
                 />}
               </>
             )}

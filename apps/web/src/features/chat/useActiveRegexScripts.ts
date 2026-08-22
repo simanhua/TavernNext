@@ -8,12 +8,14 @@ export interface ActiveRegexScripts {
 
 const EMPTY: ActiveRegexScripts = { preset: [], character: [] };
 
-export function useActiveRegexScripts(conversationId: string | null): ActiveRegexScripts {
-  const { owners, assetQueries } = useActiveExtensionAssetCollections(conversationId);
-  if (owners.length === 0 || assetQueries.some((query) => query.data === undefined)) return EMPTY;
+export function useActiveRegexScripts(conversationId: string | null): { scripts: ActiveRegexScripts; ready: boolean } {
+  const { owners, assetQueries, loading, activeContext } = useActiveExtensionAssetCollections(conversationId);
+  if (loading || activeContext.data === undefined || assetQueries.some((query) => query.data === undefined)) {
+    return { scripts: EMPTY, ready: false };
+  }
   const scripts: ActiveRegexScripts = { preset: [], character: [] };
   owners.forEach((owner, index) => {
     scripts[owner.kind].push(...parsedRegexAssets(assetQueries[index]?.data?.assets ?? []));
   });
-  return scripts;
+  return { scripts, ready: true };
 }
