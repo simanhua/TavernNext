@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PromptChatMessage } from '@tavernnext/prompt-engine';
+import type { Repositories } from '../db/repositories.js';
+import { EXTENSION_TRUST_RISK_VERSION, extensionExecutableDigest } from './extension-trust-service.js';
 import {
   canonicalHash,
   PromptSnapshotError,
@@ -22,9 +24,16 @@ export interface GenerationCandidate extends PromptSnapshotPayload {
   candidateId: string;
   expiresAt: string;
   executableDigest: string;
+  spreset?: Record<string, unknown>;
 }
 
-export function createGenerationCandidateService(promptSnapshots: PromptSnapshotService) {
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+export function createGenerationCandidateService(promptSnapshots: PromptSnapshotService, repositories: Repositories) {
   const candidates = new Map<string, CandidateRecord>();
   const tombstones = new Map<string, number>();
   const activeByConversation = new Map<string, string>();
@@ -52,18 +61,35 @@ export function createGenerationCandidateService(promptSnapshots: PromptSnapshot
         throw error;
       }
       const { snapshotId: _unused, ...payload } = preview;
-      const record: CandidateRecord = {
+      const candidateRecord: CandidateRecord = {
         candidateId,
         expiresAt: Date.now() + CANDIDATE_TTL_MS,
         used: false,
         input: structuredClone(input),
         payload: structuredClone(payload),
       };
-      candidates.set(candidateId, record);
+      candidates.set(candidateId, candidateRecord);
+      const primaryRef = payload.entityRevisions.presets[0];
+      const primary = primaryRef === undefined ? undefined : repositories.presets.get(primaryRef.id);
+      const spreset = record(record(primary?.extensions)?.SPreset ?? record(primary?.extensions)?.spreset);
+      const grant = primary === undefined ? undefined : repositories.extensionTrustGrants.getByOwner('preset', primary.id);
+      const spresetRuntimeEnabled = primary !== undefined && repositories.extensionAssets.listByOwner('preset', primary.id)
+        .some((asset) => {
+          const payload = record(asset.payload);
+          return asset.kind === 'tavern_helper' && asset.enabled && payload?.enabled !== false
+            && /SPreset|regex[_ -]?bind/i.test(`${payload?.name ?? ''}\n${payload?.content ?? ''}`);
+        });
+      const trustedSPreset = primary !== undefined && spreset !== undefined
+        && spresetRuntimeEnabled
+        && grant?.riskVersion === EXTENSION_TRUST_RISK_VERSION
+        && grant.bundleDigest === extensionExecutableDigest(repositories, 'preset', primary.id)
+        ? structuredClone(spreset)
+        : undefined;
       return {
         candidateId,
-        expiresAt: new Date(record.expiresAt).toISOString(),
+        expiresAt: new Date(candidateRecord.expiresAt).toISOString(),
         executableDigest: canonicalHash(payload.executable),
+        ...(trustedSPreset === undefined ? {} : { spreset: trustedSPreset }),
         ...structuredClone(payload),
       };
     },

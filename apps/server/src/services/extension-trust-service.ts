@@ -100,7 +100,10 @@ export function extensionExecutableDigest(
   }));
   const entries = [...new Set(rows.flatMap((asset) => executableSources(asset).flatMap(urlsIn)))].sort(compare)
     .map((url) => ({ url, sha256: remote.get(url) ?? null }));
-  return createHash('sha256').update(JSON.stringify(canonicalizeForDigest({ projection, entries }))).digest('hex');
+  const preset = ownerKind === 'preset' ? repositories.presets.get(ownerId) : undefined;
+  const extensions = asRecord(preset?.extensions);
+  const spreset = asRecord(extensions?.SPreset ?? extensions?.spreset) ?? null;
+  return createHash('sha256').update(JSON.stringify(canonicalizeForDigest({ projection, entries, spreset }))).digest('hex');
 }
 
 export function createExtensionTrustService(repositories: Repositories, fetchRemote: ExtensionRemoteFetcher) {

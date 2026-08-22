@@ -48,6 +48,7 @@ export function PromptPreviewDialog({ conversation, userText }: { conversation: 
       candidateId = candidate.candidateId;
       const patch = await runTrustedPromptHooks({
         kind: candidate.kind, messages: candidate.messages, text: candidate.text, stop: candidate.stop,
+        spreset: candidate.spreset,
       }, true, { timeoutMs: 10_000 });
       setPreview({
         ...candidate.preview,

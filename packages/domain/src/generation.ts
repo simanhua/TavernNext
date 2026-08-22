@@ -47,6 +47,7 @@ export const GenerationCandidateTransportSchema = z.object({
   stop: z.array(z.string().max(1_024)).max(128),
   entityRevisions: z.record(z.string(), z.unknown()),
   compiledRequestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  spreset: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 export const TrustedPromptPatchSchema = z.object({
   messages: z.array(PromptHookMessageSchema).max(100_000).optional(),

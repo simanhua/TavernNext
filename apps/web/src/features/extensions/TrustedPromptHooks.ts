@@ -1,6 +1,6 @@
 import type { GenerationCandidateTransport, TrustedPromptPatch } from '@tavernnext/domain';
 
-export type TrustedPromptCandidate = Pick<GenerationCandidateTransport, 'kind' | 'messages' | 'text' | 'stop'>;
+export type TrustedPromptCandidate = Pick<GenerationCandidateTransport, 'kind' | 'messages' | 'text' | 'stop' | 'spreset'>;
 export type { TrustedPromptPatch } from '@tavernnext/domain';
 
 export interface TrustedPromptHookRequest {

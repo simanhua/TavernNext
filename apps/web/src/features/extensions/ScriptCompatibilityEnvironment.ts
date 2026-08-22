@@ -1,5 +1,6 @@
 import {
   MUTATING_TAVERN_HELPER_METHODS,
+  applySPresetPromptHook,
   TAVERN_HELPER_BRIDGED_METHODS,
   type TrustedRuntimeScript,
   type TrustedScriptManifest,
@@ -26,6 +27,7 @@ export class ScriptCompatibilityEnvironment {
   private restoreParentTargets: Array<() => void> = [];
   private sourceOwners = new Map<string, Set<string>>();
   private promptHooks = new Set<symbol>();
+  private runtimeWindow?: RuntimeWindow;
 
   constructor(
     private readonly document: Document,
@@ -153,6 +155,40 @@ export class ScriptCompatibilityEnvironment {
   }
 
   install(runtimeWindow: RuntimeWindow): void {
+    this.runtimeWindow = runtimeWindow;
+    const parentDocument = this.document;
+    const chatFacade = () => [...parentDocument.querySelectorAll('#chat .mes')].map((message) => ({
+      is_user: message.classList.contains('message-user'),
+      mes: message.querySelector('.mes_text')?.textContent ?? '',
+      swipe_id: Number(message.getAttribute('data-swipe-id') ?? 0),
+      extra: {
+        reasoning: message.querySelector('.mes_reasoning')?.textContent ?? '',
+        reasoning_state: 'done',
+        reasoning_duration: 0,
+      },
+    }));
+    const sillyTavernFacade = {
+      get chat() { return chatFacade(); },
+      getContext: () => ({
+        powerUserSettings: { reasoning: {
+          prefix: '<think>', suffix: '</think>', auto_parse: true, auto_expand: false,
+        } },
+      }),
+      updateMessageBlock: () => undefined,
+    };
+    runtimeWindow.SillyTavern = sillyTavernFacade;
+    runtimeWindow.tavern_events = Object.freeze({
+      MESSAGE_UPDATED: 'tavernnext:message:updated', MESSAGE_RECEIVED: 'tavernnext:message:received',
+      CHAT_CHANGED: 'tavernnext:conversation:changed', CHARACTER_MESSAGE_RENDERED: 'tavernnext:message:rendered',
+      STREAM_TOKEN_RECEIVED: 'tavernnext:stream:token',
+    });
+    runtimeWindow.$ = (target: unknown) => {
+      if (typeof target === 'function') { target(); return undefined; }
+      return {
+        on: (event: string, listener: EventListener) => (target as EventTarget | undefined)?.addEventListener?.(event, listener),
+        off: (event: string, listener: EventListener) => (target as EventTarget | undefined)?.removeEventListener?.(event, listener),
+      };
+    };
     const add = (event: string, callback: (...args: unknown[]) => unknown, once: boolean) => {
       const listener = { scriptId: this.activeScriptId, callback, once };
       const values = this.listeners.get(event) ?? new Set<RuntimeListener>();
@@ -200,9 +236,14 @@ export class ScriptCompatibilityEnvironment {
 
   async runPromptHook(candidate: {
     kind: 'chat' | 'text'; messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string; name?: string }>;
-    text?: string; stop: string[];
+    text?: string; stop: string[]; spreset?: unknown;
   }, dryRun: boolean) {
-    const patch = structuredClone({ messages: candidate.messages, text: candidate.text, stop: candidate.stop });
+    const transformed = applySPresetPromptHook(candidate, (source, content) => {
+      if (this.runtimeWindow === undefined) return content;
+      const execute = this.runtimeWindow.Function('content', `"use strict"; return (${source})(content);`);
+      return execute(content) as unknown;
+    });
+    const patch = structuredClone({ messages: transformed.messages, text: transformed.text, stop: transformed.stop });
     const hook = Symbol('prompt-hook');
     this.promptHooks.add(hook);
     try {
@@ -215,7 +256,7 @@ export class ScriptCompatibilityEnvironment {
         await this.emit('tavernnext:generate-after-combine-prompts', eventData);
         patch.text = eventData.prompt; patch.stop = eventData.stop;
       }
-      await this.emit('tavernnext:trusted-prompt-hook', { candidate, patch, dryRun });
+      await this.emit('tavernnext:trusted-prompt-hook', { candidate: transformed, patch, dryRun });
       return patch;
     } finally {
       this.promptHooks.delete(hook);
@@ -232,5 +273,6 @@ export class ScriptCompatibilityEnvironment {
     this.disabledScripts.clear(); this.scripts.clear(); this.sourceOwners.clear(); this.deactivate();
     this.currentMessageId = undefined;
     this.promptHooks.clear();
+    this.runtimeWindow = undefined;
   }
 }

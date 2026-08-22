@@ -86,6 +86,7 @@ export function MessageList({
   return (
     <section
       className="messages"
+      id="chat"
       aria-label={t('Messages')}
       ref={messagesRef}
       onScroll={(event) => {
@@ -109,7 +110,12 @@ export function MessageList({
           : t(message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : 'System');
         const label = t('{{role}} message {{content}}', { role, content });
         return (
-          <article className={`message message-${message.role}`} key={message.id}>
+          <article
+            className={`message mes message-${message.role}`}
+            key={message.id}
+            data-swipe-id={activeVariant?.ordinal ?? 0}
+            {...{ mesid: messageIndex }}
+          >
             <header>{message.role === 'assistant' ? t('Assistant') : message.role === 'user' ? t('You') : message.speakerLabel ?? t('System')}</header>
             {editingId === message.id ? (
               <form onSubmit={(event) => {
@@ -133,16 +139,20 @@ export function MessageList({
             ) : (
               <>
                 {reasoning === '' ? null : (
-                  <details className="message-reasoning" open={content === ''}>
-                    <summary>{t('Reasoning')}</summary>
-                    <p>{reasoning}</p>
+                  <details className="message-reasoning mes_reasoning_details" data-state="done" open={content === ''}>
+                    <summary className="mes_reasoning_summary">
+                      <span className="mes_reasoning_header_block">
+                        <span className="mes_reasoning_header"><span className="mes_reasoning_header_title">{t('Reasoning')}</span></span>
+                      </span>
+                    </summary>
+                    <p className="mes_reasoning">{reasoning}</p>
                   </details>
                 )}
                 {content === '' ? (
                   <p>{activeVariant?.status === 'streaming'
                     ? t('Waiting for final response…')
                     : t('No final response was generated.')}</p>
-                ) : <RegexProjectedMarkdownContent
+                ) : <div className="mes_text"><RegexProjectedMarkdownContent
                   content={content}
                   role={message.role}
                   depth={messages.length - messageIndex - 1}
@@ -159,7 +169,7 @@ export function MessageList({
                         hasReasoning: reasoning !== '',
                       }
                     : undefined}
-                />}
+                /></div>}
               </>
             )}
             {message.id === lastAssistantId ? (

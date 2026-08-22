@@ -19,6 +19,7 @@ import {
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
 import { createMvuRuntimeService } from './mvu-runtime-service.js';
+import { createReasoningCompatibilityService } from './reasoning-compat-service.js';
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
@@ -63,6 +64,7 @@ interface PreparedGenerationBase {
   conversationId: string;
   provider: ProviderProfile;
   payload: PromptSnapshotPayload;
+  reasoningCompatibility: boolean;
 }
 
 type PreparedGeneration =
@@ -92,12 +94,14 @@ function preparedRequest(
   generationId: string,
   provider: ProviderProfile,
   payload: PromptSnapshotPayload,
+  reasoningCompatibility: boolean,
 ): PreparedGeneration {
   const base: PreparedGenerationBase = {
     generationId,
     conversationId: payload.input.conversationId,
     provider,
     payload,
+    reasoningCompatibility,
   };
   if (payload.kind === 'chat' && 'messages' in payload.compiledRequest) {
     return { ...base, kind: 'chat', request: payload.compiledRequest };
@@ -122,6 +126,7 @@ export function createGenerationService(options: {
     tokenizerRuntime: options.tokenizerRuntime ?? defaultTokenizerRuntime(),
   });
   const mvu = createMvuRuntimeService(repositories);
+  const reasoningCompatibility = createReasoningCompatibilityService(repositories);
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
@@ -299,6 +304,10 @@ export function createGenerationService(options: {
         }
       }
       if (outcome === 'aborted') controller.abort();
+      if (outcome === 'completed') {
+        const extracted = reasoningCompatibility.extract(prepared.reasoningCompatibility, content, reasoning);
+        content = extracted.content; reasoning = extracted.reasoning;
+      }
       try {
         database.transaction(() => {
           if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
@@ -400,7 +409,12 @@ export function createGenerationService(options: {
         const accepted = input.snapshotId === undefined
           ? await promptSnapshots.createAndAccept(input, generationId)
           : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
-        const prepared = preparedRequest(generationId, accepted.provider, accepted.payload);
+        const prepared = preparedRequest(
+          generationId,
+          accepted.provider,
+          accepted.payload,
+          reasoningCompatibility.resolve(accepted.payload),
+        );
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;
           active.controller.abort();

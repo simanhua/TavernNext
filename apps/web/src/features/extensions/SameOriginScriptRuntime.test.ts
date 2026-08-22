@@ -42,6 +42,35 @@ describe('same-origin trusted script iframe', () => {
     expect(mount.querySelector('iframe')).toBeNull();
   });
 
+  it('provides the accepted reasoning chat/DOM facade and base ready helper', async () => {
+    document.body.innerHTML = `<section id="chat"><article class="mes message-assistant" mesid="0" data-swipe-id="2">
+      <div class="mes_reasoning_details"><span class="mes_reasoning_header_title"></span><p class="mes_reasoning">chain</p></div>
+      <div class="mes_text">answer</div>
+    </article></section>`;
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const diagnostics: string[] = [];
+    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (value) => diagnostics.push(value.message));
+    await runtime.start(manifest(`
+      $(() => {
+        parent.reasoningFacade = {
+          message: SillyTavern.chat[0],
+          prefix: SillyTavern.getContext().powerUserSettings.reasoning.prefix,
+          event: tavern_events.MESSAGE_RECEIVED,
+        };
+        parent.document.querySelector('#chat [mesid="0"]')?.setAttribute('data-reasoning-state', 'done');
+      });
+    `));
+    await Promise.resolve();
+
+    expect((window as unknown as { reasoningFacade?: unknown }).reasoningFacade).toMatchObject({
+      message: { is_user: false, mes: 'answer', swipe_id: 2, extra: { reasoning: 'chain', reasoning_state: 'done' } },
+      prefix: '<think>', event: 'tavernnext:message:received',
+    });
+    expect(document.querySelector('#chat [mesid="0"]')?.getAttribute('data-reasoning-state')).toBe('done');
+    expect(diagnostics).toEqual([]);
+  });
+
   it('bridges supported globals with the owning runtime identity', async () => {
     const mount = document.createElement('div');
     document.body.append(mount);

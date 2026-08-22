@@ -253,7 +253,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   };
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
   const promptPreviews = createPromptPreviewService(promptSnapshots);
-  const generationCandidates = createGenerationCandidateService(promptSnapshots);
+  const generationCandidates = createGenerationCandidateService(promptSnapshots, repositories);
   const generations = createGenerationService({
     database,
     repositories,

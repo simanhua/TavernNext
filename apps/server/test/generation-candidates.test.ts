@@ -9,6 +9,7 @@ import {
   unitTokenizerRuntime,
 } from './prompt-integration-fixtures.js';
 import { createPromptSnapshotService } from '../src/services/prompt-snapshot-service.js';
+import { applySPresetPromptHook } from '@tavernnext/extension-runtime';
 
 afterEach(async () => { vi.useRealTimers(); await closePromptIntegrationContexts(); });
 
@@ -130,5 +131,85 @@ describe('two-phase generation candidates', () => {
     });
     expect(changedSeal.statusCode).toBe(409);
     expect(changedContext.repositories.generationSnapshots.list()).toEqual([]);
+  });
+
+  it('exposes trusted SPreset config and seals its ChatSquash output without changing Provider ownership', async () => {
+    const { app, repositories, provider } = await createPromptIntegrationContext();
+    seedFullPromptGraph(repositories, 'chat');
+    const preset = repositories.presets.get(integrationIds.chatPreset)!;
+    expect(repositories.presets.update(preset.id, preset.revision, {
+      extensions: { SPreset: { ChatSquash: {
+        enabled: true, role: 'user', user_prefix: '\n\nHuman:', user_suffix: '<u>',
+        char_prefix: '\n\nAssistant:', char_suffix: '<a>', prefix_system: '', suffix_system: '',
+        enable_squashed_separator: false, enable_stop_string: true, stop_string: 'Participant:',
+        squashed_post_script_enable: true,
+        squashed_post_script: "content => content.replaceAll('Human:', 'Participant:')",
+      }, RegexBinding: { enabled: true } } },
+    })).toMatchObject({ ok: true });
+    repositories.extensionAssets.create({
+      id: crypto.randomUUID(), ownerKind: 'preset', ownerId: preset.id,
+      kind: 'tavern_helper', sourceKey: 'spreset', ordinal: 0, enabled: true,
+      payload: { type: 'script', id: 'spreset', name: 'SPreset', enabled: true, content: 'SPreset', button: {} },
+    });
+    const create = () => app.inject({
+      method: 'POST', url: `/api/conversations/${integrationIds.conversation}/generation-candidates`,
+      payload: previewPayload(),
+    });
+    const untrusted = await create();
+    expect(untrusted.statusCode).toBe(201);
+    expect(untrusted.json().spreset).toBeUndefined();
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/generation-candidates/${untrusted.json().candidateId as string}`,
+    })).statusCode).toBe(204);
+    expect((await app.inject({
+      method: 'POST', url: `/api/extension-trust/preset/${preset.id}/grant`,
+    })).statusCode).toBe(200);
+
+    const created = await create();
+    const candidate = created.json();
+    expect(candidate.spreset).toMatchObject({ ChatSquash: { enabled: true }, RegexBinding: { enabled: true } });
+    const patch = applySPresetPromptHook({
+      kind: candidate.kind, messages: candidate.messages, text: candidate.text,
+      stop: candidate.stop, spreset: candidate.spreset,
+    }, (source, content) => Function('content', `return (${source})(content);`)(content));
+    const sealed = await app.inject({
+      method: 'POST', url: `/api/generation-candidates/${candidate.candidateId as string}/seal`,
+      payload: { patch: { messages: patch.messages, stop: patch.stop } },
+    });
+    expect(sealed.statusCode).toBe(201);
+    expect((await requestGeneration(app, sealed.json().snapshotId)).statusCode).toBe(200);
+    expect(provider.chat[0]).toMatchObject({
+      model: 'mock-model', messages: patch.messages, stop: patch.stop,
+    });
+    expect(JSON.stringify(provider.chat[0])).not.toContain('TOP-SECRET');
+
+    const currentPreset = repositories.presets.get(preset.id)!;
+    const currentSPreset = currentPreset.extensions.SPreset as Record<string, unknown>;
+    const currentSquash = currentSPreset.ChatSquash as Record<string, unknown>;
+    expect(repositories.presets.update(currentPreset.id, currentPreset.revision, {
+      extensions: {
+        ...currentPreset.extensions,
+        SPreset: {
+          ...currentSPreset,
+          ChatSquash: { ...currentSquash, squashed_post_script: 'content => `changed:${content}`' },
+        },
+      },
+    })).toMatchObject({ ok: true });
+    const invalidated = await app.inject({ method: 'GET', url: `/api/extension-trust/preset/${preset.id}` });
+    expect(invalidated.json().trusted).toBe(false);
+    const runtimeAsset = repositories.extensionAssets.listByOwner('preset', preset.id)
+      .find((asset) => asset.sourceKey === 'spreset')!;
+    expect(repositories.extensionAssets.update(runtimeAsset.id, runtimeAsset.revision, { enabled: false }))
+      .toMatchObject({ ok: true });
+    expect((await app.inject({
+      method: 'POST', url: `/api/extension-trust/preset/${preset.id}/grant`,
+    })).statusCode).toBe(200);
+    const disabled = await app.inject({
+      method: 'POST', url: `/api/conversations/${integrationIds.conversation}/generation-candidates`,
+      payload: previewPayload({ conversationRevision: 1 }),
+    });
+    expect(disabled.statusCode).toBe(201);
+    expect(disabled.json().spreset).toBeUndefined();
+    await app.inject({ method: 'DELETE', url: `/api/generation-candidates/${disabled.json().candidateId as string}` });
   });
 });

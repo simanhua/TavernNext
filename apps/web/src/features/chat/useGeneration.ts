@@ -84,6 +84,7 @@ export function useGeneration() {
         messages: candidate.messages,
         text: candidate.text,
         stop: candidate.stop,
+        spreset: candidate.spreset,
       }, false, { signal: controller.signal, timeoutMs: 10_000 });
       const sealed = await api.sealGenerationCandidate(candidate.candidateId, patch, controller.signal);
       candidateId = undefined;
