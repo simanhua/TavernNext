@@ -1,29 +1,24 @@
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import {
   ApiError,
   api,
   errorCode,
-  type ActiveResourceContextView,
   type EditableExtensionAssetView,
   type ExtensionAssetCollectionView,
-  type ExtensionTrustReviewView,
 } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
 import { useChatUi } from '../chat/chat-store.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { RuntimeStateManager } from './RuntimeStateManager.js';
 import { ExtensionTrustPanel } from './ExtensionTrustPanel.js';
-
-function record(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+import { asRecord, isRecord } from './extension-resource-utils.js';
+import {
+  useExtensionResourceCatalog,
+  type ResourceCatalogItem,
+  type ResourceCatalogView,
+  type ResourceSourceFilter,
+} from './useExtensionResourceCatalog.js';
 
 function normalizedOrder(assets: EditableExtensionAssetView[]): EditableExtensionAssetView[] {
   return (['regex', 'tavern_helper'] as const).flatMap((kind) => assets
@@ -37,56 +32,6 @@ function parseJson(value: string): unknown {
 }
 
 type JsonUpdater = (field: string, source: string, apply: (value: unknown) => void) => void;
-
-interface ResourceCatalogItem {
-  key: string;
-  owner: ActiveResourceContextView['owners'][number];
-  collection: ExtensionAssetCollectionView;
-  asset: EditableExtensionAssetView;
-  name: string;
-  nodeType: 'script' | 'folder' | 'regex';
-  nodeEnabled: boolean;
-}
-
-function helperChildren(value: Record<string, unknown>): unknown[] {
-  for (const key of ['children', 'scripts', 'value']) {
-    if (Array.isArray(value[key])) return value[key];
-  }
-  return [];
-}
-
-function helperCatalogNodes(
-  value: unknown,
-  base: Omit<ResourceCatalogItem, 'key' | 'name' | 'nodeType' | 'nodeEnabled'>,
-  path = 'root',
-  inheritedEnabled = base.asset.enabled,
-): ResourceCatalogItem[] {
-  if (!isRecord(value)) return [{
-    ...base,
-    key: `${base.owner.kind}:${base.owner.id}:${base.asset.sourceKey}:${path}`,
-    name: base.asset.sourceKey,
-    nodeType: 'script',
-    nodeEnabled: inheritedEnabled,
-  }];
-  const nodeType = value.type === 'folder' ? 'folder' : 'script';
-  const nodeEnabled = inheritedEnabled && value.enabled !== false;
-  const current: ResourceCatalogItem = {
-    ...base,
-    key: `${base.owner.kind}:${base.owner.id}:${base.asset.sourceKey}:${path}`,
-    name: String(value.name ?? value.id ?? base.asset.sourceKey),
-    nodeType,
-    nodeEnabled,
-  };
-  return [
-    current,
-    ...helperChildren(value).flatMap((child, ordinal) => helperCatalogNodes(child, base, `${path}.${ordinal}`, nodeEnabled)),
-  ];
-}
-
-function regexName(asset: EditableExtensionAssetView): string {
-  const payload = record(asset.payload);
-  return String(payload.scriptName ?? payload.id ?? asset.sourceKey);
-}
 
 function ScriptTreeNodeEditor({ value, path, onChange, onDelete, onMoveUp, onMoveDown, first, last, updateJson }: {
   value: unknown;
@@ -200,28 +145,27 @@ export function ExtensionResourceManagerPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const activeConversationId = useChatUi((state) => state.activeConversationId);
-  const generationConfig = useQuery({ queryKey: ['global-generation-config'], queryFn: api.getGlobalGenerationConfig });
-  const activeContext = useQuery({
-    queryKey: ['active-resource-context', activeConversationId, generationConfig.data?.revision ?? null],
-    queryFn: () => api.getActiveResourceContext(activeConversationId),
-  });
-  const contextOwners = activeContext.data?.owners ?? [];
-  const assetQueries = useQueries({
-    queries: contextOwners.map((owner) => ({
-      queryKey: ['extension-assets', owner.kind, owner.id, owner.revision],
-      queryFn: () => api.getExtensionAssets(owner.kind, owner.id),
-    })),
-  });
-  const assetsLoading = assetQueries.some((query) => query.isLoading);
-  const trustQueries = useQueries({
-    queries: contextOwners.map((owner) => ({
-      queryKey: ['extension-trust', owner.kind, owner.id, owner.revision],
-      queryFn: () => api.getExtensionTrust(owner.kind, owner.id),
-    })),
+  const [catalogView, setCatalogView] = useState<ResourceCatalogView>('current');
+  const [activeKind, setActiveKind] = useState<EditableExtensionAssetView['kind']>('tavern_helper');
+  const [search, setSearch] = useState('');
+  const [sourceFilter, setSourceFilter] = useState<ResourceSourceFilter>('all');
+  const {
+    activeContext,
+    catalog,
+    filteredCatalog,
+    visibleCatalog,
+    loading: catalogLoading,
+    normalizedSearch,
+    statusesFor,
+  } = useExtensionResourceCatalog({
+    activeConversationId,
+    view: catalogView,
+    activeKind,
+    search,
+    sourceFilter,
   });
   const [ownerKind, setOwnerKind] = useState<'character' | 'preset'>('character');
   const [ownerId, setOwnerId] = useState('');
-  const [activeKind, setActiveKind] = useState<'tavern_helper' | 'regex'>('tavern_helper');
   const [selectedKey, setSelectedKey] = useState<string>();
   const [selectionNotice, setSelectionNotice] = useState<string>();
   const [collection, setCollection] = useState<ExtensionAssetCollectionView>();
@@ -231,34 +175,7 @@ export function ExtensionResourceManagerPage() {
   const [conflict, setConflict] = useState<{ ownerKind: 'character' | 'preset'; ownerId: string; revision: number }>();
   const [invalidJsonFields, setInvalidJsonFields] = useState<Set<string>>(() => new Set());
 
-  const catalog = contextOwners.flatMap((owner, ownerIndex): ResourceCatalogItem[] => {
-    const ownerCollection = assetQueries[ownerIndex]?.data;
-    if (ownerCollection === undefined) return [];
-    return ownerCollection.assets.flatMap((asset) => {
-      const base = { owner, collection: ownerCollection, asset };
-      return asset.kind === 'regex'
-        ? [{
-            ...base,
-            key: `${owner.kind}:${owner.id}:${asset.sourceKey}`,
-            name: regexName(asset),
-            nodeType: 'regex' as const,
-            nodeEnabled: asset.enabled,
-          }]
-        : helperCatalogNodes(asset.payload, base);
-    });
-  });
-  const visibleCatalog = catalog.filter((item) => item.asset.kind === activeKind);
   const selectedCatalogItem = catalog.find((item) => item.key === selectedKey);
-  const trustFor = (owner: ResourceCatalogItem['owner']): ExtensionTrustReviewView | undefined => {
-    const index = contextOwners.findIndex((candidate) => candidate.kind === owner.kind && candidate.id === owner.id);
-    return index < 0 ? undefined : trustQueries[index]?.data;
-  };
-  const statusesFor = (item: ResourceCatalogItem) => [
-    item.nodeEnabled ? 'Enabled' : 'Disabled',
-    ...(item.asset.kind === 'tavern_helper'
-      ? [trustFor(item.owner)?.trusted === true ? 'Trusted' : 'Untrusted']
-      : []),
-  ];
   const selectResource = (item: ResourceCatalogItem) => {
     const sameOwner = collection?.owner.kind === item.owner.kind && collection.owner.id === item.owner.id;
     setOwnerKind(item.owner.kind);
@@ -274,7 +191,7 @@ export function ExtensionResourceManagerPage() {
     setSelectionNotice(undefined);
   };
   useEffect(() => {
-    if (selectedKey === undefined || activeContext.isFetching || assetsLoading) return;
+    if (selectedKey === undefined || activeContext.isFetching || catalogLoading) return;
     if (catalog.some((item) => item.key === selectedKey)) return;
     setSelectedKey(undefined);
     setOwnerId('');
@@ -282,7 +199,7 @@ export function ExtensionResourceManagerPage() {
     setDraft([]);
     setConflict(undefined);
     setSelectionNotice('The selected resource left the current context.');
-  }, [activeContext.isFetching, assetsLoading, catalog, selectedKey]);
+  }, [activeContext.isFetching, catalog, catalogLoading, selectedKey]);
 
   const load = async () => {
     if (ownerId === '') return;
@@ -393,20 +310,35 @@ export function ExtensionResourceManagerPage() {
       <aside className="manager-sidebar">
         <h1>{t('Attached Resources')}</h1>
         <div role="tablist" aria-label={t('Resource context')}>
-          <button type="button" role="tab" aria-selected="true">{t('Current Context')}</button>
+          <button type="button" role="tab" aria-selected={catalogView === 'current'} onClick={() => setCatalogView('current')}>
+            {t('Current Context')}
+          </button>
+          <button type="button" role="tab" aria-selected={catalogView === 'all'} onClick={() => setCatalogView('all')}>
+            {t('All Resources')}
+          </button>
         </div>
         <div role="tablist" aria-label={t('Resource type')}>
           <button type="button" role="tab" aria-selected={activeKind === 'tavern_helper'} onClick={() => setActiveKind('tavern_helper')}>
-            {t('Scripts')} {catalog.filter((item) => item.asset.kind === 'tavern_helper').length}
+            {t('Scripts')} {filteredCatalog.filter((item) => item.asset.kind === 'tavern_helper').length}
           </button>
           <button type="button" role="tab" aria-selected={activeKind === 'regex'} onClick={() => setActiveKind('regex')}>
-            {t('Regexes')} {catalog.filter((item) => item.asset.kind === 'regex').length}
+            {t('Regexes')} {filteredCatalog.filter((item) => item.asset.kind === 'regex').length}
           </button>
         </div>
-        {activeContext.data?.primaryPreset !== null ? null : (
+        {catalogView !== 'all' ? null : (
+          <div>
+            <label>{t('Search resources')}<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+            <label>{t('Source kind')}<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}>
+              <option value="all">{t('All owners')}</option>
+              <option value="character">{t('Characters only')}</option>
+              <option value="preset">{t('Presets only')}</option>
+            </select></label>
+          </div>
+        )}
+        {catalogView === 'all' || activeContext.data?.primaryPreset !== null ? null : (
           <p>{t('No primary Preset is configured for the active Provider mode.')}</p>
         )}
-        {activeContext.data?.character !== null ? null : (
+        {catalogView === 'all' || activeContext.data?.character !== null ? null : (
           <p>{t('No active Conversation Character is selected.')}</p>
         )}
         <div role="tabpanel" aria-label={t(activeKind === 'tavern_helper' ? 'Scripts' : 'Regexes')}>
@@ -422,9 +354,11 @@ export function ExtensionResourceManagerPage() {
               {statusesFor(item).map((status) => <span key={status}>{t(status)}</span>)}
             </button>
           ))}
-          {activeContext.isLoading || assetsLoading ? <p>{t('Loading resources…')}</p> : null}
-          {!activeContext.isLoading && !assetsLoading && visibleCatalog.length === 0
-            ? <p>{t('No resources of this type.')}</p> : null}
+          {activeContext.isLoading || catalogLoading ? <p>{t('Loading resources…')}</p> : null}
+          {!activeContext.isLoading && !catalogLoading && visibleCatalog.length === 0
+            ? <p>{t(catalogView === 'all' && (normalizedSearch !== '' || sourceFilter !== 'all')
+              ? 'No resources match the current filters.'
+              : 'No resources of this type.')}</p> : null}
         </div>
       </aside>
       <section className="manager-editor">
@@ -436,7 +370,7 @@ export function ExtensionResourceManagerPage() {
           <button type="button" disabled={collection === undefined} onClick={() => add('folder')}>{t('Add folder')}</button>
         </div>
         {draft.map((asset, index) => {
-          const payload = record(asset.payload);
+          const payload = asRecord(asset.payload);
           const type = asset.kind === 'regex' ? 'Regex' : payload.type === 'folder' ? 'Folder' : 'Script';
           const sameKind = draft.filter((item) => item.kind === asset.kind);
           return (

@@ -93,4 +93,11 @@ test('Current Context follows the primary Preset and active Conversation Charact
   await page.getByRole('link', { name: 'Attached Resources' }).click();
   await expect(page.getByRole('button', { name: /Second character script.*Untrusted/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /First character script/ })).toHaveCount(0);
+
+  await page.getByRole('tab', { name: 'All Resources' }).click();
+  await expect(page.getByRole('tab', { name: 'Scripts 2' })).toBeVisible();
+  await page.getByLabel('Search resources').fill('First');
+  await page.getByLabel('Source kind').selectOption('character');
+  await expect(page.getByRole('tab', { name: 'Scripts 1' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /First character script.*Inactive source.*Enabled.*Untrusted/ })).toBeVisible();
 });
