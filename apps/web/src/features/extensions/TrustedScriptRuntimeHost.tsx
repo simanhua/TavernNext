@@ -1,4 +1,4 @@
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildTrustedScriptManifest,
@@ -31,6 +31,7 @@ export function TrustedScriptRuntimeHost({
   createFrame?: ScriptRuntimeFrameFactory;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const active = useActiveExtensionAssetCollections(conversationId);
   const trustQueries = useQueries({
     queries: active.owners.map((owner) => ({
@@ -41,6 +42,16 @@ export function TrustedScriptRuntimeHost({
   const mountRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<ScriptRuntimeFrame | undefined>(undefined);
   const [diagnostics, setDiagnostics] = useState<ScriptRuntimeDiagnostic[]>([]);
+  useEffect(() => {
+    const refresh = () => {
+      void queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
+      void queryClient.invalidateQueries({ queryKey: ['extension-assets'] });
+      void queryClient.invalidateQueries({ queryKey: ['extension-trust'] });
+      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+    };
+    window.addEventListener('tavernnext:runtime-mutated', refresh);
+    return () => window.removeEventListener('tavernnext:runtime-mutated', refresh);
+  }, [conversationId, queryClient]);
   const inputs = active.owners.flatMap((owner, index): TrustedScriptOwnerInput[] => {
     const collection = active.assetQueries[index]?.data;
     const trust = trustQueries[index]?.data;

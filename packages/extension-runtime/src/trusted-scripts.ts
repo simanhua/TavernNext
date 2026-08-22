@@ -21,12 +21,23 @@ export interface TrustedScriptOwnerInput {
 
 export interface TrustedRuntimeScript {
   owner: ExtensionRuntimeOwnerRef;
+  ownerRevision: number;
+  bundleDigest: string;
   id: string;
   sourceId: string;
   name: string;
   content: string;
   order: number[];
 }
+
+export const TAVERN_HELPER_BRIDGED_METHODS = Object.freeze([
+  'getChatMessages', 'setChatMessages', 'createChatMessages', 'deleteChatMessages', 'getLastMessageId', 'getMessageId',
+  'getVariables', 'getAllVariables', 'replaceVariables', 'updateVariablesWith', 'insertVariables', 'deleteVariable',
+  'getTavernRegexes', 'replaceTavernRegexes',
+  'getWorldbookNames', 'getWorldbook', 'getLorebookEntries', 'updateLorebookEntriesWith',
+  'substitudeMacros', 'injectPrompts', 'uninjectPrompts',
+] as const);
+export type TavernHelperBridgedMethod = typeof TAVERN_HELPER_BRIDGED_METHODS[number];
 
 export interface TrustedRuntimeButton {
   owner: ExtensionRuntimeOwnerRef;
@@ -81,6 +92,8 @@ function ownerScripts(owner: TrustedScriptOwnerInput): { scripts: TrustedRuntime
       ), content);
       scripts.push({
         owner: owner.owner,
+        ownerRevision: owner.revision,
+        bundleDigest: owner.bundleDigest,
         id,
         sourceId,
         name: typeof node.name === 'string' && node.name !== '' ? node.name : id,

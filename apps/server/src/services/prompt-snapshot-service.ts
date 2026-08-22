@@ -59,6 +59,7 @@ import {
   type Repositories,
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
+import { EXTENSION_TRUST_RISK_VERSION, extensionExecutableDigest } from './extension-trust-service.js';
 
 export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 4 as const;
 const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
@@ -110,6 +111,10 @@ export interface PromptEntityRevisionManifest {
   worldbooks: WorldbookRevisionRef[];
   messages: MessageRevisionRef[];
   runtimeState: RevisionRef | null;
+  extensionState?: RevisionRef | null;
+  extensionTrust?: Array<{
+    ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string; riskVersion: number;
+  }>;
 }
 
 export interface SnapshotInputPayload {
@@ -216,6 +221,10 @@ interface LoadedAggregate {
   manifest: PromptEntityRevisionManifest;
   compatibilityWarnings: PromptWarning[];
   regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
+  promptInjections: Array<{
+    key: string; content: string; role: 'system' | 'user' | 'assistant'; position: 'before' | 'after';
+    ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string;
+  }>;
 }
 
 interface BuiltSnapshot {
@@ -592,6 +601,33 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   if (input.continuationByteBoundary !== undefined
     && input.continuationByteBoundary !== continuationByteBoundary) throw new PromptSnapshotError('invalid_target');
   const runtimeState = runtimeStateFor(repositories, conversation.id);
+  const activeOwnerKeys = new Set([`character:${character.id}`, ...presets.slice(0, 1).map((preset) => `preset:${preset.id}`)]);
+  const extensionState = repositories.extensionStates.getByScope('conversation', conversation.id);
+  const rawInjections = extensionState?.value.runtimePromptInjections;
+  const injectionRecord = record(rawInjections) ? rawInjections : {};
+  const promptInjections = Object.entries(injectionRecord as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([key, raw]) => {
+      const item = record(raw) ? raw : undefined;
+      const rawValue = item?.value;
+      const value = record(rawValue) ? rawValue : undefined;
+      const ownerKind = item?.ownerKind;
+      const ownerId = item?.ownerId;
+      const bundleDigest = item?.bundleDigest;
+      if ((ownerKind !== 'character' && ownerKind !== 'preset') || typeof ownerId !== 'string'
+        || typeof bundleDigest !== 'string' || !activeOwnerKeys.has(`${ownerKind}:${ownerId}`)) return [];
+      const injectionOwnerKind: 'character' | 'preset' = ownerKind;
+      const grant = repositories.extensionTrustGrants.getByOwner(ownerKind, ownerId);
+      if (grant?.bundleDigest !== bundleDigest || grant.riskVersion !== EXTENSION_TRUST_RISK_VERSION
+        || extensionExecutableDigest(repositories, ownerKind, ownerId) !== bundleDigest
+        || typeof value?.content !== 'string') return [];
+      const role: 'system' | 'user' | 'assistant' = value.role === 'user' || value.role === 'assistant'
+        ? value.role
+        : 'system';
+      return [{
+        key, content: value.content, role, position: value.position === 'after' ? 'after' as const : 'before' as const,
+        ownerKind: injectionOwnerKind, ownerId, bundleDigest,
+      }];
+    });
   const seed = input.seed ?? `${conversation.id}:${conversation.revision}`;
   const messageIndex = input.messageIndex ?? history.history.length;
   const snapshotInput: SnapshotInputPayload = {
@@ -621,6 +657,14 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     }]),
     messages: history.manifest,
     runtimeState: runtimeState === undefined ? null : ref(runtimeState),
+    extensionState: extensionState === undefined ? null : ref(extensionState),
+    extensionTrust: [...new Map(promptInjections.map((injection) => [
+      `${injection.ownerKind}:${injection.ownerId}`,
+      {
+        ownerKind: injection.ownerKind, ownerId: injection.ownerId, bundleDigest: injection.bundleDigest,
+        riskVersion: EXTENSION_TRUST_RISK_VERSION,
+      },
+    ])).values()],
   };
 
   return {
@@ -644,6 +688,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
       preset: parsedRegexAssets(repositories.extensionAssets.listByOwner('preset', presets[0]!.id)),
       character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
     },
+    promptInjections,
   };
 }
 
@@ -713,6 +758,19 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     if (runtimeState !== undefined) stale();
   } else {
     exact(runtimeState, manifest.runtimeState);
+  }
+  const extensionState = repositories.extensionStates.getByScope('conversation', manifest.conversation.id);
+  if (manifest.extensionState === undefined) {
+    // Schema v4 snapshots created before runtime prompt injection support have no extension-state ref.
+  } else if (manifest.extensionState === null) {
+    if (extensionState !== undefined) stale();
+  } else {
+    exact(extensionState, manifest.extensionState);
+  }
+  for (const expected of manifest.extensionTrust ?? []) {
+    const grant = repositories.extensionTrustGrants.getByOwner(expected.ownerKind, expected.ownerId);
+    if (grant?.bundleDigest !== expected.bundleDigest || grant.riskVersion !== expected.riskVersion
+      || extensionExecutableDigest(repositories, expected.ownerKind, expected.ownerId) !== expected.bundleDigest) stale();
   }
 }
 
@@ -1075,20 +1133,49 @@ async function compileAggregate(
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     if (decisionFingerprint(decision) !== initialDecision) continue;
 
+    const beforeInjections = aggregate.promptInjections.filter((injection) => injection.position === 'before');
+    const afterInjections = aggregate.promptInjections.filter((injection) => injection.position === 'after');
+    const runtimeMessages = compilation.kind === 'chat' ? [
+      ...beforeInjections.map(({ role, content }) => ({ role, content })),
+      ...compilation.messages,
+      ...afterInjections.map(({ role, content }) => ({ role, content })),
+    ] : undefined;
+    const runtimeText = compilation.kind === 'text' ? [
+      ...beforeInjections.map(({ content }) => content),
+      compilation.text,
+      ...afterInjections.map(({ content }) => content),
+    ].filter((value) => value !== '').join('\n') : undefined;
+    const runtimeTotalTokens = compilation.kind === 'chat'
+      ? await tokenizer.countMessages(runtimeMessages!)
+      : await tokenizer.countText(runtimeText!);
+    const runtimeMaxPromptTokens = compilation.kind === 'chat'
+      ? aggregate.conversation.maxPromptTokens
+      : Math.min(
+        aggregate.conversation.maxPromptTokens,
+        finiteSetting(aggregate.presets[0]!.settings, 'max_context') ?? aggregate.conversation.maxPromptTokens,
+      );
+    if (runtimeTotalTokens > runtimeMaxPromptTokens) throw new PromptSnapshotError('context_overflow');
+    const injectionBreakdown: TokenBreakdownEntry[] = [];
+    for (const injection of aggregate.promptInjections) injectionBreakdown.push({
+      source: `runtime-injection:${injection.key}`,
+      includedTokens: await tokenizer.countText(injection.content),
+      omittedTokens: 0,
+    });
+
     const primaryPreset = aggregate.presets[0]!;
     const temperature = finiteSetting(primaryPreset.settings, 'temperature');
     const maxTokens = responseTokens(aggregate.conversation, primaryPreset);
     const compiledRequest: ChatRequest | TextRequest = compilation.kind === 'chat'
       ? {
         model: aggregate.provider.model,
-        messages: deepJson(compilation.messages),
+        messages: deepJson(runtimeMessages!),
         ...(temperature === undefined ? {} : { temperature }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
         stop: [...compilation.stop],
       }
       : {
         model: aggregate.provider.model,
-        prompt: compilation.text,
+        prompt: runtimeText!,
         ...(temperature === undefined ? {} : { temperature }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
         stop: [...compilation.stop],
@@ -1118,11 +1205,11 @@ async function compileAggregate(
       worldbook: deepJson(worldbook),
       tokenizerDecision: deepJson(decision),
       ...(compilation.kind === 'chat'
-        ? { messages: deepJson(compilation.messages) }
-        : { text: compilation.text }),
+        ? { messages: deepJson(runtimeMessages!) }
+        : { text: runtimeText! }),
       stop: [...compilation.stop],
-      tokenBreakdown: deepJson(compilation.tokenBreakdown),
-      totalTokens: compilation.totalTokens,
+      tokenBreakdown: deepJson([...compilation.tokenBreakdown, ...injectionBreakdown]),
+      totalTokens: runtimeTotalTokens,
       warnings: deepJson(warnings),
       worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
       compiledRequest: deepJson(compiledRequest),
@@ -1166,7 +1253,7 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     || !Array.isArray(value.messages)
     || !hasOnlyKeys(value, [
       'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
-      'worldbooks', 'messages', 'runtimeState',
+      'worldbooks', 'messages', 'runtimeState', 'extensionState', 'extensionTrust',
     ])) return false;
   if (!value.presets.every((item) => record(item)
     && typeof item.id === 'string'
@@ -1186,7 +1273,14 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     && nonNegativeInteger(item.revision)
     && (item.activeVariant === null || isRevisionRef(item.activeVariant))
     && hasOnlyKeys(item, ['id', 'revision', 'activeVariant']))) return false;
-  return value.runtimeState === null || isRevisionRef(value.runtimeState);
+  return (value.runtimeState === null || isRevisionRef(value.runtimeState))
+    && (value.extensionState === undefined || value.extensionState === null || isRevisionRef(value.extensionState))
+    && (value.extensionTrust === undefined || (Array.isArray(value.extensionTrust) && value.extensionTrust.every((item) => (
+      record(item) && (item.ownerKind === 'character' || item.ownerKind === 'preset')
+      && typeof item.ownerId === 'string' && typeof item.bundleDigest === 'string'
+      && nonNegativeInteger(item.riskVersion)
+      && hasOnlyKeys(item, ['ownerKind', 'ownerId', 'bundleDigest', 'riskVersion'])
+    ))));
 }
 
 function isInput(value: unknown): value is SnapshotInputPayload {

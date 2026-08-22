@@ -13,7 +13,7 @@ afterEach(() => {
 function manifest(content: string): TrustedScriptManifest {
   return {
     conversationId: 'conversation-1', runtimeKey: 'runtime-1',
-    scripts: [{ owner: { kind: 'preset', id: 'preset-1' }, id: 'preset:preset-1:script-1', sourceId: 'script-1', name: 'Synthetic', content, order: [0] }],
+    scripts: [{ owner: { kind: 'preset', id: 'preset-1' }, ownerRevision: 1, bundleDigest: 'a'.repeat(64), id: 'preset:preset-1:script-1', sourceId: 'script-1', name: 'Synthetic', content, order: [0] }],
     buttons: [{ owner: { kind: 'preset', id: 'preset-1' }, scriptId: 'preset:preset-1:script-1', name: 'Run' }],
   };
 }
@@ -40,6 +40,83 @@ describe('same-origin trusted script iframe', () => {
 
     runtime.destroy();
     expect(mount.querySelector('iframe')).toBeNull();
+  });
+
+  it('bridges supported globals with the owning runtime identity', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const calls: unknown[] = [];
+    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, async (input) => {
+      calls.push(input);
+      return [{ message_id: 0, message: 'Persisted' }];
+    });
+    await runtime.start(manifest(`
+      eventOn(getButtonEvent('Run'), async () => { parent.bridgedMessages = await getChatMessages(); });
+    `));
+
+    await runtime.invoke('preset:preset-1:script-1', 'Run');
+
+    expect((window as unknown as { bridgedMessages?: unknown }).bridgedMessages).toEqual([{ message_id: 0, message: 'Persisted' }]);
+    expect(calls).toEqual([expect.objectContaining({
+      conversationId: 'conversation-1', scriptId: 'script-1', method: 'getChatMessages', ownerKind: 'preset', ownerId: 'preset-1',
+    })]);
+  });
+
+  it('lets a synthetic lifecycle script persist messages and variables observed after reload', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const persisted = { messages: [{ message_id: 0, message: 'Before' }], variables: {} as Record<string, unknown> };
+    const caller = async (input: { method: string; args: unknown[] }) => {
+      if (input.method === 'setChatMessages') {
+        persisted.messages = structuredClone(input.args[0] as typeof persisted.messages);
+        return persisted.messages;
+      }
+      if (input.method === 'replaceVariables') {
+        persisted.variables = structuredClone(input.args[0] as Record<string, unknown>);
+        return { value: persisted.variables };
+      }
+      if (input.method === 'getChatMessages') return structuredClone(persisted.messages);
+      if (input.method === 'getVariables') return { value: structuredClone(persisted.variables) };
+      throw new Error('unexpected method');
+    };
+    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, caller);
+    await runtime.start(manifest(`
+      eventOn(event_types.APP_READY, async () => {
+        await setChatMessages([{ message_id: 0, message: 'After' }]);
+        await replaceVariables({ phase: 'saved' });
+      });
+    `));
+    runtime.destroy();
+
+    const reloaded = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, caller);
+    await reloaded.start(manifest(`
+      eventOn(event_types.APP_READY, async () => {
+        parent.reloadedState = { messages: await getChatMessages(), variables: await getVariables() };
+      });
+    `));
+
+    expect((window as unknown as { reloadedState?: unknown }).reloadedState).toEqual({
+      messages: [{ message_id: 0, message: 'After' }],
+      variables: { value: { phase: 'saved' } },
+    });
+  });
+
+  it('propagates message-event floor context to getMessageId RPC calls', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const calls: Array<{ currentMessageId?: number }> = [];
+    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, async (input) => {
+      calls.push(input);
+      return input.currentMessageId;
+    });
+    await runtime.start(manifest(`
+      eventOn('synthetic-message-event', async () => { parent.currentFloor = await getMessageId(); });
+      parent.currentFloorPromise = eventEmitAndWait('synthetic-message-event', { message_id: 3 });
+    `));
+    await (window as unknown as { currentFloorPromise: Promise<unknown> }).currentFloorPromise;
+
+    expect((window as unknown as { currentFloor?: number }).currentFloor).toBe(3);
+    expect(calls).toEqual([expect.objectContaining({ currentMessageId: 3 })]);
   });
 
   it('attributes lifecycle registrations and removes direct parent listeners on destroy', async () => {

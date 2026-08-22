@@ -1,4 +1,8 @@
-import type { TrustedRuntimeScript, TrustedScriptManifest } from '@tavernnext/extension-runtime';
+import {
+  TAVERN_HELPER_BRIDGED_METHODS,
+  type TrustedRuntimeScript,
+  type TrustedScriptManifest,
+} from '@tavernnext/extension-runtime';
 
 export interface ScriptRuntimeDiagnostic { scriptId: string; scriptName: string; message: string }
 export type RuntimeWindow = Window & typeof globalThis & Record<string, unknown>;
@@ -16,11 +20,16 @@ export class ScriptCompatibilityEnvironment {
   private scripts = new Map<string, TrustedRuntimeScript>();
   private activeScriptId = '';
   private activeSourceId = '';
+  private currentMessageId?: number;
   private parentListeners: ParentListenerRecord[] = [];
   private restoreParentTargets: Array<() => void> = [];
   private sourceOwners = new Map<string, Set<string>>();
 
-  constructor(private readonly document: Document, private readonly onDiagnostic: (value: ScriptRuntimeDiagnostic) => void) {}
+  constructor(
+    private readonly document: Document,
+    private readonly onDiagnostic: (value: ScriptRuntimeDiagnostic) => void,
+    private readonly callApi: (scriptId: string, method: string, args: unknown[]) => Promise<unknown>,
+  ) {}
 
   configure(scripts: TrustedRuntimeScript[]): void {
     this.scripts = new Map(scripts.map((script) => [script.id, script]));
@@ -37,6 +46,7 @@ export class ScriptCompatibilityEnvironment {
   }
   deactivate(): void { this.activeScriptId = ''; this.activeSourceId = ''; }
   isDisabled(scriptId: string): boolean { return this.disabledScripts.has(scriptId); }
+  getCurrentMessageId(): number | undefined { return this.currentMessageId; }
 
   disable(scriptId: string, cause: unknown): void {
     if (this.disabledScripts.has(scriptId)) return;
@@ -127,12 +137,16 @@ export class ScriptCompatibilityEnvironment {
 
   async emit(event: string, ...args: unknown[]): Promise<boolean> {
     let ok = true;
+    const priorMessageId = this.currentMessageId;
+    const context = typeof args[0] === 'object' && args[0] !== null ? args[0] as Record<string, unknown> : undefined;
+    if (Number.isInteger(context?.message_id)) this.currentMessageId = context!.message_id as number;
     for (const listener of [...(this.listeners.get(event) ?? [])]) {
       if (this.isDisabled(listener.scriptId)) continue;
       try { await this.withScript(listener.scriptId, () => listener.callback(...args)); }
       catch (cause) { ok = false; this.disable(listener.scriptId, cause); }
       if (listener.once) this.listeners.get(event)?.delete(listener);
     }
+    this.currentMessageId = priorMessageId;
     return ok;
   }
 
@@ -155,10 +169,15 @@ export class ScriptCompatibilityEnvironment {
     runtimeWindow.getButtonEvent = (first: string, second?: string) => second === undefined ? buttonEvent(this.activeScriptId, first) : buttonEvent(first, second);
     runtimeWindow.event_types = Object.freeze({ APP_READY: 'tavernnext:runtime:start', CHAT_CHANGED: 'tavernnext:conversation:changed', RUNTIME_STOP: 'tavernnext:runtime:stop' });
     const unsupported = (method: PropertyKey) => async () => { throw Object.assign(new Error(`${String(method)} is not supported`), { code: 'not_supported' }); };
-    const api = new Proxy({}, { get: (_target, method) => unsupported(method) });
+    const bridged = new Set<string>(TAVERN_HELPER_BRIDGED_METHODS);
+    const bridge = (method: string) => (...args: unknown[]) => this.callApi(this.activeScriptId, method, args);
+    const api = new Proxy({}, { get: (_target, method) => (
+      typeof method === 'string' && bridged.has(method) ? bridge(method) : unsupported(method)
+    ) });
     runtimeWindow.TavernHelper = api; runtimeWindow.tavernHelper = api;
     runtimeWindow.TavernNext = Object.freeze({ call: (method: string) => unsupported(method)() });
     runtimeWindow.getTavernHelperVersion = () => 'compat-0'; runtimeWindow.getTavernVersion = () => '1.18.0-compat';
+    for (const method of TAVERN_HELPER_BRIDGED_METHODS) runtimeWindow[method] = bridge(method);
     runtimeWindow.addEventListener('error', (event: ErrorEvent) => this.disableAttributed(event.error ?? event.filename ?? new Error(event.message)));
     runtimeWindow.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => this.disableAttributed(event.reason));
     if (this.document.defaultView !== null) this.patchParentEventTargets(this.document.defaultView);
@@ -176,5 +195,6 @@ export class ScriptCompatibilityEnvironment {
     for (const restore of this.restoreParentTargets.reverse()) restore();
     this.restoreParentTargets = [];
     this.disabledScripts.clear(); this.scripts.clear(); this.sourceOwners.clear(); this.deactivate();
+    this.currentMessageId = undefined;
   }
 }

@@ -88,18 +88,25 @@ function urlsIn(text: string): string[] {
   return matches;
 }
 
+export function extensionExecutableDigest(
+  repositories: Repositories,
+  ownerKind: ExtensionOwnerKind,
+  ownerId: string,
+): string {
+  const rows = repositories.extensionAssets.listByOwner(ownerKind, ownerId);
+  const remote = new Map(repositories.extensionRemoteResources.listByOwner(ownerKind, ownerId).map((item) => [item.url, item.sha256]));
+  const projection = rows.filter((asset) => asset.kind === 'tavern_helper').sort((a, b) => a.ordinal - b.ordinal).map((asset) => ({
+    sourceKey: asset.sourceKey, ordinal: asset.ordinal, enabled: asset.enabled, node: executableNode(asset.payload),
+  }));
+  const entries = [...new Set(rows.flatMap((asset) => executableSources(asset).flatMap(urlsIn)))].sort(compare)
+    .map((url) => ({ url, sha256: remote.get(url) ?? null }));
+  return createHash('sha256').update(JSON.stringify(canonicalizeForDigest({ projection, entries }))).digest('hex');
+}
+
 export function createExtensionTrustService(repositories: Repositories, fetchRemote: ExtensionRemoteFetcher) {
   const assets = (ownerKind: ExtensionOwnerKind, ownerId: string) => repositories.extensionAssets.listByOwner(ownerKind, ownerId);
   const discoveredUrls = (rows: ExtensionAsset[]) => [...new Set(rows.flatMap((asset) => executableSources(asset).flatMap(urlsIn)))].sort(compare);
-  const digest = (ownerKind: ExtensionOwnerKind, ownerId: string) => {
-    const rows = assets(ownerKind, ownerId);
-    const remote = new Map(repositories.extensionRemoteResources.listByOwner(ownerKind, ownerId).map((item) => [item.url, item.sha256]));
-    const projection = rows.filter((asset) => asset.kind === 'tavern_helper').sort((a, b) => a.ordinal - b.ordinal).map((asset) => ({
-      sourceKey: asset.sourceKey, ordinal: asset.ordinal, enabled: asset.enabled, node: executableNode(asset.payload),
-    }));
-    const entries = discoveredUrls(rows).map((url) => ({ url, sha256: remote.get(url) ?? null }));
-    return createHash('sha256').update(JSON.stringify(canonicalizeForDigest({ projection, entries }))).digest('hex');
-  };
+  const digest = (ownerKind: ExtensionOwnerKind, ownerId: string) => extensionExecutableDigest(repositories, ownerKind, ownerId);
   const audit = (ownerKind: ExtensionOwnerKind, ownerId: string, event: Parameters<Repositories['extensionAuditEvents']['create']>[0]['event'], detail: Record<string, unknown> = {}) => {
     repositories.extensionAuditEvents.create({ id: randomUUID(), ownerKind, ownerId, event, detail });
   };

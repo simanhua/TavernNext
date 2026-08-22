@@ -1,9 +1,15 @@
-import type { TrustedScriptManifest } from '@tavernnext/extension-runtime';
+import {
+  TAVERN_HELPER_BRIDGED_METHODS,
+  type ExtensionRuntimeRpcRequest,
+  type TrustedScriptManifest,
+} from '@tavernnext/extension-runtime';
 import {
   ScriptCompatibilityEnvironment,
   type RuntimeWindow,
   type ScriptRuntimeDiagnostic,
 } from './ScriptCompatibilityEnvironment.js';
+import { createExtensionRuntimeRpcClient, type RuntimeApiCaller } from './ExtensionRuntimeRpcClient.js';
+export type { RuntimeApiCaller } from './ExtensionRuntimeRpcClient.js';
 
 export type { ScriptRuntimeDiagnostic } from './ScriptCompatibilityEnvironment.js';
 export interface ScriptRuntimeFrame {
@@ -19,9 +25,32 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
   private pendingLoads = new Set<() => void>();
   private readonly environment: ScriptCompatibilityEnvironment;
 
-  constructor(document: Document, private readonly mount: HTMLElement, onDiagnostic: (value: ScriptRuntimeDiagnostic) => void) {
+  constructor(
+    document: Document,
+    private readonly mount: HTMLElement,
+    onDiagnostic: (value: ScriptRuntimeDiagnostic) => void,
+    callApi?: RuntimeApiCaller,
+  ) {
     this.document = document;
-    this.environment = new ScriptCompatibilityEnvironment(document, onDiagnostic);
+    const caller = callApi ?? createExtensionRuntimeRpcClient(fetch, (input) => {
+      this.document.defaultView?.dispatchEvent(new CustomEvent('tavernnext:runtime-mutated', { detail: input }));
+    });
+    this.environment = new ScriptCompatibilityEnvironment(document, onDiagnostic, async (scriptId, method, args) => {
+      const script = this.manifest?.scripts.find((candidate) => candidate.id === scriptId);
+      if (script === undefined || this.manifest === undefined) throw Object.assign(new Error('runtime_not_authorized'), { code: 'runtime_not_authorized' });
+      const value = await caller({
+        conversationId: this.manifest.conversationId,
+        scriptId: script.sourceId,
+        method: method as ExtensionRuntimeRpcRequest['method'],
+        args,
+        ownerKind: script.owner.kind,
+        ownerId: script.owner.id,
+        ownerRevision: script.ownerRevision,
+        bundleDigest: script.bundleDigest,
+        currentMessageId: this.environment.getCurrentMessageId(),
+      });
+      return value;
+    });
   }
   private readonly document: Document;
 
@@ -76,6 +105,7 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
             'eventEmitAndWait', 'eventRemoveListener', 'eventClearEvent', 'eventClearAll', 'getScriptId',
             'getButtonEvent', 'event_types', 'TavernHelper', 'tavernHelper', 'TavernNext',
             'getTavernHelperVersion', 'getTavernVersion',
+            ...TAVERN_HELPER_BRIDGED_METHODS,
           ];
           const values = names.map((name) => name === 'window' || name === 'self' || name === 'globalThis'
             ? runtimeWindow
