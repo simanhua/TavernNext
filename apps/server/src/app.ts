@@ -17,6 +17,7 @@ import { registerGenerationRoutes } from './routes/generations.js';
 import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
 import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
 import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
+import { registerExtensionTrustRoutes } from './routes/extension-trust.js';
 import { registerMessageRoutes } from './routes/messages.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
@@ -36,6 +37,7 @@ import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createChatImportHandler } from './services/chat-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
+import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
 import {
   acquireDatabaseOwnership,
   createPreMigrationBackup,
@@ -73,6 +75,7 @@ export interface CreateAppOptions {
   loggerStream?: { write(message: string): void };
   backupClock?: () => Date;
   migrationRunner?: (database: TavernDatabase) => void;
+  extensionRemoteFetcher?: ExtensionRemoteFetcher;
   databaseOwnershipTimeoutMs?: number;
 }
 
@@ -252,6 +255,14 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     providerClientFactory,
     promptSnapshotService: promptSnapshots,
   });
+  const extensionTrust = createExtensionTrustService(repositories, options.extensionRemoteFetcher ?? (async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('remote_fetch_failed');
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      mediaType: response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream',
+    };
+  }));
 
   if (startup.result === 'read_only_migration_failed') {
     app.addHook('onRequest', async (request, reply) => {
@@ -339,6 +350,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerGlobalGenerationConfigRoutes(app, repositories);
   registerExtensionAssetRoutes(app, database, repositories);
   registerRuntimeStateRoutes(app, database, repositories);
+  registerExtensionTrustRoutes(app, repositories, extensionTrust);
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);

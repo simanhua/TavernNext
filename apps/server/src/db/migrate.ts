@@ -5,7 +5,7 @@ import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
-export const CURRENT_SCHEMA_VERSION = 14;
+export const CURRENT_SCHEMA_VERSION = 15;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -50,6 +50,9 @@ const tables = `
   CREATE TABLE IF NOT EXISTS global_generation_config (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_assets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, kind TEXT NOT NULL, source_key TEXT NOT NULL, ordinal INTEGER NOT NULL, enabled INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL, UNIQUE (scope, scope_id));
+  CREATE TABLE IF NOT EXISTS extension_trust_grants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, UNIQUE (owner_kind, owner_id));
+  CREATE TABLE IF NOT EXISTS extension_remote_resources (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, url TEXT NOT NULL, sha256 TEXT NOT NULL, UNIQUE (owner_kind, owner_id, url));
+  CREATE TABLE IF NOT EXISTS extension_audit_events (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, event TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
@@ -76,6 +79,9 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS extension_assets_owner_kind_id_idx ON extension_assets(owner_kind, owner_id);
   CREATE INDEX IF NOT EXISTS extension_assets_owner_kind_id_kind_ordinal_idx ON extension_assets(owner_kind, owner_id, kind, ordinal);
   CREATE INDEX IF NOT EXISTS extension_states_scope_id_idx ON extension_states(scope, scope_id);
+  CREATE INDEX IF NOT EXISTS extension_trust_grants_owner_idx ON extension_trust_grants(owner_kind, owner_id);
+  CREATE INDEX IF NOT EXISTS extension_remote_resources_owner_idx ON extension_remote_resources(owner_kind, owner_id);
+  CREATE INDEX IF NOT EXISTS extension_audit_events_owner_idx ON extension_audit_events(owner_kind, owner_id);
 `;
 
 function columnNames(database: TavernDatabase, table: string): string[] {

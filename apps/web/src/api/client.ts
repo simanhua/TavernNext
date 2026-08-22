@@ -65,6 +65,22 @@ export interface RuntimeStateView {
   revision: number | null;
   value: Record<string, unknown>;
 }
+export interface ExtensionTrustReviewView {
+  owner: { kind: 'character' | 'preset'; id: string };
+  scripts: Array<{ sourceKey: string; ordinal: number; order: number[]; enabled: boolean; name: string }>;
+  remotes: Array<{
+    url: string;
+    fetched: boolean;
+    fetchStatus: 'not_fetched' | 'fetched' | 'failed';
+    sha256: string | null;
+    mediaType: string | null;
+  }>;
+  bundleDigest: string;
+  trusted: boolean;
+  sameOriginRisk: boolean;
+  dynamicNetworkDisclaimer: string;
+  auditEvents: Array<{ event: string; createdAt: string; detail: Record<string, unknown> }>;
+}
 
 export interface CharacterView extends CharacterSummaryView {
   description: string;
@@ -592,6 +608,18 @@ export const api = {
   ) => request<RuntimeStateView>(
     `/api/runtime-states/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}`,
     { method: 'POST', body: JSON.stringify(input) },
+  ),
+  getExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}`,
+  ),
+  refreshExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}/refresh`, { method: 'POST' },
+  ),
+  grantExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}/grant`, { method: 'POST' },
+  ),
+  revokeExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}`, { method: 'DELETE' },
   ),
   listWorldbooks: () => request<WorldbookSummaryView[]>('/api/worldbooks'),
   getWorldbook: (id: string) => request<WorldbookView>(`/api/worldbooks/${id}`),

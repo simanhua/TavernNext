@@ -70,6 +70,24 @@ export const extensionStates = sqliteTable('extension_states', {
 }, (table) => [
   index('extension_states_scope_id_idx').on(table.scope, table.scopeId),
 ]);
+export const extensionTrustGrants = sqliteTable('extension_trust_grants', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+}, (table) => [index('extension_trust_grants_owner_idx').on(table.ownerKind, table.ownerId)]);
+export const extensionRemoteResources = sqliteTable('extension_remote_resources', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+  url: text('url').notNull(),
+  sha256: text('sha256').notNull(),
+}, (table) => [index('extension_remote_resources_owner_idx').on(table.ownerKind, table.ownerId)]);
+export const extensionAuditEvents = sqliteTable('extension_audit_events', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+  event: text('event').notNull(),
+}, (table) => [index('extension_audit_events_owner_idx').on(table.ownerKind, table.ownerId)]);
 export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),

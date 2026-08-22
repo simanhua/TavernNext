@@ -7,6 +7,9 @@ import {
   ConversationSchema,
   ExtensionAssetSchema,
   ExtensionStateSchema,
+  ExtensionTrustGrantSchema,
+  ExtensionRemoteResourceSchema,
+  ExtensionAuditEventSchema,
   GenerationSnapshotSchema,
   GLOBAL_GENERATION_CONFIG_ID,
   GlobalGenerationConfigSchema,
@@ -25,6 +28,9 @@ import {
   type ExtensionOwnerKind,
   type ExtensionState,
   type ExtensionStateScope,
+  type ExtensionTrustGrant,
+  type ExtensionRemoteResource,
+  type ExtensionAuditEvent,
   type GenerationSnapshot,
   type GlobalGenerationConfig,
   type GlobalGenerationSelection,
@@ -44,6 +50,9 @@ import {
   conversations,
   extensionAssets,
   extensionStates,
+  extensionTrustGrants,
+  extensionRemoteResources,
+  extensionAuditEvents,
   generationSnapshots,
   globalGenerationConfigurations,
   importArtifacts,
@@ -171,6 +180,19 @@ export interface ExtensionStateRepository extends Repository<ExtensionState> {
   getByScope(scope: ExtensionStateScope, scopeId: string): ExtensionState | undefined;
   deleteByScope(scope: ExtensionStateScope, scopeId: string): number;
   deleteScriptStatesByOwner(ownerKind: 'character' | 'preset', ownerId: string): number;
+}
+
+export interface ExtensionTrustGrantRepository extends Repository<ExtensionTrustGrant> {
+  getByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionTrustGrant | undefined;
+  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
+}
+export interface ExtensionRemoteResourceRepository extends Repository<ExtensionRemoteResource> {
+  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionRemoteResource[];
+  getByOwnerUrl(ownerKind: ExtensionOwnerKind, ownerId: string, url: string): ExtensionRemoteResource | undefined;
+  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
+}
+export interface ExtensionAuditEventRepository extends Repository<ExtensionAuditEvent> {
+  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionAuditEvent[];
 }
 
 export interface MessageRepository extends Repository<Message> {
@@ -465,6 +487,74 @@ function createExtensionStateRepository(database: TavernDatabase): ExtensionStat
   };
 }
 
+function createExtensionTrustGrantRepository(database: TavernDatabase): ExtensionTrustGrantRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionTrustGrants), schema: ExtensionTrustGrantSchema,
+    toRow: (value: ExtensionTrustGrant) => ({ ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId }),
+  });
+  return {
+    ...base,
+    getByOwner(ownerKind, ownerId) {
+      const row = database.orm.select({ payload: extensionTrustGrants.payload }).from(extensionTrustGrants)
+        .where(and(eq(extensionTrustGrants.ownerKind, ownerKind), eq(extensionTrustGrants.ownerId, ownerId))).get();
+      return row === undefined ? undefined : ExtensionTrustGrantSchema.parse(row.payload);
+    },
+    deleteByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_trust_grants WHERE owner_kind = ? AND owner_id = ?',
+      ).run(ownerKind, ownerId).changes;
+      database.persist(); return changes;
+    },
+  };
+}
+
+function createExtensionRemoteResourceRepository(database: TavernDatabase): ExtensionRemoteResourceRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionRemoteResources), schema: ExtensionRemoteResourceSchema,
+    toRow: (value: ExtensionRemoteResource) => ({
+      ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId, url: value.url, sha256: value.sha256,
+    }),
+  });
+  return {
+    ...base,
+    listByOwner(ownerKind, ownerId) {
+      return database.orm.select({ payload: extensionRemoteResources.payload }).from(extensionRemoteResources)
+        .where(and(eq(extensionRemoteResources.ownerKind, ownerKind), eq(extensionRemoteResources.ownerId, ownerId)))
+        .orderBy(asc(extensionRemoteResources.url)).all()
+        .map((row) => ExtensionRemoteResourceSchema.parse(row.payload));
+    },
+    getByOwnerUrl(ownerKind, ownerId, url) {
+      const row = database.orm.select({ payload: extensionRemoteResources.payload }).from(extensionRemoteResources)
+        .where(and(eq(extensionRemoteResources.ownerKind, ownerKind), eq(extensionRemoteResources.ownerId, ownerId), eq(extensionRemoteResources.url, url))).get();
+      return row === undefined ? undefined : ExtensionRemoteResourceSchema.parse(row.payload);
+    },
+    deleteByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_remote_resources WHERE owner_kind = ? AND owner_id = ?',
+      ).run(ownerKind, ownerId).changes;
+      database.persist(); return changes;
+    },
+  };
+}
+
+function createExtensionAuditEventRepository(database: TavernDatabase): ExtensionAuditEventRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionAuditEvents), schema: ExtensionAuditEventSchema,
+    toRow: (value: ExtensionAuditEvent) => ({
+      ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId, event: value.event,
+    }),
+  });
+  return {
+    ...base,
+    listByOwner(ownerKind, ownerId) {
+      return database.orm.select({ payload: extensionAuditEvents.payload }).from(extensionAuditEvents)
+        .where(and(eq(extensionAuditEvents.ownerKind, ownerKind), eq(extensionAuditEvents.ownerId, ownerId)))
+        .orderBy(asc(extensionAuditEvents.createdAt), asc(extensionAuditEvents.id)).limit(2048).all()
+        .map((row) => ExtensionAuditEventSchema.parse(row.payload));
+    },
+  };
+}
+
 function createWorldbookEntryRepository(database: TavernDatabase): WorldbookEntryRepository {
   const base = createRepository(database, {
     table: entityTable(worldbookEntries),
@@ -737,6 +827,9 @@ export interface Repositories {
   avatarAssets: AvatarAssetRepository;
   extensionAssets: ExtensionAssetRepository;
   extensionStates: ExtensionStateRepository;
+  extensionTrustGrants: ExtensionTrustGrantRepository;
+  extensionRemoteResources: ExtensionRemoteResourceRepository;
+  extensionAuditEvents: ExtensionAuditEventRepository;
 }
 
 export interface CreateRepositoriesOptions {
@@ -868,5 +961,8 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     avatarAssets: createAvatarAssetRepository(database),
     extensionAssets: createExtensionAssetRepository(database),
     extensionStates: createExtensionStateRepository(database),
+    extensionTrustGrants: createExtensionTrustGrantRepository(database),
+    extensionRemoteResources: createExtensionRemoteResourceRepository(database),
+    extensionAuditEvents: createExtensionAuditEventRepository(database),
   };
 }

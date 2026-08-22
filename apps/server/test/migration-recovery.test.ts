@@ -7,7 +7,7 @@ import { Writable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
-import { migrateDatabase } from '../src/db/migrate.js';
+import { CURRENT_SCHEMA_VERSION, migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import {
   BACKUP_METADATA_FILE,
@@ -310,7 +310,7 @@ describe('migration backup and recovery', () => {
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
-          schemaVersion: 14,
+          schemaVersion: CURRENT_SCHEMA_VERSION,
           checkpoint: 'wal_checkpointed',
           database: {
             bytes: checkpointedDatabase.byteLength,
@@ -351,7 +351,7 @@ describe('migration backup and recovery', () => {
     expect(newest).toMatchObject({
       formatVersion: 1,
       kind: 'pre_migration',
-      schemaVersion: 14,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       database: {
         file: basename(config.databasePath),
       },

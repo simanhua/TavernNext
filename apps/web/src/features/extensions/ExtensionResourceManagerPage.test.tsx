@@ -71,6 +71,11 @@ const server = setupServer(
     runtimeRevision += 1; runtimeValue = body.value;
     return HttpResponse.json({ scope: params.scope, scopeId: params.scopeId, revision: runtimeRevision, value: runtimeValue });
   }),
+  http.get('/api/extension-trust/:kind/:id', ({ params }) => HttpResponse.json({
+    owner: { kind: params.kind, id: params.id }, scripts: [], remotes: [],
+    bundleDigest: 'b'.repeat(64), trusted: false, sameOriginRisk: true,
+    dynamicNetworkDisclaimer: 'Trusted scripts may dynamically contact other origins.', auditEvents: [],
+  })),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
