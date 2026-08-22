@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import { RelationshipLimitError, type Repositories } from '../db/repositories.js';
 import type { GenerationService } from '../services/generation-service.js';
+import { createMvuRuntimeService } from '../services/mvu-runtime-service.js';
 import { registerCrudRoutes } from './crud.js';
 
 export function registerConversationRoutes(
@@ -10,12 +11,17 @@ export function registerConversationRoutes(
   repositories: Repositories,
   generations: GenerationService,
 ): void {
+  const mvu = createMvuRuntimeService(repositories);
   registerCrudRoutes(app, '/api/conversations', repositories.conversations, (conversation) => {
     const { compatibility: ignoredCompatibility, ...safe } = conversation;
     void ignoredCompatibility;
     return safe;
   }, (conversation) => generations.isConversationActive(conversation.id) ? 'generation_active' : undefined,
-  (input) => repositories.conversations.createWithGreeting(input),
+  (input) => database.transaction(() => {
+    const conversation = repositories.conversations.createWithGreeting(input);
+    mvu.initializeGreetingVariants(conversation.id);
+    return conversation;
+  }),
   (id, revision) => database.transaction(() => {
     const variants = repositories.messageVariants.listByConversationId(id);
     const result = repositories.conversations.delete(id, revision);

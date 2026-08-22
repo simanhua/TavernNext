@@ -18,6 +18,7 @@ import {
   type PromptSnapshotService,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
+import { createMvuRuntimeService } from './mvu-runtime-service.js';
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
@@ -36,6 +37,7 @@ export interface GenerationInput {
   snapshotId?: string;
   seed?: string | number;
   messageIndex?: number;
+  reuseLastUser?: boolean;
 }
 
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
@@ -69,6 +71,7 @@ type PreparedGeneration =
 
 export interface GenerationService {
   start(input: GenerationInput): Promise<StartGenerationResult>;
+  triggerLastUser(conversationId: string): Promise<StartGenerationResult>;
   cancel(generationId: string): boolean;
   isConversationActive(conversationId: string): boolean;
 }
@@ -118,6 +121,7 @@ export function createGenerationService(options: {
     repositories,
     tokenizerRuntime: options.tokenizerRuntime ?? defaultTokenizerRuntime(),
   });
+  const mvu = createMvuRuntimeService(repositories);
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
@@ -148,6 +152,7 @@ export function createGenerationService(options: {
       if (siblingMode) variant = undefined;
     }
     let content = mode === 'continue' ? variant?.content ?? '' : '';
+    const initialContent = content;
     let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
     let hasDelta = false;
     let hasReasoningDelta = false;
@@ -298,6 +303,13 @@ export function createGenerationService(options: {
         database.transaction(() => {
           if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
           if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
+          if (outcome === 'completed' && variant !== undefined && hasDelta) {
+            mvu.commitCompletedVariant(
+              prepared.conversationId,
+              variant.id,
+              mode === 'continue' ? content.slice(initialContent.length) : content,
+            );
+          }
           if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
         });
@@ -356,7 +368,7 @@ export function createGenerationService(options: {
     };
   }
 
-  return {
+  const service: GenerationService = {
     async start(input) {
       if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
         return { ok: false, reason: 'invalid_user_text' };
@@ -402,6 +414,17 @@ export function createGenerationService(options: {
         throw error;
       }
     },
+    async triggerLastUser(conversationId) {
+      if (activeByConversation.has(conversationId)) return { ok: false, reason: 'generation_active' };
+      const conversation = repositories.conversations.get(conversationId);
+      if (conversation === undefined) return { ok: false, reason: 'not_found' };
+      const last = repositories.messages.listByConversationId(conversationId).at(-1);
+      if (last?.role !== 'user' || last.content.trim() === '') return { ok: false, reason: 'invalid_user_text' };
+      return service.start({
+        conversationId, conversationRevision: conversation.revision,
+        mode: 'normal', userText: last.content, reuseLastUser: true,
+      });
+    },
     cancel(generationId) {
       const active = activeById.get(generationId);
       if (active === undefined) return false;
@@ -413,4 +436,5 @@ export function createGenerationService(options: {
       return activeByConversation.has(conversationId);
     },
   };
+  return service;
 }

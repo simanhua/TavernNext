@@ -1,16 +1,33 @@
 import type { InteractiveMessageContext } from './interactive-frame-document.js';
 
-/** Read-only capability policy for model-visible interactive message frontends. */
-export async function callReadOnlyFrontendApi(
+/** Variant-bound capability policy for accepted interactive message frontends. */
+export async function callInteractiveFrontendApi(
   context: InteractiveMessageContext,
   method: string,
+  args: unknown[] = [],
   fetcher: typeof fetch = fetch,
 ): Promise<unknown> {
   if (method === 'getMessageId') return context.messageId;
   if (method === 'getVariables') {
-    const response = await fetcher(`/api/runtime-states/message-variant/${encodeURIComponent(context.variantId)}`);
+    const options = typeof args[0] === 'object' && args[0] !== null && !Array.isArray(args[0])
+      ? args[0] as Record<string, unknown>
+      : undefined;
+    let scope = 'message-variant';
+    let scopeId = context.variantId;
+    if (options?.type === 'character') {
+      const detailResponse = await fetcher(`/api/conversations/${encodeURIComponent(context.conversationId)}/messages`);
+      if (!detailResponse.ok) throw new Error((await detailResponse.json() as { error?: string }).error ?? `http_${detailResponse.status}`);
+      const detail = await detailResponse.json() as { conversation?: { characterId?: unknown } };
+      if (typeof detail.conversation?.characterId !== 'string') throw new Error('scope_owner_not_found');
+      scope = 'character';
+      scopeId = detail.conversation.characterId;
+    } else if (options?.type !== undefined && options.type !== 'message') {
+      throw Object.assign(new Error('not_supported'), { code: 'not_supported' });
+    }
+    const response = await fetcher(`/api/runtime-states/${scope}/${encodeURIComponent(scopeId)}`);
     if (!response.ok) throw new Error((await response.json() as { error?: string }).error ?? `http_${response.status}`);
-    return response.json();
+    const payload = await response.json() as { value?: unknown };
+    return payload.value ?? {};
   }
   if (method === 'getChatMessages' || method === 'getLastMessageId') {
     const response = await fetcher(`/api/conversations/${encodeURIComponent(context.conversationId)}/messages`);
@@ -24,6 +41,17 @@ export async function callReadOnlyFrontendApi(
       message: message.variants?.find((variant) => variant.id === message.activeVariantId)?.content ?? message.content,
       active_variant_id: message.activeVariantId ?? null,
     }));
+  }
+  if (method === 'createChatMessages' || method === 'triggerSlash') {
+    const response = await fetcher(`/api/conversations/${encodeURIComponent(context.conversationId)}/interactive-actions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceVariantId: context.variantId, method, args }),
+    });
+    const payload = await response.json() as { value?: unknown; error?: string };
+    if (!response.ok) throw Object.assign(new Error(payload.error ?? `http_${response.status}`), {
+      code: payload.error ?? `http_${response.status}`,
+    });
+    return payload.value;
   }
   throw Object.assign(new Error('not_supported'), { code: 'not_supported' });
 }

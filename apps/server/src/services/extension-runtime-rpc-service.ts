@@ -158,12 +158,14 @@ export function createExtensionRuntimeRpcService(
           const prompt = input.method === 'triggerSlash' && supplied?.startsWith('/trigger')
             ? supplied.slice('/trigger'.length).trim()
             : supplied;
-          if (prompt === undefined || prompt === '') throw new RpcError('invalid_request', 400);
+          if (prompt === undefined) throw new RpcError('invalid_request', 400);
           const conversation = repositories.conversations.get(conversationId);
           if (conversation === undefined) throw new RpcError('not_found', 404);
-          const started = await generations.start({
-            conversationId, conversationRevision: conversation.revision, mode: 'normal', userText: prompt,
-          });
+          const started = input.method === 'triggerSlash' && prompt === ''
+            ? await generations.triggerLastUser(conversationId)
+            : await generations.start({
+              conversationId, conversationRevision: conversation.revision, mode: 'normal', userText: prompt,
+            });
           if (!started.ok) throw new RpcError(started.reason, started.reason === 'generation_active' ? 409 : 422);
           let output = '';
           for await (const event of started.events) {

@@ -21,6 +21,7 @@ import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
 import { registerExtensionTrustRoutes } from './routes/extension-trust.js';
 import { registerExtensionRuntimeRpcRoutes } from './routes/extension-runtime-rpc.js';
 import { registerMessageRoutes } from './routes/messages.js';
+import { registerInteractiveActionRoutes } from './routes/interactive-actions.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
@@ -358,6 +359,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerExtensionRuntimeRpcRoutes(app, database, repositories, generations, extensionTrust);
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
+  registerInteractiveActionRoutes(app, database, repositories, generations);
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);

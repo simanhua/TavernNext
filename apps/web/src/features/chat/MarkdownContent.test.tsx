@@ -3,7 +3,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownContent } from './MarkdownContent.js';
-import { callReadOnlyFrontendApi } from './InteractiveFrontendApi.js';
+import { callInteractiveFrontendApi } from './InteractiveFrontendApi.js';
 
 afterEach(cleanup);
 
@@ -45,6 +45,7 @@ describe('MarkdownContent', () => {
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
     expect(iframe?.srcdoc).toContain('id="chat"');
     expect(iframe?.srcdoc).toContain('mesid="4"');
+    expect(iframe?.srcdoc).toContain('window.getCurrentMessageId');
     expect(iframe?.srcdoc).toContain('data-variant-id="variant-1"');
     expect(iframe?.srcdoc).toContain('class="mes_reasoning"');
     expect(iframe?.srcdoc).toContain('<button>Act</button>');
@@ -70,14 +71,70 @@ describe('MarkdownContent', () => {
     expect(container.querySelector('iframe')).toBeNull();
   });
 
+  it('accepts the real card no-language status fence only when display projection supplied it', () => {
+    const source = '<body><script>document.body.dataset.ready = "true"</script></body>';
+    const content = `\`\`\`\n${source}\n\`\`\``;
+    const interactive = {
+      conversationId: 'conversation-1', messageId: 2, variantId: 'variant-1', hasReasoning: false,
+    };
+    const { container, rerender } = render(<MarkdownContent content={content} interactive={interactive} />);
+    expect(container.querySelector('iframe')?.srcdoc).toContain('dataset.ready');
+
+    rerender(<MarkdownContent content={content} interactive={interactive} inertInteractiveHtml={[source]} />);
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('pre code')?.textContent).toContain('<body>');
+  });
+
   it('limits opaque iframe RPC to variant-bound read APIs with stable errors', async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({
       scope: 'message-variant', scopeId: 'variant-1', revision: 2, value: { hp: 9 },
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const context = { conversationId: 'conversation-1', messageId: 4, variantId: 'variant-1', hasReasoning: false };
 
-    await expect(callReadOnlyFrontendApi(context, 'getVariables', fetcher)).resolves.toMatchObject({ value: { hp: 9 } });
+    await expect(callInteractiveFrontendApi(context, 'getVariables', [], fetcher)).resolves.toEqual({ hp: 9 });
     expect(fetcher).toHaveBeenCalledWith('/api/runtime-states/message-variant/variant-1');
-    await expect(callReadOnlyFrontendApi(context, 'replaceVariables', fetcher)).rejects.toMatchObject({ code: 'not_supported' });
+    await expect(callInteractiveFrontendApi(context, 'replaceVariables', [], fetcher)).rejects.toMatchObject({ code: 'not_supported' });
+  });
+
+  it('exposes only variant-bound message creation and trigger actions to accepted frontends', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ value: 'ok' }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+    const context = { conversationId: 'conversation-1', messageId: 4, variantId: 'variant-1', hasReasoning: false };
+
+    await expect(callInteractiveFrontendApi(context, 'createChatMessages', [[{
+      role: 'user', message: 'Custom start payload',
+    }]], fetcher)).resolves.toBe('ok');
+    await expect(callInteractiveFrontendApi(context, 'triggerSlash', ['/trigger'], fetcher)).resolves.toBe('ok');
+
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/conversations/conversation-1/interactive-actions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sourceVariantId: 'variant-1', method: 'createChatMessages',
+        args: [[{ role: 'user', message: 'Custom start payload' }]],
+      }),
+    });
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/conversations/conversation-1/interactive-actions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceVariantId: 'variant-1', method: 'triggerSlash', args: ['/trigger'] }),
+    });
+  });
+
+  it('resolves character-scoped variables requested by the real custom-start frontend', async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/messages')) return new Response(JSON.stringify({
+        conversation: { characterId: 'character-1' }, messages: [],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({
+        scope: 'character', scopeId: 'character-1', revision: 1, value: { start_presets: { presets: [] } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const context = { conversationId: 'conversation-1', messageId: 4, variantId: 'variant-1', hasReasoning: false };
+
+    await expect(callInteractiveFrontendApi(context, 'getVariables', [{ type: 'character' }], fetcher))
+      .resolves.toEqual({ start_presets: { presets: [] } });
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/conversations/conversation-1/messages');
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/runtime-states/character/character-1');
   });
 });

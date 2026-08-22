@@ -80,6 +80,8 @@ export interface PromptSnapshotInput {
   targetMessageId?: string;
   targetVariantId?: string;
   continuationByteBoundary?: number;
+  /** Internal /trigger path: compile the already-persisted final user message without duplicating it. */
+  reuseLastUser?: boolean;
 }
 
 export interface RevisionRef {
@@ -127,6 +129,7 @@ export interface SnapshotInputPayload {
   targetMessageId: string | null;
   targetVariantId: string | null;
   continuationByteBoundary: number | null;
+  reuseLastUser?: boolean;
 }
 
 export interface PromptSnapshotPayload {
@@ -581,6 +584,12 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
 
   const history = historyRows(repositories, conversation.id);
   compatibilityWarnings.push(...history.compatibilityWarnings);
+  if (input.reuseLastUser === true) {
+    const last = history.messages.at(-1);
+    if (input.mode !== 'normal' || last?.role !== 'user' || last.content !== input.userText) {
+      throw new PromptSnapshotError('invalid_user_text');
+    }
+  }
   const targetMessage = input.mode === 'normal' ? undefined : history.messages.at(-1);
   if (input.mode !== 'normal' && (targetMessage === undefined || targetMessage.role !== 'assistant'
     || targetMessage.activeVariantId === null)) throw new PromptSnapshotError('invalid_target');
@@ -590,7 +599,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   if (input.mode !== 'normal' && (targetVariant === undefined || targetVariant.messageId !== targetMessage?.id)) {
     throw new PromptSnapshotError('invalid_target');
   }
-  const requiredMessageHeadroom = input.mode === 'normal' ? 2 : 0;
+  const requiredMessageHeadroom = input.mode === 'normal' ? input.reuseLastUser === true ? 1 : 2 : 0;
   const requiredVariantHeadroom = input.mode === 'continue' ? 0 : 1;
   if (history.messages.length + requiredMessageHeadroom > MAX_MESSAGES_PER_CONVERSATION
     || history.variants.size + requiredVariantHeadroom > MAX_VARIANTS_PER_RELATION) {
@@ -647,6 +656,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     targetMessageId: targetMessage?.id ?? null,
     targetVariantId: targetVariant?.id ?? null,
     continuationByteBoundary,
+    ...(input.reuseLastUser === true ? { reuseLastUser: true } : {}),
   };
   const globalWorldbooks = globalBooks.map(ref);
   const manifest: PromptEntityRevisionManifest = {
@@ -1040,7 +1050,7 @@ async function compileAggregate(
     throw new PromptSnapshotError('tokenizer_error');
   }
   if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
-  const rawHistory = aggregate.input.mode === 'normal'
+  const rawHistory = aggregate.input.mode === 'normal' && aggregate.input.reuseLastUser !== true
     ? [...aggregate.history, {
       id: `proposed:${canonicalHash(aggregate.input)}`,
       role: 'user',
@@ -1300,7 +1310,9 @@ function isInput(value: unknown): value is SnapshotInputPayload {
     || !hasOnlyKeys(value, [
       'conversationId', 'conversationRevision', 'mode', 'userText', 'seed', 'messageIndex',
       'targetMessageId', 'targetVariantId', 'continuationByteBoundary',
+      'reuseLastUser',
     ])) return false;
+  if (value.reuseLastUser !== undefined && typeof value.reuseLastUser !== 'boolean') return false;
   if (value.mode === 'normal') {
     return typeof value.userText === 'string' && value.userText.trim() !== ''
       && value.targetMessageId === null && value.targetVariantId === null
@@ -1717,6 +1729,7 @@ function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapsh
     || (input.targetVariantId !== undefined && payload.input.targetVariantId !== input.targetVariantId)
     || (input.continuationByteBoundary !== undefined
       && payload.input.continuationByteBoundary !== input.continuationByteBoundary)
+    || (payload.input.reuseLastUser ?? false) !== (input.reuseLastUser ?? false)
     || (input.seed !== undefined && !sameCanonical(payload.input.seed, input.seed))
     || (input.messageIndex !== undefined && payload.input.messageIndex !== input.messageIndex)) {
     throw new PromptSnapshotError('snapshot_mismatch');
@@ -1731,13 +1744,15 @@ function acceptUserTurn(
   const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
   if (provider === undefined) stale();
   if (payload.input.mode === 'normal') {
-    repositories.messages.create({
-      id: randomUUID(),
-      conversationId: payload.input.conversationId,
-      role: 'user',
-      content: payload.input.userText!,
-      activeVariantId: null,
-    });
+    if (payload.input.reuseLastUser !== true) {
+      repositories.messages.create({
+        id: randomUUID(),
+        conversationId: payload.input.conversationId,
+        role: 'user',
+        content: payload.input.userText!,
+        activeVariantId: null,
+      });
+    }
     const revision = repositories.conversations.update(
       payload.input.conversationId,
       payload.input.conversationRevision,

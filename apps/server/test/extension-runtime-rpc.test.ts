@@ -170,11 +170,15 @@ describe('trusted TavernHelper runtime RPC', () => {
 
     const generated = await call('generateRaw', ['Nested global-provider request']);
     const triggered = await call('triggerSlash', ['/trigger Nested slash request']);
+    expect((await call('createChatMessages', [[{ role: 'user', message: 'Custom-start selection' }]])).statusCode).toBe(200);
+    const triggeredExisting = await call('triggerSlash', ['/trigger']);
 
     expect(generated.json()).toEqual({ value: 'Nested answer' });
     expect(generated.statusCode).toBe(200);
     expect(triggered.statusCode).toBe(200);
-    expect(provider.chat).toHaveLength(2);
+    expect(triggeredExisting.statusCode).toBe(200);
+    expect(triggeredExisting.json()).toEqual({ value: 'Nested answer' });
+    expect(provider.chat).toHaveLength(3);
     expect(JSON.stringify(generated.json())).not.toContain('TOP-SECRET');
   });
 });

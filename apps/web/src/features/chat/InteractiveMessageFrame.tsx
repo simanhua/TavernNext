@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { callReadOnlyFrontendApi } from './InteractiveFrontendApi.js';
+import { callInteractiveFrontendApi } from './InteractiveFrontendApi.js';
 import {
   buildInteractiveFrameDocument,
   type InteractiveMessageContext,
@@ -32,8 +32,13 @@ export function InteractiveMessageFrame({ html, context }: { html: string; conte
           const requestId = event.data?.requestId;
           const method = event.data?.method;
           if (typeof requestId !== 'string' || typeof method !== 'string') return;
-          void callReadOnlyFrontendApi(context, method).then(
-            (value) => channel.port1.postMessage({ requestId, ok: true, value }),
+          void callInteractiveFrontendApi(context, method, Array.isArray(event.data?.args) ? event.data.args : []).then(
+            (value) => {
+              channel.port1.postMessage({ requestId, ok: true, value });
+              if (method === 'createChatMessages' || method === 'triggerSlash') {
+                window.dispatchEvent(new CustomEvent('tavernnext:runtime-mutated', { detail: { method } }));
+              }
+            },
             (cause: unknown) => channel.port1.postMessage({
               requestId, ok: false,
               error: cause instanceof Error && 'code' in cause ? String(cause.code) : cause instanceof Error ? cause.message : 'runtime_error',

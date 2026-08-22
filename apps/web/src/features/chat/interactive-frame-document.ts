@@ -40,7 +40,12 @@ export function buildInteractiveFrameDocument(source: string, context: Interacti
       }, { once: true });
       window.TavernNextContext = Object.freeze(context);
       window.getMessageId = () => context.messageId;
-      window.getVariables = () => call('getVariables');
+      window.getCurrentMessageId = () => context.messageId;
+      window.getVariables = (...args) => call('getVariables', args);
+      window.getChatMessages = (...args) => call('getChatMessages', args);
+      window.getLastMessageId = (...args) => call('getLastMessageId', args);
+      window.createChatMessages = (...args) => call('createChatMessages', args);
+      window.triggerSlash = (...args) => call('triggerSlash', args);
       window.TavernHelper = new Proxy({}, { get: (_, method) => (...args) => call(String(method), args) });
       window.tavernHelper = window.TavernHelper;
     })();

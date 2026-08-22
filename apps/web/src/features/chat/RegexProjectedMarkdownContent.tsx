@@ -6,7 +6,7 @@ import {
   type RegexWorkerFactory,
 } from '@tavernnext/extension-runtime';
 import { createBrowserRegexWorker } from '@tavernnext/extension-runtime/browser';
-import { MarkdownContent } from './MarkdownContent.js';
+import { interactiveHtmlFences, MarkdownContent } from './MarkdownContent.js';
 import type { ActiveRegexScripts } from './useActiveRegexScripts.js';
 import type { InteractiveMessageContext } from './InteractiveMessageFrame.js';
 
@@ -77,8 +77,7 @@ export function RegexProjectedMarkdownContent({
   }, [content, createWorker, depth, isEdit, limits, macroKey, passthrough, projectionKey, role, scriptsKey]);
 
   const projected = passthrough ? content : projection.key === projectionKey ? projection.value : '';
-  const rawHtmlFences = [...content.matchAll(/```html\s*\r?\n([\s\S]*?)```/gi)]
-    .map((match) => String(match[1] ?? '').replace(/\r?\n$/, ''));
+  const rawHtmlFences = interactiveHtmlFences(content);
 
   return <>
     <MarkdownContent

@@ -118,6 +118,14 @@ describe('RegexProjectedMarkdownContent', () => {
     expect(container.querySelector('iframe')).toBeNull();
 
     rerender(<RegexProjectedMarkdownContent
+      content={'marker\n~~~~\n<body>raw tilde html</body>\n~~~~'} role="assistant" depth={0}
+      scripts={{ preset: [rule({ findRegex: '/marker/g', replaceString: 'changed' })], character: [] }}
+      createWorker={factory} interactive={context}
+    />);
+    await waitFor(() => expect(container.textContent).toContain('raw tilde html'));
+    expect(container.querySelector('iframe')).toBeNull();
+
+    rerender(<RegexProjectedMarkdownContent
       content="<panel>" role="assistant" depth={0}
       scripts={{ preset: [rule({ replaceString: '```html\n<body>projected frontend</body>\n```' })], character: [] }}
       createWorker={factory} interactive={context}
