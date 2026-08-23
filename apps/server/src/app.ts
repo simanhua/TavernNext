@@ -14,7 +14,14 @@ import { registerAvatarRoutes } from './routes/avatars.js';
 import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
+import { registerGenerationCandidateRoutes } from './routes/generation-candidates.js';
+import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
+import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
+import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
+import { registerExtensionTrustRoutes } from './routes/extension-trust.js';
+import { registerExtensionRuntimeRpcRoutes } from './routes/extension-runtime-rpc.js';
 import { registerMessageRoutes } from './routes/messages.js';
+import { registerInteractiveActionRoutes } from './routes/interactive-actions.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
@@ -28,11 +35,13 @@ import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
+import { createGenerationCandidateService } from './services/generation-candidate-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createChatImportHandler } from './services/chat-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
+import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
 import {
   acquireDatabaseOwnership,
   createPreMigrationBackup,
@@ -70,6 +79,7 @@ export interface CreateAppOptions {
   loggerStream?: { write(message: string): void };
   backupClock?: () => Date;
   migrationRunner?: (database: TavernDatabase) => void;
+  extensionRemoteFetcher?: ExtensionRemoteFetcher;
   databaseOwnershipTimeoutMs?: number;
 }
 
@@ -81,11 +91,13 @@ function startupDatabase(config: ServerConfig, options: CreateAppOptions): {
   database: TavernDatabase;
   result: StartupMigrationResult;
   ownership?: DatabaseOwnership;
+  backupPath?: string;
 } {
   const ownership = options.database === undefined
     ? acquireDatabaseOwnership(config.databasePath, options.databaseOwnershipTimeoutMs)
     : undefined;
   try {
+    let backupPath: string | undefined;
     ownership?.assertHeld(config.databasePath);
     if (options.database === undefined && existsSync(config.databasePath)) {
       const closedConnection = createDatabase(config.databasePath);
@@ -97,21 +109,31 @@ function startupDatabase(config: ServerConfig, options: CreateAppOptions): {
         // connection is its boundary before WAL validation/checkpoint backup.
         closedConnection.close();
       }
-      createPreMigrationBackup({
+      backupPath = createPreMigrationBackup({
         dataDir: config.dataDir,
         databasePath: config.databasePath,
         schemaVersion,
         ...(ownership === undefined ? {} : { databaseOwnership: ownership }),
         ...(options.backupClock === undefined ? {} : { clock: options.backupClock }),
-      });
+      }).path;
     }
 
     const database = options.database ?? createDatabase(config.databasePath);
     try {
       (options.migrationRunner ?? migrateDatabase)(database);
-      return { database, result: 'writable', ...(ownership === undefined ? {} : { ownership }) };
+      return {
+        database,
+        result: 'writable',
+        ...(ownership === undefined ? {} : { ownership }),
+        ...(backupPath === undefined ? {} : { backupPath }),
+      };
     } catch {
-      return { database, result: 'read_only_migration_failed', ...(ownership === undefined ? {} : { ownership }) };
+      return {
+        database,
+        result: 'read_only_migration_failed',
+        ...(ownership === undefined ? {} : { ownership }),
+        ...(backupPath === undefined ? {} : { backupPath }),
+      };
     }
   } catch {
     ownership?.release();
@@ -231,12 +253,21 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   };
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
   const promptPreviews = createPromptPreviewService(promptSnapshots);
+  const generationCandidates = createGenerationCandidateService(promptSnapshots, repositories);
   const generations = createGenerationService({
     database,
     repositories,
     providerClientFactory,
     promptSnapshotService: promptSnapshots,
   });
+  const extensionTrust = createExtensionTrustService(repositories, options.extensionRemoteFetcher ?? (async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('remote_fetch_failed');
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      mediaType: response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream',
+    };
+  }));
 
   if (startup.result === 'read_only_migration_failed') {
     app.addHook('onRequest', async (request, reply) => {
@@ -254,11 +285,20 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     throwFileSizeLimit: true,
   });
   app.get('/api/health', async () => startup.result === 'writable'
-    ? { status: 'ok', app: 'TavernNext' }
+    ? {
+        status: 'ok',
+        app: 'TavernNext',
+        ...(startup.backupPath === undefined ? {} : {
+          backup: { kind: 'pre_migration', path: startup.backupPath },
+        }),
+      }
     : {
         status: 'warning',
         app: 'TavernNext',
         mode: 'read_only_migration_failed',
+        ...(startup.backupPath === undefined ? {} : {
+          backup: { kind: 'pre_migration', path: startup.backupPath },
+        }),
         warning: {
           code: 'migration_failed',
           message: 'A database migration failed. Reads remain available; all mutations are disabled.',
@@ -278,7 +318,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   );
   registerCharacterExportRoutes(app, repositories, config.dataDir);
   registerPresetExportRoutes(app, repositories);
-  registerPresetRoutes(app, repositories);
+  registerPresetRoutes(app, database, repositories);
   registerWorldbookRoutes(app, database, repositories);
   registerWorldbookExportRoutes(app, repositories);
   registerPersonaRoutes(app, database, repositories);
@@ -312,9 +352,16 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       };
     },
   }, options.providerProbeFactory ?? ((profile: OpenAICompatibleProfile) => createOpenAICompatibleClient(profile)));
-  registerConversationRoutes(app, repositories, generations);
+  registerGlobalGenerationConfigRoutes(app, repositories);
+  registerExtensionAssetRoutes(app, database, repositories);
+  registerRuntimeStateRoutes(app, database, repositories);
+  registerExtensionTrustRoutes(app, repositories, extensionTrust);
+  registerExtensionRuntimeRpcRoutes(app, database, repositories, generations, extensionTrust);
+  registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
+  registerInteractiveActionRoutes(app, database, repositories, generations, extensionTrust);
   registerPromptPreviewRoutes(app, promptPreviews);
+  registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);
 
   app.addHook('onClose', async () => {

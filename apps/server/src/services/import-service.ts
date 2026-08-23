@@ -24,6 +24,8 @@ import {
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { MAX_AVATAR_BYTES } from './avatar-assets.js';
+import { ExtensionAssetLimitError } from '../extension-assets.js';
+import { RuntimeStateLimitError } from '../runtime-state-validation.js';
 
 export const INSPECTION_TOKEN_TTL_MS = 15 * 60 * 1000;
 export const DEFAULT_IMPORT_STAGING_LIMITS = Object.freeze({
@@ -191,8 +193,15 @@ export class ImportUploadError extends Error {
 }
 
 export class ImportCommitError extends Error {
+  readonly code: 'extension_asset_relation_limit' | 'runtime_state_limit' | 'import_commit_failed';
+  readonly statusCode: 422 | 500;
+
   constructor(readonly causeError: unknown) {
     super('import_commit_failed');
+    this.code = causeError instanceof ExtensionAssetLimitError || causeError instanceof RuntimeStateLimitError
+      ? causeError.code
+      : 'import_commit_failed';
+    this.statusCode = this.code === 'extension_asset_relation_limit' || this.code === 'runtime_state_limit' ? 422 : 500;
   }
 }
 

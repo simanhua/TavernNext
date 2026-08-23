@@ -25,12 +25,15 @@ function sourceRecord(value: unknown): Record<string, unknown> {
   return record(value) ? structuredClone(value) : {};
 }
 
+const runtimeStateKey = 'tavernnext_runtime_state';
+
 function defined<T>(current: T | undefined, fallback: unknown): T | undefined {
   return current === undefined ? fallback as T | undefined : current;
 }
 
-function exportVariant(row: MessageVariant): StChatVariant {
+function exportVariant(row: MessageVariant, repositories: Repositories): StChatVariant {
   const source = sourcePayload(row);
+  const runtimeState = repositories.extensionStates.getByScope('message-variant', row.id);
   return {
     ordinal: row.ordinal,
     content: row.content,
@@ -46,7 +49,10 @@ function exportVariant(row: MessageVariant): StChatVariant {
     ...(defined(row.reasoningDuration, source.reasoningDuration) === undefined
       ? {} : { reasoningDuration: defined(row.reasoningDuration, source.reasoningDuration)! }),
     extra: sourceRecord(source.extra),
-    swipeInfo: sourceRecord(source.swipeInfo),
+    swipeInfo: {
+      ...sourceRecord(source.swipeInfo),
+      ...(runtimeState === undefined ? {} : { [runtimeStateKey]: structuredClone(runtimeState.value) }),
+    },
   };
 }
 
@@ -58,11 +64,14 @@ function exportMessage(
   message: Message,
   variants: MessageVariant[],
   header: StChatHeader,
+  repositories: Repositories,
 ): StChatMessage {
   const source = sourcePayload(message);
   const orderedVariants = [...variants].sort((left, right) => left.ordinal - right.ordinal
     || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
-  const exportedVariants = orderedVariants.length === 0 ? [fallbackVariant(message)] : orderedVariants.map(exportVariant);
+  const exportedVariants = orderedVariants.length === 0
+    ? [fallbackVariant(message)]
+    : orderedVariants.map((variant) => exportVariant(variant, repositories));
   const selected = message.activeVariantId === null
     ? -1
     : orderedVariants.findIndex((variant) => variant.id === message.activeVariantId);
@@ -91,12 +100,16 @@ function exportDocument(repositories: Repositories, conversationId: string): { d
   const persona = repositories.personas.get(conversation.personaId);
   if (character === undefined || persona === undefined) return undefined;
   const source = sourcePayload(conversation);
+  const conversationState = repositories.extensionStates.getByScope('conversation', conversation.id);
   const header: StChatHeader = {
     userName: persona.name,
     characterName: character.name,
     ...(typeof source.createDate === 'string' || typeof source.createDate === 'number'
       ? { createDate: source.createDate } : {}),
-    chatMetadata: sourceRecord(source.chatMetadata),
+    chatMetadata: {
+      ...sourceRecord(source.chatMetadata),
+      ...(conversationState === undefined ? {} : { [runtimeStateKey]: structuredClone(conversationState.value) }),
+    },
     raw: sourceRecord(source.raw),
   };
   const variantRows = repositories.messageVariants.listByConversationId(conversation.id);
@@ -107,7 +120,7 @@ function exportDocument(repositories: Repositories, conversationId: string): { d
     variantsByMessage.set(variant.messageId, current);
   }
   const messages = repositories.messages.listByConversationId(conversation.id)
-    .map((message) => exportMessage(message, variantsByMessage.get(message.id) ?? [], header));
+    .map((message) => exportMessage(message, variantsByMessage.get(message.id) ?? [], header, repositories));
   return { document: { header, messages }, title: conversation.title };
 }
 
@@ -163,6 +176,9 @@ export function registerChatImportExportRoutes(
       }
       if (error instanceof ImportCommitError && error.causeError instanceof StChatCodecError) {
         return reply.code(422).send({ error: error.causeError.code });
+      }
+      if (error instanceof ImportCommitError && error.code === 'runtime_state_limit') {
+        return reply.code(error.statusCode).send({ error: error.code });
       }
       if (error instanceof ImportCommitError) return reply.code(500).send({ error: 'import_commit_failed' });
       throw error;

@@ -118,10 +118,12 @@ function seed(repositories: Repositories) {
     id: ids.conversation,
     characterId: character.id,
     personaId: persona.id,
-    providerId: provider.id,
-    presetId: preset.id,
     title: 'Archive visit',
   });
+    expect(repositories.globalGenerationConfig.update(0, {
+      providerId: provider.id,
+      chatPresetId: preset.id,
+    })).toMatchObject({ ok: true });
     return { character, persona, provider, preset, conversation };
   };
   const database = databasesByRepository.get(repositories);
@@ -243,7 +245,7 @@ describe('generation API', () => {
         conversationId: ids.conversation,
         conversationRevision: 0,
         payload: expect.objectContaining({
-          schemaVersion: 3,
+          schemaVersion: 4,
           input: expect.objectContaining({ conversationId: ids.conversation, conversationRevision: 0 }),
           compiledRequest: requests[0],
         }),

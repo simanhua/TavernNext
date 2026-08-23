@@ -313,18 +313,18 @@ export function seedFullPromptGraph(repositories: Repositories, mode: 'chat' | '
     kind: 'system',
     settings: { content: 'SYSTEM {{char}}', post_history: '' },
   });
-  const primaryPreset = mode === 'chat' ? chatPreset : textPreset;
+  expectGlobalGenerationConfig(repositories, {
+    providerId: provider.id,
+    chatPresetId: chatPreset.id,
+    textPresetId: textPreset.id,
+    contextPresetId: contextPreset.id,
+    instructPresetId: instructPreset.id,
+    systemPresetId: systemPreset.id,
+  });
   const conversation = repositories.conversations.create({
     id: integrationIds.conversation,
     characterId: character.id,
     personaId: persona.id,
-    providerId: provider.id,
-    presetId: primaryPreset.id,
-    ...(mode === 'text' ? {
-      contextPresetId: contextPreset.id,
-      instructPresetId: instructPreset.id,
-      systemPresetId: systemPreset.id,
-    } : {}),
     title: 'Full prompt graph',
     worldbookIds: [conversationBook.book.id],
     maxPromptTokens: 4_000,
@@ -377,6 +377,15 @@ export function seedFullPromptGraph(repositories: Repositories, mode: 'chat' | '
   };
   const database = databasesByRepository.get(repositories);
   return database === undefined ? seed() : database.transaction(seed);
+}
+
+function expectGlobalGenerationConfig(
+  repositories: Repositories,
+  selection: Parameters<Repositories['globalGenerationConfig']['update']>[1],
+): void {
+  const current = repositories.globalGenerationConfig.get();
+  const result = repositories.globalGenerationConfig.update(current.revision, selection);
+  if (!result.ok) throw new Error('Could not seed global generation configuration.');
 }
 
 export function previewPayload(overrides: Record<string, unknown> = {}) {

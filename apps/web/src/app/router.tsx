@@ -5,6 +5,7 @@ import { PersonaManagerPage } from '../features/personas/PersonaManagerPage.js';
 import { PresetManagerPage } from '../features/presets/PresetManagerPage.js';
 import { ConnectionPage } from '../features/settings/ConnectionPage.js';
 import { WorldbookManagerPage } from '../features/worldbooks/WorldbookManagerPage.js';
+import { ExtensionResourceManagerPage } from '../features/extensions/ExtensionResourceManagerPage.js';
 import { useI18n } from './i18n.js';
 
 function Layout() {
@@ -25,6 +26,7 @@ function Layout() {
           <NavLink to="/personas"><span aria-hidden="true">◈</span>{t('Personas')}</NavLink>
           <NavLink to="/presets"><span aria-hidden="true">◇</span>{t('Presets')}</NavLink>
           <NavLink to="/worldbooks"><span aria-hidden="true">▤</span>{t('Worldbooks')}</NavLink>
+          <NavLink to="/extensions"><span aria-hidden="true">⌘</span>{t('Attached Resources')}</NavLink>
           <NavLink to="/connection"><span aria-hidden="true">⚙</span>{t('Connection Settings')}</NavLink>
         </div>
         <label className="language-switcher">
@@ -48,6 +50,7 @@ export const appRoutes = [{
     { path: 'personas', element: <PersonaManagerPage /> },
     { path: 'presets', element: <PresetManagerPage /> },
     { path: 'worldbooks', element: <WorldbookManagerPage /> },
+    { path: 'extensions', element: <ExtensionResourceManagerPage /> },
     { path: 'connection', element: <ConnectionPage /> },
   ],
 }];

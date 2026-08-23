@@ -98,7 +98,14 @@ export function registerMessageRoutes(
       return reply.status(409).send({ error: 'generation_active' });
     }
     try {
-      const result = repositories.messages.delete(request.params.id, revision);
+      const variants = current === undefined ? [] : repositories.messageVariants.listByMessageId(current.id);
+      const result = database.transaction(() => {
+        const deletion = repositories.messages.delete(request.params.id, revision);
+        if (deletion.ok) {
+          for (const variant of variants) repositories.extensionStates.deleteByScope('message-variant', variant.id);
+        }
+        return deletion;
+      });
       if (result.ok) return reply.status(204).send();
       return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
     } catch {

@@ -1,4 +1,15 @@
-import type { Conversation, GenerationMode, Message, MessageVariant, PresetKind } from '@tavernnext/domain';
+import { GenerationCandidateTransportSchema } from '@tavernnext/domain';
+import type {
+  Conversation,
+  GenerationMode,
+  GenerationCandidateTransport,
+  GlobalGenerationConfig,
+  GlobalGenerationSelection,
+  Message,
+  MessageVariant,
+  PresetKind,
+  TrustedPromptPatch,
+} from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind };
 
@@ -21,6 +32,68 @@ export interface CharacterSummaryView extends MutableView {
   compatibilitySummary?: CompatibilitySummary;
 }
 
+export interface AttachedExtensionOverviewView {
+  execution: 'not_executed';
+  counts: { regex: number; scripts: number; folders: number; variableContainers: number };
+  resources: Array<{
+    type: 'regex' | 'script' | 'folder' | 'unknown';
+    order: number[];
+    sourceKey: string;
+    name: string;
+    enabled: boolean;
+    diagnostics: string[];
+  }>;
+  variables: Array<{ source: string; keyCount: number; diagnostics: string[] }>;
+  diagnostics: string[];
+}
+
+export interface EditableExtensionAssetView {
+  kind: 'regex' | 'tavern_helper';
+  sourceKey: string;
+  ordinal: number;
+  enabled: boolean;
+  payload: unknown;
+  diagnostics: string[];
+}
+
+export interface ExtensionAssetCollectionView {
+  owner: { kind: 'character' | 'preset'; id: string; revision: number; name: string };
+  assets: EditableExtensionAssetView[];
+}
+
+export interface ActiveResourceContextView {
+  globalGenerationConfigRevision: number;
+  mode: 'chat' | 'text' | null;
+  primaryPreset: ({ id: string; revision: number; name: string; kind: 'chat' | 'text' }) | null;
+  conversation: ({ id: string; revision: number }) | null;
+  character: ({ id: string; revision: number; name: string }) | null;
+  owners: Array<{ kind: 'character' | 'preset'; id: string; revision: number; name: string }>;
+}
+
+export type RuntimeStateScopeView = 'global' | 'character' | 'preset' | 'conversation' | 'message-variant' | 'script';
+export interface RuntimeStateView {
+  scope: RuntimeStateScopeView;
+  scopeId: string;
+  revision: number | null;
+  value: Record<string, unknown>;
+}
+export interface ExtensionTrustReviewView {
+  owner: { kind: 'character' | 'preset'; id: string };
+  scripts: Array<{ sourceKey: string; ordinal: number; order: number[]; enabled: boolean; name: string }>;
+  remotes: Array<{
+    url: string;
+    fetched: boolean;
+    fetchStatus: 'not_fetched' | 'fetched' | 'failed';
+    sha256: string | null;
+    mediaType: string | null;
+  }>;
+  bundleDigest: string;
+  trusted: boolean;
+  sameOriginRisk: boolean;
+  dynamicNetworkDisclaimer: string;
+  auditEvents: Array<{ event: string; createdAt: string; detail: Record<string, unknown> }>;
+}
+
 export interface CharacterView extends CharacterSummaryView {
   description: string;
   personality: string;
@@ -36,9 +109,10 @@ export interface CharacterView extends CharacterSummaryView {
   alternateGreetings: string[];
   tags: string[];
   worldbookId?: string;
+  attachedExtensions: AttachedExtensionOverviewView;
 }
 
-type CharacterWritableView = Omit<CharacterView, keyof MutableView | 'avatarUrl' | 'compatibilitySummary'>;
+type CharacterWritableView = Omit<CharacterView, keyof MutableView | 'avatarUrl' | 'compatibilitySummary' | 'attachedExtensions'>;
 type CharacterPatchView = Partial<Omit<CharacterWritableView, 'worldbookId'>> & { worldbookId?: string | null };
 
 export interface PersonaView extends MutableView {
@@ -58,6 +132,11 @@ export interface PresetSelectorView {
 
 export interface PresetView extends PresetSelectorView, MutableView {
   settings: Record<string, unknown>;
+  attachedExtensions: AttachedExtensionOverviewView;
+  spreset: {
+    present: boolean;
+    features: { ChatSquash: boolean; RegexBinding: boolean; MacroNest: boolean; ToolBindings: boolean };
+  };
   compatibilitySummary?: CompatibilitySummary;
 }
 
@@ -190,6 +269,7 @@ export interface PromptPreviewView {
   previousTimedState?: PromptTimedStateView;
   warnings: Array<{ code: string; message: string; source?: string }>;
   entityRevisions: {
+    globalGenerationConfig: { revision: number };
     conversation: { revision: number };
     character: { revision: number };
     persona: { revision: number };
@@ -202,6 +282,8 @@ export interface PromptPreviewView {
   };
 }
 
+export type GenerationCandidateView = GenerationCandidateTransport & { preview: PromptPreviewView };
+
 interface PromptTimedStateResponse {
   messageIndex: number | null;
   sticky: unknown[];
@@ -212,6 +294,7 @@ interface PromptPreviewResponse extends Omit<PromptPreviewView, 'worldbook' | 'p
   worldbook: Omit<PromptPreviewView['worldbook'], 'timedState'> & { timedState: PromptTimedStateResponse };
   previousTimedState?: PromptTimedStateResponse;
   entityRevisions: {
+    globalGenerationConfig: { id?: string; revision: number };
     conversation: { id?: string; revision: number };
     character: { id?: string; revision: number };
     persona: { id?: string; revision: number };
@@ -222,6 +305,13 @@ interface PromptPreviewResponse extends Omit<PromptPreviewView, 'worldbook' | 'p
     messages?: Array<{ id?: string; revision: number }>;
     runtimeState?: { id?: string; revision: number } | null;
   };
+}
+interface GenerationCandidateResponse extends Omit<PromptPreviewResponse, 'snapshotId' | 'messages'> {
+  candidateId: string;
+  expiresAt: string;
+  executableDigest: string;
+  compiledRequestHash: string;
+  messages?: GenerationCandidateTransport['messages'];
 }
 
 export interface ProviderProfileView {
@@ -241,6 +331,9 @@ export interface ProviderModelView {
   ownedBy?: string;
 }
 
+export type GlobalGenerationConfigView = GlobalGenerationConfig;
+export type GlobalGenerationConfigPatch = GlobalGenerationSelection;
+
 export interface ProviderProbeInput {
   id?: string;
   baseUrl: string;
@@ -258,7 +351,7 @@ export interface ConversationDetail {
 }
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, public readonly code: string) {
+  constructor(public readonly status: number, public readonly code: string, public readonly details: Record<string, unknown> = {}) {
     super(code);
   }
 }
@@ -273,8 +366,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body !== undefined && !(init.body instanceof FormData)) headers.set('content-type', 'application/json');
   const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new ApiError(response.status, payload.error ?? `http_${response.status}`);
+    const payload = await response.json().catch(() => ({})) as { error?: string } & Record<string, unknown>;
+    throw new ApiError(response.status, payload.error ?? `http_${response.status}`, payload);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -448,6 +541,7 @@ function projectPromptPreview(response: PromptPreviewResponse): PromptPreviewVie
     ...(response.previousTimedState === undefined ? {} : { previousTimedState: projectTimedState(response.previousTimedState) }),
     warnings: response.warnings.map(({ code, message, source }) => ({ code, message, ...(source === undefined ? {} : { source }) })),
     entityRevisions: {
+      globalGenerationConfig: { revision: revisions.globalGenerationConfig.revision },
       conversation: { revision: revisions.conversation.revision },
       character: { revision: revisions.character.revision },
       persona: { revision: revisions.persona.revision },
@@ -490,6 +584,10 @@ export const api = {
   deletePersona: (id: string, revision: number) => request<void>(`/api/personas/${id}?revision=${revision}`, { method: 'DELETE' }),
   uploadPersonaAvatar: (id: string, revision: number, file: File) => uploadAvatar<PersonaView>('personas', id, revision, file),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
+  getGlobalGenerationConfig: () => request<GlobalGenerationConfigView>('/api/settings/generation'),
+  saveGlobalGenerationConfig: (revision: number, patch: GlobalGenerationConfigPatch) => request<GlobalGenerationConfigView>(
+    '/api/settings/generation', { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
   probeProvider: (input: ProviderProbeInput) => request<{ ok: true; modelCount: number }>('/api/providers/probe', {
     method: 'POST', body: JSON.stringify(input),
   }),
@@ -506,6 +604,47 @@ export const api = {
   }),
   deletePreset: (id: string, revision: number) => request<void>(`/api/presets/${id}?revision=${revision}`, { method: 'DELETE' }),
   exportPreset: (id: string) => download(`/api/presets/${id}/export`),
+  getExtensionAssets: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionAssetCollectionView>(
+    `/api/extension-assets?ownerKind=${encodeURIComponent(ownerKind)}&ownerId=${encodeURIComponent(ownerId)}`,
+  ),
+  getActiveResourceContext: (conversationId: string | null) => request<ActiveResourceContextView>(
+    `/api/settings/generation/active-resource-context${conversationId === null ? '' : `?conversationId=${encodeURIComponent(conversationId)}`}`,
+  ),
+  saveExtensionAssets: (
+    ownerKind: 'character' | 'preset',
+    ownerId: string,
+    ownerRevision: number,
+    assets: EditableExtensionAssetView[],
+  ) => request<ExtensionAssetCollectionView>(
+    `/api/extension-assets?ownerKind=${encodeURIComponent(ownerKind)}&ownerId=${encodeURIComponent(ownerId)}`,
+    { method: 'PUT', body: JSON.stringify({ ownerRevision, assets }) },
+  ),
+  getRuntimeState: (scope: RuntimeStateScopeView, scopeId: string) => request<RuntimeStateView>(
+    `/api/runtime-states/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}`,
+  ),
+  operateRuntimeState: (
+    scope: RuntimeStateScopeView,
+    scopeId: string,
+    input: { expectedRevision: number | null } & (
+      { operation: 'replace' | 'merge' | 'insert'; value: Record<string, unknown> }
+      | { operation: 'delete'; keys: string[] }
+    ),
+  ) => request<RuntimeStateView>(
+    `/api/runtime-states/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}`,
+    { method: 'POST', body: JSON.stringify(input) },
+  ),
+  getExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}`,
+  ),
+  refreshExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}/refresh`, { method: 'POST' },
+  ),
+  grantExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}/grant`, { method: 'POST' },
+  ),
+  revokeExtensionTrust: (ownerKind: 'character' | 'preset', ownerId: string) => request<ExtensionTrustReviewView>(
+    `/api/extension-trust/${ownerKind}/${encodeURIComponent(ownerId)}`, { method: 'DELETE' },
+  ),
   listWorldbooks: () => request<WorldbookSummaryView[]>('/api/worldbooks'),
   getWorldbook: (id: string) => request<WorldbookView>(`/api/worldbooks/${id}`),
   createWorldbook: (input: Pick<WorldbookView, 'name' | 'description' | 'enabled' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning' | 'isGlobal'>) => request<WorldbookView>('/api/worldbooks', {
@@ -561,22 +700,12 @@ export const api = {
     characterId: string;
     personaId: string;
     title: string;
-    providerId: string;
-    presetId: string;
-    contextPresetId?: string;
-    instructPresetId?: string;
-    systemPresetId?: string;
     maxPromptTokens: number;
     maxResponseTokens: number;
   }) => request<Conversation>('/api/conversations', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
   }),
-  updateConversationConfiguration: (conversation: Conversation, patch: {
-    providerId: string;
-    presetId: string;
-    contextPresetId?: string;
-    instructPresetId?: string;
-    systemPresetId?: string;
+  updateConversationSettings: (conversation: Conversation, patch: {
     maxPromptTokens: number;
     maxResponseTokens: number;
   }) => request<Conversation>(`/api/conversations/${conversation.id}`, {
@@ -591,6 +720,29 @@ export const api = {
     `/api/conversations/${conversation.id}/prompt-preview`,
     { method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, mode: 'normal', userText }) },
   )),
+  createGenerationCandidate: (
+    conversation: Conversation,
+    input: { mode: GenerationMode; userText?: string },
+    signal?: AbortSignal,
+  ) => request<unknown>(`/api/conversations/${conversation.id}/generation-candidates`, {
+    method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, ...input }), signal,
+  }).then((raw): GenerationCandidateView => {
+    const response = GenerationCandidateTransportSchema.parse(raw) as unknown as GenerationCandidateResponse;
+    return {
+      ...response,
+      preview: projectPromptPreview({ ...response, snapshotId: response.candidateId }),
+    };
+  }),
+  sealGenerationCandidate: (
+    candidateId: string,
+    patch: TrustedPromptPatch,
+    signal?: AbortSignal,
+  ) => request<{ snapshotId: string }>(`/api/generation-candidates/${candidateId}/seal`, {
+    method: 'POST', body: JSON.stringify({ patch }), signal,
+  }),
+  discardGenerationCandidate: (candidateId: string) => request<void>(`/api/generation-candidates/${candidateId}`, {
+    method: 'DELETE',
+  }),
   updateMessage: (message: Message, content: string) => request<Message>(`/api/messages/${message.id}`, {
     method: 'PATCH', body: JSON.stringify({ revision: message.revision, patch: { content } }),
   }),
@@ -600,7 +752,7 @@ export const api = {
   }),
   startGeneration: async (
     conversation: Conversation,
-    input: { mode: GenerationMode; userText?: string },
+    input: { mode: GenerationMode; userText?: string; snapshotId?: string },
     signal?: AbortSignal,
   ) => {
     const response = await fetch(`/api/conversations/${conversation.id}/generations`, {

@@ -1,14 +1,18 @@
 import type {
   Character,
   CompatibilityMetadata,
+  ExtensionAsset,
   Persona,
   Preset,
   Worldbook,
   WorldbookEntry,
 } from '@tavernnext/domain';
 import {
+  attachedExtensionOverview,
   executablePresetFields,
+  normalizeAttachedExtensions,
   presetSettingsForExecution,
+  summarizeSPreset,
   validatePresetFamily,
 } from '@tavernnext/st-compat';
 
@@ -49,7 +53,18 @@ export function characterSummary(character: Character) {
   };
 }
 
-export function characterDetail(character: Character) {
+export function characterDetail(character: Character, extensionAssets: readonly ExtensionAsset[] = []) {
+  const normalizedExtensions = normalizeAttachedExtensions(character.extensions);
+  const persistedOverview = extensionAssets.length === 0
+    ? normalizedExtensions.overview
+    : attachedExtensionOverview(extensionAssets, normalizedExtensions.extensions);
+  const attachedExtensions = {
+    ...persistedOverview,
+    diagnostics: [...new Set([
+      ...normalizedExtensions.overview.diagnostics,
+      ...persistedOverview.diagnostics,
+    ])],
+  };
   return {
     ...characterSummary(character),
     description: character.description,
@@ -65,6 +80,7 @@ export function characterDetail(character: Character) {
     depthPrompt: character.depthPrompt,
     alternateGreetings: [...character.alternateGreetings],
     tags: [...character.tags],
+    attachedExtensions,
     ...(character.worldbookId === undefined ? {} : { worldbookId: character.worldbookId }),
   };
 }
@@ -93,12 +109,22 @@ export function safePresetSettings(preset: Preset): Record<string, unknown> {
   return executablePresetFields(preset.kind, validatePresetFamily(preset.kind, markerFree)).settings;
 }
 
-export function presetDetail(preset: Preset) {
+export function presetDetail(preset: Preset, extensionAssets: readonly ExtensionAsset[] = []) {
+  const normalized = normalizeAttachedExtensions(preset.extensions);
+  const persistedOverview = extensionAssets.length === 0
+    ? normalized.overview
+    : attachedExtensionOverview(extensionAssets, normalized.extensions);
+  const attachedExtensions = {
+    ...persistedOverview,
+    diagnostics: [...new Set([...normalized.overview.diagnostics, ...persistedOverview.diagnostics])],
+  };
   return {
     ...mutableFields(preset),
     name: preset.name,
     kind: preset.kind,
     settings: safePresetSettings(preset),
+    attachedExtensions,
+    spreset: summarizeSPreset(normalized.extensions),
     ...(compatibilitySummary(preset.compatibility) === undefined
       ? {}
       : { compatibilitySummary: compatibilitySummary(preset.compatibility) }),

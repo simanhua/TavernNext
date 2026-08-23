@@ -16,6 +16,15 @@ import {
   type WorldbookTimedState,
 } from '@tavernnext/domain';
 import {
+  parsedRegexAssets,
+  regexWorkerLimitsForProjection,
+  REGEX_PLACEMENT,
+  runOwnedRegexModeProjectionInWorker,
+  type OwnedRegexTraceEntry,
+  type TavernRegex,
+} from '@tavernnext/extension-runtime';
+import { createNodeRegexWorker } from '@tavernnext/extension-runtime/node';
+import {
   compileChatPrompt,
   compileTextPrompt,
   evaluateWorldbooks,
@@ -50,9 +59,10 @@ import {
   type Repositories,
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
+import { EXTENSION_TRUST_RISK_VERSION, extensionExecutableDigest } from './extension-trust-service.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 3 as const;
-const EXECUTABLE_AUDIT_SCHEMA_VERSION = 3 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
 
 export interface ServerTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
@@ -70,6 +80,8 @@ export interface PromptSnapshotInput {
   targetMessageId?: string;
   targetVariantId?: string;
   continuationByteBoundary?: number;
+  /** Internal /trigger path: compile the already-persisted final user message without duplicating it. */
+  reuseLastUser?: boolean;
 }
 
 export interface RevisionRef {
@@ -91,6 +103,7 @@ export interface MessageRevisionRef extends RevisionRef {
 }
 
 export interface PromptEntityRevisionManifest {
+  globalGenerationConfig: RevisionRef;
   conversation: RevisionRef;
   character: RevisionRef;
   persona: RevisionRef;
@@ -100,6 +113,10 @@ export interface PromptEntityRevisionManifest {
   worldbooks: WorldbookRevisionRef[];
   messages: MessageRevisionRef[];
   runtimeState: RevisionRef | null;
+  extensionState?: RevisionRef | null;
+  extensionTrust?: Array<{
+    ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string; riskVersion: number;
+  }>;
 }
 
 export interface SnapshotInputPayload {
@@ -112,6 +129,7 @@ export interface SnapshotInputPayload {
   targetMessageId: string | null;
   targetVariantId: string | null;
   continuationByteBoundary: number | null;
+  reuseLastUser?: boolean;
 }
 
 export interface PromptSnapshotPayload {
@@ -194,6 +212,7 @@ type LoadedBook = LoadedPersistedBook | LoadedEmbeddedBook;
 
 interface LoadedAggregate {
   input: SnapshotInputPayload;
+  globalGenerationConfig: ReturnType<Repositories['globalGenerationConfig']['get']>;
   conversation: Conversation;
   character: Character;
   persona: Persona;
@@ -204,6 +223,11 @@ interface LoadedAggregate {
   previousTimedState: WorldbookTimedState;
   manifest: PromptEntityRevisionManifest;
   compatibilityWarnings: PromptWarning[];
+  regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
+  promptInjections: Array<{
+    key: string; content: string; role: 'system' | 'user' | 'assistant'; position: 'before' | 'after';
+    ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string;
+  }>;
 }
 
 interface BuiltSnapshot {
@@ -218,6 +242,13 @@ export interface AcceptedPromptSnapshot {
 }
 
 export interface PromptSnapshotService {
+  createCandidate(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
+  sealCandidate(
+    input: PromptSnapshotInput,
+    snapshotId: string,
+    candidate: PromptSnapshotPayload,
+    patch: { messages?: PromptChatMessage[]; text?: string; stop?: string[] },
+  ): Promise<PromptSnapshotPreview>;
   createPreview(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
   createAndAccept(input: PromptSnapshotInput, snapshotId: string): Promise<AcceptedPromptSnapshot>;
   acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): Promise<AcceptedPromptSnapshot>;
@@ -290,6 +321,7 @@ function safePreset(preset: Preset, expectedKind: PresetKind): Preset {
       name: preset.name,
       kind: preset.kind,
       settings: deepJson(settings),
+      extensions: {},
     };
   } catch (error) {
     if (error instanceof PromptSnapshotError) throw error;
@@ -476,6 +508,29 @@ function runtimeStateFor(repositories: Repositories, conversationId: string): Wo
   }
 }
 
+function resolveGenerationBinding(
+  configuration: ReturnType<Repositories['globalGenerationConfig']['get']>,
+  providerMode?: ProviderProfile['apiMode'],
+): {
+  providerId: string | undefined;
+  presets: Array<{ id: string | undefined; kind: PresetKind }>;
+} {
+  const providerId = configuration.providerId ?? undefined;
+  const selected = (id: string | null) => id ?? undefined;
+  if (providerMode === undefined) return { providerId, presets: [] };
+  return {
+    providerId,
+    presets: providerMode === 'chat'
+      ? [{ id: selected(configuration.chatPresetId), kind: 'chat' }]
+      : [
+        { id: selected(configuration.textPresetId), kind: 'text' },
+        { id: selected(configuration.contextPresetId), kind: 'context' },
+        { id: selected(configuration.instructPresetId), kind: 'instruct' },
+        { id: selected(configuration.systemPresetId), kind: 'system' },
+      ],
+  };
+}
+
 function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): LoadedAggregate {
   if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
     throw new PromptSnapshotError('invalid_user_text');
@@ -487,8 +542,10 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   const character = repositories.characters.get(conversation.characterId);
   const persona = repositories.personas.get(conversation.personaId);
   if (character === undefined || persona === undefined) throw new PromptSnapshotError('not_found');
-  if (conversation.providerId === undefined) throw new PromptSnapshotError('provider_not_configured');
-  const provider = repositories.providerProfiles.get(conversation.providerId);
+  const globalGenerationConfig = repositories.globalGenerationConfig.get();
+  const providerId = resolveGenerationBinding(globalGenerationConfig).providerId;
+  if (providerId === undefined) throw new PromptSnapshotError('provider_not_configured');
+  const provider = repositories.providerProfiles.get(providerId);
   if (provider === undefined) throw new PromptSnapshotError('provider_not_configured');
 
   const compatibilityWarnings: PromptWarning[] = [];
@@ -497,14 +554,8 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
-  const presets = provider.apiMode === 'chat'
-    ? [requestedPreset(repositories, conversation.presetId, 'chat', compatibilityWarnings)]
-    : [
-      requestedPreset(repositories, conversation.presetId, 'text', compatibilityWarnings),
-      requestedPreset(repositories, conversation.contextPresetId, 'context', compatibilityWarnings),
-      requestedPreset(repositories, conversation.instructPresetId, 'instruct', compatibilityWarnings),
-      requestedPreset(repositories, conversation.systemPresetId, 'system', compatibilityWarnings),
-    ];
+  const binding = resolveGenerationBinding(globalGenerationConfig, provider.apiMode);
+  const presets = binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings));
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -533,6 +584,12 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
 
   const history = historyRows(repositories, conversation.id);
   compatibilityWarnings.push(...history.compatibilityWarnings);
+  if (input.reuseLastUser === true) {
+    const last = history.messages.at(-1);
+    if (input.mode !== 'normal' || last?.role !== 'user' || last.content !== input.userText) {
+      throw new PromptSnapshotError('invalid_user_text');
+    }
+  }
   const targetMessage = input.mode === 'normal' ? undefined : history.messages.at(-1);
   if (input.mode !== 'normal' && (targetMessage === undefined || targetMessage.role !== 'assistant'
     || targetMessage.activeVariantId === null)) throw new PromptSnapshotError('invalid_target');
@@ -542,7 +599,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   if (input.mode !== 'normal' && (targetVariant === undefined || targetVariant.messageId !== targetMessage?.id)) {
     throw new PromptSnapshotError('invalid_target');
   }
-  const requiredMessageHeadroom = input.mode === 'normal' ? 2 : 0;
+  const requiredMessageHeadroom = input.mode === 'normal' ? input.reuseLastUser === true ? 1 : 2 : 0;
   const requiredVariantHeadroom = input.mode === 'continue' ? 0 : 1;
   if (history.messages.length + requiredMessageHeadroom > MAX_MESSAGES_PER_CONVERSATION
     || history.variants.size + requiredVariantHeadroom > MAX_VARIANTS_PER_RELATION) {
@@ -560,6 +617,33 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   if (input.continuationByteBoundary !== undefined
     && input.continuationByteBoundary !== continuationByteBoundary) throw new PromptSnapshotError('invalid_target');
   const runtimeState = runtimeStateFor(repositories, conversation.id);
+  const activeOwnerKeys = new Set([`character:${character.id}`, ...presets.slice(0, 1).map((preset) => `preset:${preset.id}`)]);
+  const extensionState = repositories.extensionStates.getByScope('conversation', conversation.id);
+  const rawInjections = extensionState?.value.runtimePromptInjections;
+  const injectionRecord = record(rawInjections) ? rawInjections : {};
+  const promptInjections = Object.entries(injectionRecord as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([key, raw]) => {
+      const item = record(raw) ? raw : undefined;
+      const rawValue = item?.value;
+      const value = record(rawValue) ? rawValue : undefined;
+      const ownerKind = item?.ownerKind;
+      const ownerId = item?.ownerId;
+      const bundleDigest = item?.bundleDigest;
+      if ((ownerKind !== 'character' && ownerKind !== 'preset') || typeof ownerId !== 'string'
+        || typeof bundleDigest !== 'string' || !activeOwnerKeys.has(`${ownerKind}:${ownerId}`)) return [];
+      const injectionOwnerKind: 'character' | 'preset' = ownerKind;
+      const grant = repositories.extensionTrustGrants.getByOwner(ownerKind, ownerId);
+      if (grant?.bundleDigest !== bundleDigest || grant.riskVersion !== EXTENSION_TRUST_RISK_VERSION
+        || extensionExecutableDigest(repositories, ownerKind, ownerId) !== bundleDigest
+        || typeof value?.content !== 'string') return [];
+      const role: 'system' | 'user' | 'assistant' = value.role === 'user' || value.role === 'assistant'
+        ? value.role
+        : 'system';
+      return [{
+        key, content: value.content, role, position: value.position === 'after' ? 'after' as const : 'before' as const,
+        ownerKind: injectionOwnerKind, ownerId, bundleDigest,
+      }];
+    });
   const seed = input.seed ?? `${conversation.id}:${conversation.revision}`;
   const messageIndex = input.messageIndex ?? history.history.length;
   const snapshotInput: SnapshotInputPayload = {
@@ -572,9 +656,11 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     targetMessageId: targetMessage?.id ?? null,
     targetVariantId: targetVariant?.id ?? null,
     continuationByteBoundary,
+    ...(input.reuseLastUser === true ? { reuseLastUser: true } : {}),
   };
   const globalWorldbooks = globalBooks.map(ref);
   const manifest: PromptEntityRevisionManifest = {
+    globalGenerationConfig: ref(globalGenerationConfig),
     conversation: ref(conversation),
     character: ref(character),
     persona: ref(persona),
@@ -588,10 +674,19 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     }]),
     messages: history.manifest,
     runtimeState: runtimeState === undefined ? null : ref(runtimeState),
+    extensionState: extensionState === undefined ? null : ref(extensionState),
+    extensionTrust: [...new Map(promptInjections.map((injection) => [
+      `${injection.ownerKind}:${injection.ownerId}`,
+      {
+        ownerKind: injection.ownerKind, ownerId: injection.ownerId, bundleDigest: injection.bundleDigest,
+        riskVersion: EXTENSION_TRUST_RISK_VERSION,
+      },
+    ])).values()],
   };
 
   return {
     input: snapshotInput,
+    globalGenerationConfig: deepJson(globalGenerationConfig),
     conversation: deepJson(conversation),
     character: deepJson(character),
     persona: deepJson(persona),
@@ -606,6 +701,11 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     ),
     manifest: deepJson(manifest),
     compatibilityWarnings: deepJson(compatibilityWarnings),
+    regexScripts: {
+      preset: parsedRegexAssets(repositories.extensionAssets.listByOwner('preset', presets[0]!.id)),
+      character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
+    },
+    promptInjections,
   };
 }
 
@@ -621,6 +721,8 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   const exact = (current: { id: string; revision: number } | undefined, expected: RevisionRef) => {
     if (current === undefined || current.id !== expected.id || current.revision !== expected.revision) stale();
   };
+  const globalGenerationConfig = repositories.globalGenerationConfig.get();
+  exact(globalGenerationConfig, manifest.globalGenerationConfig);
   const conversation = repositories.conversations.get(manifest.conversation.id);
   exact(conversation, manifest.conversation);
   const character = repositories.characters.get(manifest.character.id);
@@ -631,15 +733,8 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   if (conversation === undefined || character === undefined || provider === undefined
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
-    || conversation.providerId !== manifest.provider.id) stale();
-  const configuredPresets: Array<{ id: string | undefined; kind: PresetKind }> = provider.apiMode === 'chat'
-    ? [{ id: conversation.presetId, kind: 'chat' }]
-    : [
-      { id: conversation.presetId, kind: 'text' },
-      { id: conversation.contextPresetId, kind: 'context' },
-      { id: conversation.instructPresetId, kind: 'instruct' },
-      { id: conversation.systemPresetId, kind: 'system' },
-    ];
+    || resolveGenerationBinding(globalGenerationConfig).providerId !== manifest.provider.id) stale();
+  const configuredPresets = resolveGenerationBinding(globalGenerationConfig, provider.apiMode).presets;
   if (configuredPresets.some(({ id }) => id === undefined)
     || !sameCanonical(
       manifest.presets.map(({ id, kind }) => ({ id, kind })),
@@ -680,6 +775,19 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     if (runtimeState !== undefined) stale();
   } else {
     exact(runtimeState, manifest.runtimeState);
+  }
+  const extensionState = repositories.extensionStates.getByScope('conversation', manifest.conversation.id);
+  if (manifest.extensionState === undefined) {
+    // Schema v4 snapshots created before runtime prompt injection support have no extension-state ref.
+  } else if (manifest.extensionState === null) {
+    if (extensionState !== undefined) stale();
+  } else {
+    exact(extensionState, manifest.extensionState);
+  }
+  for (const expected of manifest.extensionTrust ?? []) {
+    const grant = repositories.extensionTrustGrants.getByOwner(expected.ownerKind, expected.ownerId);
+    if (grant?.bundleDigest !== expected.bundleDigest || grant.riskVersion !== expected.riskVersion
+      || extensionExecutableDigest(repositories, expected.ownerKind, expected.ownerId) !== expected.bundleDigest) stale();
   }
 }
 
@@ -878,6 +986,59 @@ function compilerError(code: string): never {
   throw new PromptSnapshotError('invalid_preset');
 }
 
+async function projectPromptHistory(
+  aggregate: LoadedAggregate,
+  history: LoadedAggregate['history'],
+): Promise<{ history: LoadedAggregate['history']; warnings: PromptWarning[] }> {
+  const warnings: PromptWarning[] = [];
+  const projected: LoadedAggregate['history'] = [];
+  const limits = regexWorkerLimitsForProjection();
+  for (const [index, message] of history.entries()) {
+    if (message.role !== 'user' && message.role !== 'assistant') {
+      projected.push(message);
+      continue;
+    }
+    const context = {
+      placement: message.role === 'user' ? REGEX_PLACEMENT.USER_INPUT : REGEX_PLACEMENT.AI_OUTPUT,
+      depth: history.length - index - 1,
+      values: {
+        user: aggregate.persona.name,
+        char: aggregate.character.name,
+        group: aggregate.character.name,
+        charIfNotGroup: aggregate.character.name,
+        notChar: aggregate.persona.name,
+        model: aggregate.provider.model,
+        description: aggregate.character.description,
+        personality: aggregate.character.personality,
+        scenario: aggregate.character.scenario,
+        persona: aggregate.persona.description,
+        mesExamplesRaw: aggregate.character.examples,
+        charVersion: aggregate.character.characterVersion,
+        char_version: aggregate.character.characterVersion,
+        creatorNotes: aggregate.character.creatorNotes,
+        charPrompt: aggregate.character.systemPrompt,
+        charInstruction: aggregate.character.postHistoryInstructions,
+        charJailbreak: aggregate.character.postHistoryInstructions,
+        charDepthPrompt: aggregate.character.depthPrompt,
+      },
+      characterName: aggregate.character.name,
+    } as const;
+    const prompt = await runOwnedRegexModeProjectionInWorker(
+      message.content, aggregate.regexScripts, context, 'prompt', createNodeRegexWorker, limits,
+    );
+    const failed = prompt.trace.filter((entry) => (
+      entry.reason === 'timeout' || entry.reason === 'aggregate_timeout' || entry.reason === 'error'
+    ));
+    warnings.push(...failed.map((entry: OwnedRegexTraceEntry) => ({
+      code: `regex_${entry.reason}`,
+      message: `${entry.owner} regex ${entry.scriptName || entry.scriptId} failed open (${entry.reason}).`,
+      source: `${entry.owner}-regex:${entry.scriptId}`,
+    })));
+    projected.push({ ...message, content: prompt.value });
+  }
+  return { history: projected, warnings };
+}
+
 async function compileAggregate(
   aggregate: LoadedAggregate,
   runtime: ServerTokenizerRuntime,
@@ -889,19 +1050,21 @@ async function compileAggregate(
     throw new PromptSnapshotError('tokenizer_error');
   }
   if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
-  const history = aggregate.input.mode === 'normal'
+  const rawHistory = aggregate.input.mode === 'normal' && aggregate.input.reuseLastUser !== true
     ? [...aggregate.history, {
       id: `proposed:${canonicalHash(aggregate.input)}`,
       role: 'user',
       content: aggregate.input.userText!,
     }]
     : [...aggregate.history];
+  const promptProjection = await projectPromptHistory(aggregate, rawHistory);
+  const history = promptProjection.history;
   const books: WorldbookRuntimeBook[] = aggregate.books.map((book) => ({ id: book.id, book: book.book }));
   const bookBudgets = aggregate.books.map((book) => book.book.tokenBudget)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
   const tokenBudget = Math.min(aggregate.conversation.maxPromptTokens, ...bookBudgets);
   const scanSources = {
-    messages: [...history].reverse().map((message) => message.content),
+    messages: [...rawHistory].reverse().map((message) => message.content),
     additional: [],
     trigger: aggregate.input.mode,
     character: {
@@ -987,20 +1150,49 @@ async function compileAggregate(
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     if (decisionFingerprint(decision) !== initialDecision) continue;
 
+    const beforeInjections = aggregate.promptInjections.filter((injection) => injection.position === 'before');
+    const afterInjections = aggregate.promptInjections.filter((injection) => injection.position === 'after');
+    const runtimeMessages = compilation.kind === 'chat' ? [
+      ...beforeInjections.map(({ role, content }) => ({ role, content })),
+      ...compilation.messages,
+      ...afterInjections.map(({ role, content }) => ({ role, content })),
+    ] : undefined;
+    const runtimeText = compilation.kind === 'text' ? [
+      ...beforeInjections.map(({ content }) => content),
+      compilation.text,
+      ...afterInjections.map(({ content }) => content),
+    ].filter((value) => value !== '').join('\n') : undefined;
+    const runtimeTotalTokens = compilation.kind === 'chat'
+      ? await tokenizer.countMessages(runtimeMessages!)
+      : await tokenizer.countText(runtimeText!);
+    const runtimeMaxPromptTokens = compilation.kind === 'chat'
+      ? aggregate.conversation.maxPromptTokens
+      : Math.min(
+        aggregate.conversation.maxPromptTokens,
+        finiteSetting(aggregate.presets[0]!.settings, 'max_context') ?? aggregate.conversation.maxPromptTokens,
+      );
+    if (runtimeTotalTokens > runtimeMaxPromptTokens) throw new PromptSnapshotError('context_overflow');
+    const injectionBreakdown: TokenBreakdownEntry[] = [];
+    for (const injection of aggregate.promptInjections) injectionBreakdown.push({
+      source: `runtime-injection:${injection.key}`,
+      includedTokens: await tokenizer.countText(injection.content),
+      omittedTokens: 0,
+    });
+
     const primaryPreset = aggregate.presets[0]!;
     const temperature = finiteSetting(primaryPreset.settings, 'temperature');
     const maxTokens = responseTokens(aggregate.conversation, primaryPreset);
     const compiledRequest: ChatRequest | TextRequest = compilation.kind === 'chat'
       ? {
         model: aggregate.provider.model,
-        messages: deepJson(compilation.messages),
+        messages: deepJson(runtimeMessages!),
         ...(temperature === undefined ? {} : { temperature }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
         stop: [...compilation.stop],
       }
       : {
         model: aggregate.provider.model,
-        prompt: compilation.text,
+        prompt: runtimeText!,
         ...(temperature === undefined ? {} : { temperature }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
         stop: [...compilation.stop],
@@ -1013,6 +1205,7 @@ async function compileAggregate(
       })),
       ...compilation.warnings,
       ...aggregate.compatibilityWarnings,
+      ...promptProjection.warnings,
       ...(decision.warning === undefined ? [] : [{
         code: 'tokenizer_fallback',
         message: decision.warning,
@@ -1029,11 +1222,11 @@ async function compileAggregate(
       worldbook: deepJson(worldbook),
       tokenizerDecision: deepJson(decision),
       ...(compilation.kind === 'chat'
-        ? { messages: deepJson(compilation.messages) }
-        : { text: compilation.text }),
+        ? { messages: deepJson(runtimeMessages!) }
+        : { text: runtimeText! }),
       stop: [...compilation.stop],
-      tokenBreakdown: deepJson(compilation.tokenBreakdown),
-      totalTokens: compilation.totalTokens,
+      tokenBreakdown: deepJson([...compilation.tokenBreakdown, ...injectionBreakdown]),
+      totalTokens: runtimeTotalTokens,
       warnings: deepJson(warnings),
       worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
       compiledRequest: deepJson(compiledRequest),
@@ -1066,6 +1259,7 @@ function isRevisionRef(value: unknown): value is RevisionRef {
 
 function isManifest(value: unknown): value is PromptEntityRevisionManifest {
   if (!record(value)
+    || !isRevisionRef(value.globalGenerationConfig)
     || !isRevisionRef(value.conversation)
     || !isRevisionRef(value.character)
     || !isRevisionRef(value.persona)
@@ -1075,8 +1269,8 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     || !Array.isArray(value.worldbooks)
     || !Array.isArray(value.messages)
     || !hasOnlyKeys(value, [
-      'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
-      'worldbooks', 'messages', 'runtimeState',
+      'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
+      'worldbooks', 'messages', 'runtimeState', 'extensionState', 'extensionTrust',
     ])) return false;
   if (!value.presets.every((item) => record(item)
     && typeof item.id === 'string'
@@ -1096,7 +1290,14 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     && nonNegativeInteger(item.revision)
     && (item.activeVariant === null || isRevisionRef(item.activeVariant))
     && hasOnlyKeys(item, ['id', 'revision', 'activeVariant']))) return false;
-  return value.runtimeState === null || isRevisionRef(value.runtimeState);
+  return (value.runtimeState === null || isRevisionRef(value.runtimeState))
+    && (value.extensionState === undefined || value.extensionState === null || isRevisionRef(value.extensionState))
+    && (value.extensionTrust === undefined || (Array.isArray(value.extensionTrust) && value.extensionTrust.every((item) => (
+      record(item) && (item.ownerKind === 'character' || item.ownerKind === 'preset')
+      && typeof item.ownerId === 'string' && typeof item.bundleDigest === 'string'
+      && nonNegativeInteger(item.riskVersion)
+      && hasOnlyKeys(item, ['ownerKind', 'ownerId', 'bundleDigest', 'riskVersion'])
+    ))));
 }
 
 function isInput(value: unknown): value is SnapshotInputPayload {
@@ -1109,7 +1310,9 @@ function isInput(value: unknown): value is SnapshotInputPayload {
     || !hasOnlyKeys(value, [
       'conversationId', 'conversationRevision', 'mode', 'userText', 'seed', 'messageIndex',
       'targetMessageId', 'targetVariantId', 'continuationByteBoundary',
+      'reuseLastUser',
     ])) return false;
+  if (value.reuseLastUser !== undefined && typeof value.reuseLastUser !== 'boolean') return false;
   if (value.mode === 'normal') {
     return typeof value.userText === 'string' && value.userText.trim() !== ''
       && value.targetMessageId === null && value.targetVariantId === null
@@ -1526,6 +1729,7 @@ function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapsh
     || (input.targetVariantId !== undefined && payload.input.targetVariantId !== input.targetVariantId)
     || (input.continuationByteBoundary !== undefined
       && payload.input.continuationByteBoundary !== input.continuationByteBoundary)
+    || (payload.input.reuseLastUser ?? false) !== (input.reuseLastUser ?? false)
     || (input.seed !== undefined && !sameCanonical(payload.input.seed, input.seed))
     || (input.messageIndex !== undefined && payload.input.messageIndex !== input.messageIndex)) {
     throw new PromptSnapshotError('snapshot_mismatch');
@@ -1540,13 +1744,15 @@ function acceptUserTurn(
   const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
   if (provider === undefined) stale();
   if (payload.input.mode === 'normal') {
-    repositories.messages.create({
-      id: randomUUID(),
-      conversationId: payload.input.conversationId,
-      role: 'user',
-      content: payload.input.userText!,
-      activeVariantId: null,
-    });
+    if (payload.input.reuseLastUser !== true) {
+      repositories.messages.create({
+        id: randomUUID(),
+        conversationId: payload.input.conversationId,
+        role: 'user',
+        content: payload.input.userText!,
+        activeVariantId: null,
+      });
+    }
     const revision = repositories.conversations.update(
       payload.input.conversationId,
       payload.input.conversationRevision,
@@ -1563,24 +1769,100 @@ export function createPromptSnapshotService(options: {
   tokenizerRuntime: ServerTokenizerRuntime;
 }): PromptSnapshotService {
   const { database, repositories, tokenizerRuntime } = options;
+  const transientPreviews = new Map<string, { payload: PromptSnapshotPayload; expiresAt: number }>();
+  const isConsumed = (snapshotId: string) => database.sqlite.prepare(`
+    SELECT snapshot_id FROM consumed_generation_snapshots WHERE snapshot_id = ?
+  `).get(snapshotId) !== undefined;
+  const consume = (snapshotId: string) => {
+    try {
+      database.sqlite.prepare(`
+        INSERT INTO consumed_generation_snapshots (snapshot_id, consumed_at) VALUES (?, ?)
+      `).run(snapshotId, new Date().toISOString());
+    } catch {
+      throw new PromptSnapshotError('snapshot_mismatch');
+    }
+  };
   return {
-    async createPreview(input) {
+    async createCandidate(input) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
-      return database.transaction(() => {
-        revalidateManifest(repositories, built.manifest);
-        const id = randomUUID();
+      return { snapshotId: randomUUID(), ...deepJson(built.payload) };
+    },
+    async sealCandidate(input, snapshotId, candidate, patch) {
+      assertSnapshotInput(candidate, input);
+      revalidateManifest(repositories, candidate.entityRevisions);
+      const stop = patch.stop ?? candidate.stop;
+      if (!isStop(stop)) throw new PromptSnapshotError('snapshot_invalid');
+      const decision = deepJson(candidate.tokenizerDecision);
+      const messages = candidate.kind === 'chat' ? patch.messages ?? candidate.messages : undefined;
+      const text = candidate.kind === 'text' ? patch.text ?? candidate.text : undefined;
+      if ((candidate.kind === 'chat' && !isChatMessages(messages))
+        || (candidate.kind === 'text' && typeof text !== 'string')
+        || (candidate.kind === 'chat' && patch.text !== undefined)
+        || (candidate.kind === 'text' && patch.messages !== undefined)) {
+        throw new PromptSnapshotError('snapshot_invalid');
+      }
+      let totalTokens: number;
+      let stopTokens: number;
+      try {
+        totalTokens = candidate.kind === 'chat'
+          ? validCount(await tokenizerRuntime.countMessages(messages!, decision))
+          : validCount(await tokenizerRuntime.countText(text!, decision));
+        stopTokens = 0;
+        for (const value of stop) stopTokens += validCount(await tokenizerRuntime.countText(value, decision));
+      } catch {
+        throw new PromptSnapshotError('tokenizer_error');
+      }
+      const auditedConversation = record(candidate.executable.conversation)
+        ? candidate.executable.conversation
+        : undefined;
+      const maxPromptTokens = finiteNumber(auditedConversation?.maxPromptTokens)
+        ? auditedConversation.maxPromptTokens
+        : undefined;
+      if (maxPromptTokens === undefined || totalTokens + stopTokens > maxPromptTokens) {
+        throw new PromptSnapshotError('context_overflow');
+      }
+      const compiledRequest: ChatRequest | TextRequest = candidate.kind === 'chat'
+        ? { ...deepJson(candidate.compiledRequest as ChatRequest), messages: deepJson(messages!), stop: [...stop] }
+        : { ...deepJson(candidate.compiledRequest as TextRequest), prompt: text!, stop: [...stop] };
+      const { payloadHash: _candidatePayloadHash, ...candidateWithoutPayloadHash } = deepJson(candidate);
+      const withoutPayloadHash: Omit<PromptSnapshotPayload, 'payloadHash'> = {
+        ...candidateWithoutPayloadHash,
+        ...(candidate.kind === 'chat' ? { messages: deepJson(messages!) } : { text }),
+        stop: [...stop],
+        tokenBreakdown: [
+          { source: 'trusted-prompt-hook-final', includedTokens: totalTokens, omittedTokens: 0 },
+          { source: 'trusted-prompt-hook-stop', includedTokens: stopTokens, omittedTokens: 0 },
+        ],
+        totalTokens: totalTokens + stopTokens,
+        compiledRequest: deepJson(compiledRequest),
+        compiledRequestHash: canonicalHash(compiledRequest),
+      };
+      const sealed = parseStoredPayload(deepJson({
+        ...withoutPayloadHash,
+        payloadHash: canonicalHash(withoutPayloadHash),
+      }));
+      database.transaction(() => {
+        revalidateManifest(repositories, sealed.entityRevisions);
         repositories.generationSnapshots.create({
-          id,
-          conversationId: built.payload.input.conversationId,
-          conversationRevision: built.payload.input.conversationRevision,
-          payload: Object.fromEntries(Object.entries(deepJson(built.payload))),
+          id: snapshotId,
+          conversationId: sealed.input.conversationId,
+          conversationRevision: sealed.input.conversationRevision,
+          payload: Object.fromEntries(Object.entries(deepJson(sealed))),
         });
-        return { snapshotId: id, ...deepJson(built.payload) };
       });
+      return { snapshotId, ...deepJson(sealed) };
+    },
+    async createPreview(input) {
+      for (const [id, preview] of transientPreviews) if (preview.expiresAt <= Date.now()) transientPreviews.delete(id);
+      const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
+      revalidateManifest(repositories, built.manifest);
+      const snapshotId = randomUUID();
+      transientPreviews.set(snapshotId, { payload: deepJson(built.payload), expiresAt: Date.now() + 60_000 });
+      return { snapshotId, ...deepJson(built.payload) };
     },
     async createAndAccept(input, snapshotId) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
-      return database.transaction(() => {
+      const accepted = database.transaction(() => {
         revalidateManifest(repositories, built.manifest);
         repositories.generationSnapshots.create({
           id: snapshotId,
@@ -1588,11 +1870,14 @@ export function createPromptSnapshotService(options: {
           conversationRevision: built.payload.input.conversationRevision,
           payload: Object.fromEntries(Object.entries(deepJson(built.payload))),
         });
+        consume(snapshotId);
         const provider = acceptUserTurn(repositories, built.payload);
         return { snapshotId, payload: deepJson(built.payload), provider: deepJson(provider) };
       });
+      return accepted;
     },
     async acceptExisting(input) {
+      if (isConsumed(input.snapshotId)) throw new PromptSnapshotError('snapshot_mismatch');
       const getStoredSnapshot = () => {
         try {
           return repositories.generationSnapshots.get(input.snapshotId);
@@ -1600,17 +1885,36 @@ export function createPromptSnapshotService(options: {
           throw new PromptSnapshotError('snapshot_invalid');
         }
       };
+      const transient = transientPreviews.get(input.snapshotId);
+      if (transient !== undefined && transient.expiresAt <= Date.now()) transientPreviews.delete(input.snapshotId);
+      const liveTransient = transient !== undefined && transient.expiresAt > Date.now() ? transient : undefined;
       const snapshot = getStoredSnapshot();
-      if (snapshot === undefined) throw new PromptSnapshotError('not_found');
+      if (snapshot === undefined && liveTransient === undefined) throw new PromptSnapshotError('not_found');
       let payload: PromptSnapshotPayload;
       try {
-        payload = parseStoredPayload(snapshot.payload);
+        payload = parseStoredPayload(liveTransient?.payload ?? snapshot!.payload);
       } catch (error) {
         if (error instanceof PromptSnapshotError) throw error;
         throw new PromptSnapshotError('snapshot_invalid');
       }
       assertSnapshotInput(payload, input);
-      return database.transaction(() => {
+      const accepted = database.transaction(() => {
+        if (liveTransient !== undefined) {
+          const currentTransient = transientPreviews.get(input.snapshotId);
+          if (currentTransient === undefined || !sameCanonical(currentTransient.payload, payload)) {
+            throw new PromptSnapshotError('snapshot_invalid');
+          }
+          transientPreviews.delete(input.snapshotId);
+          repositories.generationSnapshots.create({
+            id: input.snapshotId,
+            conversationId: payload.input.conversationId,
+            conversationRevision: payload.input.conversationRevision,
+            payload: Object.fromEntries(Object.entries(deepJson(payload))),
+          });
+          consume(input.snapshotId);
+          const provider = acceptUserTurn(repositories, payload);
+          return { snapshotId: input.snapshotId, payload, provider: deepJson(provider) };
+        }
         const current = getStoredSnapshot();
         if (current === undefined) throw new PromptSnapshotError('not_found');
         let currentPayload: PromptSnapshotPayload;
@@ -1622,9 +1926,11 @@ export function createPromptSnapshotService(options: {
         }
         if (!sameCanonical(currentPayload, payload)) throw new PromptSnapshotError('snapshot_invalid');
         assertSnapshotInput(currentPayload, input);
+        consume(input.snapshotId);
         const provider = acceptUserTurn(repositories, currentPayload);
         return { snapshotId: input.snapshotId, payload: currentPayload, provider: deepJson(provider) };
       });
+      return accepted;
     },
     commitTimedState(payload) {
       if (payload.input.mode !== 'normal') return;

@@ -10,6 +10,13 @@ import { ConnectionPage } from './ConnectionPage.js';
 
 const server = setupServer(
   http.get('/api/providers', () => HttpResponse.json([])),
+  http.get('/api/presets', () => HttpResponse.json([])),
+  http.get('/api/settings/generation', () => HttpResponse.json({
+    id: '018f0000-0000-7000-8000-000000000001', revision: 0,
+    createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
+    providerId: null, chatPresetId: null, textPresetId: null,
+    contextPresetId: null, instructPresetId: null, systemPresetId: null,
+  })),
   http.post('/api/providers/probe', () => HttpResponse.json({ ok: true, modelCount: 2 })),
   http.post('/api/providers/models', () => HttpResponse.json({
     models: [{ id: 'deepseek-v4-flash' }, { id: 'deepseek-v4-pro', ownedBy: 'deepseek' }],
@@ -25,6 +32,83 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('ConnectionPage', () => {
+  it('shows how to recover after an active selection was cleared by deletion', async () => {
+    server.use(http.get('/api/settings/generation', () => HttpResponse.json({
+      id: '018f0000-0000-7000-8000-000000000001', revision: 2,
+      createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T01:00:00.000Z',
+      providerId: null, chatPresetId: null, textPresetId: null,
+      contextPresetId: null, instructPresetId: null, systemPresetId: null,
+      selectionNotice: {
+        kind: 'preset', deletedId: '018f0000-0000-7000-8000-000000000202', createdAt: '2026-08-17T01:00:00.000Z',
+      },
+    })));
+    renderWithApp(<ConnectionPage />);
+
+    expect(await screen.findByText(
+      'An active preset selection was cleared after deletion. Choose a replacement and save.',
+    )).not.toBeNull();
+  });
+
+  it('persists every global generation selection behind the loaded revision', async () => {
+    const provider = {
+      id: '018f0000-0000-7000-8000-000000000201', revision: 0,
+      createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
+      name: 'Global API', baseUrl: 'https://global.example/v1', model: 'global-model', apiMode: 'chat' as const, hasApiKey: true,
+    };
+    const presets = [
+      { id: '018f0000-0000-7000-8000-000000000202', revision: 0, name: 'Chat Main', kind: 'chat' },
+      { id: '018f0000-0000-7000-8000-000000000203', revision: 0, name: 'Text Main', kind: 'text' },
+      { id: '018f0000-0000-7000-8000-000000000204', revision: 0, name: 'Context Main', kind: 'context' },
+      { id: '018f0000-0000-7000-8000-000000000205', revision: 0, name: 'Instruct Main', kind: 'instruct' },
+      { id: '018f0000-0000-7000-8000-000000000206', revision: 0, name: 'System Main', kind: 'system' },
+    ];
+    let submitted: unknown;
+    server.use(
+      http.get('/api/providers', () => HttpResponse.json([provider])),
+      http.get('/api/presets', () => HttpResponse.json(presets)),
+      http.patch('/api/settings/generation', async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({
+          id: '018f0000-0000-7000-8000-000000000001', revision: 1,
+          createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T01:00:00.000Z',
+          providerId: provider.id,
+          chatPresetId: presets[0]!.id,
+          textPresetId: presets[1]!.id,
+          contextPresetId: presets[2]!.id,
+          instructPresetId: presets[3]!.id,
+          systemPresetId: presets[4]!.id,
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithApp(<ConnectionPage />);
+
+    await screen.findByRole('option', { name: 'Global API' });
+    await user.selectOptions(screen.getByLabelText('Active Provider'), provider.id);
+    expect((screen.getByRole('button', { name: 'Save active generation configuration' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Select a Chat Preset for the active Chat Provider.')).not.toBeNull();
+    await user.selectOptions(screen.getByLabelText('Chat Preset'), presets[0]!.id);
+    await user.selectOptions(screen.getByLabelText('Text Preset'), presets[1]!.id);
+    await user.selectOptions(screen.getByLabelText('Context Preset'), presets[2]!.id);
+    await user.selectOptions(screen.getByLabelText('Instruct Preset'), presets[3]!.id);
+    await user.selectOptions(screen.getByLabelText('System Preset'), presets[4]!.id);
+    expect((screen.getByRole('button', { name: 'Save active generation configuration' }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Save active generation configuration' }));
+
+    await waitFor(() => expect(submitted).toEqual({
+      revision: 0,
+      patch: {
+        providerId: provider.id,
+        chatPresetId: presets[0]!.id,
+        textPresetId: presets[1]!.id,
+        contextPresetId: presets[2]!.id,
+        instructPresetId: presets[3]!.id,
+        systemPresetId: presets[4]!.id,
+      },
+    }));
+    expect(await screen.findByText('Active generation configuration saved.')).not.toBeNull();
+  });
+
   it('applies provider presets, tests the connection, and selects a detected model', async () => {
     const user = userEvent.setup();
     renderWithApp(<ConnectionPage />);

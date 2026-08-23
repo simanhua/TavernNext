@@ -51,6 +51,8 @@ npx playwright install chromium
 
 ```powershell
 $env:SILLYTAVERN_ORACLE_DIR='D:\CodeX\SillyTavern'
+$env:TAVERNNEXT_REGEX_CARD_PATH='D:\path\to\exact-example-card.png'
+$env:TAVERNNEXT_REGEX_PRESET_PATH='D:\path\to\exact-target-preset.json'
 npm run verify
 ```
 

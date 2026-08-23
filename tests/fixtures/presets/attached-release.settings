@@ -1,0 +1,70 @@
+{
+  "name": "Synthetic Attached Release Preset",
+  "prompts": [
+    { "identifier": "main", "name": "Main", "role": "system", "content": "Synthetic release system", "enabled": true, "system_prompt": true },
+    { "identifier": "chatHistory", "name": "Chat history", "marker": true, "system_prompt": true }
+  ],
+  "prompt_order": [
+    { "character_id": 100000, "order": [
+      { "identifier": "main", "enabled": true },
+      { "identifier": "chatHistory", "enabled": true }
+    ] }
+  ],
+  "temperature": 0.4,
+  "extensions": {
+    "SPreset": {
+      "ChatSquash": {
+        "enabled": true,
+        "role": "user",
+        "user_prefix": "\n\nHuman:",
+        "user_suffix": "",
+        "char_prefix": "\n\nAssistant:",
+        "char_suffix": "",
+        "prefix_system": "",
+        "suffix_system": "",
+        "enable_squashed_separator": false,
+        "enable_stop_string": true,
+        "stop_string": "Participant:",
+        "squashed_post_script_enable": true,
+        "squashed_post_script": "content => content.replaceAll('Human:', 'Participant:').replaceAll('Assistant:', 'Recorder:')"
+      },
+      "RegexBinding": { "enabled": true },
+      "MacroNest": false,
+      "ToolBindings": false
+    },
+    "regex_scripts": [
+      { "id": "p0", "scriptName": "Preset 0", "findRegex": "/NEVER_0/g", "replaceString": "", "placement": [2] },
+      { "id": "p1", "scriptName": "Preset 1", "findRegex": "/NEVER_1/g", "replaceString": "", "placement": [2] },
+      { "id": "p2", "scriptName": "Preset 2", "findRegex": "/NEVER_2/g", "replaceString": "", "placement": [2] },
+      { "id": "p3", "scriptName": "Preset 3", "findRegex": "/NEVER_3/g", "replaceString": "", "placement": [2] },
+      { "id": "p4", "scriptName": "Preset 4", "findRegex": "/NEVER_4/g", "replaceString": "", "placement": [2] },
+      { "id": "p5", "scriptName": "Preset 5", "findRegex": "/NEVER_5/g", "replaceString": "", "placement": [2] },
+      { "id": "p6", "scriptName": "Preset 6", "findRegex": "/NEVER_6/g", "replaceString": "", "placement": [2] },
+      { "id": "p7", "scriptName": "Preset 7", "findRegex": "/NEVER_7/g", "replaceString": "", "placement": [2] },
+      { "id": "p8", "scriptName": "Preset 8", "findRegex": "/NEVER_8/g", "replaceString": "", "placement": [2] }
+    ],
+    "tavern_helper": {
+      "scripts": [
+        {
+          "type": "script",
+          "id": "spreset",
+          "name": "Synthetic SPreset RegexBinding",
+          "enabled": true,
+          "content": "SPreset RegexBinding",
+          "button": { "enabled": true, "buttons": [] },
+          "data": {}
+        },
+        {
+          "type": "script",
+          "id": "reasoning",
+          "name": "Synthetic 思维链",
+          "enabled": true,
+          "content": "ReasoningRegexStyler",
+          "button": { "enabled": true, "buttons": [] },
+          "data": {}
+        }
+      ],
+      "variables": {}
+    }
+  }
+}

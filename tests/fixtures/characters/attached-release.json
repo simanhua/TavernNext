@@ -1,0 +1,94 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Synthetic Attached Release",
+    "description": "Original release-gate Character fixture.",
+    "personality": "Deterministic",
+    "scenario": "A local compatibility gate.",
+    "first_mes": "<gametxt>Release greeting</gametxt>\n<StatusPlaceHolderImpl/>",
+    "mes_example": "",
+    "creator_notes": "Created for TavernNext tests.",
+    "system_prompt": "Stay deterministic.",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": ["synthetic", "release-gate"],
+    "creator": "TavernNext tests",
+    "character_version": "1.0.0",
+    "character_book": {
+      "name": "Synthetic Attached Release Book",
+      "entries": [
+        {
+          "id": 1,
+          "keys": [],
+          "secondary_keys": [],
+          "comment": "[InitVar] Release state",
+          "content": "world:\n  location: greeting\nscore: 1",
+          "constant": false,
+          "selective": true,
+          "enabled": false,
+          "position": "before_char",
+          "insertion_order": 1,
+          "extensions": {}
+        }
+      ]
+    },
+    "extensions": {
+      "regex_scripts": [
+        {
+          "id": "hide-status",
+          "scriptName": "Hide status from model",
+          "findRegex": "<StatusPlaceHolderImpl/>",
+          "replaceString": "",
+          "placement": [2],
+          "disabled": false,
+          "promptOnly": true,
+          "markdownOnly": false
+        },
+        {
+          "id": "status-panel",
+          "scriptName": "Release status panel",
+          "findRegex": "<StatusPlaceHolderImpl/>",
+          "replaceString": "```\n<body><div id=\"synthetic-status\">Synthetic status</div></body>\n```",
+          "placement": [2],
+          "disabled": false,
+          "promptOnly": false,
+          "markdownOnly": true
+        },
+        {
+          "id": "hide-update",
+          "scriptName": "Hide update from model",
+          "findRegex": "/<UpdateVariable>[\\s\\S]*?<\\/UpdateVariable>/gm",
+          "replaceString": "",
+          "placement": [2],
+          "disabled": false,
+          "promptOnly": true,
+          "markdownOnly": false
+        }
+      ],
+      "tavern_helper": {
+        "scripts": [
+          {
+            "type": "script",
+            "id": "mvu",
+            "name": "MVU beta",
+            "enabled": true,
+            "content": "MagVarUpdate",
+            "button": { "enabled": true, "buttons": [] },
+            "data": {}
+          },
+          {
+            "type": "script",
+            "id": "release-actions",
+            "name": "Release actions",
+            "enabled": true,
+            "content": "eventOn(getButtonEvent('Release Action'), async () => { await createChatMessages([{ role: 'user', message: 'Button-created request' }]); await triggerSlash('/trigger'); });",
+            "button": { "enabled": true, "buttons": [{ "name": "Release Action", "visible": true }] },
+            "data": {}
+          }
+        ],
+        "variables": {}
+      }
+    }
+  }
+}

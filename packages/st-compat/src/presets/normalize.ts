@@ -129,6 +129,7 @@ export interface PresetImportPreview {
   kind: PresetKind | null;
   candidates: PresetKind[];
   settings: Record<string, unknown>;
+  extensions: Record<string, unknown>;
   unknownFields: Record<string, unknown>;
   rawPayload: Record<string, unknown>;
   wrapperKey?: 'preset' | 'settings';
@@ -177,6 +178,9 @@ export function decodeInspectedPreset(bytes: Uint8Array, fileName: string): Omit
   }
   const executable = executablePresetFields(kind, validated);
   const settings = schemaAwareProviderFilter(kind, executable.settings);
+  const extensions = record(parsed.document.extensions) === undefined
+    ? {}
+    : structuredClone(record(parsed.document.extensions)!);
   const knownRawFields = schemaAwareProviderFilter(kind, executable.knownRawFields);
   const unknownFields = compatibilityFields(parsed.document, knownRawFields);
   if (parsed.wrapperKey !== undefined) {
@@ -195,6 +199,7 @@ export function decodeInspectedPreset(bytes: Uint8Array, fileName: string): Omit
     kind,
     candidates,
     settings,
+    extensions,
     unknownFields,
     rawPayload: structuredClone(parsed.root),
     ...(parsed.wrapperKey === undefined ? {} : { wrapperKey: parsed.wrapperKey }),
@@ -203,7 +208,7 @@ export function decodeInspectedPreset(bytes: Uint8Array, fileName: string): Omit
 
 function emptyPresetPreview(): PresetImportPreview {
   return {
-    name: '', kind: null, candidates: [], settings: {}, unknownFields: {}, rawPayload: {}, warnings: [], blockingErrors: [],
+    name: '', kind: null, candidates: [], settings: {}, extensions: {}, unknownFields: {}, rawPayload: {}, warnings: [], blockingErrors: [],
   };
 }
 

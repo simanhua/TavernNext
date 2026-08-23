@@ -467,6 +467,8 @@ legend { padding: 0 .45rem; color: var(--jade-300); font-family: Georgia, "Noto 
 .message-content code { border: 1px solid rgb(133 171 151 / 18%); border-radius: 3px; padding: .12em .34em; color: #e7cf9b; background: rgb(3 13 11 / 72%); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; }
 .message-content pre { max-width: 100%; overflow-x: auto; margin: .8rem 0; border: 1px solid rgb(133 171 151 / 22%); border-radius: 3px; padding: .85rem 1rem; background: #050e0c; }
 .message-content pre code { border: 0; padding: 0; color: #d7e0da; background: transparent; font-size: .86rem; white-space: pre; }
+.message-content pre:has(> .interactive-message-frame) { overflow: visible; border: 0; padding: 0; background: transparent; }
+.interactive-message-frame { display: block; width: 100%; min-height: 28rem; border: 1px solid rgb(133 171 151 / 26%); border-radius: 4px; background: #fff; }
 .message-content table { display: block; width: max-content; max-width: 100%; overflow-x: auto; margin: .8rem 0; border-spacing: 0; border-collapse: collapse; }
 .message-content th,
 .message-content td { border: 1px solid rgb(133 171 151 / 26%); padding: .45rem .68rem; text-align: left; }

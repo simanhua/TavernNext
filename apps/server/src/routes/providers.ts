@@ -197,6 +197,7 @@ export function registerProviderRoutes(
     try {
       const result = database.transaction(() => {
         const deleted = repository.delete(current.id, revision);
+        if (deleted.ok) repositories.globalGenerationConfig.clearProvider(current.id);
         if (deleted.ok && current.secretRef?.startsWith('browser:')) {
           credentialChange = credentials.remove(current.secretRef);
         }

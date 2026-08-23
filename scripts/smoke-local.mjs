@@ -104,13 +104,17 @@ try {
       prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }] }],
     },
   });
+  await inject('PATCH', '/api/settings/generation', {
+    revision: 0,
+    patch: { providerId, chatPresetId: presetId },
+  });
   await inject('POST', '/api/conversations', {
     id: conversationId,
     characterId,
     personaId,
     title: 'Local smoke chat',
-    providerId,
-    presetId,
+    maxPromptTokens: 8_192,
+    maxResponseTokens: 64,
   });
   const generation = await inject('POST', `/api/conversations/${conversationId}/generations`, {
     conversationRevision: 0,

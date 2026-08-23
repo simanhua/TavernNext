@@ -415,7 +415,10 @@ export function registerAvatarRoutes(
   registerOwnerAvatarRoutes(app, database, repositories, dataDir, 'characters', {
     get: repositories.characters.get,
     updateAvatar: (id, revision, avatarPath) => repositories.characters.update(id, revision, { avatarPath }),
-    serialize: characterDetail,
+    serialize: (character) => characterDetail(
+      character,
+      repositories.extensionAssets.listByOwner('character', character.id),
+    ),
   }, beforeCommit, maxAvatarBytes, legacyAfterFirstChunk);
   registerOwnerAvatarRoutes(app, database, repositories, dataDir, 'personas', {
     get: repositories.personas.get,

@@ -42,7 +42,7 @@ export function registerImportRoutes(app: FastifyInstance, imports: ImportServic
       return reply.code(201).send(imports.commit(token));
     } catch (error) {
       if (error instanceof ImportTokenError) return reply.code(error.statusCode).send({ error: error.code });
-      if (error instanceof ImportCommitError) return reply.code(500).send({ error: 'import_commit_failed' });
+      if (error instanceof ImportCommitError) return reply.code(error.statusCode).send({ error: error.code });
       throw error;
     }
   });

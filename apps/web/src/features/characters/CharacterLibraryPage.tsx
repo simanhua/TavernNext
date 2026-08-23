@@ -3,11 +3,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useFieldArray, useForm, type Control, type UseFormRegister } from 'react-hook-form';
 import { z } from 'zod';
-import { ApiError, api, errorCode, type CharacterView } from '../../api/client.js';
+import {
+  ApiError,
+  api,
+  errorCode,
+  type CharacterView,
+} from '../../api/client.js';
 import { ImportDialog } from '../imports/ImportDialog.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
+import { AttachedExtensionInventory } from '../shared/AttachedExtensionInventory.js';
 import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
 import { useI18n } from '../../app/i18n.js';
 
@@ -227,6 +233,7 @@ export function CharacterLibraryPage() {
           <form onSubmit={form.handleSubmit((values) => void persist(values))}>
             <h2>{creating ? t('New Character') : selected?.name}</h2>
             <CompatibilitySummary value={selected?.compatibilitySummary} />
+            {selected === undefined ? null : <AttachedExtensionInventory value={selected.attachedExtensions} />}
             {selected?.avatarUrl === undefined ? null : <img className="avatar-preview" src={selected.avatarUrl} alt={language === 'en' ? `${selected.name} avatar` : `${selected.name} ${t('Character avatar')}`} />}
             <label>{t('Name')}<input {...form.register('name')} /></label>
             <label>{t('Description')}<textarea {...form.register('description')} /></label>

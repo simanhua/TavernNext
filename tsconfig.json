@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/domain" },
+    { "path": "./packages/extension-runtime" },
     { "path": "./packages/st-compat" },
     { "path": "./packages/provider-openai-compatible" },
     { "path": "./packages/tokenizer-engine" },

@@ -5,7 +5,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { RouterProvider, createMemoryRouter } from 'react-router';
+import { RouterProvider, createMemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { appRoutes } from './router.js';
 import { I18nProvider } from './i18n.js';
@@ -17,6 +17,15 @@ const server = setupServer(
   http.get('/api/worldbooks', () => HttpResponse.json([])),
   http.get('/api/providers', () => HttpResponse.json([])),
   http.get('/api/conversations', () => HttpResponse.json([])),
+  http.get('/api/settings/generation', () => HttpResponse.json({
+    id: '018f0000-0000-7000-8000-000000000001', revision: 0,
+    providerId: null, chatPresetId: null, textPresetId: null,
+    contextPresetId: null, instructPresetId: null, systemPresetId: null, selectionNotice: null,
+  })),
+  http.get('/api/settings/generation/active-resource-context', () => HttpResponse.json({
+    globalGenerationConfigRevision: 0, mode: null, primaryPreset: null,
+    conversation: null, character: null, owners: [],
+  })),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -24,7 +33,7 @@ afterEach(() => cleanup());
 afterAll(() => server.close());
 
 describe('application routes', () => {
-  it('navigates to all six final MVP destinations', async () => {
+  it('navigates to all product destinations', async () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/characters'] });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -36,6 +45,7 @@ describe('application routes', () => {
       ['Personas', 'Personas'],
       ['Presets', 'Presets'],
       ['Worldbooks', 'Worldbooks'],
+      ['Attached Resources', 'Attached Resources'],
       ['Connection Settings', 'Connection'],
     ] as const;
     for (const [linkName, headingName] of destinations) {

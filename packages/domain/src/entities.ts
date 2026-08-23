@@ -118,17 +118,74 @@ export const PresetSchema = MutableEntitySchema.extend({
   name: z.string().min(1),
   kind: PresetKindSchema,
   settings: z.record(z.string(), z.unknown()).default({}),
+  extensions: z.record(z.string(), z.unknown()).default({}),
 }).extend(WithCompatibilitySchema.shape);
+
+export const ExtensionOwnerKindSchema = z.enum(['character', 'preset']);
+export const ExtensionAssetKindSchema = z.enum(['regex', 'tavern_helper']);
+export const ExtensionAssetSchema = MutableEntitySchema.extend({
+  ownerKind: ExtensionOwnerKindSchema,
+  ownerId: DomainIdSchema,
+  kind: ExtensionAssetKindSchema,
+  sourceKey: z.string().min(1),
+  ordinal: z.number().int().nonnegative(),
+  enabled: z.boolean(),
+  payload: z.unknown(),
+  diagnostics: z.array(z.string()).default([]),
+});
+export const ExtensionStateScopeSchema = z.enum([
+  'global', 'character', 'preset', 'conversation', 'message-variant', 'script',
+]);
+export const ExtensionStateSchema = MutableEntitySchema.extend({
+  scope: ExtensionStateScopeSchema,
+  scopeId: z.string().min(1).max(1024),
+  value: z.record(z.string(), z.unknown()).default({}),
+});
+export const ExtensionTrustGrantSchema = MutableEntitySchema.extend({
+  ownerKind: ExtensionOwnerKindSchema,
+  ownerId: DomainIdSchema,
+  bundleDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  riskVersion: z.number().int().positive(),
+  grantedAt: TimestampSchema,
+});
+export const ExtensionRemoteResourceSchema = MutableEntitySchema.extend({
+  ownerKind: ExtensionOwnerKindSchema,
+  ownerId: DomainIdSchema,
+  url: z.string().url(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  contentBase64: z.string(),
+  mediaType: z.string().min(1),
+  fetchedAt: TimestampSchema,
+});
+export const ExtensionAuditEventSchema = MutableEntitySchema.extend({
+  ownerKind: ExtensionOwnerKindSchema,
+  ownerId: DomainIdSchema,
+  event: z.enum(['remote_refresh', 'trust_granted', 'trust_revoked', 'trust_invalidated', 'remote_fetch_failed']),
+  detail: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const GLOBAL_GENERATION_CONFIG_ID = '018f0000-0000-7000-8000-000000000001' as const;
+export const GlobalGenerationSelectionSchema = z.object({
+  providerId: DomainIdSchema.nullable(),
+  chatPresetId: DomainIdSchema.nullable(),
+  textPresetId: DomainIdSchema.nullable(),
+  contextPresetId: DomainIdSchema.nullable(),
+  instructPresetId: DomainIdSchema.nullable(),
+  systemPresetId: DomainIdSchema.nullable(),
+});
+export const GlobalGenerationSelectionNoticeSchema = z.object({
+  kind: z.enum(['provider', 'preset']),
+  deletedId: DomainIdSchema,
+  createdAt: TimestampSchema,
+});
+export const GlobalGenerationConfigSchema = MutableEntitySchema
+  .extend(GlobalGenerationSelectionSchema.shape)
+  .extend({ selectionNotice: GlobalGenerationSelectionNoticeSchema.nullable() });
 
 export const ConversationSchema = MutableEntitySchema.extend({
   characterId: DomainIdSchema,
   personaId: DomainIdSchema,
-  providerId: DomainIdSchema.optional(),
   title: z.string().min(1),
-  presetId: DomainIdSchema.optional(),
-  contextPresetId: DomainIdSchema.optional(),
-  instructPresetId: DomainIdSchema.optional(),
-  systemPresetId: DomainIdSchema.optional(),
   worldbookIds: z.array(DomainIdSchema).default([]),
   maxPromptTokens: z.number().int().nonnegative().max(1_000_000).default(128_000),
   maxResponseTokens: z.number().int().nonnegative().max(384_000).default(32_768),
@@ -193,11 +250,21 @@ export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
 });
 
 export type Character = z.infer<typeof CharacterSchema>;
+export type ExtensionOwnerKind = z.infer<typeof ExtensionOwnerKindSchema>;
+export type ExtensionAssetKind = z.infer<typeof ExtensionAssetKindSchema>;
+export type ExtensionAsset = z.infer<typeof ExtensionAssetSchema>;
+export type ExtensionStateScope = z.infer<typeof ExtensionStateScopeSchema>;
+export type ExtensionState = z.infer<typeof ExtensionStateSchema>;
+export type ExtensionTrustGrant = z.infer<typeof ExtensionTrustGrantSchema>;
+export type ExtensionRemoteResource = z.infer<typeof ExtensionRemoteResourceSchema>;
+export type ExtensionAuditEvent = z.infer<typeof ExtensionAuditEventSchema>;
 export type Persona = z.infer<typeof PersonaSchema>;
 export type Worldbook = z.infer<typeof WorldbookSchema>;
 export type WorldbookEntry = z.infer<typeof WorldbookEntrySchema>;
 export type PresetKind = z.infer<typeof PresetKindSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
+export type GlobalGenerationConfig = z.infer<typeof GlobalGenerationConfigSchema>;
+export type GlobalGenerationSelection = z.infer<typeof GlobalGenerationSelectionSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageVariant = z.infer<typeof MessageVariantSchema>;

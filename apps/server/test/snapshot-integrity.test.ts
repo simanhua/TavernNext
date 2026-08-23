@@ -7,8 +7,9 @@ import { canonicalHash } from '../src/services/prompt-snapshot-service.js';
 import {
   closePromptIntegrationContexts,
   createPromptIntegrationContext,
+  integrationIds,
+  previewPayload,
   requestGeneration,
-  requestPreview,
   seedFullPromptGraph,
 } from './prompt-integration-fixtures.js';
 
@@ -30,6 +31,19 @@ function recomputePublicHashes(payload: Record<string, unknown>): void {
   const { payloadHash: ignoredPayloadHash, ...unsigned } = payload;
   void ignoredPayloadHash;
   payload.payloadHash = canonicalHash(unsigned);
+}
+
+async function requestSealedCandidate(app: ReturnType<typeof createApp>) {
+  const candidate = (await app.inject({
+    method: 'POST', url: `/api/conversations/${integrationIds.conversation}/generation-candidates`,
+    payload: previewPayload(),
+  })).json();
+  const sealed = await app.inject({
+    method: 'POST', url: `/api/generation-candidates/${candidate.candidateId as string}/seal`,
+    payload: { patch: {} },
+  });
+  expect(sealed.statusCode).toBe(201);
+  return sealed.json() as { snapshotId: string };
 }
 
 afterEach(async () => {
@@ -60,7 +74,7 @@ describe('snapshot integrity trust anchor', () => {
       appOptions: { snapshotIntegrityKey: testIntegrityKey },
     });
     seedFullPromptGraph(repositories);
-    const preview = (await requestPreview(app)).json();
+    const preview = await requestSealedCandidate(app);
     const beforeMessages = repositories.messages.list();
     const beforeTimedState = repositories.worldbookRuntimeStates.list();
     const row = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(preview.snapshotId);

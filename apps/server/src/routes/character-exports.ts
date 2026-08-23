@@ -5,6 +5,8 @@ import {
   decodeInspectedCharacter,
   exportCharacter,
   exportCharacterBook,
+  overlayAttachedExtensionAssets,
+  overlayAttachedVariables,
   type CharacterAuxiliaryAsset,
   type CharacterExportFormat,
   type CharacterUnknownFields,
@@ -137,9 +139,17 @@ export function registerCharacterExportRoutes(
           ...structuredClone(character.extensions),
         };
         const existingDepthPrompt = record(mergedExtensions.depth_prompt) ?? {};
-        const exportExtensions = character.depthPrompt !== '' || Object.hasOwn(mergedExtensions, 'depth_prompt')
+        const withDepthPrompt = character.depthPrompt !== '' || Object.hasOwn(mergedExtensions, 'depth_prompt')
           ? { ...mergedExtensions, depth_prompt: { ...existingDepthPrompt, prompt: character.depthPrompt } }
           : mergedExtensions;
+        const assetExtensions = overlayAttachedExtensionAssets(
+          withDepthPrompt,
+          repositories.extensionAssets.listByOwner('character', character.id),
+        );
+        const runtimeState = repositories.extensionStates.getByScope('character', character.id);
+        const exportExtensions = runtimeState === undefined
+          ? assetExtensions
+          : overlayAttachedVariables(assetExtensions, runtimeState.value);
         const artifact = await exportCharacter({
           character: {
             name: character.name,

@@ -68,3 +68,34 @@ Prompt Preview reports activated and excluded entries, recursion steps, outlet c
 ## Explicit MVP exclusions
 
 The MVP excludes group chat, conversation branches/checkpoints, impersonation, attachments/RAG, image generation, TTS, STscript, SillyTavern extensions, cloud sync, an installer, and auto-update. It also does not run SillyTavern itself: the optional 1.18.0 checkout is a read-only release oracle only.
+
+## Attached Extension Resource compatibility
+
+The accepted owner order is primary Preset then Character. Raw messages remain canonical; prompt and display projections are recomputed from Attached Extension Resources, while explicit trusted message APIs remain intentional canonical mutations.
+
+Supported regex behavior includes user-input and AI-output placement, prompt-only and display-only mode, Markdown-only gating, depth, edit/run-on-edit, enablement, macro substitution, captures and named captures, trim strings, replacement substitution, deterministic owner order, worker deadlines, and fail-open traces. Completed display-projected HTML fences may create lazy same-origin message frontends; streaming and raw model fences stay inert.
+
+Supported trusted runtime behavior includes lifecycle events and cleanup, script buttons, pinned static remote entries, parent/document access after a Trust Grant, all six Runtime State scopes, and the following complete Tavern Helper bridge inventory. `npm run verify:compat` checks every method exported by `TAVERN_HELPER_BRIDGED_METHODS` remains named here.
+
+<!-- tavern-helper-methods:start -->
+| Surface | Supported methods |
+| --- | --- |
+| Messages | `getChatMessages`, `setChatMessages`, `createChatMessages`, `deleteChatMessages`, `getLastMessageId`, `getMessageId` |
+| Runtime State | `getVariables`, `getAllVariables`, `replaceVariables`, `updateVariablesWith`, `insertVariables`, `deleteVariable` |
+| Regex | `getTavernRegexes`, `replaceTavernRegexes` |
+| Worldbooks | `getWorldbookNames`, `getWorldbook`, `getLorebookEntries`, `updateLorebookEntriesWith` |
+| Macros and prompt injection | `substitudeMacros`, `injectPrompts`, `uninjectPrompts` |
+| Generation | `generate`, `generateRaw`, `triggerSlash` |
+<!-- tavern-helper-methods:end -->
+
+`triggerSlash` is the accepted `/trigger` surface. The browser compatibility globals additionally support `eventOn`, `eventOnce`, `eventEmit`, `eventEmitAndWait`, `eventRemoveListener`, `eventClearEvent`, `eventClearAll`, `getScriptId`, `getButtonEvent`, `getScriptButtons`, `replaceScriptButtons`, `getTavernHelperVersion`, `getTavernVersion`, the accepted `SillyTavern.getContext` reasoning/settings facade, and the reviewed Zod, Vue, and Lodash helper globals. Repeated prompt hooks reuse the initialized Compatibility Runtime. A script that registers an accepted prompt event is permanently prompt-only for that runtime epoch, so no later Promise, timer, DOM event, or button callback can regain a mutating bridge; an individual hung listener also fails open before the outer generation deadline. Any unlisted Tavern Helper method and every `TavernNext.call` method fail with the stable `not_supported` code. Arbitrary STscript, plugin installation, MacroNest, ToolBindings, a general SillyTavern DOM/settings clone, group chat, attachments/RAG, image generation, TTS, and cloud/plugin synchronization are explicitly not supported.
+
+Interactive message frontends support the accepted `$().load(...)` shape only through a variant-bound server route. The requested URL must exist in a current active owner's approved remote cache under a current Trust Grant; unapproved URLs fail with `runtime_not_authorized`. Adjacent real-card HTML fences such as `</details>```<body>` are normalized only after a display regex has enabled interactive rendering. Large immutable generation snapshots are gzip-compressed inside the repository storage boundary while their external payload, integrity tag, and legacy uncompressed reads remain unchanged.
+
+The target SPreset subset supports RegexBinding through the shared Preset-first projection plus enabled ChatSquash affixes, literal/regex separators, stop strings, the reviewed custom post-script, and the accepted reasoning extraction/DOM facade. Provider, endpoint, model, credentials, samplers, and server token limits cannot be changed by these hooks.
+
+## Trust and remote-code risk
+
+Import never executes Attached Extension Resources. A Trust Grant is bound to the exact executable digest; code, order, enablement, approved remote entry hashes, or executable SPreset configuration changes invalidate it. Runtime State and presentation metadata do not.
+
+The remote entry hash is an audit and reproducibility record, not a network sandbox. Once same-origin trust is granted, code can dynamically load unlisted resources or access parent application state. Ordinary CI therefore contains only original synthetic CC0 fixtures and never downloads third-party bundles. The optional local oracle requires an explicitly configured approved-cache manifest, binds it to hashes of the exact reviewed Character and Preset, verifies every cached file by SHA-256 before and after the run, and performs no live download.

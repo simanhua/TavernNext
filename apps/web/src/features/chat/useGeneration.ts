@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Conversation, MessageView } from '../../api/client.js';
 import { api } from '../../api/client.js';
 import { readGenerationEvents } from '../../api/generation-stream.js';
+import { runTrustedPromptHooks } from '../extensions/TrustedPromptHooks.js';
 
 type GenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
 type NonNormalMode = 'swipe' | 'regenerate' | 'continue';
@@ -58,6 +59,7 @@ export function useGeneration() {
     if (active.current) return 'busy';
     active.current = true;
     let accepted = false;
+    let candidateId: string | undefined;
     const controller = new AbortController();
     activeRequest.current = controller;
     setStatus('starting');
@@ -72,9 +74,24 @@ export function useGeneration() {
     generationId.current = null;
     stopRequested.current = false;
     try {
-      const response = await api.startGeneration(conversation, input.mode === 'normal'
+      const requestInput: { mode: 'normal' | NonNormalMode; userText?: string } = input.mode === 'normal'
         ? { mode: 'normal', userText: input.userText }
-        : { mode: input.mode }, controller.signal);
+        : { mode: input.mode };
+      const candidate = await api.createGenerationCandidate(conversation, requestInput, controller.signal);
+      candidateId = candidate.candidateId;
+      const patch = await runTrustedPromptHooks({
+        kind: candidate.kind,
+        messages: candidate.messages,
+        text: candidate.text,
+        stop: candidate.stop,
+        spreset: candidate.spreset,
+      }, false, { signal: controller.signal, timeoutMs: 10_000 });
+      const sealed = await api.sealGenerationCandidate(candidate.candidateId, patch, controller.signal);
+      candidateId = undefined;
+      const response = await api.startGeneration(conversation, {
+        ...requestInput,
+        snapshotId: sealed.snapshotId,
+      }, controller.signal);
       let terminal = false;
       for await (const event of readGenerationEvents(response, controller.signal)) {
         if (!mounted.current) return accepted ? 'accepted' : 'rejected';
@@ -106,6 +123,7 @@ export function useGeneration() {
       if (!terminal) throw new Error('Generation stream ended without a terminal event');
       return accepted ? 'accepted' : 'rejected';
     } catch (generationError) {
+      if (candidateId !== undefined) void api.discardGenerationCandidate(candidateId).catch(() => undefined);
       if (!mounted.current || controller.signal.aborted) return accepted ? 'accepted' : 'rejected';
       setError(generationError instanceof Error ? generationError.message : 'generation_failed');
       await refreshAuthoritativeState(conversation.id).catch(() => undefined);

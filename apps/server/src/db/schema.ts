@@ -46,20 +46,56 @@ export const providerProfiles = sqliteTable('provider_profiles', {
   ...entityColumns,
   name: text('name').notNull(),
 });
+export const globalGenerationConfigurations = sqliteTable('global_generation_config', {
+  ...entityColumns,
+});
+export const extensionAssets = sqliteTable('extension_assets', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+  kind: text('kind').notNull(),
+  sourceKey: text('source_key').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+}, (table) => [
+  index('extension_assets_owner_kind_id_idx').on(table.ownerKind, table.ownerId),
+  index('extension_assets_owner_kind_id_kind_ordinal_idx').on(
+    table.ownerKind, table.ownerId, table.kind, table.ordinal,
+  ),
+]);
+export const extensionStates = sqliteTable('extension_states', {
+  ...entityColumns,
+  scope: text('scope').notNull(),
+  scopeId: text('scope_id').notNull(),
+}, (table) => [
+  index('extension_states_scope_id_idx').on(table.scope, table.scopeId),
+]);
+export const extensionTrustGrants = sqliteTable('extension_trust_grants', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+}, (table) => [index('extension_trust_grants_owner_idx').on(table.ownerKind, table.ownerId)]);
+export const extensionRemoteResources = sqliteTable('extension_remote_resources', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+  url: text('url').notNull(),
+  sha256: text('sha256').notNull(),
+}, (table) => [index('extension_remote_resources_owner_idx').on(table.ownerKind, table.ownerId)]);
+export const extensionAuditEvents = sqliteTable('extension_audit_events', {
+  ...entityColumns,
+  ownerKind: text('owner_kind').notNull(),
+  ownerId: text('owner_id').notNull(),
+  event: text('event').notNull(),
+}, (table) => [index('extension_audit_events_owner_idx').on(table.ownerKind, table.ownerId)]);
 export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),
   personaId: text('persona_id').notNull().references(() => personas.id),
-  providerId: text('provider_id').references(() => providerProfiles.id),
-  presetId: text('preset_id').references(() => presets.id),
-  contextPresetId: text('context_preset_id').references(() => presets.id),
-  instructPresetId: text('instruct_preset_id').references(() => presets.id),
-  systemPresetId: text('system_preset_id').references(() => presets.id),
   title: text('title').notNull(),
 }, (table) => [
   index('conversations_character_id_idx').on(table.characterId),
   index('conversations_persona_id_idx').on(table.personaId),
-  index('conversations_provider_id_idx').on(table.providerId),
 ]);
 export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),

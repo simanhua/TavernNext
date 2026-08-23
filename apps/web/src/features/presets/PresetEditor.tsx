@@ -4,6 +4,7 @@ import { useFieldArray, useForm, useWatch, type Control, type UseFormRegister } 
 import { z } from 'zod';
 import { ApiError, api, errorCode, type PresetKind, type PresetView } from '../../api/client.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
+import { AttachedExtensionInventory } from '../shared/AttachedExtensionInventory.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { hasPatchFields, minimalPatch, minimalRecordPatch } from '../shared/minimalPatch.js';
@@ -403,6 +404,18 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
     <form className="preset-editor" onSubmit={form.handleSubmit((values) => void submit(values))}>
       <h2>{creating ? t('New Preset') : preset?.name}</h2>
       <CompatibilitySummary value={preset?.compatibilitySummary} />
+      {preset === undefined ? null : (
+        <>
+          <AttachedExtensionInventory value={preset.attachedExtensions} />
+          <aside className="compatibility-summary" aria-label={t('SPreset compatibility data')}>
+            <strong>{t('SPreset compatibility data')}</strong>
+            <span>{t(preset.spreset.present ? 'Present' : 'Not present')}</span>
+            {Object.entries(preset.spreset.features).map(([feature, enabled]) => (
+              <span key={feature}>{feature}: {t(enabled ? 'Enabled' : 'Disabled')}</span>
+            ))}
+          </aside>
+        </>
+      )}
       <label>{t('Name')}<input {...form.register('name')} /></label>
       {creating ? <label>{t('Kind')}<select {...form.register('kind')}>{kinds.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label> : <p>{t('Family: {{kind}}', { kind: t(preset?.kind ?? '') })}</p>}
       {currentKind === 'chat' ? (

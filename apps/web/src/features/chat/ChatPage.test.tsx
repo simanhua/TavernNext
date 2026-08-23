@@ -46,15 +46,20 @@ const chatPreset = {
   id: ids.chatPreset, revision: 0, createdAt: now, updatedAt: now,
   name: 'Role Chat', kind: 'chat', settings: {},
 };
+const globalGenerationConfig = {
+  id: '018f0000-0000-7000-8000-000000000001', revision: 0, createdAt: now, updatedAt: now,
+  providerId: ids.provider, chatPresetId: ids.chatPreset, textPresetId: null,
+  contextPresetId: null, instructPresetId: null, systemPresetId: null, selectionNotice: null,
+};
 const otherConversation: Conversation = {
   id: ids.otherConversation, revision: 0, createdAt: now, updatedAt: now,
-  characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
+  characterId: ids.character, personaId: ids.persona,
   title: 'Saved chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
 const conversation: Conversation = {
   id: ids.conversation, revision: 0, createdAt: now, updatedAt: now,
-  characterId: ids.character, personaId: ids.persona, providerId: ids.provider, presetId: ids.chatPreset,
+  characterId: ids.character, personaId: ids.persona,
   title: 'Aster chat', worldbookIds: [], maxPromptTokens: 4096, maxResponseTokens: 4096,
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 };
@@ -118,14 +123,27 @@ const server = setupServer(
   http.get('/api/personas', () => HttpResponse.json([persona])),
   http.get('/api/providers', () => HttpResponse.json([provider])),
   http.get('/api/presets', () => HttpResponse.json([chatPreset])),
+  http.get('/api/settings/generation', () => HttpResponse.json(globalGenerationConfig)),
+  http.get('/api/settings/generation/active-resource-context', ({ request }) => {
+    const conversationId = new URL(request.url).searchParams.get('conversationId');
+    return HttpResponse.json({
+      globalGenerationConfigRevision: globalGenerationConfig.revision,
+      mode: 'chat',
+      primaryPreset: null,
+      conversation: conversationId === null ? null : { id: conversationId, revision: 0 },
+      character: null,
+      owners: [],
+    });
+  }),
   http.get('/api/conversations', () => HttpResponse.json(conversations)),
   http.post('/api/conversations', async ({ request }) => {
     if (conversationCreateFailure) return HttpResponse.error();
     const body = await request.json() as Record<string, unknown>;
     expect(body).toMatchObject({
       characterId: ids.character, personaId: ids.persona,
-      providerId: ids.provider, presetId: ids.chatPreset,
     });
+    expect(body).not.toHaveProperty('providerId');
+    expect(body).not.toHaveProperty('presetId');
     conversationCreateCount += 1;
     conversations = [otherConversation, conversation];
     if (seedGreetingOnCreate) {
@@ -142,7 +160,8 @@ const server = setupServer(
   }),
   http.patch('/api/conversations/:id', async ({ request }) => {
     const body = await request.json() as { revision: number; patch: Record<string, unknown> };
-    expect(body.patch).toMatchObject({ providerId: ids.provider, presetId: ids.chatPreset });
+    expect(body.patch).not.toHaveProperty('providerId');
+    expect(body.patch).not.toHaveProperty('presetId');
     conversationConfigurationPatches += 1;
     lastConversationConfigurationPatch = body.patch;
     conversationRevision += 1;
@@ -193,12 +212,41 @@ const server = setupServer(
       },
       previousTimedState: { messageIndex: null, sticky: [], cooldown: [] }, warnings: [],
       entityRevisions: {
+        globalGenerationConfig: { id: globalGenerationConfig.id, revision: 0 },
         conversation: { id: ids.conversation, revision: conversationRevision },
         character: { id: ids.character, revision: 0 }, persona: { id: ids.persona, revision: 0 },
         provider: { id: ids.provider, revision: 0 }, presets: [], globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
       },
     }, { status: 201 });
   }),
+  http.post('/api/conversations/:id/generation-candidates', async ({ request }) => {
+    const body = await request.json() as { mode: string; userText?: string };
+    const previewing = body.userText === 'Preview me';
+    if (previewing) promptPreviewRequests += 1;
+    return HttpResponse.json({
+      candidateId: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      executableDigest: 'a'.repeat(64), kind: 'chat',
+      messages: previewing
+        ? [{ role: 'system', content: 'Preview from ChatPage' }]
+        : body.mode === 'normal' ? [{ role: 'user', content: body.userText ?? '' }] : [],
+      stop: [], tokenBreakdown: [], totalTokens: 1,
+      tokenizerDecision: { tokenizerId: 0, tokenizerName: 'None / Estimated' },
+      worldbook: {
+        activated: [], excluded: [], timedState: { messageIndex: 0, sticky: [], cooldown: [] },
+        tokenUsage: { budget: 0, used: 0, overflowed: false }, recursionSteps: 0, warnings: [],
+      },
+      previousTimedState: { messageIndex: null, sticky: [], cooldown: [] }, warnings: [],
+      entityRevisions: {
+        globalGenerationConfig: { id: globalGenerationConfig.id, revision: 0 },
+        conversation: { id: ids.conversation, revision: conversationRevision },
+        character: { id: ids.character, revision: 0 }, persona: { id: ids.persona, revision: 0 },
+        provider: { id: ids.provider, revision: 0 }, presets: [], globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
+      },
+      compiledRequestHash: 'b'.repeat(64),
+    }, { status: 201 });
+  }),
+  http.post('/api/generation-candidates/:id/seal', () => HttpResponse.json({ snapshotId: crypto.randomUUID() }, { status: 201 })),
+  http.delete('/api/generation-candidates/:id', () => new HttpResponse(null, { status: 204 })),
   http.post('/api/conversations/:id/generations', async ({ request }) => {
     if (generationNetworkFailure) return HttpResponse.error();
     if (generationStartupFailureStatus !== undefined) {
@@ -446,8 +494,6 @@ describe('ChatPage', () => {
 
     await screen.findByRole('option', { name: 'Traveler' });
     await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
     await user.dblClick(screen.getByRole('button', { name: 'Start chat' }));
 
     expect(await screen.findByText('Greeting A')).not.toBeNull();
@@ -521,7 +567,7 @@ describe('ChatPage', () => {
     expect(conversationRevision).toBe(0);
   });
 
-  it('persists selected configuration before non-normal generation on an imported conversation', async () => {
+  it('uses global configuration for non-normal generation on an imported conversation', async () => {
     const user = userEvent.setup();
     const imported = { ...conversation, providerId: undefined, presetId: undefined };
     conversations = [imported];
@@ -540,21 +586,18 @@ describe('ChatPage', () => {
     renderChatPage();
 
     const regenerate = await screen.findByRole('button', { name: 'Regenerate response' });
-    expect((regenerate as HTMLButtonElement).disabled).toBe(true);
+    expect((regenerate as HTMLButtonElement).disabled).toBe(false);
     const next = screen.getByRole('button', { name: 'Next variant' });
     expect((next as HTMLButtonElement).disabled).toBe(false);
     await user.click(next);
     expect(await screen.findByText('Second imported answer')).not.toBeNull();
     expect(activeVariantSwitches).toEqual([ids.assistantSibling]);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
-    expect((regenerate as HTMLButtonElement).disabled).toBe(false);
     await user.click(regenerate);
 
-    await waitFor(() => expect(conversationConfigurationPatches).toBe(1));
+    await waitFor(() => expect(conversationConfigurationPatches).toBe(0));
     expect(await screen.findByText('Third answer')).not.toBeNull();
     expect(requestedGenerationModes).toEqual(['regenerate']);
-    expect(conversationRevision).toBe(1);
+    expect(conversationRevision).toBe(0);
   });
 
   it('hides assistant generation controls when the persisted tail message is not that assistant', async () => {
@@ -591,9 +634,6 @@ describe('ChatPage', () => {
     await screen.findByRole('option', { name: 'Traveler' });
     await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Persona' }), ids.persona);
-    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
     expect((composer as HTMLTextAreaElement).disabled).toBe(false);
 
     await user.type(composer, 'Hello');
@@ -674,7 +714,7 @@ describe('ChatPage', () => {
     expect(secondChatMain.style.getPropertyValue('--chat-page-margin')).toBe('20px');
   });
 
-  it('configures a migrated conversation explicitly before its first generation', async () => {
+  it('updates only chat budgets on a migrated conversation before its first generation', async () => {
     const user = userEvent.setup();
     const migrated = {
       ...conversation,
@@ -686,9 +726,7 @@ describe('ChatPage', () => {
     renderChatPage();
 
     const composer = await screen.findByRole('textbox', { name: 'Message' });
-    expect((composer as HTMLTextAreaElement).disabled).toBe(true);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
     const promptBudget = screen.getByRole('spinbutton', { name: 'Maximum prompt tokens' });
     const responseBudget = screen.getByRole('spinbutton', { name: 'Maximum response tokens' });
     await user.clear(promptBudget);
@@ -754,8 +792,6 @@ describe('ChatPage', () => {
     await screen.findByRole('option', { name: 'Aster' });
     await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
     await user.selectOptions(screen.getByRole('combobox', { name: 'Persona' }), ids.persona);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), ids.provider);
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Chat preset' }), ids.chatPreset);
     const composer = screen.getByRole('textbox', { name: 'Message' });
     await user.type(composer, 'Will fail');
     await user.click(screen.getByRole('button', { name: 'Send' }));

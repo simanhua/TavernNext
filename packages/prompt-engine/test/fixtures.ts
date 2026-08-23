@@ -51,6 +51,7 @@ export function preset(kind: Preset['kind'], settings: Record<string, unknown>, 
     kind,
     settings,
     ...overrides,
+    extensions: overrides.extensions ?? {},
   };
 }
 

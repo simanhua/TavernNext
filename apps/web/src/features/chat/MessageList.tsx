@@ -4,7 +4,8 @@ import { api, errorCode, type MessageView } from '../../api/client.js';
 import type { ActiveGenerationTarget } from './useGeneration.js';
 import { SwipeControls } from './SwipeControls.js';
 import { useI18n } from '../../app/i18n.js';
-import { MarkdownContent } from './MarkdownContent.js';
+import { RegexProjectedMarkdownContent } from './RegexProjectedMarkdownContent.js';
+import { useActiveRegexScripts } from './useActiveRegexScripts.js';
 
 interface MessageListProps {
   conversationId: string | null;
@@ -16,6 +17,7 @@ interface MessageListProps {
   controlsDisabled: boolean;
   generationDisabled: boolean;
   onGenerate(mode: 'swipe' | 'regenerate' | 'continue', message: MessageView, baseContent: string): void;
+  macroValues?: Readonly<Record<string, string>>;
 }
 
 function authoritativeContent(message: MessageView): string {
@@ -34,6 +36,7 @@ export function MessageList({
   controlsDisabled,
   generationDisabled,
   onGenerate,
+  macroValues,
 }: MessageListProps) {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
@@ -56,6 +59,7 @@ export function MessageList({
     onSuccess: refresh,
   });
   const lastMessage = messages.at(-1);
+  const { scripts: regexScripts, ready: regexScriptsReady } = useActiveRegexScripts(conversationId);
   const lastAssistantId = lastMessage?.role === 'assistant' ? lastMessage.id : undefined;
 
   useEffect(() => {
@@ -75,6 +79,7 @@ export function MessageList({
   return (
     <section
       className="messages"
+      id="chat"
       aria-label={t('Messages')}
       ref={messagesRef}
       onScroll={(event) => {
@@ -82,7 +87,7 @@ export function MessageList({
         stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
       }}
     >
-      {messages.map((message) => {
+      {messages.map((message, messageIndex) => {
         const activeVariant = message.role === 'assistant'
           ? message.variants.find((variant) => variant.id === message.activeVariantId) ?? message.variants[0]
           : undefined;
@@ -98,7 +103,12 @@ export function MessageList({
           : t(message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : 'System');
         const label = t('{{role}} message {{content}}', { role, content });
         return (
-          <article className={`message message-${message.role}`} key={message.id}>
+          <article
+            className={`message mes message-${message.role}`}
+            key={message.id}
+            data-swipe-id={activeVariant?.ordinal ?? 0}
+            {...{ mesid: messageIndex }}
+          >
             <header>{message.role === 'assistant' ? t('Assistant') : message.role === 'user' ? t('You') : message.speakerLabel ?? t('System')}</header>
             {editingId === message.id ? (
               <form onSubmit={(event) => {
@@ -107,22 +117,50 @@ export function MessageList({
               }}>
                 <label htmlFor={`edit-${message.id}`}>{t('Edit message')}</label>
                 <textarea id={`edit-${message.id}`} value={editText} onChange={(event) => setEditText(event.target.value)} />
+                <RegexProjectedMarkdownContent
+                  content={editText}
+                  role={message.role}
+                  depth={messages.length - messageIndex - 1}
+                  scripts={regexScripts}
+                  macroValues={macroValues}
+                  isEdit
+                />
                 <button type="submit" disabled={edit.isPending || editText.trim() === ''}>{t('Save edit')}</button>
                 <button type="button" onClick={() => setEditingId(null)}>{t('Cancel edit')}</button>
               </form>
             ) : (
               <>
                 {reasoning === '' ? null : (
-                  <details className="message-reasoning" open={content === ''}>
-                    <summary>{t('Reasoning')}</summary>
-                    <p>{reasoning}</p>
+                  <details className="message-reasoning mes_reasoning_details" data-state="done" open={content === ''}>
+                    <summary className="mes_reasoning_summary">
+                      <span className="mes_reasoning_header_block">
+                        <span className="mes_reasoning_header"><span className="mes_reasoning_header_title">{t('Reasoning')}</span></span>
+                      </span>
+                    </summary>
+                    <p className="mes_reasoning">{reasoning}</p>
                   </details>
                 )}
                 {content === '' ? (
                   <p>{activeVariant?.status === 'streaming'
                     ? t('Waiting for final response…')
                     : t('No final response was generated.')}</p>
-                ) : <MarkdownContent content={content} />}
+                ) : <div className="mes_text"><RegexProjectedMarkdownContent
+                  content={content}
+                  role={message.role}
+                  depth={messages.length - messageIndex - 1}
+                  scripts={regexScripts}
+                  macroValues={macroValues}
+                  interactive={regexScriptsReady && message.role === 'assistant'
+                    && activeVariant?.status === 'completed'
+                    && generationTarget?.messageId !== message.id
+                    ? {
+                        conversationId: conversationId!,
+                        messageId: messageIndex,
+                        variantId: activeVariant.id,
+                        hasReasoning: reasoning !== '',
+                      }
+                    : undefined}
+                /></div>}
               </>
             )}
             {message.id === lastAssistantId ? (
@@ -158,7 +196,7 @@ export function MessageList({
       {optimisticUserText === null ? null : (
         <article className="message message-user message-pending" aria-live="polite">
           <header>{t('You')}</header>
-          <MarkdownContent content={optimisticUserText} />
+          <RegexProjectedMarkdownContent content={optimisticUserText} role="user" depth={0} scripts={regexScripts} macroValues={macroValues} />
           <span className="message-pending-indicator">{t('Waiting for response…')}</span>
         </article>
       )}
@@ -168,7 +206,7 @@ export function MessageList({
       {generationTarget === null && streamedText !== '' ? (
         <article className="message message-assistant" aria-live="polite">
           <header>{t('Assistant')}</header>
-          <MarkdownContent content={streamedText} />
+          <RegexProjectedMarkdownContent content={streamedText} role="assistant" depth={0} scripts={regexScripts} macroValues={macroValues} />
         </article>
       ) : null}
       {generationTarget === null && streamedText === '' && streamedReasoning !== '' ? (

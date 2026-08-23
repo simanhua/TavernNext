@@ -19,3 +19,9 @@ third-party assets.
 
 `legacy-st.yaml` is a synthetic probe for the root-level `context` and
 `greeting` envelope used by SillyTavern's legacy YAML Character importer.
+
+`attached-release.json` is an original CCv3 release-gate fixture covering a
+small InitVar book, display/prompt regex separation, MVU state, one script
+button, and `/trigger`. Its source and all embedded code are licensed under
+CC0-1.0 as described by `tests/fixtures/LICENSE.md`; it contains no third-party
+bundle bytes or live URL.

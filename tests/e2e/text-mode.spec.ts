@@ -19,10 +19,11 @@ test('Text mode streams, stops, regenerates, swipes, continues, and survives res
     method: 'POST',
     body: { id: crypto.randomUUID(), name: 'Text Traveler', description: 'Text-mode E2E persona', isDefault: true },
   });
+  const providerId = crypto.randomUUID();
   await apiJson(stack.baseUrl, '/api/providers', {
     method: 'POST',
     body: {
-      id: crypto.randomUUID(), name: 'Local Text Mock', baseUrl: `${stack.provider.baseUrl}/v1`,
+      id: providerId, name: 'Local Text Mock', baseUrl: `${stack.provider.baseUrl}/v1`,
       model: 'mock-text-model', apiMode: 'text', apiKey: 'text-e2e-local-key',
     },
   });
@@ -32,9 +33,16 @@ test('Text mode streams, stops, regenerates, swipes, continues, and survives res
     method: 'PATCH',
     body: { revision: textPreset.revision, patch: { settings: { ...textPreset.settings, tokenizer: 0 } } },
   });
-  await importArtifact(stack.baseUrl, 'presets/context/synthetic-context.json');
-  await importArtifact(stack.baseUrl, 'presets/instruct/synthetic-instruct.json');
-  await importArtifact(stack.baseUrl, 'presets/system/synthetic-system.json');
+  const contextPresetId = await importArtifact(stack.baseUrl, 'presets/context/synthetic-context.json');
+  const instructPresetId = await importArtifact(stack.baseUrl, 'presets/instruct/synthetic-instruct.json');
+  const systemPresetId = await importArtifact(stack.baseUrl, 'presets/system/synthetic-system.json');
+  await apiJson(stack.baseUrl, '/api/settings/generation', {
+    method: 'PATCH',
+    body: {
+      revision: 0,
+      patch: { providerId, textPresetId, contextPresetId, instructPresetId, systemPresetId },
+    },
+  });
 
   stack.provider.queue({ chunks: ['Text first'] });
   stack.provider.queue({ chunks: ['Text swipe'] });
@@ -45,11 +53,6 @@ test('Text mode streams, stops, regenerates, swipes, continues, and survives res
   await page.goto('/');
   await page.getByLabel('Character').selectOption(characterId);
   await page.getByLabel('Persona').selectOption(persona.id);
-  await page.getByLabel('Provider').selectOption({ label: 'Local Text Mock' });
-  await page.locator('label').filter({ hasText: /^Text preset/ }).locator('select').selectOption({ label: 'Synthetic Text Sampler' });
-  await page.locator('label').filter({ hasText: /^Context preset/ }).locator('select').selectOption({ label: 'Synthetic Context' });
-  await page.locator('label').filter({ hasText: /^Instruct preset/ }).locator('select').selectOption({ label: 'Synthetic Instruct' });
-  await page.locator('label').filter({ hasText: /^System preset/ }).locator('select').selectOption({ label: 'Synthetic System' });
   await page.locator('#chat-draft').fill('Open the Text gate');
   await page.getByRole('button', { name: 'Send' }).click();
   await expect(page.locator('article.message-assistant').last()).toContainText('Text first');

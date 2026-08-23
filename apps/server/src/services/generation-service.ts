@@ -18,6 +18,8 @@ import {
   type PromptSnapshotService,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
+import { createMvuRuntimeService } from './mvu-runtime-service.js';
+import { createReasoningCompatibilityService } from './reasoning-compat-service.js';
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
@@ -36,6 +38,7 @@ export interface GenerationInput {
   snapshotId?: string;
   seed?: string | number;
   messageIndex?: number;
+  reuseLastUser?: boolean;
 }
 
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
@@ -61,6 +64,7 @@ interface PreparedGenerationBase {
   conversationId: string;
   provider: ProviderProfile;
   payload: PromptSnapshotPayload;
+  reasoningCompatibility: boolean;
 }
 
 type PreparedGeneration =
@@ -69,6 +73,7 @@ type PreparedGeneration =
 
 export interface GenerationService {
   start(input: GenerationInput): Promise<StartGenerationResult>;
+  triggerLastUser(conversationId: string): Promise<StartGenerationResult>;
   cancel(generationId: string): boolean;
   isConversationActive(conversationId: string): boolean;
 }
@@ -89,12 +94,14 @@ function preparedRequest(
   generationId: string,
   provider: ProviderProfile,
   payload: PromptSnapshotPayload,
+  reasoningCompatibility: boolean,
 ): PreparedGeneration {
   const base: PreparedGenerationBase = {
     generationId,
     conversationId: payload.input.conversationId,
     provider,
     payload,
+    reasoningCompatibility,
   };
   if (payload.kind === 'chat' && 'messages' in payload.compiledRequest) {
     return { ...base, kind: 'chat', request: payload.compiledRequest };
@@ -118,6 +125,8 @@ export function createGenerationService(options: {
     repositories,
     tokenizerRuntime: options.tokenizerRuntime ?? defaultTokenizerRuntime(),
   });
+  const mvu = createMvuRuntimeService(repositories);
+  const reasoningCompatibility = createReasoningCompatibilityService(repositories);
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
@@ -148,6 +157,7 @@ export function createGenerationService(options: {
       if (siblingMode) variant = undefined;
     }
     let content = mode === 'continue' ? variant?.content ?? '' : '';
+    const initialContent = content;
     let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
     let hasDelta = false;
     let hasReasoningDelta = false;
@@ -294,10 +304,21 @@ export function createGenerationService(options: {
         }
       }
       if (outcome === 'aborted') controller.abort();
+      if (outcome === 'completed') {
+        const extracted = reasoningCompatibility.extract(prepared.reasoningCompatibility, content, reasoning);
+        content = extracted.content; reasoning = extracted.reasoning;
+      }
       try {
         database.transaction(() => {
           if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
           if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
+          if (outcome === 'completed' && variant !== undefined && hasDelta) {
+            mvu.commitCompletedVariant(
+              prepared.conversationId,
+              variant.id,
+              mode === 'continue' ? content.slice(initialContent.length) : content,
+            );
+          }
           if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
         });
@@ -305,10 +326,23 @@ export function createGenerationService(options: {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (variant !== undefined && (hasDelta || hasReasoningDelta)) {
-            variant = repositories.messageVariants.get(variant.id);
-            if (variant !== undefined && variant.status !== 'failed') {
+          if (hasDelta || hasReasoningDelta) {
+            const persisted = variant === undefined ? undefined : repositories.messageVariants.get(variant.id);
+            if (persisted !== undefined) {
+              variant = persisted;
+              if (siblingMode) targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
+              if (variant.status !== 'failed') database.transaction(() => {
+                flush('failed');
+                selectSibling();
+              });
+            } else if (mode === 'normal' || siblingMode) {
+              variant = undefined;
+              if (siblingMode) {
+                targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
+                if (targetMessage === undefined) throw new Error('recovery_target_missing');
+              }
               database.transaction(() => {
+                beginPersistence();
                 flush('failed');
                 selectSibling();
               });
@@ -356,7 +390,7 @@ export function createGenerationService(options: {
     };
   }
 
-  return {
+  const service: GenerationService = {
     async start(input) {
       if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
         return { ok: false, reason: 'invalid_user_text' };
@@ -388,7 +422,12 @@ export function createGenerationService(options: {
         const accepted = input.snapshotId === undefined
           ? await promptSnapshots.createAndAccept(input, generationId)
           : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
-        const prepared = preparedRequest(generationId, accepted.provider, accepted.payload);
+        const prepared = preparedRequest(
+          generationId,
+          accepted.provider,
+          accepted.payload,
+          reasoningCompatibility.resolve(accepted.payload),
+        );
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;
           active.controller.abort();
@@ -402,6 +441,17 @@ export function createGenerationService(options: {
         throw error;
       }
     },
+    async triggerLastUser(conversationId) {
+      if (activeByConversation.has(conversationId)) return { ok: false, reason: 'generation_active' };
+      const conversation = repositories.conversations.get(conversationId);
+      if (conversation === undefined) return { ok: false, reason: 'not_found' };
+      const last = repositories.messages.listByConversationId(conversationId).at(-1);
+      if (last?.role !== 'user' || last.content.trim() === '') return { ok: false, reason: 'invalid_user_text' };
+      return service.start({
+        conversationId, conversationRevision: conversation.revision,
+        mode: 'normal', userText: last.content, reuseLastUser: true,
+      });
+    },
     cancel(generationId) {
       const active = activeById.get(generationId);
       if (active === undefined) return false;
@@ -413,4 +463,5 @@ export function createGenerationService(options: {
       return activeByConversation.has(conversationId);
     },
   };
+  return service;
 }

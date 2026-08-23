@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { and, asc, eq } from 'drizzle-orm';
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { ZodType } from 'zod';
 import {
   CharacterSchema,
   ConversationSchema,
+  ExtensionAssetSchema,
+  ExtensionStateSchema,
+  ExtensionTrustGrantSchema,
+  ExtensionRemoteResourceSchema,
+  ExtensionAuditEventSchema,
   GenerationSnapshotSchema,
+  GLOBAL_GENERATION_CONFIG_ID,
+  GlobalGenerationConfigSchema,
   ImportArtifactSchema,
   MessageSchema,
   MessageVariantSchema,
@@ -17,7 +25,16 @@ import {
   WorldbookSchema,
   type Character,
   type Conversation,
+  type ExtensionAsset,
+  type ExtensionOwnerKind,
+  type ExtensionState,
+  type ExtensionStateScope,
+  type ExtensionTrustGrant,
+  type ExtensionRemoteResource,
+  type ExtensionAuditEvent,
   type GenerationSnapshot,
+  type GlobalGenerationConfig,
+  type GlobalGenerationSelection,
   type ImportArtifact,
   type Message,
   type MessageVariant,
@@ -32,7 +49,13 @@ import {
   characters,
   conversationWorldbooks,
   conversations,
+  extensionAssets,
+  extensionStates,
+  extensionTrustGrants,
+  extensionRemoteResources,
+  extensionAuditEvents,
   generationSnapshots,
+  globalGenerationConfigurations,
   importArtifacts,
   messages,
   messageVariants,
@@ -49,6 +72,8 @@ import {
   createSnapshotIntegrityTag,
   verifySnapshotIntegrityTag,
 } from './snapshot-integrity.js';
+import { assertExtensionAssetLimit, MAX_EXTENSION_ASSETS_PER_OWNER } from '../extension-assets.js';
+import { assertRuntimeStateValue } from '../runtime-state-validation.js';
 
 export const MAX_MESSAGES_PER_CONVERSATION = 2048;
 export const MAX_VARIANTS_PER_RELATION = 4096;
@@ -59,7 +84,8 @@ export type RelationshipLimitCode =
   | 'message_relation_limit'
   | 'variant_relation_limit'
   | 'worldbook_entry_relation_limit'
-  | 'global_worldbook_relation_limit';
+  | 'global_worldbook_relation_limit'
+  | 'extension_asset_relation_limit';
 
 export class RelationshipLimitError extends Error {
   constructor(readonly code: RelationshipLimitCode) {
@@ -93,7 +119,8 @@ type DefaultedField =
   | 'characterFilter' | 'personaFilter' | 'matchPersonaDescription' | 'matchCharacterDescription'
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
-  | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries';
+  | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
+  | 'diagnostics';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -145,6 +172,30 @@ export interface AvatarAssetRepository {
   deleteByOwner(kind: AvatarAssetKind, ownerId: string): number;
 }
 
+export interface ExtensionAssetRepository extends Repository<ExtensionAsset> {
+  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionAsset[];
+  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
+}
+
+export interface ExtensionStateRepository extends Repository<ExtensionState> {
+  getByScope(scope: ExtensionStateScope, scopeId: string): ExtensionState | undefined;
+  deleteByScope(scope: ExtensionStateScope, scopeId: string): number;
+  deleteScriptStatesByOwner(ownerKind: 'character' | 'preset', ownerId: string): number;
+}
+
+export interface ExtensionTrustGrantRepository extends Repository<ExtensionTrustGrant> {
+  getByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionTrustGrant | undefined;
+  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
+}
+export interface ExtensionRemoteResourceRepository extends Repository<ExtensionRemoteResource> {
+  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionRemoteResource[];
+  getByOwnerUrl(ownerKind: ExtensionOwnerKind, ownerId: string, url: string): ExtensionRemoteResource | undefined;
+  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
+}
+export interface ExtensionAuditEventRepository extends Repository<ExtensionAuditEvent> {
+  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionAuditEvent[];
+}
+
 export interface MessageRepository extends Repository<Message> {
   listByConversationId(conversationId: string): Message[];
 }
@@ -156,6 +207,13 @@ export interface MessageVariantRepository extends Repository<MessageVariant> {
 
 export interface ConversationRepository extends Repository<Conversation> {
   createWithGreeting(input: CreateInput<Conversation>): Conversation;
+}
+
+export interface GlobalGenerationConfigRepository {
+  get(): GlobalGenerationConfig;
+  update(expectedRevision: number, patch: Partial<GlobalGenerationSelection>): UpdateResult<GlobalGenerationConfig>;
+  clearProvider(providerId: string): GlobalGenerationConfig;
+  clearPreset(presetId: string): GlobalGenerationConfig;
 }
 
 type EntityRow = Record<string, unknown>;
@@ -343,6 +401,161 @@ function createAvatarAssetRepository(database: TavernDatabase): AvatarAssetRepos
   };
 }
 
+function createExtensionAssetRepository(database: TavernDatabase): ExtensionAssetRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionAssets),
+    schema: ExtensionAssetSchema,
+    toRow: (value: ExtensionAsset) => ({
+      ...baseRow(value),
+      ownerKind: value.ownerKind,
+      ownerId: value.ownerId,
+      kind: value.kind,
+      sourceKey: value.sourceKey,
+      ordinal: value.ordinal,
+      enabled: value.enabled,
+    }),
+  });
+  return {
+    ...base,
+    create(input) {
+      const current = database.sqlite.prepare(
+        'SELECT COUNT(*) AS count FROM extension_assets WHERE owner_kind = ? AND owner_id = ?',
+      ).get(input.ownerKind, input.ownerId);
+      assertExtensionAssetLimit(Number(current?.count ?? 0) + 1);
+      return base.create(input);
+    },
+    listByOwner(ownerKind, ownerId) {
+      const rows = database.orm.select({ payload: extensionAssets.payload })
+        .from(extensionAssets)
+        .where(and(eq(extensionAssets.ownerKind, ownerKind), eq(extensionAssets.ownerId, ownerId)))
+        .orderBy(asc(extensionAssets.kind), asc(extensionAssets.ordinal), asc(extensionAssets.id))
+        .limit(MAX_EXTENSION_ASSETS_PER_OWNER + 1)
+        .all();
+      if (rows.length > MAX_EXTENSION_ASSETS_PER_OWNER) {
+        throw new RelationshipLimitError('extension_asset_relation_limit');
+      }
+      return rows.map((row) => ExtensionAssetSchema.parse(row.payload));
+    },
+    deleteByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_assets WHERE owner_kind = ? AND owner_id = ?',
+      ).run(ownerKind, ownerId).changes;
+      database.persist();
+      return changes;
+    },
+  };
+}
+
+function createExtensionStateRepository(database: TavernDatabase): ExtensionStateRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionStates),
+    schema: ExtensionStateSchema,
+    toRow: (value: ExtensionState) => ({
+      ...baseRow(value), scope: value.scope, scopeId: value.scopeId,
+    }),
+  });
+  return {
+    ...base,
+    create(input) {
+      assertRuntimeStateValue(input.value);
+      return base.create(input);
+    },
+    update(id, expectedRevision, patch) {
+      if (patch.value !== undefined) assertRuntimeStateValue(patch.value);
+      return base.update(id, expectedRevision, patch);
+    },
+    getByScope(scope, scopeId) {
+      const row = database.orm.select({ payload: extensionStates.payload })
+        .from(extensionStates)
+        .where(and(eq(extensionStates.scope, scope), eq(extensionStates.scopeId, scopeId)))
+        .get();
+      return row === undefined ? undefined : ExtensionStateSchema.parse(row.payload);
+    },
+    deleteByScope(scope, scopeId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_states WHERE scope = ? AND scope_id = ?',
+      ).run(scope, scopeId).changes;
+      database.persist();
+      return changes;
+    },
+    deleteScriptStatesByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        "DELETE FROM extension_states WHERE scope = 'script' AND scope_id LIKE ?",
+      ).run(`${ownerKind}:${ownerId}:%`).changes;
+      database.persist();
+      return changes;
+    },
+  };
+}
+
+function createExtensionTrustGrantRepository(database: TavernDatabase): ExtensionTrustGrantRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionTrustGrants), schema: ExtensionTrustGrantSchema,
+    toRow: (value: ExtensionTrustGrant) => ({ ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId }),
+  });
+  return {
+    ...base,
+    getByOwner(ownerKind, ownerId) {
+      const row = database.orm.select({ payload: extensionTrustGrants.payload }).from(extensionTrustGrants)
+        .where(and(eq(extensionTrustGrants.ownerKind, ownerKind), eq(extensionTrustGrants.ownerId, ownerId))).get();
+      return row === undefined ? undefined : ExtensionTrustGrantSchema.parse(row.payload);
+    },
+    deleteByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_trust_grants WHERE owner_kind = ? AND owner_id = ?',
+      ).run(ownerKind, ownerId).changes;
+      database.persist(); return changes;
+    },
+  };
+}
+
+function createExtensionRemoteResourceRepository(database: TavernDatabase): ExtensionRemoteResourceRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionRemoteResources), schema: ExtensionRemoteResourceSchema,
+    toRow: (value: ExtensionRemoteResource) => ({
+      ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId, url: value.url, sha256: value.sha256,
+    }),
+  });
+  return {
+    ...base,
+    listByOwner(ownerKind, ownerId) {
+      return database.orm.select({ payload: extensionRemoteResources.payload }).from(extensionRemoteResources)
+        .where(and(eq(extensionRemoteResources.ownerKind, ownerKind), eq(extensionRemoteResources.ownerId, ownerId)))
+        .orderBy(asc(extensionRemoteResources.url)).all()
+        .map((row) => ExtensionRemoteResourceSchema.parse(row.payload));
+    },
+    getByOwnerUrl(ownerKind, ownerId, url) {
+      const row = database.orm.select({ payload: extensionRemoteResources.payload }).from(extensionRemoteResources)
+        .where(and(eq(extensionRemoteResources.ownerKind, ownerKind), eq(extensionRemoteResources.ownerId, ownerId), eq(extensionRemoteResources.url, url))).get();
+      return row === undefined ? undefined : ExtensionRemoteResourceSchema.parse(row.payload);
+    },
+    deleteByOwner(ownerKind, ownerId) {
+      const changes = database.sqlite.prepare(
+        'DELETE FROM extension_remote_resources WHERE owner_kind = ? AND owner_id = ?',
+      ).run(ownerKind, ownerId).changes;
+      database.persist(); return changes;
+    },
+  };
+}
+
+function createExtensionAuditEventRepository(database: TavernDatabase): ExtensionAuditEventRepository {
+  const base = createRepository(database, {
+    table: entityTable(extensionAuditEvents), schema: ExtensionAuditEventSchema,
+    toRow: (value: ExtensionAuditEvent) => ({
+      ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId, event: value.event,
+    }),
+  });
+  return {
+    ...base,
+    listByOwner(ownerKind, ownerId) {
+      return database.orm.select({ payload: extensionAuditEvents.payload }).from(extensionAuditEvents)
+        .where(and(eq(extensionAuditEvents.ownerKind, ownerKind), eq(extensionAuditEvents.ownerId, ownerId)))
+        .orderBy(asc(extensionAuditEvents.createdAt), asc(extensionAuditEvents.id)).limit(2048).all()
+        .map((row) => ExtensionAuditEventSchema.parse(row.payload));
+    },
+  };
+}
+
 function createWorldbookEntryRepository(database: TavernDatabase): WorldbookEntryRepository {
   const base = createRepository(database, {
     table: entityTable(worldbookEntries),
@@ -491,6 +704,30 @@ interface SnapshotStorageRow {
   payload: unknown;
 }
 
+const SNAPSHOT_COMPRESSION_THRESHOLD_BYTES = 512 * 1024;
+const SNAPSHOT_COMPRESSION_FORMAT = 'tavernnext-gzip-json-v1';
+
+function encodeSnapshotStorage(value: GenerationSnapshot): unknown {
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json) < SNAPSHOT_COMPRESSION_THRESHOLD_BYTES) return value;
+  return {
+    format: SNAPSHOT_COMPRESSION_FORMAT,
+    conversationRevision: value.conversationRevision,
+    data: gzipSync(json).toString('base64'),
+  };
+}
+
+function decodeSnapshotStorage(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || Reflect.get(value, 'format') !== SNAPSHOT_COMPRESSION_FORMAT
+    || typeof Reflect.get(value, 'data') !== 'string') return value;
+  try {
+    return JSON.parse(gunzipSync(Buffer.from(Reflect.get(value, 'data'), 'base64')).toString('utf8')) as unknown;
+  } catch {
+    throw new SnapshotIntegrityError();
+  }
+}
+
 function snapshotConversationRevision(artifact: unknown): unknown {
   if (typeof artifact !== 'object' || artifact === null || Array.isArray(artifact)) return null;
   return Reflect.get(artifact, 'conversationRevision');
@@ -524,7 +761,7 @@ function createGenerationSnapshotRepository(
     if (!verifySnapshotIntegrityTag(key, snapshotEnvelope(row), row.integrityTag)) {
       throw new SnapshotIntegrityError();
     }
-    const parsed = GenerationSnapshotSchema.safeParse(row.payload);
+    const parsed = GenerationSnapshotSchema.safeParse(decodeSnapshotStorage(row.payload));
     if (!parsed.success
       || parsed.data.id !== row.id
       || parsed.data.conversationId !== row.conversationId) {
@@ -542,7 +779,8 @@ function createGenerationSnapshotRepository(
         createdAt: now,
         updatedAt: now,
       }));
-      const row = { id: value.id, conversationId: value.conversationId, payload: value };
+      const storagePayload = encodeSnapshotStorage(value);
+      const row = { id: value.id, conversationId: value.conversationId, payload: storagePayload };
       const integrityTag = createSnapshotIntegrityTag(key, snapshotEnvelope(row));
       return database.transaction(() => {
         database.orm.insert(generationSnapshots).values({
@@ -550,7 +788,7 @@ function createGenerationSnapshotRepository(
           revision: value.revision,
           createdAt: value.createdAt,
           updatedAt: value.updatedAt,
-          payload: value,
+          payload: storagePayload,
           conversationId: value.conversationId,
           integrityTag,
         }).run();
@@ -608,15 +846,89 @@ export interface Repositories {
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
+  globalGenerationConfig: GlobalGenerationConfigRepository;
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
   avatarAssets: AvatarAssetRepository;
+  extensionAssets: ExtensionAssetRepository;
+  extensionStates: ExtensionStateRepository;
+  extensionTrustGrants: ExtensionTrustGrantRepository;
+  extensionRemoteResources: ExtensionRemoteResourceRepository;
+  extensionAuditEvents: ExtensionAuditEventRepository;
 }
 
 export interface CreateRepositoriesOptions {
   snapshotIntegrityKey: Uint8Array;
   createId?: () => string;
+}
+
+function emptyGlobalGenerationConfig(): GlobalGenerationConfig {
+  return GlobalGenerationConfigSchema.parse({
+    id: GLOBAL_GENERATION_CONFIG_ID,
+    revision: 0,
+    createdAt: '1970-01-01T00:00:00.000Z',
+    updatedAt: '1970-01-01T00:00:00.000Z',
+    providerId: null,
+    chatPresetId: null,
+    textPresetId: null,
+    contextPresetId: null,
+    instructPresetId: null,
+    systemPresetId: null,
+    selectionNotice: null,
+  });
+}
+
+function createGlobalGenerationConfigRepository(database: TavernDatabase): GlobalGenerationConfigRepository {
+  const table = database.sqlite.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'global_generation_config'",
+  ).get();
+  if (table === undefined) {
+    const fallback = emptyGlobalGenerationConfig();
+    return {
+      get: () => structuredClone(fallback),
+      update: () => ({ ok: false, reason: 'not_found' }),
+      clearProvider: () => structuredClone(fallback),
+      clearPreset: () => structuredClone(fallback),
+    };
+  }
+  const base = createRepository(database, {
+    table: entityTable(globalGenerationConfigurations),
+    schema: GlobalGenerationConfigSchema,
+    toRow: (value) => baseRow(value),
+  });
+  const get = () => base.get(GLOBAL_GENERATION_CONFIG_ID) ?? emptyGlobalGenerationConfig();
+  return {
+    get,
+    update(expectedRevision, patch) {
+      return base.update(GLOBAL_GENERATION_CONFIG_ID, expectedRevision, { ...patch, selectionNotice: null });
+    },
+    clearProvider(providerId) {
+      const current = get();
+      if (current.providerId !== providerId) return current;
+      const result = base.update(current.id, current.revision, {
+        providerId: null,
+        selectionNotice: { kind: 'provider', deletedId: providerId, createdAt: new Date().toISOString() },
+      });
+      if (!result.ok) throw new Error('global_generation_config_conflict');
+      return result.value;
+    },
+    clearPreset(presetId) {
+      const current = get();
+      const patch = Object.fromEntries(
+        (['chatPresetId', 'textPresetId', 'contextPresetId', 'instructPresetId', 'systemPresetId'] as const)
+          .filter((key) => current[key] === presetId)
+          .map((key) => [key, null]),
+      );
+      if (Object.keys(patch).length === 0) return current;
+      const result = base.update(current.id, current.revision, {
+        ...patch,
+        selectionNotice: { kind: 'preset', deletedId: presetId, createdAt: new Date().toISOString() },
+      });
+      if (!result.ok) throw new Error('global_generation_config_conflict');
+      return result.value;
+    },
+  };
 }
 
 export function createRepositories(database: TavernDatabase, options: CreateRepositoriesOptions): Repositories {
@@ -630,11 +942,6 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       ...baseRow(value),
       characterId: value.characterId,
       personaId: value.personaId,
-      providerId: value.providerId ?? null,
-      presetId: value.presetId ?? null,
-      contextPresetId: value.contextPresetId ?? null,
-      instructPresetId: value.instructPresetId ?? null,
-      systemPresetId: value.systemPresetId ?? null,
       title: value.title,
     }), syncRelationships: syncConversationWorldbooks,
   });
@@ -662,6 +969,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       });
     },
   };
+  const globalGenerationConfig = createGlobalGenerationConfigRepository(database);
   return {
     characters: charactersRepository,
     personas: createPersonaRepository(database),
@@ -672,9 +980,15 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     messages: messagesRepository,
     messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
+    globalGenerationConfig,
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
     avatarAssets: createAvatarAssetRepository(database),
+    extensionAssets: createExtensionAssetRepository(database),
+    extensionStates: createExtensionStateRepository(database),
+    extensionTrustGrants: createExtensionTrustGrantRepository(database),
+    extensionRemoteResources: createExtensionRemoteResourceRepository(database),
+    extensionAuditEvents: createExtensionAuditEventRepository(database),
   };
 }

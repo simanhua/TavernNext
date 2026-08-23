@@ -24,6 +24,16 @@ let detail = {
   examples: '<START>\nAster: Hello', systemPrompt: 'Stay in character.', postHistoryInstructions: 'Remain concise.',
   creatorNotes: 'Synthetic fixture', creator: 'TavernNext', characterVersion: '1.0', depthPrompt: 'Remember the key.',
   alternateGreetings: ['Welcome.', 'You found the archive.'], tags: ['lore', 'helper'], worldbookId,
+  attachedExtensions: {
+    execution: 'not_executed',
+    counts: { regex: 12, scripts: 6, folders: 0, variableContainers: 1 },
+    resources: [
+      { type: 'regex', order: [0], sourceKey: 'regex-one', name: 'Hide state', enabled: true, diagnostics: [] },
+      { type: 'script', order: [0], sourceKey: 'script-one', name: 'MVU bootstrap', enabled: false, diagnostics: ['script_content_missing'] },
+    ],
+    variables: [{ source: 'tavern_helper.variables', keyCount: 2, diagnostics: [] }],
+    diagnostics: ['script_content_missing'],
+  },
 };
 let patchCalls = 0;
 let lastPatch: Record<string, unknown> | undefined;
@@ -83,6 +93,16 @@ afterEach(() => {
     examples: '<START>\nAster: Hello', systemPrompt: 'Stay in character.', postHistoryInstructions: 'Remain concise.',
     creatorNotes: 'Synthetic fixture', creator: 'TavernNext', characterVersion: '1.0', depthPrompt: 'Remember the key.',
     alternateGreetings: ['Welcome.', 'You found the archive.'], tags: ['lore', 'helper'], worldbookId,
+    attachedExtensions: {
+      execution: 'not_executed',
+      counts: { regex: 12, scripts: 6, folders: 0, variableContainers: 1 },
+      resources: [
+        { type: 'regex', order: [0], sourceKey: 'regex-one', name: 'Hide state', enabled: true, diagnostics: [] },
+        { type: 'script', order: [0], sourceKey: 'script-one', name: 'MVU bootstrap', enabled: false, diagnostics: ['script_content_missing'] },
+      ],
+      variables: [{ source: 'tavern_helper.variables', keyCount: 2, diagnostics: [] }],
+      diagnostics: ['script_content_missing'],
+    },
   };
   patchCalls = 0;
   lastPatch = undefined;
@@ -95,6 +115,21 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('CharacterLibraryPage', () => {
+  it('shows a safe ordered Attached Extension Resource inventory without exposing code', async () => {
+    const user = userEvent.setup();
+    renderWithApp(<CharacterLibraryPage />);
+    await user.click(await screen.findByRole('button', { name: 'Aster' }));
+
+    expect(screen.getByRole('heading', { name: 'Attached Extension Resources' })).not.toBeNull();
+    expect(screen.getByText('12 regexes')).not.toBeNull();
+    expect(screen.getByText('6 scripts')).not.toBeNull();
+    expect(screen.getByText('1 variable container')).not.toBeNull();
+    expect(screen.getByText('#1 · Regex · Hide state · Enabled')).not.toBeNull();
+    expect(screen.getByText('#1 · Script · MVU bootstrap · Disabled')).not.toBeNull();
+    expect(screen.getAllByText('script_content_missing').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/globalThis|function|import\s*\(/)).toBeNull();
+  });
+
   it('round-trips comma-containing Character tags without changing their elements', async () => {
     const user = userEvent.setup();
     detail = { ...detail, tags: ['lore, mystery', 'helper'] };

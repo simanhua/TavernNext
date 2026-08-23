@@ -12,6 +12,8 @@ import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
 import { ChatFormatSettings, chatFormatStyle, useChatFormat } from './ChatFormatSettings.js';
+import { useGlobalGenerationConfiguration } from './useGlobalGenerationConfiguration.js';
+import { TrustedScriptRuntimeHost } from '../extensions/TrustedScriptRuntimeHost.js';
 
 const MAX_PROMPT_TOKENS = 1_000_000;
 const MAX_RESPONSE_TOKENS = 384_000;
@@ -27,11 +29,6 @@ export function ChatPage() {
   const setDraft = useChatUi((state) => state.setDraft);
   const [characterId, setCharacterId] = useState('');
   const [personaId, setPersonaId] = useState('');
-  const [providerId, setProviderId] = useState('');
-  const [presetId, setPresetId] = useState('');
-  const [contextPresetId, setContextPresetId] = useState('');
-  const [instructPresetId, setInstructPresetId] = useState('');
-  const [systemPresetId, setSystemPresetId] = useState('');
   const [maxPromptTokens, setMaxPromptTokens] = useState(DEFAULT_PROMPT_TOKENS);
   const [maxResponseTokens, setMaxResponseTokens] = useState(DEFAULT_RESPONSE_TOKENS);
   const [chatImportOpen, setChatImportOpen] = useState(false);
@@ -44,8 +41,7 @@ export function ChatPage() {
   const chatFormat = useChatFormat();
   const characters = useQuery({ queryKey: ['characters'], queryFn: api.listCharacters });
   const personas = useQuery({ queryKey: ['personas'], queryFn: api.listPersonas });
-  const providers = useQuery({ queryKey: ['providers'], queryFn: api.listProviders });
-  const presets = useQuery({ queryKey: ['presets'], queryFn: api.listPresets });
+  const globalGeneration = useGlobalGenerationConfiguration();
   const conversations = useQuery({ queryKey: ['conversations'], queryFn: api.listConversations });
   const detail = useQuery({
     queryKey: ['conversation', activeConversationId],
@@ -60,11 +56,11 @@ export function ChatPage() {
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
-  const configureConversation = useMutation({
+  const updateConversationSettings = useMutation({
     mutationFn: ({ conversation, patch }: {
       conversation: Conversation;
-      patch: Parameters<typeof api.updateConversationConfiguration>[1];
-    }) => api.updateConversationConfiguration(conversation, patch),
+      patch: Parameters<typeof api.updateConversationSettings>[1];
+    }) => api.updateConversationSettings(conversation, patch),
     onSuccess: async (configured) => {
       queryClient.setQueryData(['conversation', configured.id], (current: typeof detail.data) => (
         current === undefined ? current : { ...current, conversation: configured }
@@ -84,32 +80,17 @@ export function ChatPage() {
   });
   const exportChat = useMutation({ mutationFn: api.exportChat });
 
-  const selectedProvider = providers.data?.find((provider) => provider.id === providerId);
-  const requiredPrimaryKind = selectedProvider?.apiMode === 'text' ? 'text' : 'chat';
-  const primaryPresetValid = presets.data?.some((preset) => preset.id === presetId && preset.kind === requiredPrimaryKind) === true;
-  const textCompanionsValid = selectedProvider?.apiMode !== 'text' || (
-    presets.data?.some((preset) => preset.id === contextPresetId && preset.kind === 'context') === true
-    && presets.data?.some((preset) => preset.id === instructPresetId && preset.kind === 'instruct') === true
-    && presets.data?.some((preset) => preset.id === systemPresetId && preset.kind === 'system') === true
-  );
   const tokenBudgetsValid = Number.isInteger(maxPromptTokens)
     && maxPromptTokens >= 1
     && maxPromptTokens <= MAX_PROMPT_TOKENS
     && Number.isInteger(maxResponseTokens)
     && maxResponseTokens >= 1
     && maxResponseTokens <= MAX_RESPONSE_TOKENS;
-  const configurationReady = selectedProvider !== undefined && primaryPresetValid && textCompanionsValid && tokenBudgetsValid;
+  const configurationReady = globalGeneration.ready && tokenBudgetsValid;
 
-  const selectedConfiguration = () => ({
-    providerId,
-    presetId,
+  const selectedBudgetSettings = () => ({
     maxPromptTokens,
     maxResponseTokens,
-    ...(selectedProvider?.apiMode !== 'text' ? {} : {
-      contextPresetId,
-      instructPresetId,
-      systemPresetId,
-    }),
   });
 
   const createSelectedConversation = (): Promise<Conversation> => {
@@ -119,7 +100,7 @@ export function ChatPage() {
       characterId,
       personaId,
       title: character === undefined ? 'New chat' : `${character.name} chat`,
-      ...selectedConfiguration(),
+      ...selectedBudgetSettings(),
     });
     creatingConversation.current = attempt;
     void attempt.finally(() => {
@@ -130,19 +111,12 @@ export function ChatPage() {
 
   const ensureConfigured = async (target: Conversation): Promise<Conversation> => {
     if (!configurationReady) throw new Error('configuration_not_ready');
-    const configuration = selectedConfiguration();
+    const budgetSettings = selectedBudgetSettings();
     const listed = conversations.data?.find((conversation) => conversation.id === target.id) ?? target;
-    const differs = listed.providerId !== configuration.providerId
-      || listed.presetId !== configuration.presetId
-      || listed.maxPromptTokens !== maxPromptTokens
-      || listed.maxResponseTokens !== maxResponseTokens
-      || (selectedProvider?.apiMode === 'text' && (
-        listed.contextPresetId !== contextPresetId
-        || listed.instructPresetId !== instructPresetId
-        || listed.systemPresetId !== systemPresetId
-      ));
+    const differs = listed.maxPromptTokens !== maxPromptTokens
+      || listed.maxResponseTokens !== maxResponseTokens;
     return differs
-      ? configureConversation.mutateAsync({ conversation: target, patch: configuration })
+      ? updateConversationSettings.mutateAsync({ conversation: target, patch: budgetSettings })
       : target;
   };
 
@@ -151,11 +125,6 @@ export function ChatPage() {
     if (active !== undefined) {
       setCharacterId(active.characterId);
       setPersonaId(active.personaId);
-      setProviderId(active.providerId ?? '');
-      setPresetId(active.presetId ?? '');
-      setContextPresetId(active.contextPresetId ?? '');
-      setInstructPresetId(active.instructPresetId ?? '');
-      setSystemPresetId(active.systemPresetId ?? '');
       setMaxPromptTokens(active.maxPromptTokens);
       setMaxResponseTokens(active.maxResponseTokens);
     }
@@ -174,11 +143,6 @@ export function ChatPage() {
     if (selected !== undefined) {
       setCharacterId(selected.characterId);
       setPersonaId(selected.personaId);
-      setProviderId(selected.providerId ?? '');
-      setPresetId(selected.presetId ?? '');
-      setContextPresetId(selected.contextPresetId ?? '');
-      setInstructPresetId(selected.instructPresetId ?? '');
-      setSystemPresetId(selected.systemPresetId ?? '');
       setMaxPromptTokens(selected.maxPromptTokens);
       setMaxResponseTokens(selected.maxResponseTokens);
     }
@@ -210,11 +174,10 @@ export function ChatPage() {
   const composerDisabled = !prerequisitesReady
     || generation.isActive
     || createConversation.isPending
-    || configureConversation.isPending
+    || updateConversationSettings.isPending
     || characters.isLoading
     || personas.isLoading
-    || providers.isLoading
-    || presets.isLoading
+    || globalGeneration.isLoading
     || (activeConversationId !== null && detail.data === undefined);
 
   return (
@@ -262,59 +225,6 @@ export function ChatPage() {
             {(personas.data ?? []).map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
           </select>
         </label>
-        <label>
-          {t('Provider')}
-          <select
-            value={providerId}
-            disabled={generation.isActive}
-            onChange={(event) => {
-              setProviderId(event.target.value);
-              setPresetId('');
-              setContextPresetId('');
-              setInstructPresetId('');
-              setSystemPresetId('');
-            }}
-          >
-            <option value="">{t('Choose Provider')}</option>
-            {(providers.data ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-          </select>
-        </label>
-        <label>
-          {t(selectedProvider?.apiMode === 'text' ? 'Text preset' : 'Chat preset')}
-          <select value={presetId} disabled={providerId === '' || generation.isActive} onChange={(event) => setPresetId(event.target.value)}>
-            <option value="">{t(selectedProvider?.apiMode === 'text' ? 'Choose Text preset' : 'Choose Chat preset')}</option>
-            {(presets.data ?? []).filter((preset) => preset.kind === requiredPrimaryKind)
-              .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-          </select>
-        </label>
-        {selectedProvider?.apiMode === 'text' ? (
-          <>
-            <label>
-              {t('Context preset')}
-              <select value={contextPresetId} disabled={generation.isActive} onChange={(event) => setContextPresetId(event.target.value)}>
-                <option value="">{t('Choose Context preset')}</option>
-                {(presets.data ?? []).filter((preset) => preset.kind === 'context')
-                  .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-              </select>
-            </label>
-            <label>
-              {t('Instruct preset')}
-              <select value={instructPresetId} disabled={generation.isActive} onChange={(event) => setInstructPresetId(event.target.value)}>
-                <option value="">{t('Choose Instruct preset')}</option>
-                {(presets.data ?? []).filter((preset) => preset.kind === 'instruct')
-                  .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-              </select>
-            </label>
-            <label>
-              {t('System preset')}
-              <select value={systemPresetId} disabled={generation.isActive} onChange={(event) => setSystemPresetId(event.target.value)}>
-                <option value="">{t('Choose System preset')}</option>
-                {(presets.data ?? []).filter((preset) => preset.kind === 'system')
-                  .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-              </select>
-            </label>
-          </>
-        ) : null}
         <label>
           {t('Maximum prompt tokens')}
           <input
@@ -409,7 +319,8 @@ export function ChatPage() {
         </header>
         {detail.error ? <p role="alert">{t('Unable to load this conversation.')}</p> : null}
         {createConversation.error ? <p role="alert">{t('Unable to create conversation: {{error}}', { error: errorCode(createConversation.error) })}</p> : null}
-        {configureConversation.error ? <p role="alert">{t('Unable to configure conversation: {{error}}', { error: errorCode(configureConversation.error) })}</p> : null}
+        {updateConversationSettings.error ? <p role="alert">{t('Unable to configure conversation: {{error}}', { error: errorCode(updateConversationSettings.error) })}</p> : null}
+        {globalGeneration.error ? <p role="alert">{t('Unable to load global generation configuration.')}</p> : null}
         {deleteConversation.error ? <p role="alert">{t('Unable to delete conversation: {{error}}', { error: errorCode(deleteConversation.error) })}</p> : null}
         <MessageList
           conversationId={activeConversationId}
@@ -418,8 +329,12 @@ export function ChatPage() {
           streamedText={generation.streamedText}
           streamedReasoning={generation.streamedReasoning}
           generationTarget={generation.target}
-          controlsDisabled={generation.isActive || configureConversation.isPending}
-          generationDisabled={generation.isActive || configureConversation.isPending || !configurationReady}
+          controlsDisabled={generation.isActive || updateConversationSettings.isPending}
+          generationDisabled={generation.isActive || updateConversationSettings.isPending || !configurationReady}
+          macroValues={{
+            char: characters.data?.find((candidate) => candidate.id === detail.data?.conversation.characterId)?.name ?? '',
+            user: personas.data?.find((candidate) => candidate.id === detail.data?.conversation.personaId)?.name ?? '',
+          }}
           onGenerate={(mode, message, baseContent) => {
             const target = detail.data?.conversation;
             if (target === undefined || generation.isActive) return;
@@ -433,8 +348,9 @@ export function ChatPage() {
             })();
           }}
         />
+        <TrustedScriptRuntimeHost conversationId={activeConversationId} />
         {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: t(generation.error) })}</p> : null}
-        {characters.isLoading || personas.isLoading || providers.isLoading || presets.isLoading ? (
+        {characters.isLoading || personas.isLoading || globalGeneration.isLoading ? (
           <p>{t('Loading chat configuration…')}</p>
         ) : (
           <Composer

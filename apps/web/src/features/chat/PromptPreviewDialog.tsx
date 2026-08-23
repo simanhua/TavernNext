@@ -2,6 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useState } from 'react';
 import { api, errorCode, type Conversation, type PromptPreviewView, type PromptTimedEntryView } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
+import { runTrustedPromptHooks } from '../extensions/TrustedPromptHooks.js';
 
 function revisionSummary(preview: PromptPreviewView, t: (key: string, variables?: Record<string, string | number>) => string): string {
   const revisions = preview.entityRevisions;
@@ -41,11 +42,23 @@ export function PromptPreviewDialog({ conversation, userText }: { conversation: 
     setPending(true);
     setPreview(undefined);
     setError(undefined);
+    let candidateId: string | undefined;
     try {
-      setPreview(await api.previewPrompt(conversation, userText));
+      const candidate = await api.createGenerationCandidate(conversation, { mode: 'normal', userText });
+      candidateId = candidate.candidateId;
+      const patch = await runTrustedPromptHooks({
+        kind: candidate.kind, messages: candidate.messages, text: candidate.text, stop: candidate.stop,
+        spreset: candidate.spreset,
+      }, true, { timeoutMs: 10_000 });
+      setPreview({
+        ...candidate.preview,
+        ...(candidate.kind === 'chat' ? { messages: patch.messages } : { text: patch.text }),
+        stop: patch.stop ?? candidate.stop,
+      });
     } catch (cause) {
       setError(errorCode(cause));
     } finally {
+      if (candidateId !== undefined) void api.discardGenerationCandidate(candidateId).catch(() => undefined);
       setPending(false);
     }
   };

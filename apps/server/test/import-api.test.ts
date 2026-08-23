@@ -1,5 +1,5 @@
 import { rmSync } from 'node:fs';
-import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -377,7 +377,7 @@ describe('two-stage import API', () => {
     expect(repositories.characters.list()).toHaveLength(1);
     const artifact = repositories.importArtifacts.list()[0];
     await expect(readFile(join(directory, 'assets', 'imports', artifact.id, 'avatar', 'source.bin'))).resolves.toEqual(Buffer.from([1, 2, 3]));
-    await expect(stat(join(directory, 'tmp', 'imports', stageName))).resolves.toBeDefined();
+    expect(removalAttempts).toBeGreaterThanOrEqual(1);
     await vi.waitFor(async () => {
       await expect(access(join(directory, 'tmp', 'imports', stageName))).rejects.toThrow();
     }, { timeout: 500, interval: 10 });
