@@ -132,4 +132,22 @@ describe('RegexProjectedMarkdownContent', () => {
     />);
     await waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('projected frontend'));
   });
+
+  it('starts a fresh aggregate timeout budget for each rendered message projection', async () => {
+    const context = { conversationId: 'conversation-1', messageId: 1, variantId: 'variant-1', hasReasoning: false };
+    const { container } = render(<RegexProjectedMarkdownContent
+      content="<panel>"
+      role="assistant"
+      depth={0}
+      scripts={{
+        preset: [rule({ replaceString: '```html\n<body>fresh projection budget</body>\n```' })],
+        character: [],
+      }}
+      createWorker={factory}
+      limits={{ perRuleMs: 100, aggregateMs: 1_000, aggregateDeadline: 0 }}
+      interactive={context}
+    />);
+
+    await waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('fresh projection budget'));
+  });
 });

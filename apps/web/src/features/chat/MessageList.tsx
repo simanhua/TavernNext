@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { regexWorkerLimitsForProjection } from '@tavernnext/extension-runtime';
+import { useEffect, useRef, useState } from 'react';
 import { api, errorCode, type MessageView } from '../../api/client.js';
 import type { ActiveGenerationTarget } from './useGeneration.js';
 import { SwipeControls } from './SwipeControls.js';
@@ -61,12 +60,6 @@ export function MessageList({
   });
   const lastMessage = messages.at(-1);
   const { scripts: regexScripts, ready: regexScriptsReady } = useActiveRegexScripts(conversationId);
-  const regexScriptsKey = JSON.stringify(regexScripts);
-  const regexMacroKey = JSON.stringify(macroValues ?? {});
-  const regexProjectionLimits = useMemo(
-    () => regexWorkerLimitsForProjection(),
-    [conversationId, messages, optimisticUserText, regexMacroKey, regexScriptsKey, streamedText],
-  );
   const lastAssistantId = lastMessage?.role === 'assistant' ? lastMessage.id : undefined;
 
   useEffect(() => {
@@ -129,7 +122,6 @@ export function MessageList({
                   role={message.role}
                   depth={messages.length - messageIndex - 1}
                   scripts={regexScripts}
-                  limits={regexProjectionLimits}
                   macroValues={macroValues}
                   isEdit
                 />
@@ -157,7 +149,6 @@ export function MessageList({
                   role={message.role}
                   depth={messages.length - messageIndex - 1}
                   scripts={regexScripts}
-                  limits={regexProjectionLimits}
                   macroValues={macroValues}
                   interactive={regexScriptsReady && message.role === 'assistant'
                     && activeVariant?.status === 'completed'
@@ -205,7 +196,7 @@ export function MessageList({
       {optimisticUserText === null ? null : (
         <article className="message message-user message-pending" aria-live="polite">
           <header>{t('You')}</header>
-          <RegexProjectedMarkdownContent content={optimisticUserText} role="user" depth={0} scripts={regexScripts} limits={regexProjectionLimits} macroValues={macroValues} />
+          <RegexProjectedMarkdownContent content={optimisticUserText} role="user" depth={0} scripts={regexScripts} macroValues={macroValues} />
           <span className="message-pending-indicator">{t('Waiting for response…')}</span>
         </article>
       )}
@@ -215,7 +206,7 @@ export function MessageList({
       {generationTarget === null && streamedText !== '' ? (
         <article className="message message-assistant" aria-live="polite">
           <header>{t('Assistant')}</header>
-          <RegexProjectedMarkdownContent content={streamedText} role="assistant" depth={0} scripts={regexScripts} limits={regexProjectionLimits} macroValues={macroValues} />
+          <RegexProjectedMarkdownContent content={streamedText} role="assistant" depth={0} scripts={regexScripts} macroValues={macroValues} />
         </article>
       ) : null}
       {generationTarget === null && streamedText === '' && streamedReasoning !== '' ? (

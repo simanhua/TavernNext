@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   REGEX_PLACEMENT,
+  regexWorkerLimitsForProjection,
   runOwnedRegexModeProjectionInWorker,
   type RegexWorkerLimits,
   type RegexWorkerFactory,
@@ -53,8 +54,9 @@ export function RegexProjectedMarkdownContent({
       isEdit,
     } as const;
     void (async () => {
+      const projectionLimits = regexWorkerLimitsForProjection(limits);
       const display = await runOwnedRegexModeProjectionInWorker(
-        content, scripts, context, 'display', createWorker, limits,
+        content, scripts, context, 'display', createWorker, projectionLimits,
       );
       if (active) {
         setProjection({ key: projectionKey, value: display.value });
