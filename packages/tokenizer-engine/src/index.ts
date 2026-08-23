@@ -202,6 +202,7 @@ async function execute<T>(
       attempted.add(id);
       const replacement = fallbackId(decision, id);
       if (replacement === id || attempted.has(replacement)) throw error;
+      if (replacement === TokenizerId.NONE && operation !== 'count') throw error;
       recordFallback(decision, id, replacement);
     }
   }

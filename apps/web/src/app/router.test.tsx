@@ -5,7 +5,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { RouterProvider, createMemoryRouter } from 'react-router';
+import { RouterProvider, createMemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { appRoutes } from './router.js';
 import { I18nProvider } from './i18n.js';
@@ -21,6 +21,10 @@ const server = setupServer(
     id: '018f0000-0000-7000-8000-000000000001', revision: 0,
     providerId: null, chatPresetId: null, textPresetId: null,
     contextPresetId: null, instructPresetId: null, systemPresetId: null, selectionNotice: null,
+  })),
+  http.get('/api/settings/generation/active-resource-context', () => HttpResponse.json({
+    globalGenerationConfigRevision: 0, mode: null, primaryPreset: null,
+    conversation: null, character: null, owners: [],
   })),
 );
 

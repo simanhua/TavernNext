@@ -364,6 +364,20 @@ describe('remote and model fallback behavior', () => {
     });
   });
 
+  it('preserves the model loading error when encode cannot fall back to token estimation', async () => {
+    const decision = selectTokenizer({ requestedId: TokenizerId.LLAMA3 });
+
+    await expect(encodeText('hello', decision, {
+      adapters: {
+        [TokenizerId.LLAMA3]: {
+          encode: async () => { throw new Error('llama model could not load'); },
+          decode: async () => { throw new Error('llama model could not load'); },
+        },
+      },
+    })).rejects.toThrow('llama model could not load');
+    expect(decision.tokenizerId).toBe(TokenizerId.LLAMA3);
+  });
+
   it.each([
     TokenizerId.QWEN2,
     TokenizerId.COMMAND_R,
