@@ -11,6 +11,8 @@ import { interactiveHtmlFences, MarkdownContent } from './MarkdownContent.js';
 import type { ActiveRegexScripts } from './useActiveRegexScripts.js';
 import type { InteractiveMessageContext } from './InteractiveMessageFrame.js';
 
+const DISPLAY_REGEX_WORKER_LIMITS: RegexWorkerLimits = Object.freeze({ perRuleMs: 500, aggregateMs: 5_000 });
+
 export function RegexProjectedMarkdownContent({
   content,
   role,
@@ -54,7 +56,7 @@ export function RegexProjectedMarkdownContent({
       isEdit,
     } as const;
     void (async () => {
-      const projectionLimits = regexWorkerLimitsForProjection(limits);
+      const projectionLimits = regexWorkerLimitsForProjection(limits ?? DISPLAY_REGEX_WORKER_LIMITS);
       const display = await runOwnedRegexModeProjectionInWorker(
         content, scripts, context, 'display', createWorker, projectionLimits,
       );

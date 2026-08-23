@@ -150,4 +150,27 @@ describe('RegexProjectedMarkdownContent', () => {
 
     await waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('fresh projection budget'));
   });
+
+  it('allows browser Worker startup overhead without treating a valid display rule as timed out', async () => {
+    const delayedFactory: RegexWorkerFactory = (request) => ({
+      result: new Promise((resolve) => {
+        setTimeout(() => resolve(runRegexScripts(request.raw, [request.script], request.context)), 150);
+      }),
+      terminate: () => undefined,
+    });
+    const context = { conversationId: 'conversation-1', messageId: 1, variantId: 'variant-1', hasReasoning: false };
+    const { container } = render(<RegexProjectedMarkdownContent
+      content="<panel>"
+      role="assistant"
+      depth={0}
+      scripts={{
+        preset: [rule({ replaceString: '```html\n<body>slow Worker frontend</body>\n```' })],
+        character: [],
+      }}
+      createWorker={delayedFactory}
+      interactive={context}
+    />);
+
+    await waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('slow Worker frontend'));
+  });
 });
