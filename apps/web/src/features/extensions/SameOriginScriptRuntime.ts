@@ -1,5 +1,4 @@
 import {
-  MUTATING_TAVERN_HELPER_METHODS,
   TAVERN_HELPER_BRIDGED_METHODS,
   type ExtensionRuntimeRpcRequest,
   type TrustedScriptManifest,
@@ -27,24 +26,20 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
   private pendingLoads = new Set<() => void>();
   private readonly environment: ScriptCompatibilityEnvironment;
   private readonly runtimeCaller: (scriptId: string, method: string, args: unknown[], currentMessageId?: number) => Promise<unknown>;
-  private readonly apiCaller: RuntimeApiCaller;
 
   constructor(
     document: Document,
     private readonly mount: HTMLElement,
     private readonly onDiagnostic: (value: ScriptRuntimeDiagnostic) => void,
     callApi?: RuntimeApiCaller,
-    private readonly readOnly = false,
   ) {
     this.document = document;
     const caller = callApi ?? createExtensionRuntimeRpcClient(fetch, (input) => {
       this.document.defaultView?.dispatchEvent(new CustomEvent('tavernnext:runtime-mutated', { detail: input }));
     });
-    this.apiCaller = caller;
     this.runtimeCaller = async (scriptId, method, args, currentMessageId) => {
       const script = this.manifest?.scripts.find((candidate) => candidate.id === scriptId);
       if (script === undefined || this.manifest === undefined) throw Object.assign(new Error('runtime_not_authorized'), { code: 'runtime_not_authorized' });
-      if (this.readOnly && MUTATING_TAVERN_HELPER_METHODS.has(method)) return undefined;
       const value = await caller({
         conversationId: this.manifest.conversationId,
         scriptId: script.sourceId,
@@ -80,7 +75,7 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
     runtimeDocument.open();
     runtimeDocument.write('<!doctype html><html><head></head><body></body></html>');
     runtimeDocument.close();
-    this.environment.configure(manifest.scripts);
+    this.environment.configure(manifest.scripts, manifest.buttons);
     this.environment.install(runtimeWindow);
 
     for (const script of manifest.scripts) {
@@ -140,21 +135,8 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
     candidate: Parameters<ScriptCompatibilityEnvironment['runPromptHook']>[0],
     dryRun: boolean,
   ): ReturnType<ScriptCompatibilityEnvironment['runPromptHook']> {
-    if (this.readOnly) return this.environment.runPromptHook(candidate, dryRun);
     if (this.manifest === undefined) throw new Error('runtime_not_ready');
-    const hookMount = this.document.createElement('div');
-    hookMount.hidden = true;
-    this.mount.append(hookMount);
-    const hookRuntime = new SameOriginScriptRuntimeFrame(
-      this.document, hookMount, this.onDiagnostic, this.apiCaller, true,
-    );
-    try {
-      await hookRuntime.start(structuredClone(this.manifest));
-      return await hookRuntime.runPromptHook(candidate, dryRun);
-    } finally {
-      hookRuntime.destroy();
-      hookMount.remove();
-    }
+    return this.environment.runPromptHook(candidate, dryRun);
   }
 
   destroy(): void {

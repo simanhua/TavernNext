@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildTrustedScriptManifest,
   type TrustedScriptOwnerInput,
+  type TrustedRuntimeButton,
 } from '@tavernnext/extension-runtime';
 import { api } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
@@ -44,6 +45,7 @@ export function TrustedScriptRuntimeHost({
   const runtimeRef = useRef<ScriptRuntimeFrame | undefined>(undefined);
   const runtimeReadyRef = useRef<Promise<void>>(Promise.resolve());
   const [diagnostics, setDiagnostics] = useState<ScriptRuntimeDiagnostic[]>([]);
+  const [buttons, setButtons] = useState<TrustedRuntimeButton[]>([]);
   useEffect(() => {
     const refresh = () => {
       void queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
@@ -66,13 +68,11 @@ export function TrustedScriptRuntimeHost({
         }));
         return;
       }
-      const ready = runtimeReadyRef.current;
-      void ready
-        .then(() => {
-          if (runtimeRef.current !== runtime || runtimeReadyRef.current !== ready) {
-            throw new Error('runtime_epoch_changed');
-          }
-          return runtime.runPromptHook(detail.candidate, detail.dryRun);
+      const epoch = runtimeReadyRef.current;
+      void runtime.runPromptHook(detail.candidate, detail.dryRun)
+        .then((value) => {
+          if (runtimeRef.current !== runtime || runtimeReadyRef.current !== epoch) throw new Error('runtime_epoch_changed');
+          return value;
         })
         .then(detail.resolve, detail.reject);
     };
@@ -101,6 +101,28 @@ export function TrustedScriptRuntimeHost({
   }), [conversationId, inputsKey]);
 
   useEffect(() => {
+    setButtons(manifest.buttons);
+    const replace = (event: Event) => {
+      const detail = (event as CustomEvent<{ scriptId?: unknown; buttons?: unknown }>).detail;
+      if (typeof detail?.scriptId !== 'string' || !Array.isArray(detail.buttons)) return;
+      const script = manifest.scripts.find(({ id }) => id === detail.scriptId);
+      if (script === undefined) return;
+      const replacements = detail.buttons.flatMap((candidate): TrustedRuntimeButton[] => {
+        const item = typeof candidate === 'object' && candidate !== null ? candidate as Record<string, unknown> : undefined;
+        return typeof item?.name === 'string' && item.visible !== false
+          ? [{ owner: script.owner, scriptId: script.id, name: item.name }]
+          : [];
+      });
+      setButtons((current) => [
+        ...current.filter((button) => button.scriptId !== script.id),
+        ...replacements,
+      ]);
+    };
+    window.addEventListener('tavernnext:script-buttons-changed', replace);
+    return () => window.removeEventListener('tavernnext:script-buttons-changed', replace);
+  }, [manifest.runtimeKey]);
+
+  useEffect(() => {
     runtimeRef.current?.destroy();
     runtimeRef.current = undefined;
     setDiagnostics([]);
@@ -127,9 +149,9 @@ export function TrustedScriptRuntimeHost({
   return (
     <section className="trusted-script-runtime" aria-label={t('Trusted script runtime')}>
       <div ref={mountRef} />
-      {manifest.buttons.length === 0 ? null : (
+      {buttons.length === 0 ? null : (
         <div className="editor-actions" aria-label={t('Script buttons')}>
-          {manifest.buttons.map((button) => (
+          {buttons.map((button) => (
             <button
               type="button"
               key={`${button.owner.kind}:${button.owner.id}:${button.scriptId}:${button.name}`}

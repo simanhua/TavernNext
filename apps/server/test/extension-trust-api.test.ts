@@ -97,6 +97,33 @@ describe('Attached Extension trust API', () => {
     expect(granted.json()).toMatchObject({ trusted: true, dynamicNetworkDisclaimer: expect.stringContaining('dynamically') });
     expect((await app.inject({ method: 'GET', url: `${base}/manifest` })).json().scripts).toHaveLength(2);
 
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000002405', name: 'Frontend user', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000002406', characterId: character.id, personaId: persona.id, title: 'Frontend cache',
+    });
+    const message = repositories.messages.create({
+      id: '018f0000-0000-7000-8000-000000002407', conversationId: conversation.id,
+      role: 'assistant', content: 'status', activeVariantId: null,
+    });
+    const variant = repositories.messageVariants.create({
+      id: '018f0000-0000-7000-8000-000000002408', messageId: message.id,
+      content: 'status', status: 'completed', finishReason: 'stop',
+    });
+    expect(repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id })).toMatchObject({ ok: true });
+    const approvedHtml = await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${conversation.id}/interactive-resource?sourceVariantId=${variant.id}&url=${encodeURIComponent('https://cdn.example/view.html')}`,
+    });
+    expect(approvedHtml.statusCode).toBe(200);
+    expect(approvedHtml.payload).toBe('<p>view</p>');
+    expect(approvedHtml.headers['x-content-sha256']).toBe(createHash('sha256').update('<p>view</p>').digest('hex'));
+    expect((await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${conversation.id}/interactive-resource?sourceVariantId=${variant.id}&url=${encodeURIComponent('https://cdn.example/unapproved.html')}`,
+    })).statusCode).toBe(403);
+
     bodies.delete('https://cdn.example/view.html');
     const failedRefresh = await app.inject({ method: 'POST', url: `${base}/refresh` });
     expect(failedRefresh.statusCode).toBe(502);

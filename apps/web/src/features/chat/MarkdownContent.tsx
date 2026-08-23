@@ -18,7 +18,7 @@ interface MarkdownNode {
 }
 
 export function interactiveHtmlFences(content: string): string[] {
-  const root = unified().use(remarkParse).parse(content) as MarkdownNode;
+  const root = unified().use(remarkParse).parse(normalizeInteractiveHtmlFences(content)) as MarkdownNode;
   const values: string[] = [];
   const visit = (node: MarkdownNode) => {
     if (node.type === 'code' && (node.lang == null || node.lang.toLowerCase() === 'html')
@@ -31,7 +31,15 @@ export function interactiveHtmlFences(content: string): string[] {
   return values;
 }
 
+export function normalizeInteractiveHtmlFences(content: string): string {
+  return content.replace(
+    /([^\r\n])(```(?:html)?\r?\n(?=\s*<(?:html|head|body)\b))/gi,
+    '$1\n\n$2',
+  );
+}
+
 export function MarkdownContent({ content, interactive, inertInteractiveHtml = [] }: MarkdownContentProps) {
+  const projectedContent = interactive === undefined ? content : normalizeInteractiveHtmlFences(content);
   return (
     <div className="message-content">
       <ReactMarkdown
@@ -54,7 +62,7 @@ export function MarkdownContent({ content, interactive, inertInteractiveHtml = [
           },
         }}
       >
-        {content}
+        {projectedContent}
       </ReactMarkdown>
     </div>
   );

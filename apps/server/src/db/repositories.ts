@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { and, asc, eq } from 'drizzle-orm';
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { ZodType } from 'zod';
@@ -703,6 +704,30 @@ interface SnapshotStorageRow {
   payload: unknown;
 }
 
+const SNAPSHOT_COMPRESSION_THRESHOLD_BYTES = 512 * 1024;
+const SNAPSHOT_COMPRESSION_FORMAT = 'tavernnext-gzip-json-v1';
+
+function encodeSnapshotStorage(value: GenerationSnapshot): unknown {
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json) < SNAPSHOT_COMPRESSION_THRESHOLD_BYTES) return value;
+  return {
+    format: SNAPSHOT_COMPRESSION_FORMAT,
+    conversationRevision: value.conversationRevision,
+    data: gzipSync(json).toString('base64'),
+  };
+}
+
+function decodeSnapshotStorage(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || Reflect.get(value, 'format') !== SNAPSHOT_COMPRESSION_FORMAT
+    || typeof Reflect.get(value, 'data') !== 'string') return value;
+  try {
+    return JSON.parse(gunzipSync(Buffer.from(Reflect.get(value, 'data'), 'base64')).toString('utf8')) as unknown;
+  } catch {
+    throw new SnapshotIntegrityError();
+  }
+}
+
 function snapshotConversationRevision(artifact: unknown): unknown {
   if (typeof artifact !== 'object' || artifact === null || Array.isArray(artifact)) return null;
   return Reflect.get(artifact, 'conversationRevision');
@@ -736,7 +761,7 @@ function createGenerationSnapshotRepository(
     if (!verifySnapshotIntegrityTag(key, snapshotEnvelope(row), row.integrityTag)) {
       throw new SnapshotIntegrityError();
     }
-    const parsed = GenerationSnapshotSchema.safeParse(row.payload);
+    const parsed = GenerationSnapshotSchema.safeParse(decodeSnapshotStorage(row.payload));
     if (!parsed.success
       || parsed.data.id !== row.id
       || parsed.data.conversationId !== row.conversationId) {
@@ -754,7 +779,8 @@ function createGenerationSnapshotRepository(
         createdAt: now,
         updatedAt: now,
       }));
-      const row = { id: value.id, conversationId: value.conversationId, payload: value };
+      const storagePayload = encodeSnapshotStorage(value);
+      const row = { id: value.id, conversationId: value.conversationId, payload: storagePayload };
       const integrityTag = createSnapshotIntegrityTag(key, snapshotEnvelope(row));
       return database.transaction(() => {
         database.orm.insert(generationSnapshots).values({
@@ -762,7 +788,7 @@ function createGenerationSnapshotRepository(
           revision: value.revision,
           createdAt: value.createdAt,
           updatedAt: value.updatedAt,
-          payload: value,
+          payload: storagePayload,
           conversationId: value.conversationId,
           integrityTag,
         }).run();

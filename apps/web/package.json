@@ -14,6 +14,7 @@
     "@tavernnext/domain": "*",
     "@tavernnext/extension-runtime": "*",
     "@vitejs/plugin-react": "^4.7.0",
+    "lodash-es": "4.18.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-hook-form": "^7.55.0",
@@ -24,6 +25,7 @@
     "remark-parse": "^11.0.0",
     "unified": "^11.0.5",
     "vite": "^6.4.3",
+    "vue": "3.5.41",
     "zod": "4.4.3",
     "zustand": "5.0.3"
   },
@@ -31,6 +33,7 @@
     "@tailwindcss/vite": "4.0.9",
     "@testing-library/react": "16.2.0",
     "@testing-library/user-event": "14.6.1",
+    "@types/lodash-es": "4.17.12",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "jsdom": "26.0.0",

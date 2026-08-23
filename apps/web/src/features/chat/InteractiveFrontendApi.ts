@@ -42,6 +42,21 @@ export async function callInteractiveFrontendApi(
       active_variant_id: message.activeVariantId ?? null,
     }));
   }
+  if (method === 'loadApprovedHtml') {
+    const url = args[0];
+    if (typeof url !== 'string') throw Object.assign(new Error('invalid_request'), { code: 'invalid_request' });
+    const query = new URLSearchParams({ sourceVariantId: context.variantId, url });
+    const response = await fetcher(
+      `/api/conversations/${encodeURIComponent(context.conversationId)}/interactive-resource?${query.toString()}`,
+    );
+    if (!response.ok) {
+      const payload = await response.json() as { error?: string };
+      throw Object.assign(new Error(payload.error ?? `http_${response.status}`), {
+        code: payload.error ?? `http_${response.status}`,
+      });
+    }
+    return response.text();
+  }
   if (method === 'createChatMessages' || method === 'triggerSlash') {
     const response = await fetcher(`/api/conversations/${encodeURIComponent(context.conversationId)}/interactive-actions`, {
       method: 'POST', headers: { 'content-type': 'application/json' },

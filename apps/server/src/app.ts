@@ -359,7 +359,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerExtensionRuntimeRpcRoutes(app, database, repositories, generations, extensionTrust);
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
-  registerInteractiveActionRoutes(app, database, repositories, generations);
+  registerInteractiveActionRoutes(app, database, repositories, generations, extensionTrust);
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);

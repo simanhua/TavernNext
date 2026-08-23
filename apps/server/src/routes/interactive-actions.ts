@@ -3,12 +3,20 @@ import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
+import { resolveActiveResourceContext } from '../services/active-extension-resources.js';
+import type { createExtensionTrustService } from '../services/extension-trust-service.js';
 import type { GenerationService } from '../services/generation-service.js';
+
+type TrustService = ReturnType<typeof createExtensionTrustService>;
 
 const InputSchema = z.object({
   sourceVariantId: z.string().uuid(),
   method: z.enum(['createChatMessages', 'triggerSlash']),
   args: z.array(z.unknown()).max(64).default([]),
+}).strict();
+const InteractiveResourceQuerySchema = z.object({
+  sourceVariantId: z.string().uuid(),
+  url: z.string().url(),
 }).strict();
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -28,15 +36,45 @@ export function registerInteractiveActionRoutes(
   database: TavernDatabase,
   repositories: Repositories,
   generations: GenerationService,
+  trust: TrustService,
 ): void {
+  const authorizedSource = (conversationId: string, sourceVariantId: string) => {
+    const source = repositories.messageVariants.get(sourceVariantId);
+    const sourceMessage = source === undefined ? undefined : repositories.messages.get(source.messageId);
+    return source !== undefined && source.status === 'completed'
+      && sourceMessage?.conversationId === conversationId
+      && sourceMessage.activeVariantId === source.id;
+  };
+  app.get<{ Params: { id: string }; Querystring: unknown }>(
+    '/api/conversations/:id/interactive-resource',
+    async (request, reply) => {
+      const input = InteractiveResourceQuerySchema.safeParse(request.query);
+      if (!input.success) return reply.status(400).send({ error: 'invalid_request' });
+      if (!authorizedSource(request.params.id, input.data.sourceVariantId)) {
+        return reply.status(403).send({ error: 'runtime_not_authorized' });
+      }
+      const context = resolveActiveResourceContext(repositories, request.params.id);
+      for (const owner of context.owners) {
+        const review = trust.review(owner.kind, owner.id);
+        if (!review.trusted) continue;
+        const remote = review.remotes.find((candidate) => (
+          candidate.url === input.data.url && candidate.fetched && candidate.sha256 !== null
+        ));
+        if (remote?.sha256 === null || remote?.sha256 === undefined) continue;
+        const cached = trust.cached(owner.kind, owner.id, remote.sha256);
+        if (cached === undefined || !/^text\/html(?:$|;)/i.test(cached.mediaType)) continue;
+        reply.header('content-type', cached.mediaType);
+        reply.header('cache-control', 'private, no-store');
+        reply.header('x-content-sha256', cached.sha256);
+        return reply.send(Buffer.from(cached.contentBase64, 'base64'));
+      }
+      return reply.status(403).send({ error: 'runtime_not_authorized' });
+    },
+  );
   app.post<{ Params: { id: string }; Body: unknown }>('/api/conversations/:id/interactive-actions', async (request, reply) => {
     const input = InputSchema.safeParse(request.body);
     if (!input.success) return reply.status(400).send({ error: 'invalid_request' });
-    const source = repositories.messageVariants.get(input.data.sourceVariantId);
-    const sourceMessage = source === undefined ? undefined : repositories.messages.get(source.messageId);
-    if (source === undefined || source.status !== 'completed'
-      || sourceMessage?.conversationId !== request.params.id
-      || sourceMessage.activeVariantId !== source.id) {
+    if (!authorizedSource(request.params.id, input.data.sourceVariantId)) {
       return reply.status(403).send({ error: 'runtime_not_authorized' });
     }
     if (generations.isConversationActive(request.params.id)) {

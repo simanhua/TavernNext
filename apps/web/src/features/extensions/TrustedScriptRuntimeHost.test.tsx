@@ -59,7 +59,7 @@ afterEach(() => { cleanup(); presetDigest = 'a'.repeat(64); characterTrusted = t
 afterAll(() => server.close());
 
 describe('TrustedScriptRuntimeHost', () => {
-  it('rejects a queued hook when the trusted runtime epoch changes before readiness', async () => {
+  it('runs a prompt hook without waiting for unrelated script startup to settle', async () => {
     let releaseFirst: (() => void) | undefined;
     const firstReady = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const hookCalls: number[] = [];
@@ -78,21 +78,20 @@ describe('TrustedScriptRuntimeHost', () => {
       frames.push(frame);
       return frame;
     };
-    const { queryClient } = renderWithApp(
+    renderWithApp(
       <TrustedScriptRuntimeHost conversationId="conversation-1" createFrame={createFrame} />,
     );
     await waitFor(() => expect(frames).toHaveLength(1));
     const hook = runTrustedPromptHooks({
       kind: 'chat', messages: [{ role: 'user', content: 'queued' }], stop: [],
     }, false);
-    const rejection = expect(hook).rejects.toThrow('runtime_epoch_changed');
-
-    presetDigest = 'c'.repeat(64);
-    await queryClient.invalidateQueries({ queryKey: ['extension-trust', 'preset'] });
-    await waitFor(() => expect(frames).toHaveLength(2));
+    await Promise.resolve();
+    await Promise.resolve();
+    const callsBeforeFullStartup = [...hookCalls];
     releaseFirst?.();
-    await rejection;
-    expect(hookCalls).toEqual([]);
+    await expect(hook).resolves.toMatchObject({ messages: [{ role: 'user', content: 'queued' }] });
+    expect(callsBeforeFullStartup).toEqual([0]);
+    expect(hookCalls).toEqual([0]);
   });
 
   it('restarts on digest/trust changes, routes owning buttons, and surfaces fail-open errors', async () => {
@@ -125,6 +124,13 @@ describe('TrustedScriptRuntimeHost', () => {
     await screen.findByRole('button', { name: 'preset button' });
     await waitFor(() => expect(frames).toHaveLength(1));
     expect(frames[0]!.manifest?.scripts.map(({ owner }) => owner.kind)).toEqual(['preset', 'character']);
+    window.dispatchEvent(new CustomEvent('tavernnext:script-buttons-changed', { detail: {
+      scriptId: `preset:${presetId}:preset-script`,
+      buttons: [{ name: 'dynamic preset button', visible: true }, { name: 'hidden preset button', visible: false }],
+    } }));
+    await screen.findByRole('button', { name: 'dynamic preset button' });
+    expect(screen.queryByRole('button', { name: 'preset button' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'hidden preset button' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'character button' }));
     expect(frames[0]!.invoked).toEqual([`character:${characterId}:character-script:character button`]);
     await expect(runTrustedPromptHooks({

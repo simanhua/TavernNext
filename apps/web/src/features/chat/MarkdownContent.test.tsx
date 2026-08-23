@@ -2,7 +2,7 @@
 
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MarkdownContent } from './MarkdownContent.js';
+import { interactiveHtmlFences, MarkdownContent } from './MarkdownContent.js';
 import { callInteractiveFrontendApi } from './InteractiveFrontendApi.js';
 
 afterEach(cleanup);
@@ -85,6 +85,35 @@ describe('MarkdownContent', () => {
     expect(container.querySelector('pre code')?.textContent).toContain('<body>');
   });
 
+  it('boots the real status loader through the approved HTML bridge', () => {
+    const source = `<body><script>$('body').load('https://cdn.example/status.html')</script></body>`;
+    const { container } = render(<MarkdownContent
+      content={`<details><summary>Variables</summary>updated</details>\`\`\`\n${source}\n\`\`\``}
+      interactive={{ conversationId: 'conversation-1', messageId: 2, variantId: 'variant-1', hasReasoning: false }}
+    />);
+    expect(container.querySelector('iframe')).not.toBeNull();
+    const srcdoc = container.querySelector('iframe')?.srcdoc ?? '';
+
+    expect(srcdoc).toContain('window.$');
+    expect(srcdoc).toContain("call('loadApprovedHtml'");
+    expect(srcdoc.indexOf('window.$')).toBeLessThan(srcdoc.indexOf("$('body').load"));
+  });
+
+  it('keeps adjacent raw model HTML inert after shared fence normalization', () => {
+    const source = `<body><script>window.rawModelCode = true</script></body>`;
+    const content = `raw model text\`\`\`\n${source}\n\`\`\``;
+    const inert = interactiveHtmlFences(content);
+    const { container } = render(<MarkdownContent
+      content={content}
+      interactive={{ conversationId: 'conversation-1', messageId: 2, variantId: 'variant-1', hasReasoning: false }}
+      inertInteractiveHtml={inert}
+    />);
+
+    expect(inert).toEqual([source]);
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('pre code')?.textContent).toContain('window.rawModelCode');
+  });
+
   it('limits opaque iframe RPC to variant-bound read APIs with stable errors', async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({
       scope: 'message-variant', scopeId: 'variant-1', revision: 2, value: { hp: 9 },
@@ -94,6 +123,20 @@ describe('MarkdownContent', () => {
     await expect(callInteractiveFrontendApi(context, 'getVariables', [], fetcher)).resolves.toEqual({ hp: 9 });
     expect(fetcher).toHaveBeenCalledWith('/api/runtime-states/message-variant/variant-1');
     await expect(callInteractiveFrontendApi(context, 'replaceVariables', [], fetcher)).rejects.toMatchObject({ code: 'not_supported' });
+  });
+
+  it('loads message frontend HTML only through the variant-bound approved cache route', async () => {
+    const fetcher = vi.fn(async () => new Response('<main>Approved status</main>', {
+      status: 200, headers: { 'content-type': 'text/html' },
+    }));
+    const context = { conversationId: 'conversation-1', messageId: 4, variantId: 'variant-1', hasReasoning: false };
+
+    await expect(callInteractiveFrontendApi(
+      context, 'loadApprovedHtml', ['https://cdn.example/status.html'], fetcher,
+    )).resolves.toBe('<main>Approved status</main>');
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/conversations/conversation-1/interactive-resource?sourceVariantId=variant-1&url=https%3A%2F%2Fcdn.example%2Fstatus.html',
+    );
   });
 
   it('exposes only variant-bound message creation and trigger actions to accepted frontends', async () => {

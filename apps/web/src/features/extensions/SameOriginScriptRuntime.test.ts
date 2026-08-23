@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TrustedScriptManifest } from '@tavernnext/extension-runtime';
 import { SameOriginScriptRuntimeFrame } from './SameOriginScriptRuntime.js';
 
+const activeRuntimes: SameOriginScriptRuntimeFrame[] = [];
+function trackedRuntime(...args: ConstructorParameters<typeof SameOriginScriptRuntimeFrame>) {
+  const runtime = new SameOriginScriptRuntimeFrame(...args);
+  activeRuntimes.push(runtime);
+  return runtime;
+}
+
 afterEach(() => {
+  vi.useRealTimers();
+  for (const runtime of activeRuntimes.splice(0).reverse()) runtime.destroy();
   document.body.replaceChildren();
   delete (window as unknown as Record<string, unknown>).runtimeStarted;
   delete (window as unknown as Record<string, unknown>).runtimeClicks;
@@ -23,7 +32,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const diagnostics: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (diagnostic) => diagnostics.push(diagnostic.message));
+    const runtime = trackedRuntime(document, mount, (diagnostic) => diagnostics.push(diagnostic.message));
     await runtime.start(manifest(`
       parent.runtimeStarted = (parent.runtimeStarted || 0) + 1;
       eventOn(getButtonEvent('Run'), () => { parent.runtimeClicks = (parent.runtimeClicks || 0) + 1; });
@@ -50,7 +59,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const diagnostics: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (value) => diagnostics.push(value.message));
+    const runtime = trackedRuntime(document, mount, (value) => diagnostics.push(value.message));
     await runtime.start(manifest(`
       $(() => {
         parent.reasoningFacade = {
@@ -71,11 +80,56 @@ describe('same-origin trusted script iframe', () => {
     expect(diagnostics).toEqual([]);
   });
 
+  it('provides the accepted Zod, Vue, and SillyTavern settings globals', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const diagnostics: string[] = [];
+    const runtime = trackedRuntime(document, mount, (value) => diagnostics.push(value.message));
+    await runtime.start(manifest(`
+      const schema = z.z.object({ phase: z.z.string() });
+      const phase = Vue.ref(schema.parse({ phase: 'ready' }).phase);
+      SillyTavern.extensionSettings.regexBinding_scriptId = getScriptId();
+      parent.acceptedGlobals = {
+        phase: phase.value,
+        unique: _.uniq(['a', 'a', 'b']),
+        settingsShared: SillyTavern.getContext().extensionSettings === SillyTavern.extensionSettings,
+        scriptId: SillyTavern.extensionSettings.regexBinding_scriptId,
+      };
+    `));
+
+    expect((window as unknown as { acceptedGlobals?: unknown }).acceptedGlobals).toEqual({
+      phase: 'ready', unique: ['a', 'b'], settingsShared: true, scriptId: 'script-1',
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('lets an owning script replace its visible buttons at runtime', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const changes: unknown[] = [];
+    window.addEventListener('tavernnext:script-buttons-changed', (event) => {
+      changes.push((event as CustomEvent).detail);
+    }, { once: true });
+    const runtime = trackedRuntime(document, mount, () => undefined);
+    await runtime.start(manifest(`
+      parent.initialScriptButtons = getScriptButtons();
+      replaceScriptButtons([{ name: 'Dynamic', visible: true }, { name: 'Hidden', visible: false }]);
+    `));
+
+    expect((window as unknown as { initialScriptButtons?: unknown }).initialScriptButtons).toEqual([
+      { name: 'Run', visible: true },
+    ]);
+    expect(changes).toEqual([{
+      scriptId: 'preset:preset-1:script-1',
+      buttons: [{ name: 'Dynamic', visible: true }, { name: 'Hidden', visible: false }],
+    }]);
+  });
+
   it('bridges supported globals with the owning runtime identity', async () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const calls: unknown[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, async (input) => {
+    const runtime = trackedRuntime(document, mount, () => undefined, async (input) => {
       calls.push(input);
       return [{ message_id: 0, message: 'Persisted' }];
     });
@@ -108,7 +162,7 @@ describe('same-origin trusted script iframe', () => {
       if (input.method === 'getVariables') return { value: structuredClone(persisted.variables) };
       throw new Error('unexpected method');
     };
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, caller);
+    const runtime = trackedRuntime(document, mount, () => undefined, caller);
     await runtime.start(manifest(`
       eventOn(event_types.APP_READY, async () => {
         await setChatMessages([{ message_id: 0, message: 'After' }]);
@@ -117,7 +171,7 @@ describe('same-origin trusted script iframe', () => {
     `));
     runtime.destroy();
 
-    const reloaded = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, caller);
+    const reloaded = trackedRuntime(document, mount, () => undefined, caller);
     await reloaded.start(manifest(`
       eventOn(event_types.APP_READY, async () => {
         parent.reloadedState = { messages: await getChatMessages(), variables: await getVariables() };
@@ -134,7 +188,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const calls: Array<{ currentMessageId?: number }> = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, async (input) => {
+    const runtime = trackedRuntime(document, mount, () => undefined, async (input) => {
       calls.push(input);
       return input.currentMessageId;
     });
@@ -162,7 +216,7 @@ describe('same-origin trusted script iframe', () => {
       id: 'character:character-1:script-2', sourceId: 'script-2', name: 'Character hook',
       content: `eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => { event.chat[0].content += '-character'; });`,
     });
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined);
+    const runtime = trackedRuntime(document, mount, () => undefined);
     await runtime.start(input);
 
     const patch = await runtime.runPromptHook({
@@ -172,11 +226,117 @@ describe('same-origin trusted script iframe', () => {
     expect(patch.messages).toEqual([{ role: 'user', content: 'input-preset-dry-character' }]);
   });
 
+  it('reuses the started Compatibility Runtime for repeated prompt hooks', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const runtime = trackedRuntime(document, mount, () => undefined);
+    await runtime.start(manifest(`
+      parent.runtimeStarted = (parent.runtimeStarted || 0) + 1;
+      eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => { event.chat[0].content += '-hooked'; });
+    `));
+
+    const first = await runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'first' }], stop: [],
+    }, false);
+    const second = await runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'second' }], stop: [],
+    }, false);
+
+    expect(first.messages?.[0]?.content).toBe('first-hooked');
+    expect(second.messages?.[0]?.content).toBe('second-hooked');
+    expect((window as unknown as { runtimeStarted?: number }).runtimeStarted).toBe(1);
+  });
+
+  it('fails open a hung script listener before the outer prompt hook deadline', async () => {
+    vi.useFakeTimers();
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const diagnostics: string[] = [];
+    const calls: string[] = [];
+    const input = manifest(`
+      eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, () => {
+        parent.addEventListener('late-hook-mutation', () => replaceVariables({ leaked: true }));
+        return new Promise(() => {});
+      });
+    `);
+    input.scripts.push({
+      ...input.scripts[0]!, id: 'preset:preset-1:script-2', sourceId: 'script-2', name: 'Later hook',
+      content: `eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => { event.chat[0].content += '-continued'; });`,
+    });
+    const runtime = trackedRuntime(document, mount, (value) => diagnostics.push(value.message), async (input) => {
+      calls.push(input.method);
+      return undefined;
+    });
+    await runtime.start(input);
+    const hook = runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, false);
+    const verdict = Promise.race([
+      hook,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('outer_test_timeout')), 1_001)),
+    ]);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+
+    await expect(verdict).resolves.toMatchObject({ messages: [{ role: 'user', content: 'input-continued' }] });
+    window.dispatchEvent(new Event('late-hook-mutation'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(diagnostics).toEqual(['prompt_listener_timeout']);
+    expect(calls).toEqual([]);
+  });
+
+  it('keeps callbacks registered by a successful prompt hook permanently read-only', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const calls: string[] = [];
+    const runtime = trackedRuntime(document, mount, () => undefined, async (input) => {
+      calls.push(input.method);
+      return undefined;
+    });
+    await runtime.start(manifest(`
+      eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => {
+        parent.addEventListener('successful-late-mutation', () => replaceVariables({ leaked: true }));
+        event.chat[0].content += '-ready';
+      });
+    `));
+
+    await expect(runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, false)).resolves.toMatchObject({ messages: [{ role: 'user', content: 'input-ready' }] });
+    window.dispatchEvent(new Event('successful-late-mutation'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toEqual([]);
+  });
+
+  it('never restores persistent bridge authority to a script that owns a prompt hook', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const calls: string[] = [];
+    const runtime = trackedRuntime(document, mount, () => undefined, async (input) => {
+      calls.push(input.method);
+      return undefined;
+    });
+    await runtime.start(manifest(`
+      eventOn(event_types.CHAT_COMPLETION_PROMPT_READY, event => { event.chat[0].content += '-ready'; });
+      eventOn(getButtonEvent('Run'), () => replaceVariables({ leakedFromButton: true }));
+    `));
+
+    await runtime.runPromptHook({
+      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
+    }, false);
+    await runtime.invoke('preset:preset-1:script-1', 'Run');
+
+    expect(calls).toEqual([]);
+  });
+
   it('enforces prompt hooks as read-only even when a script ignores dry-run state', async () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const calls: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined, async (input) => {
+    const runtime = trackedRuntime(document, mount, () => undefined, async (input) => {
       calls.push(input.method);
       return { value: input.args[0] };
     });
@@ -209,7 +369,7 @@ describe('same-origin trusted script iframe', () => {
       windowAdd: Object.hasOwn(window, 'addEventListener'),
       documentAdd: Object.hasOwn(document, 'addEventListener'),
     };
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined);
+    const runtime = trackedRuntime(document, mount, () => undefined);
     await runtime.start(manifest(`
       parent.document.body.addEventListener('direct-parent-event', () => { parent.runtimeClicks = (parent.runtimeClicks || 0) + 1; });
       eventOn(event_types.APP_READY, async () => {
@@ -236,7 +396,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const diagnostics: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (value) => diagnostics.push(value.scriptId));
+    const runtime = trackedRuntime(document, mount, (value) => diagnostics.push(value.scriptId));
     await runtime.start(manifest(`
       parent.addEventListener('explode-later', () => { throw new Error('async parent failure'); });
     `));
@@ -253,7 +413,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const diagnostics: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (value) => diagnostics.push(value.scriptId));
+    const runtime = trackedRuntime(document, mount, (value) => diagnostics.push(value.scriptId));
     await runtime.start(manifest(''));
     const error = new Error('timer failed');
     error.stack = 'Error: timer failed\n at tavernnext-runtime:preset:preset-1:script-1:1:1';
@@ -268,7 +428,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const diagnostics: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (value) => diagnostics.push(value.scriptId));
+    const runtime = trackedRuntime(document, mount, (value) => diagnostics.push(value.scriptId));
     const cacheUrl = `/api/extension-trust/preset/preset-1/cache/${'f'.repeat(64)}`;
     const input = manifest(`// ${cacheUrl}`);
     input.scripts.push({
@@ -287,7 +447,7 @@ describe('same-origin trusted script iframe', () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const diagnostics: string[] = [];
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, (diagnostic) => diagnostics.push(diagnostic.scriptId));
+    const runtime = trackedRuntime(document, mount, (diagnostic) => diagnostics.push(diagnostic.scriptId));
 
     await runtime.start(manifest(`
       eventOn(getButtonEvent('Run'), () => { throw new Error('button failed'); });
@@ -301,7 +461,7 @@ describe('same-origin trusted script iframe', () => {
   it('cancels an in-flight module load when the runtime is destroyed', async () => {
     const mount = document.createElement('div');
     document.body.append(mount);
-    const runtime = new SameOriginScriptRuntimeFrame(document, mount, () => undefined);
+    const runtime = trackedRuntime(document, mount, () => undefined);
 
     const starting = runtime.start(manifest("import '/never-loads.js';"));
     runtime.destroy();

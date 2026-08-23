@@ -393,7 +393,7 @@ describe('SQLite repositories', () => {
   });
 
   it('persists a separately revisioned Worldbook timed state and exposes snapshots as immutable', async () => {
-    const { repositories } = await createTestRepositories();
+    const { database, repositories } = await createTestRepositories();
     const character = repositories.characters.create({
       id: '018f0000-0000-7000-8000-000000000047', name: 'Runtime character', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
     });
@@ -420,6 +420,16 @@ describe('SQLite repositories', () => {
     })).toMatchObject({ ok: true, value: { revision: 1, timedState: { messageIndex: 2 } } });
     expect(repositories.worldbookRuntimeStates.getByConversationId(conversation.id)).toMatchObject({
       id: runtime.id, conversationId: conversation.id, revision: 1,
+    });
+
+    const largeSnapshot = repositories.generationSnapshots.create({
+      id: '018f0000-0000-7000-8000-000000000052', conversationId: conversation.id, conversationRevision: 0,
+      payload: { schemaVersion: 1, payloadHash: 'large', audit: 'x'.repeat(2_000_000) },
+    });
+    const stored = database.sqlite.prepare('SELECT payload FROM generation_snapshots WHERE id = ?').get(largeSnapshot.id);
+    expect(String(stored?.payload).length).toBeLessThan(100_000);
+    expect(repositories.generationSnapshots.get(largeSnapshot.id)?.payload).toEqual({
+      schemaVersion: 1, payloadHash: 'large', audit: 'x'.repeat(2_000_000),
     });
   });
 
