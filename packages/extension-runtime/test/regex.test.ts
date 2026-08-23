@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   projectRegexViews,
   REGEX_PLACEMENT,
@@ -132,21 +132,28 @@ describe('SillyTavern Regex compatibility engine', () => {
   });
 
   it('shares one aggregate deadline across a multi-value projection', async () => {
-    let workers = 0;
-    const limits = regexWorkerLimitsForProjection({ perRuleMs: 100, aggregateMs: 5 });
-    const factory: RegexWorkerFactory = () => {
-      workers += 1;
-      return { result: new Promise(() => undefined), terminate: () => undefined };
-    };
-    await runOwnedRegexProjectionInWorker('<one>', { preset: [rule()], character: [] }, {
-      placement: REGEX_PLACEMENT.AI_OUTPUT,
-    }, factory, limits);
-    const second = await runOwnedRegexProjectionInWorker('<two>', { preset: [rule()], character: [] }, {
-      placement: REGEX_PLACEMENT.AI_OUTPUT,
-    }, factory, limits);
+    vi.useFakeTimers();
+    try {
+      let workers = 0;
+      const limits = regexWorkerLimitsForProjection({ perRuleMs: 100, aggregateMs: 5 });
+      const factory: RegexWorkerFactory = () => {
+        workers += 1;
+        return { result: new Promise(() => undefined), terminate: () => undefined };
+      };
+      const first = runOwnedRegexProjectionInWorker('<one>', { preset: [rule()], character: [] }, {
+        placement: REGEX_PLACEMENT.AI_OUTPUT,
+      }, factory, limits);
+      await vi.advanceTimersByTimeAsync(5);
+      await first;
+      const second = await runOwnedRegexProjectionInWorker('<two>', { preset: [rule()], character: [] }, {
+        placement: REGEX_PLACEMENT.AI_OUTPUT,
+      }, factory, limits);
 
-    expect(workers).toBe(1);
-    expect(second.trace).toEqual([expect.objectContaining({ reason: 'aggregate_timeout' })]);
+      expect(workers).toBe(1);
+      expect(second.trace).toEqual([expect.objectContaining({ reason: 'aggregate_timeout' })]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
 });
