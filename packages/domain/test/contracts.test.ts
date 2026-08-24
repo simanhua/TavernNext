@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { CharacterSchema, CompatibilityMetadataSchema, ConversationSchema, GenerationRequestSchema } from '../src/index.js';
+import {
+  CharacterSchema,
+  CompatibilityMetadataSchema,
+  ConversationSchema,
+  GenerationRequestSchema,
+  SceneManifestSchema,
+} from '../src/index.js';
 
 describe('domain contracts', () => {
   it('retains unknown compatibility fields verbatim', () => {
@@ -50,5 +56,29 @@ describe('domain contracts', () => {
     });
     expect(ConversationSchema.safeParse({ ...base, maxPromptTokens: 1_000_001 }).success).toBe(false);
     expect(ConversationSchema.safeParse({ ...base, maxResponseTokens: 384_001 }).success).toBe(false);
+  });
+
+  it('accepts only declared browser-ready Scene SDK v2 module assets', () => {
+    const manifest = {
+      id: '018f2000-0000-7000-8000-000000000001',
+      slug: 'top-level-scene',
+      version: '2.0.0',
+      name: 'Top-level Scene',
+      summary: '',
+      description: '',
+      author: 'TavernNext',
+      minimumTavernNextVersion: '1.0.0',
+      sceneSdkVersion: 2,
+      frontendEntry: 'frontend/app.js',
+      frontendStyles: ['frontend/styles.css'],
+      setupSchema: {},
+      stateSchema: {},
+      files: ['frontend/app.js', 'frontend/styles.css'],
+    };
+    expect(SceneManifestSchema.parse(manifest).sceneSdkVersion).toBe(2);
+    expect(SceneManifestSchema.safeParse({ ...manifest, sceneSdkVersion: 1 }).success).toBe(false);
+    expect(SceneManifestSchema.safeParse({ ...manifest, frontendEntry: 'frontend/index.html' }).success).toBe(false);
+    expect(SceneManifestSchema.safeParse({ ...manifest, frontendEntry: '../app.js' }).success).toBe(false);
+    expect(SceneManifestSchema.safeParse({ ...manifest, files: ['frontend/app.js'] }).success).toBe(false);
   });
 });

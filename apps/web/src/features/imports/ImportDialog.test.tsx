@@ -26,6 +26,23 @@ const validPreview = {
   inspectionToken: 'opaque-token',
   expiresAt: '2026-08-08T00:15:00.000Z',
 };
+const importedEntityId = '018f0000-0000-7000-8000-000000000802';
+
+function trustReview(kind: 'character' | 'preset', fetched = false, trusted = false) {
+  return {
+    owner: { kind, id: importedEntityId },
+    scripts: [{ sourceKey: 'script', ordinal: 0, order: [0], enabled: true, name: 'Imported script' }],
+    remotes: [{
+      url: 'https://cdn.example/imported.js', fetched,
+      fetchStatus: fetched ? 'fetched' as const : 'not_fetched' as const,
+      sha256: fetched ? 'a'.repeat(64) : null,
+      mediaType: fetched ? 'text/javascript' : null,
+    }],
+    bundleDigest: 'b'.repeat(64), trusted, sameOriginRisk: true,
+    dynamicNetworkDisclaimer: 'Trusted scripts may dynamically contact other origins.',
+    auditEvents: [],
+  };
+}
 
 let inspectRequests = 0;
 let commitRequests = 0;
@@ -51,7 +68,12 @@ const server = setupServer(
         blockingErrors: [{ code: 'corrupt_zip', message: 'Archive central directory is corrupt.', path: 'central-directory' }],
       }, { status: 422 });
     }
-    return HttpResponse.json({ ...validPreview, source: { ...validPreview.source, fileName: file.name } });
+    const kind = file.name.endsWith('.settings') ? 'preset' : 'character';
+    return HttpResponse.json({
+      ...validPreview,
+      source: { ...validPreview.source, fileName: file.name },
+      detected: { ...validPreview.detected, kind },
+    });
   }),
   http.post('/api/imports/commit', async ({ request }) => {
     commitRequests += 1;
@@ -62,10 +84,14 @@ const server = setupServer(
     }
     return HttpResponse.json({
       artifactId: '018f0000-0000-7000-8000-000000000801',
-      entityId: '018f0000-0000-7000-8000-000000000802',
+      entityId: importedEntityId,
       assetPath: 'assets/imports/018f0000-0000-7000-8000-000000000801',
     }, { status: 201 });
   }),
+  http.get('/api/extension-trust/:kind/:id', ({ params }) => HttpResponse.json({
+    ...trustReview(params.kind as 'character' | 'preset'),
+    scripts: [], remotes: [],
+  })),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -82,15 +108,21 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-function Harness({ onCommitted = () => undefined }: { onCommitted?: (entityId?: string) => void }) {
+function Harness({
+  onCommitted = () => undefined,
+  expectedKind = 'character',
+}: {
+  onCommitted?: (entityId?: string) => void;
+  expectedKind?: 'character' | 'preset';
+}) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}>Open import</button>
       <ImportDialog
         open={open}
-        expectedKind="character"
-        title="Import Character"
+        expectedKind={expectedKind}
+        title={expectedKind === 'character' ? 'Import Character' : 'Import Preset'}
         onOpenChange={setOpen}
         onCommitted={(receipt) => onCommitted(receipt.entityId)}
       />
@@ -99,6 +131,46 @@ function Harness({ onCommitted = () => undefined }: { onCommitted?: (entityId?: 
 }
 
 describe('ImportDialog', () => {
+  it.each(['character', 'preset'] as const)(
+    'keeps %s import open for one reviewed Trust Grant, then persists the grant and finishes',
+    async (expectedKind) => {
+      const refreshKinds: string[] = [];
+      const grantKinds: string[] = [];
+      server.use(
+        http.get('/api/extension-trust/:kind/:id', ({ params }) => HttpResponse.json(
+          trustReview(params.kind as 'character' | 'preset'),
+        )),
+        http.post('/api/extension-trust/:kind/:id/refresh', ({ params }) => {
+          refreshKinds.push(String(params.kind));
+          return HttpResponse.json(trustReview(params.kind as 'character' | 'preset', true));
+        }),
+        http.post('/api/extension-trust/:kind/:id/grant', ({ params }) => {
+          grantKinds.push(String(params.kind));
+          return HttpResponse.json(trustReview(params.kind as 'character' | 'preset', true, true));
+        }),
+      );
+      const committed = vi.fn();
+      const user = userEvent.setup();
+      renderWithApp(<Harness onCommitted={committed} expectedKind={expectedKind} />);
+
+      await user.click(screen.getByRole('button', { name: 'Open import' }));
+      await user.upload(
+        screen.getByLabelText('Choose a file'),
+        new File(['artifact'], expectedKind === 'character' ? 'aster.png' : 'preset.settings'),
+      );
+      await user.click(await screen.findByRole('button', { name: 'Commit import' }));
+
+      expect(await screen.findByText('Import complete. Review executable resources once before using them automatically.')).not.toBeNull();
+      expect(await screen.findByText('a'.repeat(64))).not.toBeNull();
+      expect(refreshKinds).toEqual([expectedKind]);
+      expect(committed).toHaveBeenCalledWith(importedEntityId);
+      await user.click(screen.getByRole('button', { name: 'Grant trust' }));
+
+      await waitFor(() => expect(grantKinds).toEqual([expectedKind]));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    },
+  );
+
   it('discards an in-flight inspection result when cancelled and cannot reuse its token after reopening', async () => {
     const user = userEvent.setup();
     holdInspection = true;

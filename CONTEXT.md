@@ -1,6 +1,6 @@
 # TavernNext
 
-TavernNext is a local-first roleplay workspace that preserves SillyTavern artifacts while executing only an explicit, auditable compatibility subset.
+TavernNext is a local-first runtime for official, installable roleplay Scenes. A user manages role cards as Scene Packages, creates isolated Saves, and plays each Scene through its own workspace and functional modules.
 
 ## Language
 
@@ -23,3 +23,23 @@ _Avoid_: Install, permission toggle, permanent approval
 **Global Generation Configuration**:
 The single revisioned selection of Provider and primary/companion Presets shared by all Conversations.
 _Avoid_: Conversation preset, chat provider binding
+
+**Scene Package**:
+One official catalog artifact containing a roleplay Scene's manifest, frontend workspace, optional trusted server module, prompt resources, and state contract.
+_Avoid_: Character library item, plugin bundle
+
+**Scene Workspace**:
+The Scene-owned, trusted top-level application opened in its own browser tab to create a Save or play one current Save through the Scene SDK.
+_Avoid_: Generic chat skin, regex-rendered message
+
+**Save**:
+One isolated Conversation, player-profile snapshot, setup snapshot, messages, variants, and Scene State belonging to exactly one installed Scene.
+_Avoid_: Global chat, Character state
+
+**Scene State**:
+Revisioned structured game data belonging to one Save and validated before transactional writes.
+_Avoid_: Shared Character variables, chat metadata
+
+**Generation Recipe**:
+The Scene-owned prompt and output protocol used before the singleton global fallback Preset.
+_Avoid_: User-composed Conversation preset

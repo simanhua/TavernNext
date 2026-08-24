@@ -19,13 +19,15 @@ function revisionFrom(value: unknown): number | undefined {
 
 export function registerPersonaRoutes(app: FastifyInstance, database: TavernDatabase, repositories: Repositories): void {
   app.get('/api/personas', async (_request, reply) => {
-    const rows = repositories.personas.list(MAX_MANAGER_ROWS + 1);
+    const rows = repositories.personas.list(MAX_MANAGER_ROWS + 1).filter((row) => !row.sceneInternal);
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
     return rows.map(personaDetail);
   });
   app.get<{ Params: { id: string } }>('/api/personas/:id', async (request, reply) => {
     const value = repositories.personas.get(request.params.id);
-    return value === undefined ? reply.status(404).send({ error: 'not_found' }) : personaDetail(value);
+    return value === undefined || value.sceneInternal
+      ? reply.status(404).send({ error: 'not_found' })
+      : personaDetail(value);
   });
   app.post<{ Body: unknown }>('/api/personas', async (request, reply) => {
     const parsed = PersonaCreateSchema.safeParse(request.body);

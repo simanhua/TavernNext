@@ -118,7 +118,7 @@ describe('global generation configuration API', () => {
     expect(stale.json()).toEqual({ error: 'conflict' });
   });
 
-  it('rejects missing or wrong-kind selections and clears deleted selections', async () => {
+  it('allows independently saved valid selections, rejects missing or wrong-kind IDs, and clears deleted selections', async () => {
     const { app, repositories } = await context();
     const provider = repositories.providerProfiles.create({
       id: '018f0000-0000-7000-8000-000000000111',
@@ -142,23 +142,24 @@ describe('global generation configuration API', () => {
     expect(missing.statusCode).toBe(400);
     expect(missing.json()).toEqual({ error: 'invalid_selection' });
 
-    const missingPrimary = await app.inject({
+    const providerOnly = await app.inject({
       method: 'PATCH', url: '/api/settings/generation',
       payload: { revision: 0, patch: { providerId: provider.id } },
     });
-    expect(missingPrimary.statusCode).toBe(400);
-    expect(missingPrimary.json()).toEqual({ error: 'invalid_selection' });
+    expect(providerOnly.statusCode).toBe(200);
+    expect(providerOnly.json()).toMatchObject({ revision: 1, providerId: provider.id, chatPresetId: null });
 
     const saved = await app.inject({
       method: 'PATCH', url: '/api/settings/generation',
-      payload: { revision: 0, patch: { providerId: provider.id, chatPresetId: chat.id } },
+      payload: { revision: 1, patch: { chatPresetId: chat.id } },
     });
     expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ revision: 2, providerId: provider.id, chatPresetId: chat.id });
 
     expect((await app.inject({ method: 'DELETE', url: `/api/providers/${provider.id}?revision=0` })).statusCode).toBe(204);
     let current = (await app.inject({ method: 'GET', url: '/api/settings/generation' })).json();
     expect(current).toMatchObject({
-      revision: 2,
+      revision: 3,
       providerId: null,
       chatPresetId: chat.id,
       selectionNotice: { kind: 'provider', deletedId: provider.id },
@@ -167,7 +168,7 @@ describe('global generation configuration API', () => {
     expect((await app.inject({ method: 'DELETE', url: `/api/presets/${chat.id}?revision=0` })).statusCode).toBe(204);
     current = (await app.inject({ method: 'GET', url: '/api/settings/generation' })).json();
     expect(current).toMatchObject({
-      revision: 3,
+      revision: 4,
       providerId: null,
       chatPresetId: null,
       selectionNotice: { kind: 'preset', deletedId: chat.id },

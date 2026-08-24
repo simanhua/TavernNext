@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { apiJson, importArtifact, startE2eStack, type E2eStack } from './support/stack.js';
+import { expect, test, type Page } from '@playwright/test';
+import { apiJson, fixturePath, startE2eStack, type E2eStack } from './support/stack.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -8,16 +8,37 @@ let stack: E2eStack;
 test.beforeAll(async () => { stack = await startE2eStack(); });
 test.afterAll(async () => { await stack?.close(); });
 
+async function importAndTrust(
+  page: Page,
+  input: { link: string; button: string; fixture: string; entityName: string; endpoint: 'characters' | 'presets' },
+): Promise<string> {
+  await page.getByRole('link', { name: input.link }).click();
+  await page.getByRole('button', { name: input.button }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Choose a file').setInputFiles(fixturePath(input.fixture));
+  await dialog.getByRole('button', { name: 'Commit import' }).click();
+  await expect(dialog.getByText('Import complete. Review executable resources once before using them automatically.')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Grant trust' }).click();
+  await expect(dialog).toBeHidden();
+  const entities = await apiJson<Array<{ id: string; name: string }>>(stack.baseUrl, `/api/${input.endpoint}`);
+  return entities.find((entity) => entity.name === input.entityName)!.id;
+}
+
 test('attached compatibility release gate stays offline and crosses import, trust, generation, MVU, reasoning, actions, and reload', async ({ page }) => {
   const ids = {
     provider: '018f0000-0000-7000-8000-000000005001',
     persona: '018f0000-0000-7000-8000-000000005002',
     conversation: '018f0000-0000-7000-8000-000000005003',
   };
-  const characterId = await importArtifact(stack.baseUrl, 'characters/attached-release.json');
-  const presetId = await importArtifact(stack.baseUrl, 'presets/attached-release.settings');
-  await apiJson(stack.baseUrl, `/api/extension-trust/character/${characterId}/grant`, { method: 'POST' });
-  await apiJson(stack.baseUrl, `/api/extension-trust/preset/${presetId}/grant`, { method: 'POST' });
+  await page.goto('/');
+  const characterId = await importAndTrust(page, {
+    link: 'Characters', button: 'Import Character', fixture: 'characters/attached-release.json',
+    entityName: 'Synthetic Attached Release', endpoint: 'characters',
+  });
+  const presetId = await importAndTrust(page, {
+    link: 'Presets', button: 'Import Preset', fixture: 'presets/attached-release.settings',
+    entityName: 'Synthetic Attached Release Preset', endpoint: 'presets',
+  });
   await apiJson(stack.baseUrl, '/api/providers', { method: 'POST', body: {
     id: ids.provider, name: 'Release provider', baseUrl: `${stack.provider.baseUrl}/v1`,
     model: 'mock-model', apiMode: 'chat', apiKey: 'release-secret',

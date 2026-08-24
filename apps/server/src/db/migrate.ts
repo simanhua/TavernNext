@@ -5,7 +5,7 @@ import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -15,6 +15,7 @@ const conversationTableColumns = `(
   payload TEXT NOT NULL,
   character_id TEXT NOT NULL REFERENCES characters(id),
   persona_id TEXT NOT NULL REFERENCES personas(id),
+  scene_id TEXT REFERENCES installed_scenes(id) ON DELETE CASCADE,
   title TEXT NOT NULL
 )`;
 
@@ -48,6 +49,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS global_generation_config (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS installed_scenes (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, version TEXT NOT NULL, archive_digest TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_assets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, kind TEXT NOT NULL, source_key TEXT NOT NULL, ordinal INTEGER NOT NULL, enabled INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL, UNIQUE (scope, scope_id));
   CREATE TABLE IF NOT EXISTS extension_trust_grants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, UNIQUE (owner_kind, owner_id));
@@ -57,6 +59,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS consumed_generation_snapshots (snapshot_id TEXT PRIMARY KEY REFERENCES generation_snapshots(id) ON DELETE CASCADE, consumed_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS conversation_scene_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS avatar_assets (path TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('characters', 'personas')), owner_id TEXT NOT NULL, media_type TEXT NOT NULL, bytes BLOB NOT NULL);
 `;
 
@@ -67,6 +70,9 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS worldbook_entries_worldbook_id_idx ON worldbook_entries(worldbook_id);
   CREATE INDEX IF NOT EXISTS conversations_character_id_idx ON conversations(character_id);
   CREATE INDEX IF NOT EXISTS conversations_persona_id_idx ON conversations(persona_id);
+  CREATE INDEX IF NOT EXISTS conversations_scene_id_idx ON conversations(scene_id);
+  CREATE INDEX IF NOT EXISTS installed_scenes_slug_idx ON installed_scenes(slug);
+  CREATE INDEX IF NOT EXISTS conversation_scene_states_conversation_id_idx ON conversation_scene_states(conversation_id);
   CREATE INDEX IF NOT EXISTS conversation_worldbooks_worldbook_id_idx ON conversation_worldbooks(worldbook_id);
   CREATE INDEX IF NOT EXISTS messages_conversation_created_id_idx ON messages(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
@@ -217,6 +223,35 @@ function addVariantColumns(database: TavernDatabase): void {
     UPDATE message_variants
     SET payload = json_set(payload, '$.continuationBoundaries', json('[]'))
     WHERE json_valid(payload) AND json_type(payload, '$.continuationBoundaries') IS NULL;
+  `);
+}
+
+function addSceneColumns(database: TavernDatabase): void {
+  addColumn(database, 'conversations', 'scene_id', 'TEXT REFERENCES installed_scenes(id) ON DELETE CASCADE');
+}
+
+function clearLegacyPublicAssets(database: TavernDatabase): void {
+  resetConversationExtensionStates(database);
+  database.sqlite.exec(`
+    DELETE FROM consumed_generation_snapshots;
+    DELETE FROM message_variants;
+    DELETE FROM generation_snapshots;
+    DELETE FROM worldbook_runtime_states;
+    DELETE FROM messages;
+    DELETE FROM conversation_worldbooks;
+    DELETE FROM conversations;
+    DELETE FROM conversation_scene_states;
+    DELETE FROM extension_audit_events;
+    DELETE FROM extension_remote_resources;
+    DELETE FROM extension_trust_grants;
+    DELETE FROM extension_states;
+    DELETE FROM extension_assets;
+    DELETE FROM import_artifacts;
+    DELETE FROM worldbook_entries;
+    DELETE FROM worldbooks;
+    DELETE FROM presets;
+    DELETE FROM avatar_assets WHERE kind = 'characters';
+    DELETE FROM characters;
   `);
 }
 
@@ -497,12 +532,14 @@ export function migrateDatabase(database: TavernDatabase): void {
 
       addPromptSnapshotColumns(database);
       addVariantColumns(database);
+      addSceneColumns(database);
       backfillCharacterDepthPrompt(database);
       if ((startingVersion ?? 0) < 12) backfillCharacterExtensionAssets(database);
       if ((startingVersion ?? 0) < 13) backfillPresetExtensionAssets(database);
       if ((startingVersion ?? 0) < 14) backfillOwnerExtensionStates(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
+      if (startingVersion === 16) clearLegacyPublicAssets(database);
       database.sqlite.exec(indexes);
       database.sqlite.exec(`DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION});`);
     });

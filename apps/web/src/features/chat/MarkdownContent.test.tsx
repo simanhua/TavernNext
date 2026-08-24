@@ -4,10 +4,20 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { interactiveHtmlFences, MarkdownContent } from './MarkdownContent.js';
 import { callInteractiveFrontendApi } from './InteractiveFrontendApi.js';
+import { installInteractiveCompatibilityGlobals } from './InteractiveMessageFrame.js';
 
 afterEach(cleanup);
 
 describe('MarkdownContent', () => {
+  it('installs the globals required before a trusted remote message frontend starts', async () => {
+    const runtimeWindow = {} as Window & typeof globalThis & Record<string, unknown>;
+    installInteractiveCompatibilityGlobals(runtimeWindow);
+
+    expect((runtimeWindow.Vue as typeof import('vue')).ref('ready').value).toBe('ready');
+    expect((runtimeWindow.getTavernHelperVersion as () => string)()).toBe('compat-0');
+    await expect((runtimeWindow.waitGlobalInitialized as () => Promise<void>)()).resolves.toBeUndefined();
+  });
+
   it('renders common and GitHub-flavored Markdown as semantic HTML', () => {
     const { container } = render(
       <MarkdownContent content={'## Plan\n\n- **First** item\n- [x] Finished\n\n| Name | State |\n| --- | --- |\n| TavernNext | Ready |\n\n[`Open docs`](https://example.com)\n\n```ts\nconst ready = true;\n```'} />,
@@ -41,11 +51,13 @@ describe('MarkdownContent', () => {
       conversationId: 'conversation-1', messageId: 4, variantId: 'variant-1', hasReasoning: true,
     }} />);
     const iframe = container.querySelector('iframe');
-    expect(iframe?.getAttribute('loading')).toBe('lazy');
+    expect(iframe?.getAttribute('loading')).toBe('eager');
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
     expect(iframe?.srcdoc).toContain('id="chat"');
     expect(iframe?.srcdoc).toContain('mesid="4"');
     expect(iframe?.srcdoc).toContain('window.getCurrentMessageId');
+    expect(iframe?.srcdoc).toContain('tavernnext-frontend-ready');
+    expect(iframe?.srcdoc).toContain("document.querySelector(target)");
     expect(iframe?.srcdoc).toContain('data-variant-id="variant-1"');
     expect(iframe?.srcdoc).toContain('class="mes_reasoning"');
     expect(iframe?.srcdoc).toContain('<button>Act</button>');

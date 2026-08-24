@@ -59,6 +59,9 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await page.getByRole('link', { name: 'Presets' }).click();
   await importThroughDialog(page, 'Import Preset', 'presets/chat/synthetic-chat.settings');
   await expect(page.getByRole('heading', { name: 'Synthetic Chat Settings' })).toBeVisible();
+  await page.getByLabel('Chat preset').selectOption({ label: 'Synthetic Chat Settings' });
+  await page.getByRole('button', { name: 'Save active Presets' }).click();
+  await expect(page.getByRole('status')).toContainText('Active Presets saved.');
 
   await page.getByRole('link', { name: 'Worldbooks' }).click();
   await importThroughDialog(page, 'Import Worldbook', 'worldbooks/native.json');
@@ -66,9 +69,8 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
 
   await page.getByRole('link', { name: 'Connection' }).click();
   await page.getByLabel('Active Provider').selectOption({ label: 'Local Mock' });
-  await page.getByLabel('Chat Preset').selectOption({ label: 'Synthetic Chat Settings' });
-  await page.getByRole('button', { name: 'Save active generation configuration' }).click();
-  await expect(page.getByRole('status')).toContainText('Active generation configuration saved.');
+  await page.getByRole('button', { name: 'Save active Provider' }).click();
+  await expect(page.getByRole('status')).toContainText('Active Provider saved.');
 
   await page.getByRole('link', { name: 'Chat' }).click();
   await page.getByLabel('Character').selectOption({ label: 'E2E Aster' });

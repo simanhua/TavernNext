@@ -25,6 +25,16 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function approvedHtmlMediaType(url: string, mediaType: string, contentBase64: string): string | undefined {
+  if (/^text\/html(?:$|;)/i.test(mediaType)) return mediaType;
+  if (!/^text\/plain(?:$|;)/i.test(mediaType)) return undefined;
+  let pathname: string;
+  try { pathname = new URL(url).pathname; } catch { return undefined; }
+  if (!pathname.toLowerCase().endsWith('.html')) return undefined;
+  const prefix = Buffer.from(contentBase64, 'base64').subarray(0, 1_024).toString('utf8').trimStart();
+  return /^(?:<!doctype\s+html\b|<html\b)/i.test(prefix) ? 'text/html; charset=utf-8' : undefined;
+}
+
 class InteractiveActionError extends Error {
   constructor(readonly code: 'invalid_request' | 'conflict', readonly status: 400 | 409) {
     super(code);
@@ -62,8 +72,10 @@ export function registerInteractiveActionRoutes(
         ));
         if (remote?.sha256 === null || remote?.sha256 === undefined) continue;
         const cached = trust.cached(owner.kind, owner.id, remote.sha256);
-        if (cached === undefined || !/^text\/html(?:$|;)/i.test(cached.mediaType)) continue;
-        reply.header('content-type', cached.mediaType);
+        if (cached === undefined) continue;
+        const mediaType = approvedHtmlMediaType(remote.url, cached.mediaType, cached.contentBase64);
+        if (mediaType === undefined) continue;
+        reply.header('content-type', mediaType);
         reply.header('cache-control', 'private, no-store');
         reply.header('x-content-sha256', cached.sha256);
         return reply.send(Buffer.from(cached.contentBase64, 'base64'));

@@ -5,6 +5,9 @@ import type {
   GenerationCandidateTransport,
   GlobalGenerationConfig,
   GlobalGenerationSelection,
+  InstalledScene,
+  ConversationSceneState,
+  SceneCatalogEntry,
   Message,
   MessageVariant,
   PresetKind,
@@ -12,6 +15,16 @@ import type {
 } from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind };
+
+export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean }
+export interface InstalledSceneView extends InstalledScene {
+  coverUrl?: string;
+  conversationCount: number;
+  messageCount: number;
+  fullyTrusted: true;
+  trustNotice: string;
+}
+export type ConversationSceneStateView = ConversationSceneState;
 
 export interface CompatibilitySummary {
   sourceFormat: string;
@@ -332,7 +345,7 @@ export interface ProviderModelView {
 }
 
 export type GlobalGenerationConfigView = GlobalGenerationConfig;
-export type GlobalGenerationConfigPatch = GlobalGenerationSelection;
+export type GlobalGenerationConfigPatch = Partial<GlobalGenerationSelection>;
 
 export interface ProviderProbeInput {
   id?: string;
@@ -556,6 +569,35 @@ function projectPromptPreview(response: PromptPreviewResponse): PromptPreviewVie
 }
 
 export const api = {
+  listSceneCatalog: () => request<SceneCatalogEntryView[]>('/api/scenes/catalog'),
+  listScenes: () => request<InstalledSceneView[]>('/api/scenes'),
+  getScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}`),
+  installScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}/install`, { method: 'POST' }),
+  uninstallScene: (scene: InstalledSceneView) => request<{ backupPath: string }>(`/api/scenes/${encodeURIComponent(scene.id)}`, {
+    method: 'DELETE', body: JSON.stringify({ revision: scene.revision, cascade: true }),
+  }),
+  listSceneConversations: (sceneId: string) => request<Conversation[]>(`/api/scenes/${encodeURIComponent(sceneId)}/conversations`),
+  createSceneConversation: (sceneId: string, input: {
+    title: string;
+    personaTemplateId?: string;
+    playerProfile: { name: string; description: string };
+    setup: Record<string, unknown>;
+    maxPromptTokens?: number;
+    maxResponseTokens?: number;
+  }) => request<Conversation>(`/api/scenes/${encodeURIComponent(sceneId)}/conversations`, {
+    method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
+  }),
+  getSceneState: (conversationId: string) => request<ConversationSceneStateView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/scene-state`,
+  ),
+  patchSceneState: (conversationId: string, revision: number, patch: unknown[]) => request<ConversationSceneStateView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/scene-state`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  runSceneAction: (conversationId: string, action: unknown) => request<{ state: ConversationSceneStateView; result: unknown }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/scene-actions`,
+    { method: 'POST', body: JSON.stringify(action) },
+  ),
   listCharacters: () => request<CharacterSummaryView[]>('/api/characters'),
   getCharacter: (id: string) => request<CharacterView>(`/api/characters/${id}`),
   createCharacter: (input: { name: string; description: string; firstMessage: string }) => request<CharacterView>('/api/characters', {

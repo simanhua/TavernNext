@@ -3,6 +3,7 @@ import { useId, useRef, useState } from 'react';
 import { api, errorCode, type ImportPreview as ImportPreviewData, type ImportReceipt } from '../../api/client.js';
 import { ImportPreview } from './ImportPreview.js';
 import { useI18n } from '../../app/i18n.js';
+import { ExtensionTrustPanel } from '../extensions/ExtensionTrustPanel.js';
 
 export interface ImportDialogProps {
   open: boolean;
@@ -21,6 +22,7 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
   const [commitError, setCommitError] = useState<string>();
   const [inspecting, setInspecting] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [committed, setCommitted] = useState<ImportReceipt>();
   const inspectionEpoch = useRef(0);
   const committingRef = useRef(false);
 
@@ -32,6 +34,7 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
     setCommitError(undefined);
     setInspecting(false);
     setCommitting(false);
+    setCommitted(undefined);
   };
   const changeOpen = (next: boolean) => {
     if (!next) reset();
@@ -66,7 +69,12 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
       const receipt = await commitImport(token);
       if (inspectionEpoch.current !== operation) return;
       onCommitted(receipt);
-      changeOpen(false);
+      if ((expectedKind === 'character' || expectedKind === 'preset') && receipt.entityId !== undefined) {
+        setCommitted(receipt);
+        setPreview(undefined);
+      } else {
+        changeOpen(false);
+      }
     } catch (error) {
       if (inspectionEpoch.current !== operation) return;
       setCommitError(errorCode(error));
@@ -89,7 +97,7 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content" aria-describedby={undefined}>
           <Dialog.Title>{title}</Dialog.Title>
-          <label
+          {committed === undefined ? <><label
             className="import-drop-zone"
             data-testid="import-drop-zone"
             htmlFor={inputId}
@@ -110,7 +118,21 @@ export function ImportDialog({ open, expectedKind, title, onOpenChange, onCommit
           <div className="dialog-actions">
             <button type="button" onClick={() => changeOpen(false)}>{t('Cancel import')}</button>
             <button type="button" disabled={!canCommit} onClick={() => void commit()}>{t(committing ? 'Committing…' : 'Commit import')}</button>
-          </div>
+          </div></> : <>
+            <p role="status">{t('Import complete. Review executable resources once before using them automatically.')}</p>
+            <ExtensionTrustPanel
+              ownerKind={expectedKind as 'character' | 'preset'}
+              ownerId={committed.entityId!}
+              autoRefresh
+              onReview={(review) => {
+                if (review.scripts.length === 0 && review.remotes.length === 0) changeOpen(false);
+              }}
+              onTrusted={() => changeOpen(false)}
+            />
+            <div className="dialog-actions">
+              <button type="button" onClick={() => changeOpen(false)}>{t('Finish without granting trust')}</button>
+            </div>
+          </>}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

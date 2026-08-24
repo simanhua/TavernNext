@@ -1,167 +1,49 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Conversation, MessageView } from '../../api/client.js';
-import { api } from '../../api/client.js';
-import { readGenerationEvents } from '../../api/generation-stream.js';
-import { runTrustedPromptHooks } from '../extensions/TrustedPromptHooks.js';
+import { useEffect, useState } from 'react';
+import {
+  GenerationSessionController,
+  type ActiveGenerationTarget,
+  type GenerationStartInput,
+  type GenerationStartOptions,
+  type GenerationStartOutcome,
+} from './generation-session.js';
 
-type GenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
-type NonNormalMode = 'swipe' | 'regenerate' | 'continue';
-
-export type GenerationStartInput =
-  | { mode: 'normal'; userText: string }
-  | { mode: NonNormalMode; target: MessageView; baseContent: string };
-
-export interface ActiveGenerationTarget {
-  mode: NonNormalMode;
-  messageId: string;
-  baseContent: string;
-}
-
-export type GenerationStartOutcome = 'accepted' | 'rejected' | 'busy';
-export interface GenerationStartOptions { onAccepted?: () => void }
+export type {
+  ActiveGenerationTarget,
+  GenerationStartInput,
+  GenerationStartOptions,
+  GenerationStartOutcome,
+};
 
 export function useGeneration() {
   const queryClient = useQueryClient();
-  const [status, setStatus] = useState<GenerationStatus>('idle');
-  const [streamedText, setStreamedText] = useState('');
-  const [streamedReasoning, setStreamedReasoning] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [target, setTarget] = useState<ActiveGenerationTarget | null>(null);
-  const generationId = useRef<string | null>(null);
-  const stopRequested = useRef(false);
-  const activeRequest = useRef<AbortController | null>(null);
-  const mounted = useRef(true);
-  const active = useRef(false);
+  const [controller] = useState(() => new GenerationSessionController({
+    refreshAuthoritativeState: async (conversationId) => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['conversation', conversationId] }),
+        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+      ]);
+    },
+  }));
+  const [snapshot, setSnapshot] = useState(controller.getSnapshot);
 
   useEffect(() => {
-    mounted.current = true;
+    controller.activate();
+    setSnapshot(controller.getSnapshot());
+    const unsubscribe = controller.subscribe(setSnapshot);
     return () => {
-      mounted.current = false;
-      activeRequest.current?.abort();
-      activeRequest.current = null;
-      active.current = false;
+      unsubscribe();
+      controller.dispose();
     };
-  }, []);
-
-  const refreshAuthoritativeState = useCallback(async (conversationId: string) => {
-    await Promise.all([
-      queryClient.refetchQueries({ queryKey: ['conversation', conversationId] }),
-      queryClient.invalidateQueries({ queryKey: ['conversations'] }),
-    ]);
-  }, [queryClient]);
-
-  const start = useCallback(async (
-    conversation: Conversation,
-    input: GenerationStartInput,
-    options: GenerationStartOptions = {},
-  ): Promise<GenerationStartOutcome> => {
-    if (active.current) return 'busy';
-    active.current = true;
-    let accepted = false;
-    let candidateId: string | undefined;
-    const controller = new AbortController();
-    activeRequest.current = controller;
-    setStatus('starting');
-    setStreamedText('');
-    setStreamedReasoning('');
-    setError(null);
-    setTarget(input.mode === 'normal' ? null : {
-      mode: input.mode,
-      messageId: input.target.id,
-      baseContent: input.baseContent,
-    });
-    generationId.current = null;
-    stopRequested.current = false;
-    try {
-      const requestInput: { mode: 'normal' | NonNormalMode; userText?: string } = input.mode === 'normal'
-        ? { mode: 'normal', userText: input.userText }
-        : { mode: input.mode };
-      const candidate = await api.createGenerationCandidate(conversation, requestInput, controller.signal);
-      candidateId = candidate.candidateId;
-      const patch = await runTrustedPromptHooks({
-        kind: candidate.kind,
-        messages: candidate.messages,
-        text: candidate.text,
-        stop: candidate.stop,
-        spreset: candidate.spreset,
-      }, false, { signal: controller.signal, timeoutMs: 10_000 });
-      const sealed = await api.sealGenerationCandidate(candidate.candidateId, patch, controller.signal);
-      candidateId = undefined;
-      const response = await api.startGeneration(conversation, {
-        ...requestInput,
-        snapshotId: sealed.snapshotId,
-      }, controller.signal);
-      let terminal = false;
-      for await (const event of readGenerationEvents(response, controller.signal)) {
-        if (!mounted.current) return accepted ? 'accepted' : 'rejected';
-        if (event.type === 'started') {
-          if (!accepted) {
-            accepted = true;
-            options.onAccepted?.();
-          }
-          generationId.current = event.generationId;
-          setStatus('streaming');
-        } else if (event.type === 'reasoning_delta') {
-          setStreamedReasoning((current) => current + event.text);
-        } else if (event.type === 'delta') {
-          setStreamedText((current) => current + event.text);
-        } else if (event.type === 'completed' || event.type === 'aborted' || event.type === 'failed') {
-          terminal = true;
-          if (event.type === 'failed') setError(event.code);
-          await refreshAuthoritativeState(conversation.id);
-          if (!mounted.current) return accepted ? 'accepted' : 'rejected';
-          setStreamedText('');
-          setStreamedReasoning('');
-          setTarget(null);
-          setStatus('idle');
-          active.current = false;
-          activeRequest.current = null;
-          generationId.current = null;
-        }
-      }
-      if (!terminal) throw new Error('Generation stream ended without a terminal event');
-      return accepted ? 'accepted' : 'rejected';
-    } catch (generationError) {
-      if (candidateId !== undefined) void api.discardGenerationCandidate(candidateId).catch(() => undefined);
-      if (!mounted.current || controller.signal.aborted) return accepted ? 'accepted' : 'rejected';
-      setError(generationError instanceof Error ? generationError.message : 'generation_failed');
-      await refreshAuthoritativeState(conversation.id).catch(() => undefined);
-      if (!mounted.current) return accepted ? 'accepted' : 'rejected';
-      setStreamedText('');
-      setStreamedReasoning('');
-      setTarget(null);
-      setStatus('idle');
-      active.current = false;
-      activeRequest.current = null;
-      generationId.current = null;
-      return accepted ? 'accepted' : 'rejected';
-    }
-  }, [refreshAuthoritativeState]);
-
-  const stop = useCallback(async () => {
-    const id = generationId.current;
-    if (id === null || stopRequested.current) return;
-    stopRequested.current = true;
-    setStatus('stopping');
-    try {
-      await api.stopGeneration(id);
-    } catch (stopError) {
-      setError(stopError instanceof Error ? stopError.message : 'stop_failed');
-      stopRequested.current = false;
-      setStatus('streaming');
-    }
-  }, []);
+  }, [controller]);
 
   return {
-    status,
-    streamedText,
-    streamedReasoning,
-    target,
-    error,
-    isActive: status !== 'idle',
-    canStop: (status === 'streaming' || status === 'stopping') && generationId.current !== null,
-    start,
-    stop,
+    ...snapshot,
+    isActive: snapshot.status !== 'idle',
+    canStop: controller.canStop,
+    start: controller.start,
+    stop: controller.stop,
+    getSnapshot: controller.getSnapshot,
+    subscribeEvents: controller.subscribeEvents,
   };
 }

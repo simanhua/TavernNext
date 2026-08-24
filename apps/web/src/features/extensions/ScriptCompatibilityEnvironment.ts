@@ -339,6 +339,7 @@ export class ScriptCompatibilityEnvironment {
     runtimeWindow.TavernHelper = api; runtimeWindow.tavernHelper = api;
     runtimeWindow.TavernNext = Object.freeze({ call: (method: string) => unsupported(method)() });
     runtimeWindow.getTavernHelperVersion = () => 'compat-0'; runtimeWindow.getTavernVersion = () => '1.18.0-compat';
+    runtimeWindow.waitGlobalInitialized = async () => undefined;
     for (const method of TAVERN_HELPER_BRIDGED_METHODS) runtimeWindow[method] = bridge(method);
     runtimeWindow.addEventListener('error', (event: ErrorEvent) => this.disableAttributed(event.error ?? event.filename ?? new Error(event.message)));
     runtimeWindow.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => this.disableAttributed(event.reason));

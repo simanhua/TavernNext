@@ -60,12 +60,6 @@ export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repos
       if (id === undefined || id === null) continue;
       if (repositories.presets.get(id)?.kind !== kind) return reply.status(400).send({ error: 'invalid_selection' });
     }
-    if (provider?.apiMode === 'chat' && candidate.chatPresetId === null) {
-      return reply.status(400).send({ error: 'invalid_selection' });
-    }
-    if (provider?.apiMode === 'text' && candidate.textPresetId === null) {
-      return reply.status(400).send({ error: 'invalid_selection' });
-    }
     const result = repositories.globalGenerationConfig.update(parsed.data.revision, patch);
     if (result.ok) return reply.send(result.value);
     return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });

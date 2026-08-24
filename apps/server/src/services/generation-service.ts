@@ -20,6 +20,7 @@ import {
 } from './prompt-snapshot-service.js';
 import { createMvuRuntimeService } from './mvu-runtime-service.js';
 import { createReasoningCompatibilityService } from './reasoning-compat-service.js';
+import { applyScenePatch, type SceneService } from '../scenes/scene-service.js';
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
@@ -118,6 +119,7 @@ export function createGenerationService(options: {
   providerClientFactory: ProviderClientFactory;
   promptSnapshotService?: PromptSnapshotService;
   tokenizerRuntime?: ServerTokenizerRuntime;
+  sceneService?: SceneService;
 }): GenerationService {
   const { database, repositories, providerClientFactory } = options;
   const promptSnapshots = options.promptSnapshotService ?? createPromptSnapshotService({
@@ -127,6 +129,7 @@ export function createGenerationService(options: {
   });
   const mvu = createMvuRuntimeService(repositories);
   const reasoningCompatibility = createReasoningCompatibilityService(repositories);
+  const sceneService = options.sceneService;
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
@@ -165,6 +168,7 @@ export function createGenerationService(options: {
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
     let providerIterator: AsyncIterator<ProviderEvent> | undefined;
+    let sceneStateUpdate: { id: string; revision: number; value: Record<string, unknown> } | undefined;
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
@@ -307,6 +311,25 @@ export function createGenerationService(options: {
       if (outcome === 'completed') {
         const extracted = reasoningCompatibility.extract(prepared.reasoningCompatibility, content, reasoning);
         content = extracted.content; reasoning = extracted.reasoning;
+        const conversation = repositories.conversations.get(prepared.conversationId);
+        const scene = conversation?.sceneId === undefined ? undefined : sceneService?.get(conversation.sceneId);
+        const state = scene === undefined ? undefined : sceneService?.state(prepared.conversationId);
+        const host = scene === undefined ? undefined : sceneService?.module(scene);
+        if (conversation !== undefined && scene !== undefined && state !== undefined && host !== undefined) {
+          try {
+            const processed = await host.call<{ displayContent?: unknown; statePatch?: unknown }>('afterGeneration', {
+              content, reasoning, state: state.value, setup: conversation.setup ?? {},
+              playerProfile: conversation.playerProfile, manifest: scene.manifest,
+            });
+            if (typeof processed.displayContent === 'string') content = processed.displayContent;
+            if (processed.statePatch !== undefined) {
+              sceneStateUpdate = { id: state.id, revision: state.revision, value: applyScenePatch(state.value, processed.statePatch) };
+            }
+          } catch {
+            // Preserve the raw provider response and leave Scene state unchanged.
+            // The Scene can expose a reprocess action without losing the reply.
+          }
+        }
       }
       try {
         database.transaction(() => {
@@ -318,6 +341,12 @@ export function createGenerationService(options: {
               variant.id,
               mode === 'continue' ? content.slice(initialContent.length) : content,
             );
+          }
+          if (outcome === 'completed' && sceneStateUpdate !== undefined) {
+            const updated = repositories.conversationSceneStates.update(
+              sceneStateUpdate.id, sceneStateUpdate.revision, { value: sceneStateUpdate.value },
+            );
+            if (!updated.ok) throw new Error(`Unable to commit Scene state: ${updated.reason}`);
           }
           if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
@@ -419,6 +448,21 @@ export function createGenerationService(options: {
       activeByConversation.set(input.conversationId, generationId);
       activeById.set(generationId, active);
       try {
+        if (sceneService !== undefined) {
+          const conversation = repositories.conversations.get(input.conversationId);
+          const scene = conversation?.sceneId === undefined ? undefined : sceneService.get(conversation.sceneId);
+          const state = scene === undefined ? undefined : sceneService.state(input.conversationId);
+          const host = scene === undefined ? undefined : sceneService.module(scene);
+          if (conversation !== undefined && scene !== undefined && state !== undefined && host !== undefined) {
+            const before = await host.call<{ statePatch?: unknown }>('beforeGeneration', {
+              state: state.value, setup: conversation.setup ?? {}, playerProfile: conversation.playerProfile,
+              manifest: scene.manifest, mode: input.mode, userText: input.userText,
+            });
+            if (before.statePatch !== undefined) sceneService.patchState(
+              conversation.id, state.revision, before.statePatch,
+            );
+          }
+        }
         const accepted = input.snapshotId === undefined
           ? await promptSnapshots.createAndAccept(input, generationId)
           : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });

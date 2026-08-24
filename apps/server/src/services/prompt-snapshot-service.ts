@@ -113,6 +113,8 @@ export interface PromptEntityRevisionManifest {
   worldbooks: WorldbookRevisionRef[];
   messages: MessageRevisionRef[];
   runtimeState: RevisionRef | null;
+  installedScene?: RevisionRef | null;
+  sceneState?: RevisionRef | null;
   extensionState?: RevisionRef | null;
   extensionTrust?: Array<{
     ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string; riskVersion: number;
@@ -531,6 +533,19 @@ function resolveGenerationBinding(
   };
 }
 
+function resolveConversationGenerationBinding(
+  repositories: Repositories,
+  conversation: Conversation,
+  configuration: ReturnType<Repositories['globalGenerationConfig']['get']>,
+  providerMode?: ProviderProfile['apiMode'],
+): ReturnType<typeof resolveGenerationBinding> {
+  const fallback = resolveGenerationBinding(configuration, providerMode);
+  if (providerMode !== 'chat' || conversation.sceneId === undefined) return fallback;
+  const scene = repositories.installedScenes.get(conversation.sceneId);
+  if (scene?.manifest.generationRecipe === undefined || scene.backingPresetId === undefined) return fallback;
+  return { providerId: fallback.providerId, presets: [{ id: scene.backingPresetId, kind: 'chat' }] };
+}
+
 function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): LoadedAggregate {
   if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
     throw new PromptSnapshotError('invalid_user_text');
@@ -554,8 +569,12 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
-  const binding = resolveGenerationBinding(globalGenerationConfig, provider.apiMode);
+  const binding = resolveConversationGenerationBinding(repositories, conversation, globalGenerationConfig, provider.apiMode);
   const presets = binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings));
+  const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
+  if (conversation.sceneId !== undefined && installedScene === undefined) throw new PromptSnapshotError('not_found');
+  const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
+  if (installedScene !== undefined && sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -674,6 +693,8 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     }]),
     messages: history.manifest,
     runtimeState: runtimeState === undefined ? null : ref(runtimeState),
+    installedScene: installedScene === undefined ? null : ref(installedScene),
+    sceneState: sceneState === undefined ? null : ref(sceneState),
     extensionState: extensionState === undefined ? null : ref(extensionState),
     extensionTrust: [...new Map(promptInjections.map((injection) => [
       `${injection.ownerKind}:${injection.ownerId}`,
@@ -688,7 +709,12 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     input: snapshotInput,
     globalGenerationConfig: deepJson(globalGenerationConfig),
     conversation: deepJson(conversation),
-    character: deepJson(character),
+    character: deepJson(sceneState === undefined ? character : {
+      ...character,
+      systemPrompt: `${character.systemPrompt}\n\n<scene_state>\n${JSON.stringify(sceneState.value)}\n</scene_state>\n`
+        + 'Write the roleplay narrative first. When Scene state changes, append exactly one '
+        + '<UpdateVariable><JSONPatch>[RFC 6902 operations]</JSONPatch></UpdateVariable> block.',
+    }),
     persona: deepJson(persona),
     provider: deepJson(provider),
     presets: deepJson(presets),
@@ -713,6 +739,20 @@ function currentMessageManifest(repositories: Repositories, conversationId: stri
   return historyRows(repositories, conversationId).manifest;
 }
 
+function sceneSnapshotMetadata(repositories: Repositories, conversationId: string) {
+  const conversation = repositories.conversations.get(conversationId);
+  const scene = conversation?.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
+  const state = conversation === undefined ? undefined : repositories.conversationSceneStates.getByConversationId(conversation.id);
+  if (scene === undefined) return {};
+  return {
+    sceneId: scene.id,
+    sceneVersion: scene.version,
+    scenePackageDigest: scene.archiveDigest,
+    ...(state === undefined ? {} : { sceneStateRevision: state.revision }),
+    recipeSource: scene.manifest.generationRecipe === undefined ? 'global-fallback' as const : 'scene' as const,
+  };
+}
+
 function stale(): never {
   throw new PromptSnapshotError('snapshot_stale');
 }
@@ -734,7 +774,9 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
     || resolveGenerationBinding(globalGenerationConfig).providerId !== manifest.provider.id) stale();
-  const configuredPresets = resolveGenerationBinding(globalGenerationConfig, provider.apiMode).presets;
+  const configuredPresets = resolveConversationGenerationBinding(
+    repositories, conversation, globalGenerationConfig, provider.apiMode,
+  ).presets;
   if (configuredPresets.some(({ id }) => id === undefined)
     || !sameCanonical(
       manifest.presets.map(({ id, kind }) => ({ id, kind })),
@@ -775,6 +817,22 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     if (runtimeState !== undefined) stale();
   } else {
     exact(runtimeState, manifest.runtimeState);
+  }
+  const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
+  if (manifest.installedScene === undefined) {
+    // Snapshot created before Scene Packages.
+  } else if (manifest.installedScene === null) {
+    if (installedScene !== undefined) stale();
+  } else {
+    exact(installedScene, manifest.installedScene);
+  }
+  const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
+  if (manifest.sceneState === undefined) {
+    // Snapshot created before Scene Packages.
+  } else if (manifest.sceneState === null) {
+    if (sceneState !== undefined) stale();
+  } else {
+    exact(sceneState, manifest.sceneState);
   }
   const extensionState = repositories.extensionStates.getByScope('conversation', manifest.conversation.id);
   if (manifest.extensionState === undefined) {
@@ -1270,7 +1328,7 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     || !Array.isArray(value.messages)
     || !hasOnlyKeys(value, [
       'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
-      'worldbooks', 'messages', 'runtimeState', 'extensionState', 'extensionTrust',
+      'worldbooks', 'messages', 'runtimeState', 'installedScene', 'sceneState', 'extensionState', 'extensionTrust',
     ])) return false;
   if (!value.presets.every((item) => record(item)
     && typeof item.id === 'string'
@@ -1291,6 +1349,8 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     && (item.activeVariant === null || isRevisionRef(item.activeVariant))
     && hasOnlyKeys(item, ['id', 'revision', 'activeVariant']))) return false;
   return (value.runtimeState === null || isRevisionRef(value.runtimeState))
+    && (value.installedScene === undefined || value.installedScene === null || isRevisionRef(value.installedScene))
+    && (value.sceneState === undefined || value.sceneState === null || isRevisionRef(value.sceneState))
     && (value.extensionState === undefined || value.extensionState === null || isRevisionRef(value.extensionState))
     && (value.extensionTrust === undefined || (Array.isArray(value.extensionTrust) && value.extensionTrust.every((item) => (
       record(item) && (item.ownerKind === 'character' || item.ownerKind === 'preset')
@@ -1848,6 +1908,7 @@ export function createPromptSnapshotService(options: {
           conversationId: sealed.input.conversationId,
           conversationRevision: sealed.input.conversationRevision,
           payload: Object.fromEntries(Object.entries(deepJson(sealed))),
+          ...sceneSnapshotMetadata(repositories, sealed.input.conversationId),
         });
       });
       return { snapshotId, ...deepJson(sealed) };
@@ -1869,6 +1930,7 @@ export function createPromptSnapshotService(options: {
           conversationId: built.payload.input.conversationId,
           conversationRevision: built.payload.input.conversationRevision,
           payload: Object.fromEntries(Object.entries(deepJson(built.payload))),
+          ...sceneSnapshotMetadata(repositories, built.payload.input.conversationId),
         });
         consume(snapshotId);
         const provider = acceptUserTurn(repositories, built.payload);
@@ -1910,6 +1972,7 @@ export function createPromptSnapshotService(options: {
             conversationId: payload.input.conversationId,
             conversationRevision: payload.input.conversationRevision,
             payload: Object.fromEntries(Object.entries(deepJson(payload))),
+            ...sceneSnapshotMetadata(repositories, payload.input.conversationId),
           });
           consume(input.snapshotId);
           const provider = acceptUserTurn(repositories, payload);
