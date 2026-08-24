@@ -17,9 +17,9 @@ const PACKAGE_URL = 'builtin:destined-poem';
 // The catalog is signed offline. The public key and signature are replaced only
 // when the official catalog changes; the private key is not part of TavernNext.
 export const OFFICIAL_CATALOG_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAakk4Mn3PmoJCvNbxEI2dcrwmyizomkGOtcHcvIvsGC4=
+MCowBQYDK2VwAyEAI/uXxpkXfWl75dIIqA3wgjGs/F5LuzcBKwGczI5VBM0=
 -----END PUBLIC KEY-----`;
-export const OFFICIAL_CATALOG_SIGNATURE_BASE64 = 'sGg+Wi0VuoyMluaebIDO5gcN3jGsdkujBfkh+Qe3qqz20Ptv7Ac2QVA9xNmbUMHvATm+Nv+pjPC0c+0T4M7RAg==';
+export const OFFICIAL_CATALOG_SIGNATURE_BASE64 = '4IDSoas3OI4G/H9KcFzxtNMfDjKNaYCTI5erl80Yh5Pthp/lnKAkvz45BNKsnnqkTqpsD+12Ke53GmuI8U3HBw==';
 
 const stylesheet = `
 :root{color-scheme:light;--vp-c-bg:#fff;--vp-c-bg-alt:#f6f6f7;--vp-c-bg-elv:#fff;--vp-c-bg-soft:#f6f6f7;--vp-c-text-1:#213547;--vp-c-text-2:#476582;--vp-c-text-3:rgb(60 60 67/56%);--vp-c-divider:#e2e2e3;--vp-c-border:#c2c2c4;--vp-c-brand-1:#3451b2;--vp-c-brand-2:#3a5ccc;--vp-c-brand-3:#5672cd;--vp-c-brand-soft:rgb(100 108 255/14%);--vp-c-success-1:#18794e;--vp-c-success-soft:rgb(16 185 129/14%);--vp-c-warning-1:#915930;--vp-c-warning-soft:rgb(234 179 8/14%);--vp-c-danger-1:#b8272c;--vp-c-danger-soft:rgb(244 63 94/14%);--vp-shadow-1:0 1px 2px rgb(0 0 0/4%),0 1px 6px rgb(0 0 0/4%);--vp-shadow-2:0 3px 12px rgb(0 0 0/7%)}
@@ -136,7 +136,9 @@ export function buildDestinedPoemPackage(): OfficialScenePackage {
     'content/initial-state.json': strToU8(JSON.stringify(initialState(cardBytes))),
     'content/character.png': cardBytes,
   };
-  const bytes = zipSync(files, { level: 0, mtime: new Date('1980-01-01T00:00:00.000Z') });
+  // ZIP stores DOS local-time fields. Constructing the same local calendar
+  // value on every host keeps the signed archive digest platform-independent.
+  const bytes = zipSync(files, { level: 0, mtime: new Date(1980, 0, 1, 0, 0, 0) });
   return { manifest, bytes, digest: createHash('sha256').update(bytes).digest('hex') };
 }
 
