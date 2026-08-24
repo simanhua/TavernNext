@@ -4,6 +4,7 @@ import { api, errorCode, type PresetView } from '../../api/client.js';
 import { ImportDialog } from '../imports/ImportDialog.js';
 import { PresetEditor } from './PresetEditor.js';
 import { useI18n } from '../../app/i18n.js';
+import { ActivePresetConfiguration } from '../settings/GlobalGenerationConfiguration.js';
 
 function titleCase(value: string): string {
   return `${value[0]!.toUpperCase()}${value.slice(1)}`;
@@ -43,6 +44,7 @@ export function PresetManagerPage() {
         <button type="button" onClick={() => setImportOpen(true)}>{t('Import Preset')}</button>
       </aside>
       <section className="manager-editor">
+        <ActivePresetConfiguration />
         {error === undefined ? null : <p role="alert">{t('Unable to load Preset: {{error}}', { error })}</p>}
         {!creating && selected === undefined ? <p>{t('Select a Preset to edit.')}</p> : (
           <PresetEditor

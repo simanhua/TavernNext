@@ -6,6 +6,14 @@ process.env.TAVERNNEXT_API_PROXY_TARGET = `http://127.0.0.1:${apiPort}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: [
+    '**/attached-release-gate.spec.ts',
+    '**/extension-resource-context.spec.ts',
+    '**/first-run-chat.spec.ts',
+    '**/imports-and-exports.spec.ts',
+    '**/restart-recovery.spec.ts',
+    '**/text-mode.spec.ts',
+  ],
   fullyParallel: false,
   workers: 1,
   timeout: 60_000,

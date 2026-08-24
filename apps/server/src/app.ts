@@ -32,6 +32,7 @@ import type { ProviderProbeFactory } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
+import { registerSceneRoutes } from './routes/scenes.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
@@ -50,6 +51,8 @@ import {
 import { REDACTED_LOG_VALUE, redactLogValue } from './services/log-redaction.js';
 import { createSecretStore } from './services/secret-store.js';
 import { injectedSnapshotIntegrityKey, loadSnapshotIntegrityKey } from './snapshot-integrity-key.js';
+import { createSceneService } from './scenes/scene-service.js';
+import { upgradeInstalledOfficialSceneRuntime } from './scenes/official-scene-upgrade.js';
 
 export type StartupMigrationResult = 'writable' | 'read_only_migration_failed';
 
@@ -199,11 +202,13 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const startup = startupDatabase(config, options);
   try {
   const { database } = startup;
+  if (startup.result === 'writable') upgradeInstalledOfficialSceneRuntime(database, config.dataDir);
   app.decorate('startupMigrationResult', startup.result);
   if (startup.result === 'read_only_migration_failed') {
     app.log.warn({ code: 'migration_failed' }, 'Startup migration failed; read-only recovery mode is active.');
   }
   const repositories = createRepositories(database, { snapshotIntegrityKey });
+  const scenes = createSceneService({ dataDir: config.dataDir, database, repositories });
   const imports = createImportService({
     dataDir: config.dataDir,
     database,
@@ -259,6 +264,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     repositories,
     providerClientFactory,
     promptSnapshotService: promptSnapshots,
+    sceneService: scenes,
   });
   const extensionTrust = createExtensionTrustService(repositories, options.extensionRemoteFetcher ?? (async (url) => {
     const response = await fetch(url);
@@ -304,23 +310,32 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
           message: 'A database migration failed. Reads remain available; all mutations are disabled.',
         },
       });
-  registerImportRoutes(app, imports);
-  registerChatImportExportRoutes(app, imports, repositories);
-  registerCharacterRoutes(app, database, repositories);
-  registerAvatarRoutes(
-    app,
-    database,
-    repositories,
-    config.dataDir,
-    options.avatarBeforeCommit,
-    options.avatarMaxBytes,
-    options.avatarLegacyAfterFirstChunk,
-  );
-  registerCharacterExportRoutes(app, repositories, config.dataDir);
-  registerPresetExportRoutes(app, repositories);
+  const legacyAssetApiEnabled = process.env.NODE_ENV === 'test'
+    || process.env.TAVERNNEXT_ENABLE_LEGACY_ASSET_API === 'true';
+  if (legacyAssetApiEnabled) {
+    registerImportRoutes(app, imports);
+    registerChatImportExportRoutes(app, imports, repositories);
+    registerCharacterRoutes(app, database, repositories);
+    registerAvatarRoutes(
+      app,
+      database,
+      repositories,
+      config.dataDir,
+      options.avatarBeforeCommit,
+      options.avatarMaxBytes,
+      options.avatarLegacyAfterFirstChunk,
+    );
+    registerCharacterExportRoutes(app, repositories, config.dataDir);
+    registerPresetExportRoutes(app, repositories);
+    registerWorldbookRoutes(app, database, repositories);
+    registerWorldbookExportRoutes(app, repositories);
+    registerExtensionAssetRoutes(app, database, repositories);
+    registerRuntimeStateRoutes(app, database, repositories);
+    registerExtensionTrustRoutes(app, repositories, extensionTrust);
+    registerExtensionRuntimeRpcRoutes(app, database, repositories, generations, extensionTrust);
+    registerInteractiveActionRoutes(app, database, repositories, generations, extensionTrust);
+  }
   registerPresetRoutes(app, database, repositories);
-  registerWorldbookRoutes(app, database, repositories);
-  registerWorldbookExportRoutes(app, repositories);
   registerPersonaRoutes(app, database, repositories);
   registerProviderRoutes(app, database, repositories, {
     has(profile) {
@@ -353,25 +368,25 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     },
   }, options.providerProbeFactory ?? ((profile: OpenAICompatibleProfile) => createOpenAICompatibleClient(profile)));
   registerGlobalGenerationConfigRoutes(app, repositories);
-  registerExtensionAssetRoutes(app, database, repositories);
-  registerRuntimeStateRoutes(app, database, repositories);
-  registerExtensionTrustRoutes(app, repositories, extensionTrust);
-  registerExtensionRuntimeRpcRoutes(app, database, repositories, generations, extensionTrust);
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations);
-  registerInteractiveActionRoutes(app, database, repositories, generations, extensionTrust);
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);
+  registerSceneRoutes(app, scenes, repositories);
 
   app.addHook('onClose', async () => {
     try {
-      imports.close();
+      await scenes.close();
     } finally {
       try {
-        database.close();
+        imports.close();
       } finally {
-        startup.ownership?.release();
+        try {
+          database.close();
+        } finally {
+          startup.ownership?.release();
+        }
       }
     }
   });

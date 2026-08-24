@@ -17,12 +17,12 @@
     "@tavernnext/tokenizer-engine": "*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.3",
+    "fflate": "0.8.3",
     "sql.js": "^1.14.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/sql.js": "^1.4.11",
-    "fflate": "0.8.3",
     "tsx": "^4.23.11"
   }
 }

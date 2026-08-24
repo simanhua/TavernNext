@@ -15,6 +15,7 @@ import {
   GLOBAL_GENERATION_CONFIG_ID,
   GlobalGenerationConfigSchema,
   ImportArtifactSchema,
+  InstalledSceneSchema,
   MessageSchema,
   MessageVariantSchema,
   PersonaSchema,
@@ -23,6 +24,7 @@ import {
   WorldbookEntrySchema,
   WorldbookRuntimeStateSchema,
   WorldbookSchema,
+  ConversationSceneStateSchema,
   type Character,
   type Conversation,
   type ExtensionAsset,
@@ -36,6 +38,7 @@ import {
   type GlobalGenerationConfig,
   type GlobalGenerationSelection,
   type ImportArtifact,
+  type InstalledScene,
   type Message,
   type MessageVariant,
   type Persona,
@@ -44,6 +47,7 @@ import {
   type Worldbook,
   type WorldbookEntry,
   type WorldbookRuntimeState,
+  type ConversationSceneState,
 } from '@tavernnext/domain';
 import {
   characters,
@@ -57,6 +61,7 @@ import {
   generationSnapshots,
   globalGenerationConfigurations,
   importArtifacts,
+  installedScenes,
   messages,
   messageVariants,
   personas,
@@ -65,6 +70,7 @@ import {
   worldbookEntries,
   worldbookRuntimeStates,
   worldbooks,
+  conversationSceneStates,
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
 import {
@@ -120,7 +126,7 @@ type DefaultedField =
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
   | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
-  | 'diagnostics';
+  | 'diagnostics' | 'setup' | 'schemaVersion' | 'value' | 'sceneInternal';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -153,6 +159,11 @@ export interface WorldbookRepository extends Repository<Worldbook> {
 
 export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRuntimeState> {
   getByConversationId(conversationId: string): WorldbookRuntimeState | undefined;
+}
+
+export interface ConversationSceneStateRepository extends Repository<ConversationSceneState> {
+  getByConversationId(conversationId: string): ConversationSceneState | undefined;
+  deleteByConversationId(conversationId: string): number;
 }
 
 export type AvatarAssetKind = 'characters' | 'personas';
@@ -837,6 +848,7 @@ function createWorldbookRuntimeStateRepository(database: TavernDatabase): Worldb
 }
 
 export interface Repositories {
+  installedScenes: Repository<InstalledScene>;
   characters: Repository<Character>;
   personas: Repository<Persona>;
   worldbooks: WorldbookRepository;
@@ -850,12 +862,35 @@ export interface Repositories {
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
+  conversationSceneStates: ConversationSceneStateRepository;
   avatarAssets: AvatarAssetRepository;
   extensionAssets: ExtensionAssetRepository;
   extensionStates: ExtensionStateRepository;
   extensionTrustGrants: ExtensionTrustGrantRepository;
   extensionRemoteResources: ExtensionRemoteResourceRepository;
   extensionAuditEvents: ExtensionAuditEventRepository;
+}
+
+function createConversationSceneStateRepository(database: TavernDatabase): ConversationSceneStateRepository {
+  const base = createRepository(database, {
+    table: entityTable(conversationSceneStates),
+    schema: ConversationSceneStateSchema,
+    toRow: (value: ConversationSceneState) => ({ ...baseRow(value), conversationId: value.conversationId }),
+  });
+  return {
+    ...base,
+    getByConversationId(conversationId) {
+      const row = database.orm.select({ payload: conversationSceneStates.payload })
+        .from(conversationSceneStates)
+        .where(eq(conversationSceneStates.conversationId, conversationId))
+        .get();
+      return row === undefined ? undefined : ConversationSceneStateSchema.parse(row.payload);
+    },
+    deleteByConversationId(conversationId) {
+      return database.sqlite.prepare('DELETE FROM conversation_scene_states WHERE conversation_id = ?')
+        .run(conversationId).changes;
+    },
+  };
 }
 
 export interface CreateRepositoriesOptions {
@@ -942,6 +977,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       ...baseRow(value),
       characterId: value.characterId,
       personaId: value.personaId,
+      sceneId: value.sceneId ?? null,
       title: value.title,
     }), syncRelationships: syncConversationWorldbooks,
   });
@@ -971,6 +1007,13 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
   };
   const globalGenerationConfig = createGlobalGenerationConfigRepository(database);
   return {
+    installedScenes: createRepository(database, {
+      table: entityTable(installedScenes),
+      schema: InstalledSceneSchema,
+      toRow: (value) => ({
+        ...baseRow(value), slug: value.slug, version: value.version, archiveDigest: value.archiveDigest,
+      }),
+    }),
     characters: charactersRepository,
     personas: createPersonaRepository(database),
     worldbooks: createWorldbookRepository(database),
@@ -984,6 +1027,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
+    conversationSceneStates: createConversationSceneStateRepository(database),
     avatarAssets: createAvatarAssetRepository(database),
     extensionAssets: createExtensionAssetRepository(database),
     extensionStates: createExtensionStateRepository(database),

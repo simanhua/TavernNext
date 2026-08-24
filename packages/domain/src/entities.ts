@@ -41,6 +41,7 @@ export const PersonaSchema = MutableEntitySchema.extend({
   name: z.string().min(1),
   description: z.string(),
   isDefault: z.boolean(),
+  sceneInternal: z.boolean().optional(),
   avatarPath: z.string().optional(),
 }).extend(WithCompatibilitySchema.shape);
 
@@ -182,9 +183,96 @@ export const GlobalGenerationConfigSchema = MutableEntitySchema
   .extend(GlobalGenerationSelectionSchema.shape)
   .extend({ selectionNotice: GlobalGenerationSelectionNoticeSchema.nullable() });
 
+const SceneRelativePathSchema = z.string().min(1).max(512).refine((value) => (
+  !value.includes('\\')
+  && !value.startsWith('/')
+  && !/^[A-Za-z]:/.test(value)
+  && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+), 'scene_path_invalid');
+
+const SceneModulePathSchema = SceneRelativePathSchema.refine(
+  (value) => /\.(?:mjs|js)$/i.test(value),
+  'scene_frontend_entry_invalid',
+);
+
+const SceneStylesheetPathSchema = SceneRelativePathSchema.refine(
+  (value) => /\.css$/i.test(value),
+  'scene_frontend_stylesheet_invalid',
+);
+
+export const SceneManifestSchema = z.object({
+  id: DomainIdSchema,
+  slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(96),
+  version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
+  name: z.string().min(1).max(160),
+  summary: z.string().max(500),
+  description: z.string().max(20_000),
+  author: z.string().min(1).max(160),
+  minimumTavernNextVersion: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
+  sceneSdkVersion: z.literal(2),
+  frontendEntry: SceneModulePathSchema,
+  frontendStyles: z.array(SceneStylesheetPathSchema).max(64).default([]),
+  serverEntry: SceneRelativePathSchema.optional(),
+  coverPath: SceneRelativePathSchema.optional(),
+  setupSchema: z.record(z.string(), z.unknown()).default({}),
+  stateSchema: z.record(z.string(), z.unknown()).default({}),
+  generationRecipe: z.record(z.string(), z.unknown()).optional(),
+  files: z.array(SceneRelativePathSchema).min(1).max(2_048),
+}).strict().superRefine((manifest, context) => {
+  const declared = new Set(manifest.files);
+  const required = [
+    manifest.frontendEntry,
+    ...manifest.frontendStyles,
+    manifest.serverEntry,
+    manifest.coverPath,
+  ].filter((value): value is string => value !== undefined);
+  for (const path of required) {
+    if (!declared.has(path)) {
+      context.addIssue({ code: 'custom', message: 'scene_manifest_file_not_declared', path: ['files'] });
+    }
+  }
+});
+
+export const SceneCatalogEntrySchema = z.object({
+  sceneId: DomainIdSchema,
+  version: SceneManifestSchema.shape.version,
+  packageUrl: z.string().min(1),
+  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  minimumTavernNextVersion: SceneManifestSchema.shape.minimumTavernNextVersion,
+  name: z.string().min(1),
+  summary: z.string(),
+  author: z.string().min(1),
+}).strict();
+
+export const SceneCatalogSchema = z.object({
+  version: z.literal(1),
+  generatedAt: TimestampSchema,
+  scenes: z.array(SceneCatalogEntrySchema),
+}).strict();
+
+export const InstalledSceneSchema = MutableEntitySchema.extend({
+  slug: SceneManifestSchema.shape.slug,
+  version: SceneManifestSchema.shape.version,
+  archiveDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  installPath: z.string().min(1),
+  installedAt: TimestampSchema,
+  manifest: SceneManifestSchema,
+  backingCharacterId: DomainIdSchema,
+  backingPresetId: DomainIdSchema.optional(),
+});
+
+export const ConversationPlayerProfileSchema = z.object({
+  name: z.string().min(1).max(160),
+  description: z.string().max(20_000),
+  sourcePersonaId: DomainIdSchema.optional(),
+}).strict();
+
 export const ConversationSchema = MutableEntitySchema.extend({
   characterId: DomainIdSchema,
   personaId: DomainIdSchema,
+  sceneId: DomainIdSchema.optional(),
+  playerProfile: ConversationPlayerProfileSchema.optional(),
+  setup: z.record(z.string(), z.unknown()).optional(),
   title: z.string().min(1),
   worldbookIds: z.array(DomainIdSchema).default([]),
   maxPromptTokens: z.number().int().nonnegative().max(1_000_000).default(128_000),
@@ -194,6 +282,12 @@ export const ConversationSchema = MutableEntitySchema.extend({
   authorNoteDepth: z.number().int().nonnegative().default(4),
   authorNoteRole: z.number().int().min(0).max(2).default(0),
 }).extend(WithCompatibilitySchema.shape);
+
+export const ConversationSceneStateSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  schemaVersion: z.number().int().positive().default(1),
+  value: z.record(z.string(), z.unknown()).default({}),
+});
 
 export const MessageRoleSchema = z.enum(['system', 'user', 'assistant']);
 export const MessageSchema = MutableEntitySchema.extend({
@@ -242,6 +336,11 @@ export const GenerationSnapshotSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   conversationRevision: z.number().int().nonnegative(),
   payload: z.record(z.string(), z.unknown()),
+  sceneId: DomainIdSchema.optional(),
+  sceneVersion: SceneManifestSchema.shape.version.optional(),
+  scenePackageDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  sceneStateRevision: z.number().int().nonnegative().optional(),
+  recipeSource: z.enum(['scene', 'global-fallback']).optional(),
 });
 
 export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
@@ -265,7 +364,13 @@ export type PresetKind = z.infer<typeof PresetKindSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
 export type GlobalGenerationConfig = z.infer<typeof GlobalGenerationConfigSchema>;
 export type GlobalGenerationSelection = z.infer<typeof GlobalGenerationSelectionSchema>;
+export type SceneManifest = z.infer<typeof SceneManifestSchema>;
+export type SceneCatalogEntry = z.infer<typeof SceneCatalogEntrySchema>;
+export type SceneCatalog = z.infer<typeof SceneCatalogSchema>;
+export type InstalledScene = z.infer<typeof InstalledSceneSchema>;
+export type ConversationPlayerProfile = z.infer<typeof ConversationPlayerProfileSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
+export type ConversationSceneState = z.infer<typeof ConversationSceneStateSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageVariant = z.infer<typeof MessageVariantSchema>;
 export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;

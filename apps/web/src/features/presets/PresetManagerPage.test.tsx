@@ -56,6 +56,13 @@ let patchBodies: Array<{ revision: number; patch: Record<string, unknown> }> = [
 
 const server = setupServer(
   http.get('/api/presets', () => HttpResponse.json(ids)),
+  http.get('/api/settings/generation', () => HttpResponse.json({
+    id: '018f0000-0000-7000-8000-000000000001', revision: 0,
+    createdAt: now, updatedAt: now,
+    providerId: null, chatPresetId: null, textPresetId: null,
+    contextPresetId: null, instructPresetId: null, systemPresetId: null,
+    selectionNotice: null,
+  })),
   http.get('/api/presets/:id', () => HttpResponse.json(chatDetail)),
   http.patch('/api/presets/:id', async ({ request }) => {
     patchCalls += 1;
@@ -137,6 +144,44 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('PresetManagerPage', () => {
+  it('selects and saves active Presets without exposing Provider selection', async () => {
+    let submitted: unknown;
+    server.use(http.patch('/api/settings/generation', async ({ request }) => {
+      submitted = await request.json();
+      return HttpResponse.json({
+        id: '018f0000-0000-7000-8000-000000000001', revision: 1,
+        createdAt: now, updatedAt: now, providerId: null,
+        chatPresetId: ids[0]!.id, textPresetId: ids[1]!.id,
+        contextPresetId: ids[2]!.id, instructPresetId: ids[3]!.id, systemPresetId: ids[4]!.id,
+        selectionNotice: null,
+      });
+    }));
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+
+    await screen.findByRole('heading', { name: 'Active Presets' });
+    await screen.findByRole('option', { name: 'Chat preset' });
+    expect(screen.queryByLabelText('Active Provider')).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Chat preset'), ids[0]!.id);
+    await user.selectOptions(screen.getByLabelText('Text preset'), ids[1]!.id);
+    await user.selectOptions(screen.getByLabelText('Context preset'), ids[2]!.id);
+    await user.selectOptions(screen.getByLabelText('Instruct preset'), ids[3]!.id);
+    await user.selectOptions(screen.getByLabelText('System preset'), ids[4]!.id);
+    await user.click(screen.getByRole('button', { name: 'Save active Presets' }));
+
+    await waitFor(() => expect(submitted).toEqual({
+      revision: 0,
+      patch: {
+        chatPresetId: ids[0]!.id,
+        textPresetId: ids[1]!.id,
+        contextPresetId: ids[2]!.id,
+        instructPresetId: ids[3]!.id,
+        systemPresetId: ids[4]!.id,
+      },
+    }));
+    expect(await screen.findByText('Active Presets saved.')).not.toBeNull();
+  });
+
   it('shows the safe Preset resource inventory and SPreset feature summary', async () => {
     const user = userEvent.setup();
     renderWithApp(<PresetManagerPage />);

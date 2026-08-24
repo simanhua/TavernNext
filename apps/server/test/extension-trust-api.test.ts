@@ -50,13 +50,17 @@ describe('Attached Extension trust API', () => {
     repositories.extensionAssets.create({
       id: '018f0000-0000-7000-8000-000000002403', ownerKind: 'character', ownerId: character.id,
       kind: 'regex', sourceKey: 'frontend', ordinal: 0, enabled: true,
-      payload: { id: 'frontend', scriptName: 'Frontend', findRegex: '/x/', replaceString: "$('body').load('https://cdn.example/view.html')" },
+      payload: {
+        id: 'frontend', scriptName: 'Frontend', findRegex: '/x/',
+        replaceString: "$('body').load('https://cdn.example/view.html'); $('body').load('https://cdn.example/plain.html')",
+      },
     });
     const fetched: string[] = [];
     const bodies = new Map([
       ['https://cdn.example/entry.js', 'export const value = 1;'],
       ['https://cdn.example/nested.js', 'export const nested = 1;'],
-      ['https://cdn.example/view.html', '<p>view</p>'],
+      ['https://cdn.example/plain.html', 'not an html document'],
+      ['https://cdn.example/view.html', '<!doctype html><html><body><p>view</p></body></html>'],
     ]);
     const app = createApp({
       database, snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
@@ -65,7 +69,7 @@ describe('Attached Extension trust API', () => {
         fetched.push(url);
         const body = bodies.get(url);
         if (body === undefined) throw new Error('missing');
-        return { bytes: new TextEncoder().encode(body), mediaType: url.endsWith('.js') ? 'text/javascript' : 'text/html' };
+        return { bytes: new TextEncoder().encode(body), mediaType: url.endsWith('.js') ? 'text/javascript' : 'text/plain' };
       },
     });
     apps.push(app); await app.ready();
@@ -80,6 +84,7 @@ describe('Attached Extension trust API', () => {
       remotes: [
         { url: 'https://cdn.example/entry.js', fetched: false },
         { url: 'https://cdn.example/nested.js', fetched: false },
+        { url: 'https://cdn.example/plain.html', fetched: false },
         { url: 'https://cdn.example/view.html', fetched: false },
       ],
     });
@@ -91,6 +96,7 @@ describe('Attached Extension trust API', () => {
     expect(fetched).toEqual([
       'https://cdn.example/entry.js',
       'https://cdn.example/nested.js',
+      'https://cdn.example/plain.html',
       'https://cdn.example/view.html',
     ]);
     const granted = await app.inject({ method: 'POST', url: `${base}/grant` });
@@ -117,8 +123,14 @@ describe('Attached Extension trust API', () => {
       url: `/api/conversations/${conversation.id}/interactive-resource?sourceVariantId=${variant.id}&url=${encodeURIComponent('https://cdn.example/view.html')}`,
     });
     expect(approvedHtml.statusCode).toBe(200);
-    expect(approvedHtml.payload).toBe('<p>view</p>');
-    expect(approvedHtml.headers['x-content-sha256']).toBe(createHash('sha256').update('<p>view</p>').digest('hex'));
+    const approvedHtmlBody = '<!doctype html><html><body><p>view</p></body></html>';
+    expect(approvedHtml.payload).toBe(approvedHtmlBody);
+    expect(approvedHtml.headers['content-type']).toContain('text/html');
+    expect(approvedHtml.headers['x-content-sha256']).toBe(createHash('sha256').update(approvedHtmlBody).digest('hex'));
+    expect((await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${conversation.id}/interactive-resource?sourceVariantId=${variant.id}&url=${encodeURIComponent('https://cdn.example/plain.html')}`,
+    })).statusCode).toBe(403);
     expect((await app.inject({
       method: 'GET',
       url: `/api/conversations/${conversation.id}/interactive-resource?sourceVariantId=${variant.id}&url=${encodeURIComponent('https://cdn.example/unapproved.html')}`,
@@ -137,7 +149,7 @@ describe('Attached Extension trust API', () => {
       fetchStatus: 'failed',
     });
     expect((await app.inject({ method: 'POST', url: `${base}/grant` })).statusCode).toBe(409);
-    bodies.set('https://cdn.example/view.html', '<p>view</p>');
+    bodies.set('https://cdn.example/view.html', approvedHtmlBody);
     expect((await app.inject({ method: 'POST', url: `${base}/refresh` })).statusCode).toBe(200);
     expect((await app.inject({ method: 'POST', url: `${base}/grant` })).statusCode).toBe(200);
 
@@ -163,6 +175,7 @@ describe('Attached Extension trust API', () => {
       remotes: [
         { url: 'https://cdn.example/entry.js' },
         { url: 'https://cdn.example/nested.js' },
+        { url: 'https://cdn.example/plain.html' },
         { url: 'https://cdn.example/view.html' },
       ],
     });

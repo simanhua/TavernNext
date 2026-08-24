@@ -1,0 +1,5 @@
+# Make signed Scene Packages the product boundary
+
+TavernNext presents official Scene Packages rather than independent Character, Worldbook, Preset, and script libraries. A Scene owns its workspace and may include fully trusted server code. Scene SDK v2 frontend code runs as a trusted same-origin ES Module in an independent top-level browser tab. It receives a versioned Scene SDK for Save operations, but it may also access TavernNext APIs, browser storage, the document, global objects, and the network. The SDK is an application compatibility boundary, not a security boundary. Worker Threads provide timeout and crash isolation for server modules, also not a security boundary.
+
+The official static catalog is signed with Ed25519 and pins each complete archive by SHA-256. Browser-ready JavaScript modules, styles, and other executable assets ship inside that archive. A Scene Workspace uses one named tab per setup flow or Save; duplicate Save pages cannot write concurrently. Scene networking remains subject to browser CORS and TavernNext provides no cross-origin credential proxy.

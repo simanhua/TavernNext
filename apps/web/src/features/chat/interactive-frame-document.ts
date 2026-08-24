@@ -9,7 +9,12 @@ function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
-export function buildInteractiveFrameDocument(source: string, context: InteractiveMessageContext, nonce: string): string {
+export function buildInteractiveFrameDocument(
+  source: string,
+  context: InteractiveMessageContext,
+  nonce: string,
+  parentOrigin: string,
+): string {
   const head = /<head\b[^>]*>([\s\S]*?)<\/head>/i.exec(source)?.[1] ?? '';
   const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(source)?.[1] ?? source;
   const serialized = JSON.stringify(context).replaceAll('<', '\\u003c');
@@ -17,11 +22,27 @@ export function buildInteractiveFrameDocument(source: string, context: Interacti
     (() => {
       const context = ${serialized};
       const expectedNonce = ${JSON.stringify(nonce)};
+      const expectedParentOrigin = ${JSON.stringify(parentOrigin)};
       let port;
       let sequence = 0;
       const pending = new Map();
       let markReady;
       const ready = new Promise(resolve => { markReady = resolve; });
+      const parentVue = parent.Vue;
+      const bindVueAppFactory = factory => (...args) => {
+        const app = factory(...args);
+        const mount = app.mount.bind(app);
+        app.mount = target => mount(typeof target === 'string' ? document.querySelector(target) : target);
+        return app;
+      };
+      window.Vue = new Proxy(parentVue, { get: (target, property, receiver) => {
+        if (property === 'createApp' || property === 'createSSRApp') return bindVueAppFactory(Reflect.get(target, property, receiver));
+        return Reflect.get(target, property, receiver);
+      } });
+      window.getTavernHelperVersion = parent.getTavernHelperVersion;
+      window.getTavernVersion = parent.getTavernVersion;
+      window.waitGlobalInitialized = parent.waitGlobalInitialized;
+      if (parent.SillyTavern) window.SillyTavern = parent.SillyTavern;
       const call = async (method, args = []) => {
         if (!port) await ready;
         return new Promise((resolve, reject) => {
@@ -31,8 +52,14 @@ export function buildInteractiveFrameDocument(source: string, context: Interacti
         port.postMessage({ requestId, method, args });
         });
       };
-      addEventListener('message', event => {
-        if (event.source !== parent || event.origin !== location.origin || event.data?.channel !== 'tavernnext-frontend-init' || event.data?.nonce !== expectedNonce || !event.ports[0]) return;
+      const announceReady = () => parent.postMessage(
+        { channel: 'tavernnext-frontend-ready', nonce: expectedNonce }, '*',
+      );
+      const announceTimer = setInterval(announceReady, 100);
+      const receiveInit = event => {
+        if (event.source !== parent || event.origin !== expectedParentOrigin || event.data?.channel !== 'tavernnext-frontend-init' || event.data?.nonce !== expectedNonce || !event.ports[0]) return;
+        removeEventListener('message', receiveInit);
+        clearInterval(announceTimer);
         port = event.ports[0];
         markReady();
         port.onmessage = result => {
@@ -42,7 +69,9 @@ export function buildInteractiveFrameDocument(source: string, context: Interacti
           result.data.ok ? request.resolve(result.data.value) : request.reject(Object.assign(new Error(result.data.error), { code: result.data.error }));
         };
         port.start();
-      }, { once: true });
+      };
+      addEventListener('message', receiveInit);
+      announceReady();
       window.TavernNextContext = Object.freeze(context);
       window.getMessageId = () => context.messageId;
       window.getCurrentMessageId = () => context.messageId;

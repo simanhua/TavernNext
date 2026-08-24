@@ -49,6 +49,12 @@ export const providerProfiles = sqliteTable('provider_profiles', {
 export const globalGenerationConfigurations = sqliteTable('global_generation_config', {
   ...entityColumns,
 });
+export const installedScenes = sqliteTable('installed_scenes', {
+  ...entityColumns,
+  slug: text('slug').notNull().unique(),
+  version: text('version').notNull(),
+  archiveDigest: text('archive_digest').notNull(),
+}, (table) => [index('installed_scenes_slug_idx').on(table.slug)]);
 export const extensionAssets = sqliteTable('extension_assets', {
   ...entityColumns,
   ownerKind: text('owner_kind').notNull(),
@@ -92,11 +98,17 @@ export const conversations = sqliteTable('conversations', {
   ...entityColumns,
   characterId: text('character_id').notNull().references(() => characters.id),
   personaId: text('persona_id').notNull().references(() => personas.id),
+  sceneId: text('scene_id').references(() => installedScenes.id, { onDelete: 'cascade' }),
   title: text('title').notNull(),
 }, (table) => [
   index('conversations_character_id_idx').on(table.characterId),
   index('conversations_persona_id_idx').on(table.personaId),
+  index('conversations_scene_id_idx').on(table.sceneId),
 ]);
+export const conversationSceneStates = sqliteTable('conversation_scene_states', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
+}, (table) => [index('conversation_scene_states_conversation_id_idx').on(table.conversationId)]);
 export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
   worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),

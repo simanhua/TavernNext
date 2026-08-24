@@ -80,9 +80,9 @@ test('Current Context follows the primary Preset and active Conversation Charact
   await page.getByRole('tab', { name: 'Regexes 1' }).click();
   await expect(page.getByRole('button', { name: /First preset regex.*Disabled/ })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Connection' }).click();
-  await page.getByLabel('Chat Preset').selectOption(ids.secondPreset);
-  await page.getByRole('button', { name: 'Save active generation configuration' }).click();
+  await page.getByRole('link', { name: 'Presets' }).click();
+  await page.getByLabel('Chat preset').selectOption(ids.secondPreset);
+  await page.getByRole('button', { name: 'Save active Presets' }).click();
   await page.getByRole('link', { name: 'Attached Resources' }).click();
   await page.getByRole('tab', { name: 'Regexes 1' }).click();
   await expect(page.getByRole('button', { name: /Second preset regex.*Disabled/ })).toBeVisible();
