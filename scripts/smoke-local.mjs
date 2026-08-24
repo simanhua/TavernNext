@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../apps/server/src/app.ts';
+import { DESTINED_POEM_SCENE_ID } from '../apps/server/src/scenes/official-package.ts';
 
 const apiKey = `smoke-${randomUUID()}-secret`;
 const dataDir = await mkdtemp(join(tmpdir(), 'tavernnext-smoke-'));
@@ -67,24 +68,9 @@ try {
   const address = app.server.address();
   assert(address !== null && typeof address !== 'string' && address.address === '127.0.0.1', 'server did not bind only to 127.0.0.1');
 
-  const characterId = randomUUID();
-  const personaId = randomUUID();
   const providerId = randomUUID();
-  const presetId = randomUUID();
   const conversationId = randomUUID();
-  await inject('POST', '/api/characters', {
-    id: characterId,
-    name: 'Smoke Aster',
-    description: 'Local smoke character',
-    personality: '',
-    scenario: '',
-    firstMessage: '',
-    alternateGreetings: [],
-    tags: [],
-  });
-  await inject('POST', '/api/personas', {
-    id: personaId, name: 'Smoke Traveler', description: '', isDefault: true,
-  });
+  await inject('POST', `/api/scenes/${DESTINED_POEM_SCENE_ID}/install`);
   const providerResponse = await inject('POST', '/api/providers', {
     id: providerId,
     name: 'Smoke provider',
@@ -93,38 +79,30 @@ try {
     apiMode: 'chat',
     apiKey,
   });
-  await inject('POST', '/api/presets', {
-    id: presetId,
-    name: 'Smoke chat preset',
-    kind: 'chat',
-    settings: {
-      tokenizer: 0,
-      max_tokens: 64,
-      prompts: [{ identifier: 'main', role: 'system', content: 'Local smoke prompt', enabled: true }],
-      prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }] }],
-    },
-  });
   await inject('PATCH', '/api/settings/generation', {
     revision: 0,
-    patch: { providerId, chatPresetId: presetId },
+    patch: { providerId },
   });
-  await inject('POST', '/api/conversations', {
+  const conversationResponse = await inject('POST', `/api/scenes/${DESTINED_POEM_SCENE_ID}/conversations`, {
     id: conversationId,
-    characterId,
-    personaId,
-    title: 'Local smoke chat',
-    maxPromptTokens: 8_192,
+    title: 'Local smoke Save',
+    playerProfile: { name: 'Smoke Traveler', description: 'Local smoke player' },
+    setup: { origin: '梵尼亚' },
     maxResponseTokens: 64,
   });
+  const conversation = conversationResponse.json();
   const generation = await inject('POST', `/api/conversations/${conversationId}/generations`, {
-    conversationRevision: 0,
+    conversationRevision: conversation.revision,
     mode: 'normal',
     userText: 'Run local smoke',
   });
   assert(generation.payload.includes('Local smoke reply') && generation.payload.includes('event: completed'), 'generation did not stream to completion');
 
-  const providerList = await inject('GET', '/api/providers');
-  const exposed = `${providerResponse.payload}\n${providerList.payload}\n${generation.payload}`;
+  const [providerList, sceneList] = await Promise.all([
+    inject('GET', '/api/providers'),
+    inject('GET', '/api/scenes'),
+  ]);
+  const exposed = `${providerResponse.payload}\n${providerList.payload}\n${sceneList.payload}\n${generation.payload}`;
   const logged = logs.join('');
   const database = await readFile(databasePath);
   assert(!exposed.includes(apiKey), 'API response exposed the configured API key');
@@ -137,7 +115,7 @@ try {
   assert(outboundUrls.length === 1 && new URL(outboundUrls[0]).origin === expectedOrigin, `unexpected outbound calls: ${outboundUrls.join(', ')}`);
 
   console.log(`Local smoke: bound ${address.address}:${address.port}`);
-  console.log(`Local smoke: ${providerRequests.length} configured-provider request, 0 telemetry requests`);
+  console.log(`Local smoke: Scene Save generated through ${providerRequests.length} configured-provider request, 0 telemetry requests`);
   console.log('Local smoke: API key absent from API responses, SQLite, and captured logs');
 } finally {
   globalThis.fetch = originalFetch;
