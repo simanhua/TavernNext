@@ -499,6 +499,46 @@ describe('generation API', () => {
     ]);
   });
 
+  it('aborts a run through the Save Agent Runtime cancellation signal', async () => {
+    const release = deferred();
+    let providerSignal: AbortSignal | undefined;
+    const client = mockClient(async function* (_request, signal) {
+      providerSignal = signal;
+      yield { type: 'delta', text: 'Signal partial' };
+      await release.promise;
+      if (signal?.aborted) throw new ProviderError('aborted');
+      yield { type: 'completed', finishReason: 'stop' };
+    });
+    const { database, repositories } = await createTestContext(client);
+    seed(repositories);
+    const runtime = createGenerationService({ database, repositories, providerClientFactory: () => client });
+    const controller = new AbortController();
+
+    const started = await runtime.start({
+      conversationId: ids.conversation,
+      conversationRevision: 0,
+      mode: 'normal',
+      userText: 'Abort through the seam',
+    }, controller.signal);
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error(started.reason);
+    const iterator = started.events[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'started' } });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: 'delta', text: 'Signal partial' },
+    });
+
+    controller.abort();
+    release.resolve();
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: { type: 'aborted' } });
+    await expect(iterator.next()).resolves.toMatchObject({ done: true });
+    expect(providerSignal?.aborted).toBe(true);
+    expect(repositories.messageVariants.list()).toEqual([
+      expect.objectContaining({ content: 'Signal partial', status: 'aborted' }),
+    ]);
+  });
+
   it('emits failed without creating an empty assistant message when upstream fails before a delta', async () => {
     const client = mockClient(async function* () {
       throw new ProviderError('connection');

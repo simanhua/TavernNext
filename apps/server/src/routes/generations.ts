@@ -1,26 +1,27 @@
 import { Readable } from 'node:stream';
 import { GenerationRequestSchema } from '@tavernnext/domain';
 import type { FastifyInstance } from 'fastify';
-import type { GenerationEvent, GenerationService } from '../services/generation-service.js';
+import type { SaveAgentRuntime, SaveAgentRuntimeEvent } from '../services/save-agent-runtime.js';
 import { promptSnapshotErrorStatus } from '../services/prompt-snapshot-service.js';
 
-function encode(event: GenerationEvent): string {
+function encode(event: SaveAgentRuntimeEvent): string {
   const { type, ...data } = event;
   return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-async function* encodeEvents(events: AsyncIterable<GenerationEvent>): AsyncIterable<string> {
+async function* encodeEvents(events: AsyncIterable<SaveAgentRuntimeEvent>): AsyncIterable<string> {
   for await (const event of events) yield encode(event);
 }
 
-export function registerGenerationRoutes(app: FastifyInstance, service: GenerationService): void {
+export function registerGenerationRoutes(app: FastifyInstance, service: SaveAgentRuntime): void {
   app.post<{ Params: { id: string }; Body: unknown }>('/api/conversations/:id/generations', async (request, reply) => {
     const parsed = GenerationRequestSchema.safeParse({
       ...(typeof request.body === 'object' && request.body !== null ? request.body : {}),
       conversationId: request.params.id,
     });
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
-    const result = await service.start(parsed.data);
+    const controller = new AbortController();
+    const result = await service.start(parsed.data, controller.signal);
     if (!result.ok) {
       const status = result.reason === 'generation_active' ? 409 : promptSnapshotErrorStatus(result.reason);
       return reply.status(status).send({ error: result.reason });
@@ -36,6 +37,7 @@ export function registerGenerationRoutes(app: FastifyInstance, service: Generati
       reply.raw.off('finish', detachLifecycleListeners);
     };
     const cancelGeneration = () => {
+      controller.abort();
       service.cancel(result.generationId);
       detachLifecycleListeners();
     };

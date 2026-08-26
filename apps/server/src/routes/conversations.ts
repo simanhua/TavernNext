@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import { RelationshipLimitError, type Repositories } from '../db/repositories.js';
-import type { GenerationService } from '../services/generation-service.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
 import { createMvuRuntimeService } from '../services/mvu-runtime-service.js';
 import { registerCrudRoutes } from './crud.js';
 
@@ -9,7 +9,7 @@ export function registerConversationRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
 ): void {
   const mvu = createMvuRuntimeService(repositories);
   registerCrudRoutes(app, '/api/conversations', repositories.conversations, (conversation) => {

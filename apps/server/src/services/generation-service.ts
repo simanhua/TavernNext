@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import {
   SceneAfterGenerationResultSchema,
   SceneBeforeGenerationResultSchema,
-  type GenerationMode,
   type Message,
   type MessageVariant,
   type ProviderProfile,
@@ -23,11 +22,16 @@ import type { Repositories } from '../db/repositories.js';
 import {
   createPromptSnapshotService,
   PromptSnapshotError,
-  type PromptSnapshotErrorCode,
   type PromptSnapshotPayload,
   type PromptSnapshotService,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
+import type {
+  SaveAgentRunInput,
+  SaveAgentRuntime,
+  SaveAgentRuntimeEvent,
+  StartSaveAgentRunResult,
+} from './save-agent-runtime.js';
 import { createMvuRuntimeService } from './mvu-runtime-service.js';
 import { createReasoningCompatibilityService } from './reasoning-compat-service.js';
 import {
@@ -36,32 +40,7 @@ import {
   type SceneService,
 } from '../scenes/scene-service.js';
 
-export type GenerationEvent =
-  | { type: 'started'; generationId: string }
-  | { type: 'reasoning_delta'; text: string }
-  | { type: 'delta'; text: string }
-  | { type: 'usage'; inputTokens: number; outputTokens: number }
-  | { type: 'completed'; finishReason: string }
-  | { type: 'aborted' }
-  | { type: 'failed'; code: string };
-
-export interface GenerationInput {
-  conversationId: string;
-  conversationRevision: number;
-  mode: GenerationMode;
-  userText?: string;
-  snapshotId?: string;
-  seed?: string | number;
-  messageIndex?: number;
-  reuseLastUser?: boolean;
-}
-
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
-
-export type StartGenerationFailure = 'generation_active' | PromptSnapshotErrorCode;
-export type StartGenerationResult =
-  | { ok: true; generationId: string; events: AsyncIterable<GenerationEvent> }
-  | { ok: false; reason: StartGenerationFailure };
 
 interface ActiveGeneration {
   generationId: string;
@@ -69,6 +48,7 @@ interface ActiveGeneration {
   controller: AbortController;
   state: 'reserved' | 'iterating' | 'closed';
   reservationTimer?: ReturnType<typeof setTimeout>;
+  detachExternalAbort?: () => void;
   cleanup(): void;
 }
 
@@ -92,13 +72,6 @@ interface PreparedGenerationBase {
 type PreparedGeneration =
   | (PreparedGenerationBase & { kind: 'chat'; request: ChatRequest })
   | (PreparedGenerationBase & { kind: 'text'; request: TextRequest });
-
-export interface GenerationService {
-  start(input: GenerationInput): Promise<StartGenerationResult>;
-  triggerLastUser(conversationId: string): Promise<StartGenerationResult>;
-  cancel(generationId: string): boolean;
-  isConversationActive(conversationId: string): boolean;
-}
 
 function safeFailureCode(error: unknown): string {
   return error instanceof ProviderError ? error.code : 'upstream_error';
@@ -179,7 +152,7 @@ export function createGenerationService(options: {
   promptSnapshotService?: PromptSnapshotService;
   tokenizerRuntime?: ServerTokenizerRuntime;
   sceneService?: SceneService;
-}): GenerationService {
+}): SaveAgentRuntime {
   const { database, repositories, providerClientFactory } = options;
   const promptSnapshots = options.promptSnapshotService ?? createPromptSnapshotService({
     database,
@@ -202,7 +175,7 @@ export function createGenerationService(options: {
       : client.streamText(prepared.request, signal);
   }
 
-  async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<GenerationEvent> {
+  async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<SaveAgentRuntimeEvent> {
     const { controller } = active;
     const mode = prepared.payload.input.mode;
     const siblingMode = mode === 'swipe' || mode === 'regenerate';
@@ -495,7 +468,10 @@ export function createGenerationService(options: {
     else yield { type: 'failed', code: failureCode };
   }
 
-  function lifecycleEvents(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterableIterator<GenerationEvent> {
+  function lifecycleEvents(
+    prepared: PreparedGeneration,
+    active: ActiveGeneration,
+  ): AsyncIterableIterator<SaveAgentRuntimeEvent> {
     const source = stream(prepared, active)[Symbol.asyncIterator]();
     return {
       [Symbol.asyncIterator]() {
@@ -525,8 +501,8 @@ export function createGenerationService(options: {
     };
   }
 
-  const service: GenerationService = {
-    async start(input) {
+  const service: SaveAgentRuntime = {
+    async start(input: SaveAgentRunInput, signal?: AbortSignal): Promise<StartSaveAgentRunResult> {
       if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
         return { ok: false, reason: 'invalid_user_text' };
       }
@@ -535,15 +511,23 @@ export function createGenerationService(options: {
       const generationId = input.snapshotId ?? randomUUID();
       if (activeById.has(generationId)) return { ok: false, reason: 'generation_active' };
       const controller = new AbortController();
+      const abortFromExternal = () => controller.abort(signal?.reason);
+      if (signal?.aborted) abortFromExternal();
+      else signal?.addEventListener('abort', abortFromExternal, { once: true });
       const active: ActiveGeneration = {
         generationId,
         conversationId: input.conversationId,
         controller,
+        ...(signal === undefined ? {} : {
+          detachExternalAbort: () => signal.removeEventListener('abort', abortFromExternal),
+        }),
         state: 'reserved',
         cleanup() {
           if (active.state === 'closed') return;
           if (active.reservationTimer !== undefined) clearTimeout(active.reservationTimer);
           active.reservationTimer = undefined;
+          active.detachExternalAbort?.();
+          active.detachExternalAbort = undefined;
           active.state = 'closed';
           if (activeByConversation.get(active.conversationId) === active.generationId) {
             activeByConversation.delete(active.conversationId);
@@ -624,7 +608,7 @@ export function createGenerationService(options: {
         throw error;
       }
     },
-    async triggerLastUser(conversationId) {
+    async triggerLastUser(conversationId, signal) {
       if (activeByConversation.has(conversationId)) return { ok: false, reason: 'generation_active' };
       const conversation = repositories.conversations.get(conversationId);
       if (conversation === undefined) return { ok: false, reason: 'not_found' };
@@ -633,7 +617,7 @@ export function createGenerationService(options: {
       return service.start({
         conversationId, conversationRevision: conversation.revision,
         mode: 'normal', userText: last.content, reuseLastUser: true,
-      });
+      }, signal);
     },
     cancel(generationId) {
       const active = activeById.get(generationId);

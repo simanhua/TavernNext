@@ -10,7 +10,7 @@ import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { assertRuntimeStateValue } from '../runtime-state-validation.js';
 import { resolveActiveResourceContext } from './active-extension-resources.js';
-import type { GenerationService } from './generation-service.js';
+import type { SaveAgentRuntime } from './save-agent-runtime.js';
 import type { createExtensionTrustService } from './extension-trust-service.js';
 
 type TrustService = ReturnType<typeof createExtensionTrustService>;
@@ -43,7 +43,7 @@ function messageView(repositories: Repositories, conversationId: string) {
 export function createExtensionRuntimeRpcService(
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
   trust: TrustService,
 ) {
   return {

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
-import type { GenerationService } from '../services/generation-service.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
 import { SceneServiceError, type SceneService } from '../scenes/scene-service.js';
 
 interface Body {
@@ -19,7 +19,7 @@ export function registerMessageRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
   scenes: SceneService,
 ): void {
   const update = async (

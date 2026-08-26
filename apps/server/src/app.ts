@@ -33,6 +33,7 @@ import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
+import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
 import { createGenerationCandidateService } from './services/generation-candidate-service.js';
@@ -64,6 +65,7 @@ export interface CreateAppOptions {
   config?: ServerConfig;
   database?: TavernDatabase;
   providerClientFactory?: ProviderClientFactory;
+  saveAgentRuntime?: SaveAgentRuntime;
   providerProbeFactory?: ProviderProbeFactory;
   providerSecrets?: ProviderSecretMap;
   tokenizerRuntime?: ServerTokenizerRuntime;
@@ -256,7 +258,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
   const promptPreviews = createPromptPreviewService(promptSnapshots);
   const generationCandidates = createGenerationCandidateService(promptSnapshots, repositories);
-  const generations = createGenerationService({
+  const generations = options.saveAgentRuntime ?? createGenerationService({
     database,
     repositories,
     providerClientFactory,

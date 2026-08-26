@@ -1,6 +1,7 @@
 import { ProviderError, type OpenAICompatibleClient, type ProviderEvent } from '@tavernnext/provider-openai-compatible';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createGenerationService, type GenerationEvent } from '../src/services/generation-service.js';
+import { createGenerationService } from '../src/services/generation-service.js';
+import type { SaveAgentRuntimeEvent } from '../src/services/save-agent-runtime.js';
 import { createPromptSnapshotService } from '../src/services/prompt-snapshot-service.js';
 import { MAX_MESSAGES_PER_CONVERSATION, MAX_VARIANTS_PER_RELATION } from '../src/db/repositories.js';
 import {
@@ -155,7 +156,7 @@ describe('generation modes and active variants', () => {
     expect((await iterator.next()).value).toMatchObject({ type: 'started' });
     expect((await iterator.next()).value).toEqual({ type: 'delta', text: 'Partial' });
     expect(service.cancel(started.generationId)).toBe(true);
-    const terminal: GenerationEvent[] = [];
+    const terminal: SaveAgentRuntimeEvent[] = [];
     for (;;) {
       const next = await iterator.next();
       if (next.done) break;
@@ -205,7 +206,7 @@ describe('generation modes and active variants', () => {
       }
     };
     const completed = await start();
-    const completedEvents: GenerationEvent[] = [];
+    const completedEvents: SaveAgentRuntimeEvent[] = [];
     for await (const event of completed.events) completedEvents.push(event);
     expect(completedEvents.map(({ type }) => type)).toEqual(['started', 'delta', 'completed']);
     expect(completedCleanup).toBe(1);
@@ -223,7 +224,7 @@ describe('generation modes and active variants', () => {
       return iterator;
     };
     const protocol = await start();
-    const protocolEvents: GenerationEvent[] = [];
+    const protocolEvents: SaveAgentRuntimeEvent[] = [];
     for await (const event of protocol.events) protocolEvents.push(event);
     expect(protocolEvents.map(({ type }) => type)).toEqual(['started', 'failed']);
     expect(protocolCleanup).toBe(1);
