@@ -122,6 +122,11 @@ export class SceneViewRuntime {
     };
   }
 
+  placeholder(reference: string): { viewId: string; kind: string } | undefined {
+    const staged = [...this.staged.values()].find((candidate) => candidate.reference === reference);
+    return staged === undefined ? undefined : { viewId: staged.id, kind: staged.kind };
+  }
+
   async resolve(markdown: string, signal?: AbortSignal): Promise<ResolvedSceneViews> {
     const blocks: RoleplayDocument['blocks'] = [];
     const diagnostics: SceneStateDiagnostic[] = [];

@@ -1,4 +1,5 @@
 import type {
+  AgentActivityKind,
   Conversation,
   ConversationSceneState,
   InstalledScene,
@@ -26,12 +27,16 @@ export interface SceneGenerationSnapshot {
   streamedText: string;
   streamedReasoning: string;
   error: string | null;
+  activities: Array<{ kind: AgentActivityKind; label: string }>;
+  viewPlaceholders: Array<{ viewId: string; kind: string; offset: number }>;
 }
 
 export type SceneGenerationEvent =
   | { type: 'snapshot'; value: SceneGenerationSnapshot }
   | { type: 'text-delta'; text: string }
-  | { type: 'reasoning-delta'; text: string };
+  | { type: 'reasoning-delta'; text: string }
+  | { type: 'activity'; kind: AgentActivityKind; label: string }
+  | { type: 'view-placeholder'; viewId: string; kind: string; offset: number };
 
 export interface SceneThemeSnapshot {
   scheme: 'dark' | 'light';

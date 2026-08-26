@@ -38,6 +38,7 @@ import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
+import { registerAgentRunRoutes } from './routes/agent-runs.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import type { PiAgentRuntimeFactory } from './services/scene-director-agent.js';
 import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
@@ -425,6 +426,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerGenerationRoutes(app, generations);
   registerSaveAgentConfigurationRoutes(app, repositories);
   registerSceneRoutes(app, scenes, repositories);
+  registerAgentRunRoutes(app, repositories);
 
   app.addHook('onClose', async () => {
     try {

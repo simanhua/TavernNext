@@ -1746,3 +1746,32 @@ button[type="submit"]:hover:not(:disabled),
   grid-column: 1 / -1;
   width: 100%;
 }
+
+.scene-view-placeholder,
+.agent-activity {
+  display: block;
+  margin: .55rem 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: .6rem;
+  padding: .55rem .7rem;
+  color: var(--muted);
+  background: rgb(8 18 16 / 72%);
+  font-size: .86rem;
+}
+
+.scene-view-placeholder { min-height: 2.25rem; }
+
+.agent-run-inspector {
+  margin: .75rem var(--chat-page-margin, 20px);
+  border: 1px solid var(--line);
+  border-radius: .7rem;
+  padding: .65rem;
+  background: var(--ink-850);
+}
+
+.agent-run-inspector article { border-top: 1px solid var(--line); padding: .65rem 0; }
+.agent-run-inspector article header { display: flex; justify-content: space-between; gap: .75rem; }
+.agent-run-inspector dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .4rem; }
+.agent-run-inspector dl div { display: flex; justify-content: space-between; gap: .5rem; }
+.agent-run-inspector dt { color: var(--muted); }
+.agent-run-inspector dd { margin: 0; }

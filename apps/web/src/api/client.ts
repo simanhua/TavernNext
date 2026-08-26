@@ -12,11 +12,13 @@ import type {
   SaveAgentConfiguration,
   Message,
   MessageVariant,
+  AgentRun,
   PresetKind,
   TrustedPromptPatch,
 } from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind, SaveAgentConfiguration };
+export type { AgentRun };
 
 export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean; coverUrl?: string }
 export interface InstalledSceneView extends InstalledScene {
@@ -588,6 +590,9 @@ export const api = {
   listSceneCatalog: () => request<SceneCatalogEntryView[]>('/api/scenes/catalog'),
   listScenes: () => request<InstalledSceneView[]>('/api/scenes'),
   getScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}`),
+  listAgentRuns: (conversationId: string) => request<AgentRun[]>(
+    `/api/development/agent-runs?conversationId=${encodeURIComponent(conversationId)}`,
+  ),
   installScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}/install`, { method: 'POST' }),
   uninstallScene: (scene: InstalledSceneView) => request<{ backupPath: string }>(`/api/scenes/${encodeURIComponent(scene.id)}`, {
     method: 'DELETE', body: JSON.stringify({ revision: scene.revision, cascade: true }),

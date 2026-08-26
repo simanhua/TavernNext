@@ -16,6 +16,7 @@ import type {
   ScenePatchOperation,
   RoleplayDocument,
   SceneStateDiagnostic,
+  AgentActivityKind,
 } from '@tavernnext/domain';
 import { roleplayDocumentFromMarkdown, roleplayDocumentPlainText } from '@tavernnext/domain';
 import type { PiAgentModelRuntime, ProviderEvent } from '@tavernnext/provider-openai-compatible';
@@ -63,6 +64,7 @@ export interface SceneDirectorTerminal {
     counts: AgentRun['counts'];
     usage: AgentRun['usage'];
     lifecycle: AgentRun['lifecycle'];
+    activities: AgentRun['activities'];
     diagnostics: AgentRun['diagnostics'];
     failureCode?: string;
   };
@@ -75,8 +77,93 @@ interface MutableMetrics {
   outputTokens: number;
   lifecycle: AgentRun['lifecycle'];
   diagnostics: string[];
+  activities: AgentRun['activities'];
   budgetExceeded: boolean;
   timedOut: boolean;
+}
+
+export type SceneDirectorEvent = ProviderEvent
+  | { type: 'agent_raw_delta'; text: string }
+  | { type: 'activity'; kind: AgentActivityKind; label: string }
+  | { type: 'view_placeholder'; viewId: string; kind: string };
+
+const VIEW_PREFIX = '<!--tavernnext:view:';
+const COMPLETE_VIEW_REFERENCE = /^<!--tavernnext:view:([0-9A-Za-z_-]{1,160})-->/;
+
+function safeActivity(toolName: string): { kind: AgentActivityKind; label: string } {
+  if (toolName === 'save_state_read') return { kind: 'inspect-save', label: 'Inspecting Save state' };
+  if (toolName === 'world_query') return { kind: 'query-lore', label: 'Querying world lore' };
+  if (toolName === 'deterministic_check') return { kind: 'perform-check', label: 'Performing a rule check' };
+  if (toolName === 'scene_patch_stage') return { kind: 'update-state', label: 'Updating staged Save state' };
+  if (toolName === 'scene_view_stage') return { kind: 'stage-view', label: 'Preparing a Scene view' };
+  return { kind: 'scene-action', label: 'Performing a Scene action' };
+}
+
+class ViewReferenceStream {
+  private buffer = '';
+  private readonly emittedViewIds = new Set<string>();
+
+  constructor(private readonly runtime: SceneViewRuntime | undefined) {}
+
+  push(text: string, emit: (event: SceneDirectorEvent) => void): void {
+    this.buffer += text;
+    this.drain(emit, false);
+  }
+
+  finish(emit: (event: SceneDirectorEvent) => void): void {
+    this.drain(emit, true);
+    if (this.buffer !== '') emit({ type: 'delta', text: this.buffer });
+    this.buffer = '';
+  }
+
+  private drain(emit: (event: SceneDirectorEvent) => void, final: boolean): void {
+    for (;;) {
+      const start = this.buffer.indexOf(VIEW_PREFIX);
+      if (start < 0) {
+        if (final) {
+          if (this.buffer !== '') emit({ type: 'delta', text: this.buffer });
+          this.buffer = '';
+          return;
+        }
+        let retained = 0;
+        for (let length = 1; length < VIEW_PREFIX.length && length <= this.buffer.length; length += 1) {
+          if (VIEW_PREFIX.startsWith(this.buffer.slice(-length))) retained = length;
+        }
+        const visible = retained === 0 ? this.buffer : this.buffer.slice(0, -retained);
+        if (visible !== '') emit({ type: 'delta', text: visible });
+        this.buffer = retained === 0 ? '' : this.buffer.slice(-retained);
+        return;
+      }
+      if (start > 0) {
+        emit({ type: 'delta', text: this.buffer.slice(0, start) });
+        this.buffer = this.buffer.slice(start);
+      }
+      const complete = COMPLETE_VIEW_REFERENCE.exec(this.buffer);
+      if (complete !== null) {
+        const reference = complete[0];
+        const placeholder = this.runtime?.placeholder(reference);
+        if (placeholder !== undefined && !this.emittedViewIds.has(placeholder.viewId)) {
+          this.emittedViewIds.add(placeholder.viewId);
+          emit({ type: 'view_placeholder', ...placeholder });
+        }
+        this.buffer = this.buffer.slice(reference.length);
+        continue;
+      }
+      const token = new RegExp(`^${VIEW_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[0-9A-Za-z_-]{0,160}`).exec(this.buffer)?.[0]
+        ?? VIEW_PREFIX;
+      const next = this.buffer.slice(token.length);
+      if (!final && (next === '' || '-->'.startsWith(next))) return;
+      if (next !== '' && !next.startsWith('-->')) {
+        this.buffer = next;
+        continue;
+      }
+      if (final) {
+        this.buffer = next.startsWith('-->') ? next.slice(3) : '';
+        continue;
+      }
+      this.buffer = next.slice(3);
+    }
+  }
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -380,6 +467,7 @@ export class SceneDirectorExecution {
     outputTokens: 0,
     lifecycle: [],
     diagnostics: [],
+    activities: [],
     budgetExceeded: false,
     timedOut: false,
   };
@@ -572,14 +660,15 @@ export class SceneDirectorExecution {
         sceneState: payload.entityRevisions.sceneState ?? (sceneState === undefined ? null : revision(sceneState)),
       },
       lifecycle: [],
+      activities: [],
       diagnostics: [],
     });
     return { configuration, conversation, character, runtime: this.plan.runtime };
   }
 
-  events(signal: AbortSignal): AsyncIterable<ProviderEvent> {
+  events(signal: AbortSignal): AsyncIterable<SceneDirectorEvent> {
     if (this.producer !== undefined) throw new Error('scene_director_already_started');
-    const queue = new AsyncQueue<ProviderEvent>();
+    const queue = new AsyncQueue<SceneDirectorEvent>();
     this.producer = (async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let removeAbort: (() => void) | undefined;
@@ -615,6 +704,8 @@ export class SceneDirectorExecution {
           toolExecution: 'sequential',
         });
         this.activeAgent = agent;
+        const referenceStream = new ViewReferenceStream(this.sceneViewRuntime);
+        const activityByCall = new Map<string, number>();
         const abort = () => {
           agent.abort();
           queue.end(new ProviderError('aborted'));
@@ -653,9 +744,32 @@ export class SceneDirectorExecution {
               return;
             }
             this.metrics.toolCalls += 1;
+            if (this.metrics.activities.length < 64) {
+              const activity = safeActivity(event.toolName);
+              const index = this.metrics.activities.length;
+              this.metrics.activities.push({
+                sequence: index,
+                ...activity,
+                status: 'started',
+                startedAt: this.clock().toISOString(),
+              });
+              activityByCall.set(event.toolCallId, index);
+              queue.push({ type: 'activity', ...activity });
+            }
+          } else if (event.type === 'tool_execution_end') {
+            const index = activityByCall.get(event.toolCallId);
+            if (index !== undefined) {
+              const activity = this.metrics.activities[index];
+              if (activity !== undefined) this.metrics.activities[index] = {
+                ...activity,
+                status: event.isError ? 'failed' : 'completed',
+                finishedAt: this.clock().toISOString(),
+              };
+            }
           } else if (event.type === 'message_update') {
             if (event.assistantMessageEvent.type === 'text_delta' && event.assistantMessageEvent.delta !== '') {
-              queue.push({ type: 'delta', text: event.assistantMessageEvent.delta });
+              queue.push({ type: 'agent_raw_delta', text: event.assistantMessageEvent.delta });
+              referenceStream.push(event.assistantMessageEvent.delta, (value) => queue.push(value));
             }
           } else if (event.type === 'message_end' && event.message.role === 'assistant') {
             this.metrics.inputTokens += event.message.usage.input
@@ -669,6 +783,7 @@ export class SceneDirectorExecution {
           }
         });
         await agent.prompt(this.plan.playerInput);
+        referenceStream.finish((value) => queue.push(value));
         const final = [...agent.state.messages].reverse().find((message): message is AssistantMessage => (
           message.role === 'assistant'
         ));
@@ -740,6 +855,7 @@ export class SceneDirectorExecution {
         usage: { inputTokens: this.metrics.inputTokens, outputTokens: this.metrics.outputTokens },
         lifecycle: structuredClone(this.metrics.lifecycle),
         diagnostics: [...this.metrics.diagnostics],
+        activities: structuredClone(this.metrics.activities),
         ...(failureCode === undefined ? {} : { failureCode }),
       },
     };
@@ -772,6 +888,7 @@ export class SceneDirectorExecution {
         usage: { inputTokens: this.metrics.inputTokens, outputTokens: this.metrics.outputTokens },
         lifecycle: structuredClone(this.metrics.lifecycle),
         diagnostics: this.metrics.diagnostics.length === 0 ? ['run_failed'] : [...this.metrics.diagnostics],
+        activities: structuredClone(this.metrics.activities),
         failureCode,
       },
     };

@@ -105,6 +105,7 @@ let seedGreetingOnCreate = false;
 let stopRequests = 0;
 let abortedRequests = 0;
 let holdFirstGeneration = false;
+let emitAgentProgress = false;
 let conversationCreateFailure = false;
 let conversationDeleteFailure = false;
 let conversationDeleteCount = 0;
@@ -119,6 +120,7 @@ let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
 let promptPreviewRequests = 0;
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+let agentRuns: unknown[] = [];
 const encoder = new TextEncoder();
 const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
 
@@ -141,6 +143,7 @@ const server = setupServer(
       }],
     },
   })),
+  http.get('/api/development/agent-runs', () => HttpResponse.json(agentRuns)),
   http.get('/api/settings/generation/active-resource-context', ({ request }) => {
     const conversationId = new URL(request.url).searchParams.get('conversationId');
     return HttpResponse.json({
@@ -341,7 +344,14 @@ const server = setupServer(
           controller.enqueue(frame('completed', { finishReason: 'stop' }));
           controller.close();
         } else {
-          controller.enqueue(frame('delta', { text: delta }));
+          if (emitAgentProgress) {
+            controller.enqueue(frame('activity', { kind: 'query-lore', label: 'Querying world lore' }));
+            controller.enqueue(frame('view_placeholder', {
+              viewId: '018f0000-0000-7000-8000-000000000451', kind: 'combat',
+            }));
+          } else {
+            controller.enqueue(frame('delta', { text: delta }));
+          }
           activeStream = controller;
         }
       },
@@ -403,6 +413,7 @@ afterEach(() => {
   stopRequests = 0;
   abortedRequests = 0;
   holdFirstGeneration = false;
+  emitAgentProgress = false;
   conversationCreateFailure = false;
   conversationDeleteFailure = false;
   conversationDeleteCount = 0;
@@ -417,6 +428,7 @@ afterEach(() => {
   activeVariantSwitches = [];
   promptPreviewRequests = 0;
   activeStream = undefined;
+  agentRuns = [];
   window.localStorage.removeItem(CHAT_FORMAT_STORAGE_KEY);
   useChatUi.setState({ activeConversationId: null, draft: '' });
 });
@@ -436,6 +448,41 @@ function renderChatPage() {
 }
 
 describe('ChatPage', () => {
+  it('shows the bounded sanitized Agent Run development inspector', async () => {
+    conversations = [conversation];
+    agentRuns = [{
+      id: '018f0000-0000-7000-8000-000000000460', revision: 1, createdAt: now, updatedAt: now,
+      conversationId: conversation.id, generationId: '018f0000-0000-7000-8000-000000000461',
+      snapshotId: '018f0000-0000-7000-8000-000000000461', status: 'failed',
+      startedAt: now, finishedAt: now,
+      limits: { maxModelTurns: 8, maxToolCalls: 16, timeoutMs: 120000 },
+      counts: { modelTurns: 2, toolCalls: 1 }, usage: { inputTokens: 10, outputTokens: 4 },
+      promptPlan: { schemaVersion: 1, hash: 'a'.repeat(64), promptTokens: 30, messageCount: 3 },
+      revisions: {
+        conversation: { id: conversation.id, revision: 0 },
+        character: { id: ids.character, revision: 0 }, persona: { id: ids.persona, revision: 0 },
+        provider: { id: ids.provider, revision: 0 },
+        saveAgentConfiguration: { id: '018f0000-0000-7000-8000-000000000462', revision: 0 },
+        sceneState: null,
+      },
+      lifecycle: [],
+      activities: [{
+        sequence: 0, kind: 'query-lore', label: 'Querying world lore', status: 'completed',
+        startedAt: now, finishedAt: now,
+      }],
+      diagnostics: ['provider_failure'], failureCode: 'connection',
+    }];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    const summary = await screen.findByText('Agent Run inspector');
+    await userEvent.setup().click(summary);
+    expect(await screen.findByText('Querying world lore · completed')).not.toBeNull();
+    const inspector = summary.closest('details')!;
+    expect(inspector.textContent).toContain('provider_failure');
+    expect(inspector.textContent).not.toContain('SECRET-TOOL-ARGUMENT');
+  });
+
   it('renders assistant Markdown from the Roleplay Document instead of a divergent compatibility field', async () => {
     conversations = [conversation];
     messages = [{
@@ -495,6 +542,70 @@ describe('ChatPage', () => {
     expect(combat.getAttribute('data-source-state-revision')).toBe('7');
     expect(screen.queryByText('STALE VARIANT TEXT')).toBeNull();
     expect(screen.queryByText('STALE COMPATIBILITY TEXT')).toBeNull();
+  });
+
+  it('shows safe Agent activity and an inline view placeholder that becomes the committed read-only view', async () => {
+    const user = userEvent.setup();
+    conversations = [conversation];
+    holdFirstGeneration = true;
+    emitAgentProgress = true;
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+    const composer = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(composer, 'Show the battle');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('Querying world lore')).not.toBeNull();
+    const placeholder = await screen.findByText('Preparing combat view…');
+    expect(placeholder.getAttribute('data-view-id')).toBe('018f0000-0000-7000-8000-000000000451');
+    expect(screen.queryByText('Before after')).toBeNull();
+    activeStream!.enqueue(frame('delta', { text: 'Before after' }));
+    const prose = await screen.findByText('Before after');
+    expect(placeholder.compareDocumentPosition(prose) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    messages.push({
+      id: ids.assistantMessage,
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+      conversationId: ids.conversation,
+      role: 'assistant',
+      content: 'Before after',
+      activeVariantId: ids.assistantVariant,
+      variants: [{
+        id: ids.assistantVariant,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        messageId: ids.assistantMessage,
+        content: 'Before after',
+        document: {
+          version: 1,
+          blocks: [
+            { type: 'markdown', content: 'Before ' },
+            {
+              type: 'scene-view', viewId: '018f0000-0000-7000-8000-000000000451',
+              sceneId: '018f2000-0000-7000-8000-000000000001', sceneVersion: '2.6.0',
+              sceneDigest: 'a'.repeat(64), kind: 'combat', schemaVersion: 1,
+              rendererId: 'destined-poem-combat-v1', sourceStateRevision: 7,
+              props: {
+                title: 'Archive battle', location: 'Vault',
+                protagonist: { name: 'Aster', hp: 8, maxHp: 10, statuses: [] }, opponents: [],
+              },
+            },
+            { type: 'markdown', content: 'after' },
+          ],
+        },
+        status: 'completed',
+        finishReason: 'stop',
+      }],
+    });
+    activeStream!.enqueue(frame('completed', { finishReason: 'stop' }));
+    activeStream!.close();
+    activeStream = undefined;
+
+    expect(await screen.findByRole('region', { name: 'Archive battle' })).not.toBeNull();
+    await waitFor(() => expect(screen.queryByText('Preparing combat view…')).toBeNull());
   });
 
   it('confirms deletion of the active conversation, then clears the selection and refreshes the list', async () => {

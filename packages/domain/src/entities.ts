@@ -450,6 +450,17 @@ export const AgentRunLifecycleEventSchema = z.object({
   type: z.enum(['agent_start', 'turn_start', 'turn_end', 'agent_end']),
   at: z.string().datetime(),
 }).strict();
+export const AgentActivityKindSchema = z.enum([
+  'inspect-save', 'query-lore', 'perform-check', 'update-state', 'stage-view', 'scene-action',
+]);
+export const AgentRunActivitySchema = z.object({
+  sequence: z.number().int().nonnegative(),
+  kind: AgentActivityKindSchema,
+  label: z.string().min(1).max(96),
+  status: z.enum(['started', 'completed', 'failed']),
+  startedAt: z.string().datetime(),
+  finishedAt: z.string().datetime().optional(),
+}).strict();
 export const AgentRunRevisionSchema = z.object({
   id: DomainIdSchema,
   revision: z.number().int().nonnegative(),
@@ -489,6 +500,7 @@ export const AgentRunSchema = MutableEntitySchema.extend({
     sceneState: AgentRunRevisionSchema.nullable(),
   }).strict(),
   lifecycle: z.array(AgentRunLifecycleEventSchema).max(64),
+  activities: z.array(AgentRunActivitySchema).max(64).default([]),
   diagnostics: z.array(z.string().max(128)).max(32),
   failureCode: z.string().max(128).optional(),
 });
@@ -532,4 +544,5 @@ export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;
 export type ImportArtifact = z.infer<typeof ImportArtifactSchema>;
 export type GenerationSnapshot = z.infer<typeof GenerationSnapshotSchema>;
 export type AgentRun = z.infer<typeof AgentRunSchema>;
+export type AgentActivityKind = z.infer<typeof AgentActivityKindSchema>;
 export type WorldbookRuntimeState = z.infer<typeof WorldbookRuntimeStateSchema>;

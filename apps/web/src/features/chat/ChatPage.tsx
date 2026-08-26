@@ -7,6 +7,7 @@ import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
+import { AgentRunInspector } from './AgentRunInspector.js';
 import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
@@ -281,6 +282,8 @@ export function ChatPage() {
           optimisticUserText={optimisticUserText}
           streamedText={generation.streamedText}
           streamedReasoning={generation.streamedReasoning}
+          activities={generation.activities}
+          viewPlaceholders={generation.viewPlaceholders}
           generationTarget={generation.target}
           controlsDisabled={generation.isActive || updateConversationSettings.isPending}
           generationDisabled={generation.isActive || updateConversationSettings.isPending || !configurationReady}
@@ -302,6 +305,7 @@ export function ChatPage() {
           }}
         />
         <TrustedScriptRuntimeHost conversationId={activeConversationId} />
+        <AgentRunInspector conversationId={activeConversationId} />
         {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: t(generation.error) })}</p> : null}
         {characters.isLoading || personas.isLoading || globalGeneration.isLoading ? (
           <p>{t('Loading chat configuration…')}</p>

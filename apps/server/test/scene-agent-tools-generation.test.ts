@@ -67,7 +67,7 @@ function runtime(contexts: Context[]): PiAgentModelRuntime {
             type: 'toolCall' as const,
             id: 'fate-1',
             name: 'destined_poem_adjust_fate',
-            arguments: { amount: 3, reason: '守住档案馆' },
+            arguments: { amount: 3, reason: 'SECRET-TOOL-ARGUMENT' },
           };
           const partial: AssistantMessage = {
             role: 'assistant', content: [toolCall], api: model.api, provider: model.provider,
@@ -144,7 +144,11 @@ function viewRuntime(contexts: Context[]): PiAgentModelRuntime {
           provider: model.provider, model: model.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
         };
         events.push({ type: 'start', partial });
-        events.push({ type: 'text_delta', contentIndex: 0, delta: text, partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: '战斗爆发。', partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: reference.slice(0, 12), partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: reference.slice(12, -2), partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: `${reference.slice(-2)}${reference.slice(0, 18)}`, partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: `${reference.slice(18)}局势仍在变化。`, partial });
         const message: AssistantMessage = { ...partial, content: [{ type: 'text', text }], stopReason: 'stop' };
         events.push({ type: 'done', reason: 'stop', message });
         events.end(message);
@@ -219,6 +223,8 @@ describe('bundled Scene Agent tools', () => {
       payload: { conversationRevision: conversation.revision, mode: 'normal', userText: '守住档案馆。' },
     });
     expect(terminal(response.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
+    expect(response.payload).toContain('"kind":"scene-action","label":"Performing a Scene action"');
+    expect(response.payload).not.toContain('SECRET-TOOL-ARGUMENT');
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
       'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
       'destined_poem_adjust_fate', 'scene_view_stage',
@@ -230,7 +236,7 @@ describe('bundled Scene Agent tools', () => {
       role: 'toolResult',
       isError: false,
       details: {
-        scene: { before: 0, after: 3, amount: 3, reason: '守住档案馆' },
+        scene: { before: 0, after: 3, amount: 3, reason: 'SECRET-TOOL-ARGUMENT' },
         patch: {
           appliedCount: 1,
           applied: [{ op: 'delta', path: '/命运点数' }],
@@ -272,6 +278,17 @@ describe('bundled Scene Agent tools', () => {
       payload: { conversationRevision: currentConversation.revision, mode: 'normal', userText: '展示当前战况。' },
     });
     expect(terminal(viewResponse.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
+    expect(viewResponse.payload).toContain('event: activity');
+    expect(viewResponse.payload).toContain('"kind":"stage-view","label":"Preparing a Scene view"');
+    expect(viewResponse.payload).toContain('event: view_placeholder');
+    expect(viewResponse.payload.match(/event: view_placeholder/g)).toHaveLength(1);
+    expect(viewResponse.payload).not.toContain('<!--tavernnext:view:');
+    expect(viewResponse.payload.indexOf('"text":"战斗爆发。"')).toBeLessThan(
+      viewResponse.payload.indexOf('event: view_placeholder'),
+    );
+    expect(viewResponse.payload.indexOf('event: view_placeholder')).toBeLessThan(
+      viewResponse.payload.indexOf('"text":"局势仍在变化。"'),
+    );
     expect(viewContexts[0]!.tools?.map((tool) => tool.name)).toContain('scene_view_stage');
     const viewVariant = repositories.messageVariants.listByConversationId(conversation.id).at(-1)!;
     expect(viewVariant.content).toBe('战斗爆发。局势仍在变化。');
@@ -294,6 +311,16 @@ describe('bundled Scene Agent tools', () => {
       }),
       { type: 'markdown', content: '局势仍在变化。' },
     ]);
+    expect(repositories.agentRuns.listByConversationId(conversation.id).map((run) => run.activities)).toEqual([
+      [expect.objectContaining({
+        kind: 'scene-action', label: 'Performing a Scene action', status: 'completed',
+      })],
+      [expect.objectContaining({
+        kind: 'stage-view', label: 'Preparing a Scene view', status: 'completed',
+      })],
+    ]);
+    expect(JSON.stringify(repositories.agentRuns.listByConversationId(conversation.id)))
+      .not.toContain('SECRET-TOOL-ARGUMENT');
     const reloaded = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/messages` });
     expect(reloaded.json().messages.at(-1).variants[0].document).toEqual(viewVariant.document);
     const beforeContinue = structuredClone(viewVariant.document);

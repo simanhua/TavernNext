@@ -22,6 +22,7 @@ export function useGeneration() {
       await Promise.all([
         queryClient.refetchQueries({ queryKey: ['conversation', conversationId] }),
         queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+        queryClient.invalidateQueries({ queryKey: ['agent-runs', conversationId] }),
       ]);
     },
   }));

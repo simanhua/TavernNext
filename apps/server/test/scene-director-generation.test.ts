@@ -660,5 +660,26 @@ describe('per-Save Pi Scene Director', () => {
       'SELECT COUNT(*) AS count FROM consumed_generation_snapshots',
     ).get() as { count: number }).count).toBe(0);
     expect(JSON.stringify(runs)).not.toContain('AUDIT-SECRET');
+    const inspector = await seeded.app.inject({
+      method: 'GET', url: `/api/development/agent-runs?conversationId=${ids.conversation}`,
+    });
+    expect(inspector.statusCode).toBe(200);
+    expect(inspector.json()).toHaveLength(runs.length);
+    expect(inspector.json().map((run: { status: string }) => run.status)).toEqual(
+      [...runs].reverse().map((run) => run.status),
+    );
+    expect(inspector.payload).not.toContain('AUDIT-SECRET');
+    expect(inspector.payload).not.toContain('PRIVATE-CHAIN-OF-THOUGHT');
+    expect(inspector.payload).not.toContain('Unsafe partial');
+    expect(inspector.json().find((run: { id: string }) => run.id === runs[2]!.id)).toMatchObject({
+      status: 'budget_exhausted',
+      activities: expect.arrayContaining([
+        expect.objectContaining({ kind: 'scene-action', label: 'Performing a Scene action' }),
+      ]),
+    });
+    expect((await seeded.app.inject({
+      method: 'GET', url: `/api/development/agent-runs/${runs[2]!.id}`,
+    })).statusCode).toBe(404);
+
   });
 });

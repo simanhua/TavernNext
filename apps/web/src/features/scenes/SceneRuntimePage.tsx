@@ -49,6 +49,8 @@ function generationSnapshot(value: ReturnType<ReturnType<typeof useGeneration>['
     streamedText: value.streamedText,
     streamedReasoning: value.streamedReasoning,
     error: value.error,
+    activities: value.activities,
+    viewPlaceholders: value.viewPlaceholders,
   };
 }
 

@@ -50,6 +50,7 @@ import {
   SceneDirectorRunError,
   type SceneDirectorLimits,
   type SceneDirectorTerminal,
+  type SceneDirectorEvent,
   type PiAgentRuntimeFactory,
 } from './scene-director-agent.js';
 import { createSceneAgentToolFactory, type SceneAgentToolFactory } from './scene-agent-tools.js';
@@ -193,7 +194,7 @@ export function createGenerationService(options: {
   function providerEvents(
     prepared: PreparedGeneration,
     signal: AbortSignal,
-  ): AsyncIterable<ProviderEvent> {
+  ): AsyncIterable<ProviderEvent | SceneDirectorEvent> {
     if (prepared.sceneDirector !== undefined) return prepared.sceneDirector.events(signal);
     const client = providerClientFactory(prepared.provider);
     return prepared.kind === 'chat'
@@ -231,7 +232,7 @@ export function createGenerationService(options: {
     let finishReason = 'stop';
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
-    let providerIterator: AsyncIterator<ProviderEvent> | undefined;
+    let providerIterator: AsyncIterator<SceneDirectorEvent> | undefined;
     const initialWorkspace = prepared.sceneDirector?.workspaceSnapshot();
     let sceneOperations = initialWorkspace?.operations ?? [...(prepared.sceneTransition?.beforeOperations ?? [])];
     let sceneFailures = initialWorkspace?.failures ?? [...(prepared.sceneTransition?.beforeFailures ?? [])];
@@ -317,6 +318,21 @@ export function createGenerationService(options: {
         const next = await providerIterator.next();
         if (next.done) break;
         const event = next.value;
+        if (event.type === 'agent_raw_delta') {
+          if (event.text !== '') {
+            content += event.text;
+            hasDelta = true;
+          }
+          continue;
+        }
+        if (event.type === 'activity') {
+          yield { type: 'activity', kind: event.kind, label: event.label };
+          continue;
+        }
+        if (event.type === 'view_placeholder') {
+          yield { type: 'view_placeholder', viewId: event.viewId, kind: event.kind };
+          continue;
+        }
         if (event.type === 'reasoning_delta') {
           if (event.text === '') continue;
           reasoning += event.text;
@@ -330,8 +346,10 @@ export function createGenerationService(options: {
         }
         if (event.type === 'delta') {
           if (event.text === '') continue;
-          content += event.text;
-          hasDelta = true;
+          if (prepared.sceneDirector === undefined) {
+            content += event.text;
+            hasDelta = true;
+          }
           // The SSE response is the live source of truth. Persist once at the
           // terminal boundary so large outputs do not repeatedly export the
           // complete sql.js database while they are still streaming.

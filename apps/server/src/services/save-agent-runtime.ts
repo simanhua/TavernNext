@@ -1,10 +1,12 @@
-import type { GenerationMode } from '@tavernnext/domain';
+import type { AgentActivityKind, GenerationMode } from '@tavernnext/domain';
 import type { PromptSnapshotErrorCode } from './prompt-snapshot-service.js';
 
 export type SaveAgentRuntimeEvent =
   | { readonly type: 'started'; readonly generationId: string }
   | { readonly type: 'reasoning_delta'; readonly text: string }
   | { readonly type: 'delta'; readonly text: string }
+  | { readonly type: 'activity'; readonly kind: AgentActivityKind; readonly label: string }
+  | { readonly type: 'view_placeholder'; readonly viewId: string; readonly kind: string }
   | { readonly type: 'usage'; readonly inputTokens: number; readonly outputTokens: number }
   | { readonly type: 'completed'; readonly finishReason: string }
   | { readonly type: 'aborted' }

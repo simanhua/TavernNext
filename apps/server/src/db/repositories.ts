@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { ZodType } from 'zod';
 import {
@@ -186,6 +186,7 @@ export interface SaveAgentConfigurationRepository extends Repository<SaveAgentCo
 export interface AgentRunRepository extends Repository<AgentRun> {
   getByGenerationId(generationId: string): AgentRun | undefined;
   listByConversationId(conversationId: string): AgentRun[];
+  listRecentByConversationId(conversationId: string, limit: number): AgentRun[];
 }
 
 export interface SceneStateTransitionRepository extends Repository<SceneStateTransition> {
@@ -940,6 +941,13 @@ function createAgentRunRepository(database: TavernDatabase): AgentRunRepository 
       return database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
         .where(eq(agentRuns.conversationId, conversationId))
         .orderBy(asc(agentRuns.createdAt), asc(agentRuns.id)).all()
+        .map((row) => AgentRunSchema.parse(row.payload));
+    },
+    listRecentByConversationId(conversationId, limit) {
+      const boundedLimit = Math.min(100, Math.max(1, Math.floor(limit)));
+      return database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
+        .where(eq(agentRuns.conversationId, conversationId))
+        .orderBy(desc(agentRuns.createdAt), desc(agentRuns.id)).limit(boundedLimit).all()
         .map((row) => AgentRunSchema.parse(row.payload));
     },
   };

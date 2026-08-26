@@ -32,6 +32,8 @@ const EMPTY_SNAPSHOT: GenerationSessionSnapshot = {
   streamedText: '',
   streamedReasoning: '',
   error: null,
+  activities: [],
+  viewPlaceholders: [],
   target: null,
 };
 
@@ -109,6 +111,8 @@ export class GenerationSessionController {
       streamedText: '',
       streamedReasoning: '',
       error: null,
+      activities: [],
+      viewPlaceholders: [],
       target: input.mode === 'normal' ? null : {
         mode: input.mode,
         messageId: input.target.id,
@@ -155,6 +159,19 @@ export class GenerationSessionController {
         } else if (event.type === 'delta') {
           this.patch({ streamedText: this.snapshot.streamedText + event.text }, false);
           this.notifyEvent({ type: 'text-delta', text: event.text });
+        } else if (event.type === 'activity') {
+          const activity = { kind: event.kind, label: event.label };
+          this.patch({ activities: [...this.snapshot.activities, activity].slice(-32) }, false);
+          this.notifyEvent({ type: 'activity', ...activity });
+        } else if (event.type === 'view_placeholder') {
+          if (this.snapshot.viewPlaceholders.some((placeholder) => placeholder.viewId === event.viewId)) continue;
+          const placeholder = {
+            viewId: event.viewId,
+            kind: event.kind,
+            offset: this.snapshot.streamedText.length,
+          };
+          this.patch({ viewPlaceholders: [...this.snapshot.viewPlaceholders, placeholder].slice(-16) }, false);
+          this.notifyEvent({ type: 'view-placeholder', ...placeholder });
         } else if (event.type === 'completed' || event.type === 'aborted' || event.type === 'failed') {
           terminal = true;
           if (event.type === 'failed') this.patch({ error: event.code });

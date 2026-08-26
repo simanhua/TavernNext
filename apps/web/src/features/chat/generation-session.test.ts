@@ -28,6 +28,9 @@ vi.mock('../../api/generation-stream.js', () => ({
     yield { type: 'started', generationId: 'generation-1' };
     yield { type: 'reasoning_delta', text: 'think' };
     yield { type: 'delta', text: 'hello' };
+    yield { type: 'activity', kind: 'query-lore', label: 'Querying world lore' };
+    yield { type: 'view_placeholder', viewId: 'view-1', kind: 'combat' };
+    yield { type: 'view_placeholder', viewId: 'view-1', kind: 'combat' };
     yield { type: 'delta', text: ' world' };
     yield { type: 'completed', finishReason: 'stop' };
   },
@@ -61,7 +64,7 @@ describe('GenerationSessionController', () => {
   it('shares the existing generation pipeline while publishing only incremental text events', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
     const controller = new GenerationSessionController({ refreshAuthoritativeState: refresh });
-    const events: Array<{ type: string; text?: string }> = [];
+    const events: Array<{ type: string; text?: string; label?: string; offset?: number }> = [];
     controller.subscribeEvents((event) => events.push(event));
 
     await expect(controller.start(conversation, { mode: 'normal', userText: 'go' })).resolves.toBe('accepted');
@@ -75,7 +78,14 @@ describe('GenerationSessionController', () => {
       { type: 'text-delta', text: 'hello' },
       { type: 'text-delta', text: ' world' },
     ]);
-    expect(controller.getSnapshot()).toMatchObject({ status: 'idle', streamedText: '', streamedReasoning: '' });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'activity', label: 'Querying world lore' }),
+      expect.objectContaining({ type: 'view-placeholder', offset: 5 }),
+    ]));
+    expect(events.filter((event) => event.type === 'view-placeholder')).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({
+      status: 'idle', streamedText: '', streamedReasoning: '', activities: [], viewPlaceholders: [],
+    });
   });
 
   it('uses the server-owned Scene recipe without sealing a client candidate', async () => {

@@ -20,6 +20,8 @@ interface MessageListProps {
   optimisticUserText: string | null;
   streamedText: string;
   streamedReasoning: string;
+  activities: Array<{ kind: string; label: string }>;
+  viewPlaceholders: Array<{ viewId: string; kind: string; offset: number }>;
   generationTarget: ActiveGenerationTarget | null;
   controlsDisabled: boolean;
   generationDisabled: boolean;
@@ -46,6 +48,8 @@ export function MessageList({
   optimisticUserText,
   streamedText,
   streamedReasoning,
+  activities,
+  viewPlaceholders,
   generationTarget,
   controlsDisabled,
   generationDisabled,
@@ -75,6 +79,43 @@ export function MessageList({
   const lastMessage = messages.at(-1);
   const { scripts: regexScripts, ready: regexScriptsReady } = useActiveRegexScripts(conversationId);
   const lastAssistantId = lastMessage?.role === 'assistant' ? lastMessage.id : undefined;
+  const renderStreaming = (text: string) => {
+    const nodes = [];
+    let cursor = 0;
+    for (const placeholder of [...viewPlaceholders].sort((left, right) => left.offset - right.offset)) {
+      const offset = Math.max(cursor, Math.min(text.length, placeholder.offset));
+      if (offset > cursor) nodes.push(
+        <RegexProjectedMarkdownContent
+          key={`text:${cursor}`}
+          content={text.slice(cursor, offset)}
+          role="assistant"
+          depth={0}
+          scripts={regexScripts}
+          macroValues={macroValues}
+        />,
+      );
+      nodes.push(
+        <span
+          key={placeholder.viewId}
+          className="scene-view-placeholder"
+          role="status"
+          data-view-id={placeholder.viewId}
+        >{t('Preparing {{kind}} view…', { kind: placeholder.kind })}</span>,
+      );
+      cursor = offset;
+    }
+    if (cursor < text.length) nodes.push(
+      <RegexProjectedMarkdownContent
+        key={`text:${cursor}`}
+        content={text.slice(cursor)}
+        role="assistant"
+        depth={0}
+        scripts={regexScripts}
+        macroValues={macroValues}
+      />,
+    );
+    return nodes;
+  };
 
   useEffect(() => {
     const element = messagesRef.current;
@@ -119,6 +160,9 @@ export function MessageList({
           ? message.role
           : t(message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : 'System');
         const label = t('{{role}} message {{content}}', { role, content });
+        const hasViewPlaceholder = message.role === 'assistant'
+          && generationTarget?.messageId === message.id
+          && viewPlaceholders.length > 0;
         return (
           <article
             className={`message mes message-${message.role}`}
@@ -159,13 +203,15 @@ export function MessageList({
                     <p className="mes_reasoning">{reasoning}</p>
                   </details>
                 )}
-                {content === '' ? (
+                {content === '' && !hasViewPlaceholder ? (
                   <p>{activeVariant?.status === 'streaming'
                     ? t('Waiting for final response…')
                     : t('No final response was generated.')}</p>
                 ) : <div className="mes_text">{message.role !== 'assistant'
                   ? <MarkdownContent content={content} />
-                  : blocks.map((block, blockIndex) => block.type === 'scene-view' ? (
+                  : generationTarget?.messageId === message.id && generationTarget.mode !== 'continue'
+                    ? renderStreaming(streamedText)
+                    : <>{blocks.map((block, blockIndex) => block.type === 'scene-view' ? (
                     <SceneViewBlock key={block.viewId} block={block} />
                   ) : <RegexProjectedMarkdownContent
                     key={blockIndex}
@@ -184,7 +230,9 @@ export function MessageList({
                           hasReasoning: reasoning !== '',
                         }
                       : undefined}
-                  />)}</div>}
+                  />)}{generationTarget?.messageId === message.id && generationTarget.mode === 'continue'
+                    ? renderStreaming(streamedText)
+                    : null}</>}</div>}
               </>
             )}
             {message.id === lastAssistantId ? (
@@ -224,16 +272,19 @@ export function MessageList({
           <span className="message-pending-indicator">{t('Waiting for response…')}</span>
         </article>
       )}
+      {activities.length === 0 ? null : (
+        <p className="agent-activity" role="status">{activities.at(-1)!.label}</p>
+      )}
       {edit.error ? <p role="alert">{t('Unable to edit message: {{error}}', { error: errorCode(edit.error) })}</p> : null}
       {remove.error ? <p role="alert">{t('Unable to delete message: {{error}}', { error: errorCode(remove.error) })}</p> : null}
       {selectVariant.error ? <p role="alert">{t('Unable to switch variant: {{error}}', { error: errorCode(selectVariant.error) })}</p> : null}
-      {generationTarget === null && streamedText !== '' ? (
+      {generationTarget === null && (streamedText !== '' || viewPlaceholders.length > 0) ? (
         <article className="message message-assistant" aria-live="polite">
           <header>{t('Assistant')}</header>
-          <RegexProjectedMarkdownContent content={streamedText} role="assistant" depth={0} scripts={regexScripts} macroValues={macroValues} />
+          {renderStreaming(streamedText)}
         </article>
       ) : null}
-      {generationTarget === null && streamedText === '' && streamedReasoning !== '' ? (
+      {generationTarget === null && streamedText === '' && viewPlaceholders.length === 0 && streamedReasoning !== '' ? (
         <article className="message message-assistant" aria-live="polite">
           <header>{t('Assistant')}</header>
           <details className="message-reasoning" open>
