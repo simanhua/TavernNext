@@ -42,7 +42,9 @@ describe('OpenAI-compatible provider client', () => {
   it('streams chat deltas, usage, and completion from SSE frames', async () => {
     const server = await mock((request, response) => {
       expect(request.path).toBe('/v1/chat/completions');
-      expect(request.body).toEqual({ model: 'mock', messages: [{ role: 'user', content: 'Hi' }], stream: true });
+      expect(request.body).toMatchObject({ model: 'mock', messages: [{ role: 'user', content: 'Hi' }], stream: true });
+      expect(request.body).not.toHaveProperty('max_tokens');
+      expect(request.body).not.toHaveProperty('max_completion_tokens');
       beginSse(response);
       response.write(': keepalive\r\n');
       response.write('data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}\r\n\r\n');
@@ -109,6 +111,53 @@ describe('OpenAI-compatible provider client', () => {
       expect(String(error)).not.toContain('test-api-key');
       expect(String(error)).not.toContain('response-secret');
     });
+  });
+
+  it('maps Chat authentication and rate limits through Pi without leaking secrets', async () => {
+    const authServer = await mock((_request, response) => {
+      sendJson(response, 401, { error: { message: 'invalid key chat-secret' } });
+    });
+    await expect(collect(client(authServer.baseUrl, 'chat-secret').streamChat({
+      model: 'mock', messages: [],
+    }))).rejects.toMatchObject({ code: 'auth', status: 401 });
+    await collect(client(authServer.baseUrl, 'chat-secret').streamChat({ model: 'mock', messages: [] }))
+      .catch((error: unknown) => expect(String(error)).not.toContain('chat-secret'));
+
+    const rateServer = await mock((_request, response) => {
+      sendJson(response, 429, { error: { message: 'slow down' } }, { 'retry-after': '3' });
+    });
+    await expect(collect(client(rateServer.baseUrl).streamChat({
+      model: 'mock', messages: [],
+    }))).rejects.toMatchObject({ code: 'rate_limit', status: 429, retryAfterMs: 3000 });
+  });
+
+  it('preserves custom Authorization headers when an API key is not configured', async () => {
+    const server = await mock((request, response) => {
+      expect(request.headers.authorization).toBe('Custom server credential');
+      beginSse(response);
+      response.end('data: [DONE]\n\n');
+    });
+    const custom = createOpenAICompatibleClient({
+      baseUrl: server.baseUrl,
+      headers: { Authorization: 'Custom server credential' },
+    });
+
+    await expect(collect(custom.streamChat({ model: 'mock', messages: [] }))).resolves.toEqual([
+      { type: 'completed', finishReason: 'stop' },
+    ]);
+  });
+
+  it('reports cached prompt tokens in the stable input-token total', async () => {
+    const server = await mock((_request, response) => {
+      beginSse(response);
+      response.write('data: {"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4,"cache_write_tokens":2}}}\n\n');
+      response.end('data: [DONE]\n\n');
+    });
+
+    await expect(collect(client(server.baseUrl).streamChat({ model: 'mock', messages: [] }))).resolves.toEqual([
+      { type: 'usage', inputTokens: 10, outputTokens: 3 },
+      { type: 'completed', finishReason: 'stop' },
+    ]);
   });
 
   it('maps rate limiting with safe retry metadata', async () => {
