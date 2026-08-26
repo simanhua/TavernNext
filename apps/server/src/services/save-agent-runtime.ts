@@ -23,7 +23,7 @@ export interface SaveAgentRunInput {
   readonly reuseLastUser?: boolean;
 }
 
-export type StartSaveAgentRunFailure = 'generation_active' | PromptSnapshotErrorCode;
+export type StartSaveAgentRunFailure = 'generation_active' | 'scene_branch_has_descendants' | PromptSnapshotErrorCode;
 export type StartSaveAgentRunResult =
   | {
     readonly ok: true;

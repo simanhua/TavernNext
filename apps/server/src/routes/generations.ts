@@ -23,7 +23,9 @@ export function registerGenerationRoutes(app: FastifyInstance, service: SaveAgen
     const controller = new AbortController();
     const result = await service.start(parsed.data, controller.signal);
     if (!result.ok) {
-      const status = result.reason === 'generation_active' ? 409 : promptSnapshotErrorStatus(result.reason);
+      const status = result.reason === 'generation_active' || result.reason === 'scene_branch_has_descendants'
+        ? 409
+        : promptSnapshotErrorStatus(result.reason);
       return reply.status(status).send({ error: result.reason });
     }
     reply.headers({

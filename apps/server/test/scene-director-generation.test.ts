@@ -401,6 +401,7 @@ describe('per-Save Pi Scene Director', () => {
       payload: seeded.repositories.generationSnapshots.list().at(-1)!.payload as unknown as PromptSnapshotPayload,
       provider: seeded.repositories.providerProfiles.get(ids.provider)!,
       configuration: seeded.repositories.saveAgentConfigurations.getByConversationId(ids.conversation)!,
+      playerInput: 'Staged state',
       runtimeFactory: () => completedRuntime(['Staged state reply'], stagedContexts),
       effectiveSceneState: { phase: 'staged', points: 9 },
       scenePromptAdditions: [{ role: 'system', content: 'SCENE-TURN-RULE' }],

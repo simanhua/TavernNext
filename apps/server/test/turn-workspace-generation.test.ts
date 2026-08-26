@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -129,6 +129,11 @@ function scriptedRuntime(options: {
 async function context(runtimeFactory: () => PiAgentModelRuntime) {
   const directory = await mkdtemp(join(tmpdir(), 'tavernnext-workspace-run-'));
   directories.push(directory);
+  await writeFile(join(directory, 'server.mjs'), [
+    'export default {',
+    "  beforeGeneration(input) { return { promptAdditions: [{ role: 'system', content: `HOOK:${input.userText}` }] }; },",
+    '};',
+  ].join('\n'));
   const database = createDatabase(join(directory, 'tavernnext.sqlite'));
   migrateDatabase(database);
   const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
@@ -174,12 +179,13 @@ async function context(runtimeFactory: () => PiAgentModelRuntime) {
       minimumTavernNextVersion: '0.1.0',
       sceneSdkVersion: 2,
       frontendEntry: 'frontend.js',
+      serverEntry: 'server.mjs',
       frontendStyles: [],
       setupSchema: {},
       stateSchema: {},
       agentTools: [],
       sceneViews: [],
-      files: ['frontend.js'],
+      files: ['frontend.js', 'server.mjs'],
     },
     backingCharacterId: character.id,
     backingPresetId: preset.id,
@@ -218,6 +224,18 @@ async function generate(app: ReturnType<typeof createApp>, conversationId: strin
   return app.inject({
     method: 'POST', url: `/api/conversations/${conversationId}/generations`,
     payload: { conversationRevision: revision, mode: 'normal', userText: 'Open the vault.' },
+  });
+}
+
+async function generateSibling(
+  app: ReturnType<typeof createApp>,
+  conversationId: string,
+  revision: number,
+  mode: 'swipe' | 'regenerate' = 'regenerate',
+) {
+  return app.inject({
+    method: 'POST', url: `/api/conversations/${conversationId}/generations`,
+    payload: { conversationRevision: revision, mode },
   });
 }
 
@@ -337,5 +355,190 @@ describe('Scene Director Turn Workspace integration', () => {
       failureCode: 'conflict',
     });
     expect(seeded.repositories.sceneStateTransitions.listByConversationId(seeded.conversation.id)).toEqual([]);
+  });
+
+  it('regenerates a tail Agent reply from its parent state and restores sibling timelines atomically', async () => {
+    let runtime = scriptedRuntime({
+      contexts: [],
+      finalText: 'First timeline.',
+      toolCalls: [{
+        type: 'toolCall', id: 'first-patch', name: 'scene_patch_stage',
+        arguments: { operations: [{ op: 'replace', path: '/points', value: 5 }] },
+      }],
+    });
+    const seeded = await context(() => runtime);
+    expect(terminal((await generate(seeded.app, seeded.conversation.id)).payload).event).toBe('completed');
+    const message = seeded.repositories.messages.listByConversationId(seeded.conversation.id).at(-1)!;
+    const firstVariant = seeded.repositories.messageVariants.get(message.activeVariantId!)!;
+    const firstTransition = seeded.repositories.sceneStateTransitions.getBySource('message-variant', firstVariant.id)!;
+
+    const configuration = seeded.repositories.saveAgentConfigurations.getByConversationId(seeded.conversation.id)!;
+    const updatedConfiguration = seeded.repositories.saveAgentConfigurations.update(
+      configuration.id,
+      configuration.revision,
+      {
+        name: 'Latest private style',
+        settings: {
+          ...configuration.settings,
+          prompts: [{ identifier: 'style', role: 'system', content: 'LATEST PRIVATE STYLE' }],
+        },
+      },
+    );
+    expect(updatedConfiguration.ok).toBe(true);
+
+    const regenerationContexts: Context[] = [];
+    const beforeRegenerationState = seeded.repositories.conversationSceneStates
+      .getByConversationId(seeded.conversation.id)!;
+    runtime = scriptedRuntime({
+      contexts: regenerationContexts,
+      finalText: 'Second timeline.',
+      toolCalls: [{
+        type: 'toolCall', id: 'second-patch', name: 'scene_patch_stage',
+        arguments: { operations: [{ op: 'replace', path: '/points', value: 9 }] },
+      }],
+      beforeFinal() {
+        expect(seeded.repositories.messages.get(message.id)?.activeVariantId).toBe(firstVariant.id);
+        expect(seeded.repositories.messageVariants.listByMessageId(message.id)).toHaveLength(1);
+        expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)).toEqual(
+          beforeRegenerationState,
+        );
+      },
+    });
+    const conversation = seeded.repositories.conversations.get(seeded.conversation.id)!;
+    const regenerated = await generateSibling(seeded.app, seeded.conversation.id, conversation.revision);
+    expect(terminal(regenerated.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
+    expect(regenerationContexts[0]!.systemPrompt).toContain('LATEST PRIVATE STYLE');
+    expect(regenerationContexts[0]!.systemPrompt).toContain('HOOK:Open the vault.');
+    expect(JSON.stringify(regenerationContexts[0]!.messages)).not.toContain('First timeline.');
+    expect(regenerationContexts[0]!.messages.at(-1)).toMatchObject({
+      role: 'user', content: [{ type: 'text', text: 'Open the vault.' }],
+    });
+
+    const afterRegenerationMessage = seeded.repositories.messages.get(message.id)!;
+    const variants = seeded.repositories.messageVariants.listByMessageId(message.id);
+    expect(variants).toHaveLength(2);
+    const secondVariant = variants.find((variant) => variant.id === afterRegenerationMessage.activeVariantId)!;
+    expect(firstVariant).toMatchObject({ content: 'First timeline.', status: 'completed' });
+    expect(secondVariant).toMatchObject({ content: 'Second timeline.', status: 'completed' });
+    expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)).toMatchObject({
+      revision: beforeRegenerationState.revision + 1,
+      value: { points: 9, map: { place: 'gate' } },
+    });
+    const secondTransition = seeded.repositories.sceneStateTransitions.getBySource('message-variant', secondVariant.id)!;
+    expect(firstTransition.parentTransitionId).toBeNull();
+    expect(secondTransition.parentTransitionId).toBe(firstTransition.parentTransitionId);
+    expect(seeded.repositories.agentRuns.listByConversationId(seeded.conversation.id).at(-1)?.revisions)
+      .toMatchObject({ saveAgentConfiguration: { revision: 1 } });
+
+    let selectedMessage = afterRegenerationMessage;
+    for (const [variant, points] of [[firstVariant, 5], [secondVariant, 9], [firstVariant, 5]] as const) {
+      const selected = await seeded.app.inject({
+        method: 'PUT', url: `/api/messages/${message.id}/active-variant`,
+        payload: { revision: selectedMessage.revision, variantId: variant.id },
+      });
+      expect(selected.statusCode).toBe(200);
+      selectedMessage = selected.json();
+      expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)?.value.points)
+        .toBe(points);
+      const messages = (await seeded.app.inject({
+        method: 'GET', url: `/api/conversations/${seeded.conversation.id}/messages`,
+      })).json().messages;
+      const active = messages.at(-1).variants.find((candidate: { id: string }) => candidate.id === variant.id);
+      expect(active.document).toEqual(variant.document);
+    }
+
+    const stateBeforeConflict = seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)!;
+    const staleSwitch = await seeded.app.inject({
+      method: 'PUT', url: `/api/messages/${message.id}/active-variant`,
+      payload: { revision: selectedMessage.revision - 1, variantId: secondVariant.id },
+    });
+    expect(staleSwitch.statusCode).toBe(409);
+    expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)).toEqual(
+      stateBeforeConflict,
+    );
+
+    runtime = scriptedRuntime({
+      contexts: [], finalText: 'Unsafe sibling.', fail: true,
+      toolCalls: [{
+        type: 'toolCall', id: 'failed-patch', name: 'scene_patch_stage',
+        arguments: { operations: [{ op: 'replace', path: '/points', value: 99 }] },
+      }],
+    });
+    const failed = await generateSibling(
+      seeded.app,
+      seeded.conversation.id,
+      seeded.repositories.conversations.get(seeded.conversation.id)!.revision,
+      'swipe',
+    );
+    expect(terminal(failed.payload)).toEqual({ event: 'failed', data: { code: 'connection' } });
+    expect(seeded.repositories.messages.get(message.id)).toEqual(selectedMessage);
+    expect(seeded.repositories.messageVariants.listByMessageId(message.id)).toHaveLength(2);
+    expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)).toEqual(
+      stateBeforeConflict,
+    );
+
+    runtime = scriptedRuntime({
+      contexts: [], finalText: 'Descendant timeline.',
+      toolCalls: [{
+        type: 'toolCall', id: 'descendant-patch', name: 'scene_patch_stage',
+        arguments: { operations: [{ op: 'delta', path: '/points', value: 1 }] },
+      }],
+    });
+    expect(terminal((await generate(
+      seeded.app,
+      seeded.conversation.id,
+      seeded.repositories.conversations.get(seeded.conversation.id)!.revision,
+    )).payload).event).toBe('completed');
+    const stateWithDescendant = seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)!;
+    const historicalSwitch = await seeded.app.inject({
+      method: 'PUT', url: `/api/messages/${message.id}/active-variant`,
+      payload: { revision: selectedMessage.revision, variantId: secondVariant.id },
+    });
+    expect(historicalSwitch.statusCode).toBe(409);
+    expect(historicalSwitch.json()).toEqual({ error: 'scene_branch_has_descendants' });
+    expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)).toEqual(
+      stateWithDescendant,
+    );
+  });
+
+  it('anchors a no-op Agent Variant and rejects regeneration or switching after a descendant Scene action', async () => {
+    const runtime = scriptedRuntime({
+      contexts: [], finalText: 'The archive remains quiet.',
+      toolCalls: [{
+        type: 'toolCall', id: 'read-only', name: 'save_state_read', arguments: { paths: ['/points'] },
+      }],
+    });
+    const seeded = await context(() => runtime);
+    expect(terminal((await generate(seeded.app, seeded.conversation.id)).payload).event).toBe('completed');
+    const message = seeded.repositories.messages.listByConversationId(seeded.conversation.id).at(-1)!;
+    const variant = seeded.repositories.messageVariants.get(message.activeVariantId!)!;
+    const anchor = seeded.repositories.sceneStateTransitions.getBySource('message-variant', variant.id)!;
+    expect(anchor).toMatchObject({ operations: [], value: seeded.sceneState.value });
+
+    const current = seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)!;
+    const descendant = await seeded.app.inject({
+      method: 'PATCH', url: `/api/conversations/${seeded.conversation.id}/scene-state`,
+      payload: { revision: current.revision, patch: [{ op: 'replace', path: '/points', value: 7 }] },
+    });
+    expect(descendant.statusCode).toBe(200);
+    const stateWithDescendant = seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)!;
+
+    const regenerate = await generateSibling(
+      seeded.app,
+      seeded.conversation.id,
+      seeded.repositories.conversations.get(seeded.conversation.id)!.revision,
+    );
+    expect(regenerate.statusCode).toBe(409);
+    expect(regenerate.json()).toEqual({ error: 'scene_branch_has_descendants' });
+    const switchActive = await seeded.app.inject({
+      method: 'PUT', url: `/api/messages/${message.id}/active-variant`,
+      payload: { revision: message.revision, variantId: variant.id },
+    });
+    expect(switchActive.statusCode).toBe(409);
+    expect(switchActive.json()).toEqual({ error: 'scene_branch_has_descendants' });
+    expect(seeded.repositories.conversationSceneStates.getByConversationId(seeded.conversation.id)).toEqual(
+      stateWithDescendant,
+    );
+    expect(seeded.repositories.messageVariants.listByMessageId(message.id)).toEqual([variant]);
   });
 });

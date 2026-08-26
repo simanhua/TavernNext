@@ -660,7 +660,7 @@ function loadAggregate(
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
-  const saveAgentConfiguration = input.mode === 'normal' && provider.apiMode === 'chat'
+  const saveAgentConfiguration = provider.apiMode === 'chat'
     ? repositories.saveAgentConfigurations.getByConversationId(conversation.id)
     : undefined;
   const binding = resolveConversationGenerationBinding(repositories, conversation, globalGenerationConfig, provider.apiMode);

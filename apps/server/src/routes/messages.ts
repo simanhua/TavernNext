@@ -80,6 +80,7 @@ export function registerMessageRoutes(
     }
     const message = repositories.messages.get(request.params.id);
     if (message === undefined) return reply.status(404).send({ error: 'not_found' });
+    if (message.revision !== revision) return reply.status(409).send({ error: 'conflict' });
     if (generations.isConversationActive(message.conversationId)) {
       return reply.status(409).send({ error: 'generation_active' });
     }

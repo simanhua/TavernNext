@@ -400,17 +400,31 @@ function activeContent(message: StoredMessage, variants: Map<string, MessageVari
   return variant === undefined ? message.content : roleplayDocumentPlainText(variant.document);
 }
 
-function historyMessages(
+function conversationPrompt(
   repositories: Repositories,
   conversationId: string,
   provider: ProviderProfile,
-): Message[] {
+  input: PromptSnapshotPayload['input'],
+  playerInput: string,
+): { messages: Message[]; playerInput: string } {
   const variants = new Map(
     repositories.messageVariants.listByConversationId(conversationId).map((variant) => [variant.id, variant]),
   );
   const rows = repositories.messages.listByConversationId(conversationId);
-  const withoutCurrentUser = rows.at(-1)?.role === 'user' ? rows.slice(0, -1) : rows;
-  return withoutCurrentUser.flatMap((message): Message[] => {
+  let history = rows.at(-1)?.role === 'user' ? rows.slice(0, -1) : rows;
+  if (input.mode === 'swipe' || input.mode === 'regenerate') {
+    const targetIndex = rows.findIndex((message) => message.id === input.targetMessageId);
+    if (targetIndex < 0 || rows[targetIndex]?.role !== 'assistant') {
+      throw new PromptSnapshotError('invalid_target');
+    }
+    const player = rows[targetIndex - 1];
+    if (player?.role === 'user') {
+      history = rows.slice(0, targetIndex - 1);
+    } else {
+      history = rows.slice(0, targetIndex);
+    }
+  }
+  const messages = history.flatMap((message): Message[] => {
     const content = activeContent(message, variants);
     if (message.role === 'assistant') return [assistantHistory(content, provider)];
     return [{
@@ -419,6 +433,7 @@ function historyMessages(
       timestamp: 0,
     }];
   });
+  return { messages, playerInput };
 }
 
 function promptMessages(
@@ -498,6 +513,7 @@ export class SceneDirectorExecution {
     payload: PromptSnapshotPayload;
     provider: ProviderProfile;
     configuration: SaveAgentConfiguration;
+    playerInput: string;
     runtimeFactory: PiAgentRuntimeFactory;
     now?: () => Date;
     limits?: Partial<SceneDirectorLimits>;
@@ -524,7 +540,14 @@ export class SceneDirectorExecution {
     const frozenCharacter = structuredClone(character);
     const frozenPersona = { name: persona.name, description: persona.description };
     const frozenSceneState = structuredClone(input.repositories.conversationSceneStates.getByConversationId(conversation.id));
-    const frozenMessages = structuredClone(historyMessages(input.repositories, conversation.id, input.provider));
+    const prompt = conversationPrompt(
+      input.repositories,
+      conversation.id,
+      input.provider,
+      input.payload.input,
+      input.playerInput,
+    );
+    const frozenMessages = structuredClone(prompt.messages);
     const frozenSceneStateValue = structuredClone(
       input.effectiveSceneState ?? frozenSceneState?.value ?? {},
     );
@@ -566,7 +589,7 @@ export class SceneDirectorExecution {
         frozenSceneStateValue,
         frozenScenePromptAdditions,
       ),
-      playerInput: input.payload.input.userText ?? '',
+      playerInput: prompt.playerInput,
       runtime,
       responseLimit,
       ...(temperature === undefined ? {} : { temperature }),

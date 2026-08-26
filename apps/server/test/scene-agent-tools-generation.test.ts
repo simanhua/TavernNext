@@ -299,7 +299,7 @@ describe('bundled Scene Agent tools', () => {
         kind: 'combat',
         schemaVersion: 1,
         rendererId: 'destined-poem-combat-v1',
-        sourceStateRevision: 2,
+        sourceStateRevision: 3,
         props: {
           title: '档案馆防卫战',
           location: '梵尼亚',
@@ -321,6 +321,7 @@ describe('bundled Scene Agent tools', () => {
     ]);
     expect(JSON.stringify(repositories.agentRuns.listByConversationId(conversation.id)))
       .not.toContain('SECRET-TOOL-ARGUMENT');
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)?.revision).toBe(3);
     const reloaded = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/messages` });
     expect(reloaded.json().messages.at(-1).variants[0].document).toEqual(viewVariant.document);
     const beforeContinue = structuredClone(viewVariant.document);

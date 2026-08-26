@@ -108,6 +108,17 @@ function defaultTokenizerRuntime(): ServerTokenizerRuntime {
   };
 }
 
+function frozenAgentPlayerInput(repositories: Repositories, input: SaveAgentRunInput): string {
+  if (input.mode === 'normal') return input.userText!;
+  const messages = repositories.messages.listByConversationId(input.conversationId);
+  const target = messages.at(-1);
+  if (target?.role === 'assistant') {
+    const player = messages.at(-2);
+    if (player?.role === 'user') return player.content;
+  }
+  return 'Generate an alternative assistant reply for the current conversation point.';
+}
+
 function preparedRequest(
   generationId: string,
   provider: ProviderProfile,
@@ -531,7 +542,8 @@ export function createGenerationService(options: {
             );
           }
           if (outcome === 'completed' && variant !== undefined
-            && prepared.sceneTransition !== undefined && sceneOperations.length > 0) {
+            && prepared.sceneTransition !== undefined
+            && (sceneOperations.length > 0 || prepared.sceneDirector !== undefined)) {
             sceneService!.commitStateTransition(
               prepared.conversationId,
               prepared.sceneTransition.stateRevision,
@@ -679,6 +691,7 @@ export function createGenerationService(options: {
       activeByConversation.set(input.conversationId, generationId);
       activeById.set(generationId, active);
       try {
+        const playerInput = frozenAgentPlayerInput(repositories, input);
         let sceneTransition: PreparedGenerationBase['sceneTransition'];
         let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
         let sceneAgentToolFactory: SceneAgentToolFactory | undefined;
@@ -712,7 +725,7 @@ export function createGenerationService(options: {
               ? SceneBeforeGenerationResultSchema.parse({})
               : SceneBeforeGenerationResultSchema.parse(await host.call('beforeGeneration', {
                 state: baseValue, setup: conversation.setup ?? {}, playerProfile: conversation.playerProfile,
-                manifest: scene.manifest, mode: input.mode, userText: input.userText,
+                manifest: scene.manifest, mode: input.mode, userText: playerInput,
               }));
             const beforeApplied = applyScenePatchPartial(baseValue, before.statePatch ?? [], scene.manifest);
             const beforeOperations = beforeApplied.operations;
@@ -734,7 +747,7 @@ export function createGenerationService(options: {
         let sceneDirector: SceneDirectorExecution | undefined;
         const beforeAccept = async (candidate: AcceptedPromptSnapshot) => {
           if (!candidate.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
-          if (input.mode !== 'normal' || candidate.payload.kind !== 'chat'
+          if (input.mode === 'continue' || candidate.payload.kind !== 'chat'
             || options.piAgentRuntimeFactory === undefined) return undefined;
           const configurationRef = candidate.payload.entityRevisions.saveAgentConfiguration;
           const configuration = candidate.saveAgentConfiguration;
@@ -749,6 +762,7 @@ export function createGenerationService(options: {
             payload: candidate.payload,
             provider: candidate.provider,
             configuration,
+            playerInput,
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
             ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
@@ -787,7 +801,7 @@ export function createGenerationService(options: {
           reasoningCompatibility.resolve(accepted.payload),
           sceneTransition,
         );
-        if (input.mode === 'normal' && accepted.payload.kind === 'chat'
+        if (input.mode !== 'continue' && accepted.payload.kind === 'chat'
           && options.piAgentRuntimeFactory !== undefined && sceneDirector === undefined) {
           const configurationRef = accepted.payload.entityRevisions.saveAgentConfiguration;
           const configuration = accepted.saveAgentConfiguration;
@@ -802,6 +816,7 @@ export function createGenerationService(options: {
             payload: accepted.payload,
             provider: accepted.provider,
             configuration,
+            playerInput,
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
             ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
@@ -837,7 +852,12 @@ export function createGenerationService(options: {
       } catch (error) {
         active.cleanup();
         if (error instanceof PromptSnapshotError) return { ok: false, reason: error.code };
-        if (error instanceof SceneServiceError) return { ok: false, reason: 'invalid_runtime_state' };
+        if (error instanceof SceneServiceError) return {
+          ok: false,
+          reason: error.code === 'scene_branch_has_descendants'
+            ? 'scene_branch_has_descendants'
+            : 'invalid_runtime_state',
+        };
         throw error;
       }
     },

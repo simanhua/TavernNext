@@ -173,7 +173,7 @@ export class SceneViewRuntime {
           insertionIntent: staged.insertionIntent,
           workspace: {
             baseStateRevision: workspace.stateRevision,
-            commitStateRevision: workspace.stateRevision + (workspace.operations.length > 0 ? 1 : 0),
+            commitStateRevision: workspace.stateRevision + 1,
             state: workspace.stagedValue,
           },
           setup: structuredClone(this.input.setup),
@@ -194,7 +194,7 @@ export class SceneViewRuntime {
           kind: staged.kind,
           schemaVersion: declaration.schemaVersion,
           rendererId: declaration.renderer.id,
-          sourceStateRevision: workspace.stateRevision + (workspace.operations.length > 0 ? 1 : 0),
+          sourceStateRevision: workspace.stateRevision + 1,
           props,
         }));
       } catch {
