@@ -1,0 +1,15 @@
+# Make the Save Agent the only roleplay runtime
+
+TavernNext uses `pi-agent-core` and `pi-ai` behind one TavernNext-owned Save Agent Runtime seam. It does not use `pi-coding-agent`, Pi sessions, coding tools, compaction, authentication storage, or terminal UI. One Save owns one persistent Save Agent identity, but each Agent Run reconstructs a fresh Pi Agent from TavernNext records.
+
+Provider and model selection remain global. The global Chat Preset and a Scene backing Preset are templates only: Save creation copies one into a revisioned Save Agent Configuration. Later template edits do not change that Save. Explicit private edits, replacement, or synchronization affect subsequent Agent Runs; Text, Context, Instruct, System, and Reasoning Preset families remain importable library data but never execute in Agent Runtime.
+
+Prompt precedence is fixed: platform contracts, world rules, Character identity, Save Agent Configuration, current Scene State and history, then player input. A Preset controls writing and sampling but cannot suppress higher layers, tools, or output contracts. Browser prompt hooks, candidate sealing, continuation, Text Completion, and prose `<UpdateVariable>` state extraction are removed.
+
+An Agent Run snapshots the relevant revisions and uses bounded model turns, tool calls, and time. Platform and reviewed official-Scene tools operate on a Turn Workspace. Failure, cancellation, empty narrative, limit exhaustion, or revision conflict leaves Save-owned state and the prior active Variant unchanged. Success atomically commits the Roleplay Document, Message Variant, successful Scene operations, Scene State transition, snapshot, Worldbook timed state, and completed Agent Run audit.
+
+Assistant output is a Roleplay Document containing ordered Markdown and typed Scene Views. The Agent selects and positions views, but trusted Scene projection derives objective props from the Turn Workspace. Stored views are read-only commit-time snapshots. Presentation failures may omit an invalid view with diagnostics without corrupting valid narrative or state.
+
+This is an intentional breaking migration. Before clearing incompatible Conversation graphs, messages, Variants, snapshots, Scene State, transitions, Worldbook runtime state, Save Agent Configurations, and Agent records, TavernNext publishes and verifies a pinned recovery backup. Characters, Personas, Worldbooks, all Preset templates, imports, Provider profiles, secrets, and installed Scenes remain.
+
+This decision supersedes ADR 0002, the Preset-runtime portion of ADR 0003, and ADR 0006. ADR 0005 remains authoritative for Scene Package trust and isolation boundaries.

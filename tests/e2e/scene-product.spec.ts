@@ -1,8 +1,48 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { startE2eStack, type E2eStack } from './support/stack.js';
 
 test.describe.configure({ mode: 'serial' });
 let stack: E2eStack;
+
+async function updatePrivatePreset(page: Page, marker: string): Promise<void> {
+  const panel = page.locator('details.scene-agent-configuration');
+  if ((await panel.getAttribute('open')) === null) {
+    await page.getByText('Save Agent configuration', { exact: true }).click();
+  }
+  const editor = page.getByLabel('Executable settings JSON');
+  const settings = JSON.parse(await editor.inputValue()) as Record<string, unknown>;
+  const identifier = 'e2e-private-style';
+  const prompts = Array.isArray(settings.prompts)
+    ? settings.prompts.filter((value) => (
+      typeof value !== 'object' || value === null || (value as { identifier?: unknown }).identifier !== identifier
+    ))
+    : [];
+  settings.prompts = [
+    ...prompts,
+    { identifier, role: 'system', content: marker, system_prompt: true },
+  ];
+  const orderItem = { identifier, enabled: true };
+  settings.prompt_order = Array.isArray(settings.prompt_order) && settings.prompt_order.length > 0
+    ? settings.prompt_order.map((value) => {
+      const row = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+      const order = Array.isArray(row.order)
+        ? row.order.filter((item) => (
+          typeof item !== 'object' || item === null || (item as { identifier?: unknown }).identifier !== identifier
+        ))
+        : [];
+      return { ...row, order: [...order, orderItem] };
+    })
+    : [{ character_id: 100001, order: [orderItem] }];
+  await editor.fill(JSON.stringify(settings, null, 2));
+  const saved = page.waitForResponse((response) => (
+    response.request().method() === 'PATCH' && response.url().endsWith('/agent-configuration')
+  ));
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  expect((await saved).ok()).toBe(true);
+  await expect(editor).toHaveValue(new RegExp(marker));
+  await page.getByText('Save Agent configuration', { exact: true }).click();
+  await expect(panel).not.toHaveAttribute('open', '');
+}
 
 test.beforeAll(async () => { stack = await startE2eStack(); });
 test.afterAll(async () => { await stack?.close(); });
@@ -20,14 +60,18 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
       questId: 'guard_archive', title: '守住档案馆', status: 'completed', description: '噬页兽已经退去。',
     } },
     { name: 'destined_poem_rule_check', arguments: { key: 'archive-vault', difficulty: 10, modifier: 2 } },
-    ...['status', 'map', 'relationship', 'progress'].map((kind) => ({
+    ...['combat', 'status', 'map', 'relationship', 'progress'].map((kind) => ({
       name: 'scene_view_stage',
-      arguments: { kind, relatedEntities: kind === 'relationship' ? ['lyra'] : [], insertionIntent: 'inline' },
+      arguments: {
+        kind,
+        relatedEntities: kind === 'relationship' || kind === 'combat' ? ['lyra'] : [],
+        insertionIntent: 'inline',
+      },
     })),
   ] });
   stack.provider.queue((request) => {
     const references = [...new Set(JSON.stringify(request.body).match(/<!--tavernnext:view:[0-9a-f-]+-->/g) ?? [])];
-    if (references.length !== 4) throw new Error(`Expected four staged Scene View references, got ${references.length}`);
+    if (references.length !== 5) throw new Error(`Expected five staged Scene View references, got ${references.length}`);
     return { chunks: [`钟声回荡，命运向前推进。${references.join('随后，')}旅程仍在继续。`] };
   });
 
@@ -77,6 +121,7 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   await firstScene.getByPlaceholder('你准备做什么？').fill('沿钟声继续前进');
   await firstScene.getByRole('button', { name: '发送' }).click();
   await expect(firstScene.getByText('钟声回荡，命运向前推进。')).toBeVisible({ timeout: 30_000 });
+  await expect(firstScene.getByRole('region', { name: '战斗态势' })).toBeVisible();
   await expect(firstScene.getByRole('region', { name: '艾琳状态' })).toBeVisible();
   await expect(firstScene.getByRole('region', { name: '艾瑟嘉德地图' })).toBeVisible();
   await expect(firstScene.getByRole('region', { name: '关系进展' })).toContainText('莉拉');
@@ -86,18 +131,44 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   await expect(firstScene.locator('.tn-status-rail')).toContainText('艾瑟嘉德');
 
   await firstScene.reload();
+  await expect(firstScene.getByRole('region', { name: '战斗态势' })).toBeVisible({ timeout: 30_000 });
   await expect(firstScene.getByRole('region', { name: '艾琳状态' })).toBeVisible({ timeout: 30_000 });
   await expect(firstScene.getByRole('region', { name: '关系进展' })).toContainText('莉拉');
+  const nextTurnStyle = 'E2E_PRIVATE_STYLE_NEXT_TURN';
+  await updatePrivatePreset(firstScene, nextTurnStyle);
   stack.provider.queue({ toolCalls: [{
     name: 'destined_poem_rule_check', arguments: { key: 'continue-journey', difficulty: 8, modifier: 1 },
   }] });
-  stack.provider.queue({ chunks: ['判定完成后，艾琳继续向皇城深处前进。'] });
+  stack.provider.queue((request) => {
+    if (!JSON.stringify(request.body).includes(nextTurnStyle)) throw new Error('Private Preset edit was not active next turn');
+    return { chunks: ['判定完成后，艾琳继续向皇城深处前进。'] };
+  });
   await firstScene.getByPlaceholder('你准备做什么？').fill('继续探索皇城');
   await firstScene.getByRole('button', { name: '发送' }).click();
   await expect(firstScene.getByText('判定完成后，艾琳继续向皇城深处前进。')).toBeVisible({ timeout: 30_000 });
   await expect(firstScene.getByRole('button', { name: '重生成' })).toHaveCount(1);
   await expect(firstScene.getByRole('button', { name: '换一个回复' })).toHaveCount(1);
   await expect(firstScene.getByRole('button', { name: '续写' })).toHaveCount(0);
+
+  const regenerateStyle = 'E2E_PRIVATE_STYLE_REGENERATE';
+  await updatePrivatePreset(firstScene, regenerateStyle);
+  stack.provider.queue({ toolCalls: [
+    { name: 'destined_poem_adjust_fate', arguments: { amount: 1, reason: '重走皇城分支' } },
+    { name: 'scene_view_stage', arguments: { kind: 'status', relatedEntities: [], insertionIntent: 'inline' } },
+  ] });
+  stack.provider.queue((request) => {
+    const payload = JSON.stringify(request.body);
+    if (!payload.includes(regenerateStyle)) throw new Error('Tail regeneration did not use the latest private Preset');
+    const reference = payload.match(/<!--tavernnext:view:[0-9a-f-]+-->/)?.[0];
+    if (reference === undefined) throw new Error('Tail regeneration did not receive its staged status view');
+    return { chunks: [`重生成的命运分支已经展开。${reference}`] };
+  });
+  await firstScene.getByRole('button', { name: '重生成' }).click();
+  await expect(firstScene.getByText('重生成的命运分支已经展开。')).toBeVisible({ timeout: 30_000 });
+  await expect(firstScene.getByRole('region', { name: '艾琳状态' })).toBeVisible();
+  await expect(firstScene.locator('.tn-status-rail')).toContainText('3');
+  await expect(firstScene.getByText('判定完成后，艾琳继续向皇城深处前进。')).toHaveCount(0);
+  await expect(firstScene.locator('body')).not.toContainText('scene-e2e-key');
 
   const [secondScene] = await Promise.all([
     page.waitForEvent('popup'),

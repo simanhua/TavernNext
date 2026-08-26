@@ -9,7 +9,7 @@ A normalized regex definition or Tavern Helper script tree owned by one Characte
 _Avoid_: Plugin, extension library, global script
 
 **Compatibility Runtime**:
-The bounded execution environment that projects regexes, runs trusted scripts and prompt hooks, and supplies the accepted compatibility APIs.
+The bounded presentation environment that projects Markdown regexes, runs explicitly trusted scripts, and supplies accepted non-prompt compatibility APIs. It never changes an Agent Run prompt or Scene View block.
 _Avoid_: SillyTavern clone, plugin host, sandbox
 
 **Runtime State**:
@@ -21,7 +21,7 @@ The user's approval of one exact executable bundle digest, including enabled cod
 _Avoid_: Install, permission toggle, permanent approval
 
 **Global Generation Configuration**:
-The single revisioned selection of Provider and primary/companion Presets shared by all Conversations.
+The single revisioned selection of the global Provider/model and the default Chat Preset template copied into new Saves.
 _Avoid_: Conversation preset, chat provider binding
 
 **Scene Package**:
@@ -40,10 +40,30 @@ _Avoid_: Global chat, Character state
 The revisioned, Save-owned copy of one Chat Preset's executable settings and template lineage used by that Save's Agent Runs.
 _Avoid_: Conversation preset binding, global active Preset
 
+**Save Agent**:
+The one persistent roleplay-director identity owned by a Save. Its durable identity consists of the Save Agent Configuration, Save messages, Scene State, and Agent Run audit history; a fresh Pi Agent instance is reconstructed for each run.
+_Avoid_: Persisted Pi session, coding agent, background agent
+
+**Agent Run**:
+One user-triggered, bounded execution of a Save Agent against immutable input revisions. It may perform multiple model/tool turns and commits completed narrative, state, views, and audit outcome atomically.
+_Avoid_: Generation request, autonomous task, Pi session
+
+**Turn Workspace**:
+The in-memory staged projection of one Scene State revision used by tools during an Agent Run. Successful operations are visible to later tools in the same run but reach persistent Scene State only at the final atomic commit.
+_Avoid_: Temporary Save, mutable database transaction, Agent memory
+
+**Roleplay Document**:
+The canonical versioned assistant response made of ordered Markdown and Scene View blocks. Plain text is a derived compatibility/search projection, never a second response source.
+_Avoid_: HTML response, message text plus widgets, model-authored UI
+
+**Scene View**:
+A typed, read-only block inside a Roleplay Document whose objective props are projected by trusted Scene code from the Turn Workspace and stored as a commit-time snapshot.
+_Avoid_: Agent-generated HTML, live state panel, interactive state editor
+
 **Scene State**:
 Revisioned structured game data belonging to one Save and validated before transactional writes.
 _Avoid_: Shared Character variables, chat metadata
 
 **Generation Recipe**:
-The Scene-owned prompt and output protocol used before the singleton global fallback Preset.
-_Avoid_: User-composed Conversation preset
+Legacy Scene metadata retained for package compatibility. Agent Runtime prompt precedence and Save-owned Preset selection are defined by the Save Agent contract, not by a runtime recipe fallback.
+_Avoid_: Active Scene prompt override, output parser

@@ -77,6 +77,7 @@ try {
     baseUrl: providerBaseUrl,
     model: 'mock-model',
     apiMode: 'chat',
+    toolCalls: true,
     apiKey,
   });
   await inject('PATCH', '/api/settings/generation', {
