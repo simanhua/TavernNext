@@ -32,6 +32,7 @@ import type { ProviderProbeFactory } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
+import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
@@ -371,6 +372,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);
+  registerSaveAgentConfigurationRoutes(app, repositories);
   registerSceneRoutes(app, scenes, repositories);
 
   app.addHook('onClose', async () => {

@@ -74,10 +74,23 @@ describe('SQLite repositories', () => {
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
 
     migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000041', name: 'Persistent Character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000042', name: 'Persistent Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000043', characterId: character.id, personaId: persona.id,
+      title: 'Must survive an idempotent migration',
+    });
     migrateDatabase(database);
 
     expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: CURRENT_SCHEMA_VERSION }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
+    expect(repositories.conversations.get(conversation.id)).toBeDefined();
   });
 
   it('stores and deletes avatar bytes only through an exact entity-bound key', async () => {

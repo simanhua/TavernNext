@@ -96,6 +96,97 @@ describe('Scene Package API', () => {
     const second = secondResponse.json();
     expect(first.playerProfile).toMatchObject({ name: '艾琳', sourcePersonaId: persona.id });
 
+    const installedScene = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
+    const template = repositories.presets.get(installedScene.backingPresetId!)!;
+    const firstAgentResponse = await app.inject({
+      method: 'GET', url: `/api/conversations/${first.id}/agent-configuration`,
+    });
+    const secondAgentResponse = await app.inject({
+      method: 'GET', url: `/api/conversations/${second.id}/agent-configuration`,
+    });
+    expect(firstAgentResponse.statusCode).toBe(200);
+    expect(secondAgentResponse.statusCode).toBe(200);
+    expect(firstAgentResponse.json()).toMatchObject({
+      revision: 0,
+      conversationId: first.id,
+      sourcePresetId: template.id,
+      sourcePresetRevision: template.revision,
+      name: template.name,
+      settings: template.settings,
+    });
+    expect(firstAgentResponse.json()).not.toHaveProperty('extensions');
+    expect(firstAgentResponse.json()).not.toHaveProperty('attachedExtensions');
+    expect(secondAgentResponse.json()).toMatchObject({
+      revision: 0,
+      conversationId: second.id,
+      sourcePresetId: template.id,
+      sourcePresetRevision: template.revision,
+      name: template.name,
+      settings: template.settings,
+    });
+    const editedAgent = await app.inject({
+      method: 'PATCH', url: `/api/conversations/${first.id}/agent-configuration`,
+      payload: { revision: 0, patch: { settings: { ...template.settings, temperature: 0.2 } } },
+    });
+    expect(editedAgent.statusCode).toBe(200);
+    expect(editedAgent.json()).toMatchObject({ revision: 1, settings: { temperature: 0.2 } });
+    expect((await app.inject({
+      method: 'GET', url: `/api/conversations/${second.id}/agent-configuration`,
+    })).json()).toMatchObject({ revision: 0, settings: template.settings });
+    expect(repositories.presets.get(template.id)).toEqual(template);
+
+    const updatedTemplate = repositories.presets.update(template.id, template.revision, {
+      name: '新版场景文风',
+      settings: { ...template.settings, temperature: 0.8 },
+    });
+    expect(updatedTemplate.ok).toBe(true);
+    expect((await app.inject({
+      method: 'GET', url: `/api/conversations/${first.id}/agent-configuration`,
+    })).json()).toMatchObject({
+      revision: 1,
+      sourcePresetRevision: 0,
+      name: template.name,
+      settings: { temperature: 0.2 },
+    });
+    const synchronized = await app.inject({
+      method: 'POST', url: `/api/conversations/${first.id}/agent-configuration/sync`,
+      payload: { revision: 1 },
+    });
+    expect(synchronized.statusCode).toBe(200);
+    expect(synchronized.json()).toMatchObject({
+      revision: 2,
+      sourcePresetId: template.id,
+      sourcePresetRevision: 1,
+      name: '新版场景文风',
+      settings: { temperature: 0.8 },
+    });
+
+    const alternative = repositories.presets.create({
+      id: randomUUID(), name: '冷峻叙事', kind: 'chat',
+      settings: { prompts: [], prompt_order: [], temperature: 0.4 },
+    });
+    const replaced = await app.inject({
+      method: 'POST', url: `/api/conversations/${second.id}/agent-configuration/replace`,
+      payload: { revision: 0, presetId: alternative.id },
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json()).toMatchObject({
+      revision: 1,
+      sourcePresetId: alternative.id,
+      sourcePresetRevision: 0,
+      name: alternative.name,
+      settings: alternative.settings,
+    });
+    const textTemplate = repositories.presets.create({
+      id: randomUUID(), name: 'Text only', kind: 'text', settings: {},
+    });
+    const wrongKind = await app.inject({
+      method: 'POST', url: `/api/conversations/${second.id}/agent-configuration/replace`,
+      payload: { revision: 1, presetId: textTemplate.id },
+    });
+    expect(wrongKind.statusCode).toBe(400);
+    expect(wrongKind.json()).toEqual({ error: 'invalid_preset' });
+
     const firstState = (await app.inject({ method: 'GET', url: `/api/conversations/${first.id}/scene-state` })).json();
     const secondState = (await app.inject({ method: 'GET', url: `/api/conversations/${second.id}/scene-state` })).json();
     expect(firstState.value.世界.地点).toBe('梵尼亚');
@@ -144,6 +235,7 @@ describe('Scene Package API', () => {
     expect(repositories.conversations.get(second.id)).toBeUndefined();
     expect(repositories.personas.get(second.personaId)).toBeUndefined();
     expect(repositories.conversationSceneStates.getByConversationId(second.id)).toBeUndefined();
+    expect(repositories.saveAgentConfigurations.getByConversationId(second.id)).toBeUndefined();
     expect(repositories.sceneStateTransitions.listByConversationId(second.id)).toEqual([]);
     expect(secondMessages.every((message) => repositories.messages.get(message.id) === undefined)).toBe(true);
     expect(secondVariants.every((variant) => repositories.messageVariants.get(variant.id) === undefined)).toBe(true);

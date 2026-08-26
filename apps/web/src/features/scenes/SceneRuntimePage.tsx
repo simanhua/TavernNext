@@ -20,6 +20,7 @@ import {
   type SceneRuntimeSignal,
 } from './scene-window.js';
 import { mountSceneStatusRail } from './status-rail.js';
+import { SaveAgentConfigurationPanel } from './SaveAgentConfigurationPanel.js';
 
 type LeaseState = 'checking' | 'active' | 'duplicate';
 
@@ -371,6 +372,9 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
   return (
     <main className="scene-standalone-page">
       {moduleError === undefined ? null : <div className="scene-runtime-error" role="alert">场景前端加载失败：{moduleError}</div>}
+      {mode === 'workspace' && conversationId !== undefined
+        ? <SaveAgentConfigurationPanel conversationId={conversationId} />
+        : null}
       <div ref={mountRef} className="scene-runtime-root" />
     </main>
   );

@@ -105,6 +105,10 @@ export const conversations = sqliteTable('conversations', {
   index('conversations_persona_id_idx').on(table.personaId),
   index('conversations_scene_id_idx').on(table.sceneId),
 ]);
+export const saveAgentConfigurations = sqliteTable('save_agent_configurations', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
+}, (table) => [index('save_agent_configurations_conversation_id_idx').on(table.conversationId)]);
 export const conversationSceneStates = sqliteTable('conversation_scene_states', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),

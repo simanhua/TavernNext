@@ -5,7 +5,8 @@ import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
-export const CURRENT_SCHEMA_VERSION = 18;
+const SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION = 19;
+export const CURRENT_SCHEMA_VERSION = SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -44,6 +45,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS worldbook_entries (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id));
   CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS conversations ${conversationTableColumns};
+  CREATE TABLE IF NOT EXISTS save_agent_configurations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS conversation_worldbooks (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id), PRIMARY KEY (conversation_id, worldbook_id));
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, active_variant_id TEXT REFERENCES message_variants(id), role TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
@@ -72,6 +74,7 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS conversations_character_id_idx ON conversations(character_id);
   CREATE INDEX IF NOT EXISTS conversations_persona_id_idx ON conversations(persona_id);
   CREATE INDEX IF NOT EXISTS conversations_scene_id_idx ON conversations(scene_id);
+  CREATE INDEX IF NOT EXISTS save_agent_configurations_conversation_id_idx ON save_agent_configurations(conversation_id);
   CREATE INDEX IF NOT EXISTS installed_scenes_slug_idx ON installed_scenes(slug);
   CREATE INDEX IF NOT EXISTS conversation_scene_states_conversation_id_idx ON conversation_scene_states(conversation_id);
   CREATE INDEX IF NOT EXISTS scene_state_transitions_conversation_idx ON scene_state_transitions(conversation_id);
@@ -365,7 +368,11 @@ function resetConversationExtensionStates(database: TavernDatabase): void {
 function resetConversationGraph(database: TavernDatabase): void {
   resetConversationExtensionStates(database);
   database.sqlite.exec(`
+    DELETE FROM scene_state_transitions;
+    DELETE FROM conversation_scene_states;
+    DELETE FROM save_agent_configurations;
     DELETE FROM message_variants;
+    DELETE FROM consumed_generation_snapshots;
     DELETE FROM generation_snapshots;
     DELETE FROM worldbook_runtime_states;
     DELETE FROM messages;
@@ -549,7 +556,10 @@ export function migrateDatabase(database: TavernDatabase): void {
 
       if (hasCascadeWorldbookEntries(database)) rebuildWorldbookEntries(database);
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
-      if (hasConversationGenerationBindings(database)) resetConversationGraph(database);
+      if (hasConversationGenerationBindings(database)
+        || (startingVersion !== null && startingVersion < SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION)) {
+        resetConversationGraph(database);
+      }
 
       addPromptSnapshotColumns(database);
       addVariantColumns(database);

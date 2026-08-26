@@ -9,13 +9,14 @@ import type {
   ConversationSceneState,
   SceneCatalogEntry,
   ScenePatchFailure,
+  SaveAgentConfiguration,
   Message,
   MessageVariant,
   PresetKind,
   TrustedPromptPatch,
 } from '@tavernnext/domain';
 
-export type { Conversation, Message, MessageVariant, PresetKind };
+export type { Conversation, Message, MessageVariant, PresetKind, SaveAgentConfiguration };
 
 export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean; coverUrl?: string }
 export interface InstalledSceneView extends InstalledScene {
@@ -641,6 +642,27 @@ export const api = {
     method: 'POST', body: JSON.stringify(input),
   }),
   listPresets: () => request<PresetSelectorView[]>('/api/presets'),
+  getSaveAgentConfiguration: (conversationId: string) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration`,
+  ),
+  updateSaveAgentConfiguration: (
+    conversationId: string,
+    revision: number,
+    patch: Pick<SaveAgentConfiguration, 'name' | 'settings'>,
+  ) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  replaceSaveAgentConfiguration: (conversationId: string, revision: number, presetId: string) => (
+    request<SaveAgentConfiguration>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration/replace`,
+      { method: 'POST', body: JSON.stringify({ revision, presetId }) },
+    )
+  ),
+  syncSaveAgentConfiguration: (conversationId: string, revision: number) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration/sync`,
+    { method: 'POST', body: JSON.stringify({ revision }) },
+  ),
   getPreset: (id: string) => request<PresetView>(`/api/presets/${id}`),
   createPreset: (input: { name: string; kind: PresetKind; settings: Record<string, unknown> }) => request<PresetView>('/api/presets', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),

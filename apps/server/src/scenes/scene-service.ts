@@ -38,6 +38,7 @@ import { unzipSync } from 'fflate';
 import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
+import { createSaveAgentConfiguration } from '../services/save-agent-configuration-service.js';
 import { persistDecodedWorldbook } from '../services/worldbook-import-handler.js';
 import { builtInPackage, officialCatalog } from './official-package.js';
 import { SceneModuleRegistry } from './scene-module-host.js';
@@ -532,6 +533,7 @@ export function createSceneService(options: {
           maxPromptTokens: parsed.data.maxPromptTokens,
           maxResponseTokens: parsed.data.maxResponseTokens,
         });
+        createSaveAgentConfiguration(repositories, conversation.id, scene.backingPresetId);
         repositories.conversationSceneStates.create({
           id: randomUUID(), conversationId: conversation.id, schemaVersion: 1,
           baseValue: initialized.initialState, headTransitionId: null, value: initialized.initialState,

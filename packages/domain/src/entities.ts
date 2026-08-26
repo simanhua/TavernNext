@@ -283,6 +283,14 @@ export const ConversationSchema = MutableEntitySchema.extend({
   authorNoteRole: z.number().int().min(0).max(2).default(0),
 }).extend(WithCompatibilitySchema.shape);
 
+export const SaveAgentConfigurationSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  sourcePresetId: DomainIdSchema.nullable(),
+  sourcePresetRevision: z.number().int().nonnegative().nullable(),
+  name: z.string().min(1),
+  settings: z.record(z.string(), z.unknown()).default({}),
+});
+
 export const ConversationSceneStateSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   schemaVersion: z.number().int().positive().default(1),
@@ -385,6 +393,7 @@ export type SceneCatalog = z.infer<typeof SceneCatalogSchema>;
 export type InstalledScene = z.infer<typeof InstalledSceneSchema>;
 export type ConversationPlayerProfile = z.infer<typeof ConversationPlayerProfileSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
+export type SaveAgentConfiguration = z.infer<typeof SaveAgentConfigurationSchema>;
 export type ConversationSceneState = z.infer<typeof ConversationSceneStateSchema>;
 export type SceneStateTransitionSourceKind = z.infer<typeof SceneStateTransitionSourceKindSchema>;
 export type SceneStateTransition = z.infer<typeof SceneStateTransitionSchema>;

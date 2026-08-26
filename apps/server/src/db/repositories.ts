@@ -26,6 +26,7 @@ import {
   WorldbookSchema,
   ConversationSceneStateSchema,
   SceneStateTransitionSchema,
+  SaveAgentConfigurationSchema,
   type Character,
   type Conversation,
   type ExtensionAsset,
@@ -51,6 +52,7 @@ import {
   type ConversationSceneState,
   type SceneStateTransition,
   type SceneStateTransitionSourceKind,
+  type SaveAgentConfiguration,
 } from '@tavernnext/domain';
 import {
   characters,
@@ -75,6 +77,7 @@ import {
   worldbooks,
   conversationSceneStates,
   sceneStateTransitions,
+  saveAgentConfigurations,
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
 import {
@@ -169,6 +172,10 @@ export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRun
 export interface ConversationSceneStateRepository extends Repository<ConversationSceneState> {
   getByConversationId(conversationId: string): ConversationSceneState | undefined;
   deleteByConversationId(conversationId: string): number;
+}
+
+export interface SaveAgentConfigurationRepository extends Repository<SaveAgentConfiguration> {
+  getByConversationId(conversationId: string): SaveAgentConfiguration | undefined;
 }
 
 export interface SceneStateTransitionRepository extends Repository<SceneStateTransition> {
@@ -867,6 +874,7 @@ export interface Repositories {
   worldbookEntries: WorldbookEntryRepository;
   presets: Repository<Preset>;
   conversations: ConversationRepository;
+  saveAgentConfigurations: SaveAgentConfigurationRepository;
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
@@ -882,6 +890,24 @@ export interface Repositories {
   extensionTrustGrants: ExtensionTrustGrantRepository;
   extensionRemoteResources: ExtensionRemoteResourceRepository;
   extensionAuditEvents: ExtensionAuditEventRepository;
+}
+
+function createSaveAgentConfigurationRepository(database: TavernDatabase): SaveAgentConfigurationRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveAgentConfigurations),
+    schema: SaveAgentConfigurationSchema,
+    toRow: (value: SaveAgentConfiguration) => ({ ...baseRow(value), conversationId: value.conversationId }),
+  });
+  return {
+    ...base,
+    getByConversationId(conversationId) {
+      const row = database.orm.select({ payload: saveAgentConfigurations.payload })
+        .from(saveAgentConfigurations)
+        .where(eq(saveAgentConfigurations.conversationId, conversationId))
+        .get();
+      return row === undefined ? undefined : SaveAgentConfigurationSchema.parse(row.payload);
+    },
+  };
 }
 
 function createConversationSceneStateRepository(database: TavernDatabase): ConversationSceneStateRepository {
@@ -1079,6 +1105,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     worldbookEntries: createWorldbookEntryRepository(database),
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
     conversations: conversationsRepository,
+    saveAgentConfigurations: createSaveAgentConfigurationRepository(database),
     messages: messagesRepository,
     messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),

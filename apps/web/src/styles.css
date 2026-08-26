@@ -1177,6 +1177,31 @@ button[type="submit"]:hover:not(:disabled),
   color: var(--vp-c-danger-1);
   background: var(--vp-c-danger-soft);
 }
+.scene-agent-configuration {
+  position: fixed;
+  z-index: 900;
+  top: 16px;
+  left: 16px;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+}
+.scene-agent-configuration > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-weight: 700;
+}
+.scene-agent-configuration-form {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+.scene-agent-configuration-form label { display: grid; gap: 6px; }
+.scene-agent-configuration-form textarea { min-height: 180px; resize: vertical; }
 
 @media (max-width: 760px) {
   .save-list > button { flex-direction: column; }

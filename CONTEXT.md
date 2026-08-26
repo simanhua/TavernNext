@@ -36,6 +36,10 @@ _Avoid_: Generic chat skin, regex-rendered message
 One isolated Conversation, player-profile snapshot, setup snapshot, messages, variants, and Scene State belonging to exactly one installed Scene.
 _Avoid_: Global chat, Character state
 
+**Save Agent Configuration**:
+The revisioned, Save-owned copy of one Chat Preset's executable settings and template lineage used by that Save's Agent Runs.
+_Avoid_: Conversation preset binding, global active Preset
+
 **Scene State**:
 Revisioned structured game data belonging to one Save and validated before transactional writes.
 _Avoid_: Shared Character variables, chat metadata
