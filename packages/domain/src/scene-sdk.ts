@@ -6,6 +6,7 @@ import type {
   MessageVariant,
   Persona,
 } from './entities.js';
+import type { ScenePatchFailure, ScenePatchOperation } from './scene-state.js';
 
 export type SceneRuntimeMode = 'setup' | 'workspace';
 export type SceneGenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
@@ -35,6 +36,75 @@ export type SceneGenerationEvent =
 export interface SceneThemeSnapshot {
   scheme: 'dark' | 'light';
   tokens: Record<string, string>;
+}
+
+export interface SceneStatusRailField {
+  label: string;
+  value: string;
+}
+
+export interface SceneStatusRailAction {
+  id: string;
+  label: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+}
+
+export type SceneStatusRailSection =
+  | {
+    kind: 'identity';
+    title: string;
+    overline?: string;
+    subtitle?: string;
+    badge?: { label?: string; value: string };
+  }
+  | { kind: 'fields'; title?: string; fields: SceneStatusRailField[] }
+  | {
+    kind: 'meters';
+    meters: Array<{ label: string; value: number; maximum: number; displayValue?: string; tone?: string }>;
+  }
+  | {
+    kind: 'stats';
+    title?: string;
+    aside?: string;
+    stats: Array<{ label: string; value: string; action?: SceneStatusRailAction }>;
+  }
+  | {
+    kind: 'cards';
+    title?: string;
+    cards: Array<{ title: string; fields: SceneStatusRailField[] }>;
+    emptyText: string;
+  };
+
+export interface SceneStatusRailTab {
+  id: string;
+  label: string;
+  sections: SceneStatusRailSection[];
+}
+
+export interface SceneStatusRailModel {
+  title: string;
+  overline?: string;
+  ariaLabel?: string;
+  closeLabel?: string;
+  tabs: SceneStatusRailTab[];
+}
+
+export interface SceneStatusRailController {
+  update(model: SceneStatusRailModel, activeTab?: string): void;
+  setOpen(open: boolean, restoreFocus?: boolean): void;
+  destroy(): void;
+}
+
+export interface SceneStatusRailMountOptions {
+  container: HTMLElement;
+  trigger?: HTMLElement;
+  model: SceneStatusRailModel;
+  activeTab?: string;
+  open?: boolean;
+  onTabChange?(tabId: string): void;
+  onOpenChange?(open: boolean): void;
+  onAction?(actionId: string): void | Promise<void>;
 }
 
 export interface SceneSdkErrorShape {
@@ -80,7 +150,10 @@ export interface SceneSdkV2 {
   };
   state: {
     get(): Promise<ConversationSceneState>;
-    patch(operations: unknown[]): Promise<ConversationSceneState>;
+    patch(operations: ScenePatchOperation[]): Promise<{
+      state: ConversationSceneState;
+      failures: ScenePatchFailure[];
+    }>;
   };
   scene: {
     action(action: unknown): Promise<{ state: ConversationSceneState; result: unknown }>;
@@ -94,6 +167,11 @@ export interface SceneSdkV2 {
   theme: {
     getSnapshot(): SceneThemeSnapshot;
     subscribe(listener: (snapshot: SceneThemeSnapshot) => void): () => void;
+  };
+  ui: {
+    statusRail: {
+      mount(options: SceneStatusRailMountOptions): SceneStatusRailController;
+    };
   };
 }
 

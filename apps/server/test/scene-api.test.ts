@@ -9,7 +9,7 @@ import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import { TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
-import { capturedProvider, unitTokenizerRuntime } from './prompt-integration-fixtures.js';
+import { capturedProvider, queuedCapturedProvider, unitTokenizerRuntime } from './prompt-integration-fixtures.js';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((value) => value())); });
@@ -31,7 +31,7 @@ async function context(provider = capturedProvider()) {
 }
 
 describe('Scene Package API', () => {
-  it('installs the signed official Scene and compiles the complete embedded Worldbook', async () => {
+  it('installs the trusted built-in Scene and compiles the complete embedded Worldbook', async () => {
     const { app, repositories } = await context();
     const catalog = await app.inject({ method: 'GET', url: '/api/scenes/catalog' });
     expect(catalog.statusCode).toBe(200);
@@ -41,9 +41,29 @@ describe('Scene Package API', () => {
     expect(installed.statusCode).toBe(201);
     expect(installed.json()).toMatchObject({
       id: DESTINED_POEM_SCENE_ID,
+      coverUrl: `/api/scenes/${DESTINED_POEM_SCENE_ID}/assets/content/cover.png`,
       conversationCount: 0,
       fullyTrusted: true,
-      manifest: { name: '命定之诗与黄昏之歌', serverEntry: 'server/index.mjs' },
+      manifest: {
+        name: '命定之诗与黄昏之歌',
+        version: '2.5.0',
+        serverEntry: 'server/index.mjs',
+        coverPath: 'content/cover.png',
+      },
+    });
+    const cover = await app.inject({
+      method: 'GET', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/assets/content/cover.png`,
+    });
+    expect(cover.statusCode).toBe(200);
+    expect(cover.headers['content-type']).toBe('image/png');
+    expect(cover.rawPayload.subarray(1, 4).toString('ascii')).toBe('PNG');
+    expect(cover.rawPayload.includes(Buffer.from('chara'))).toBe(false);
+    expect(cover.rawPayload.includes(Buffer.from('ccv3'))).toBe(false);
+    const refreshedCatalog = await app.inject({ method: 'GET', url: '/api/scenes/catalog' });
+    expect(refreshedCatalog.json()[0]).toMatchObject({
+      sceneId: DESTINED_POEM_SCENE_ID,
+      installed: true,
+      coverUrl: `/api/scenes/${DESTINED_POEM_SCENE_ID}/assets/content/cover.png`,
     });
     const scene = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     const character = repositories.characters.get(scene.backingCharacterId)!;
@@ -86,9 +106,48 @@ describe('Scene Package API', () => {
       payload: { revision: firstState.revision, patch: [{ op: 'replace', path: '/命运点数', value: 3 }] },
     });
     expect(patched.statusCode).toBe(200);
-    expect(patched.json().value.命运点数).toBe(3);
+    expect(patched.json().state.value.命运点数).toBe(3);
+    expect(patched.json().failures).toEqual([]);
+    expect(repositories.sceneStateTransitions.listByConversationId(first.id)).toHaveLength(1);
+    const unconstrained = await app.inject({
+      method: 'PATCH', url: `/api/conversations/${first.id}/scene-state`,
+      payload: { revision: patched.json().state.revision, patch: [{ op: 'replace', path: '/命运点数', value: -1 }] },
+    });
+    expect(unconstrained.statusCode).toBe(200);
+    expect(unconstrained.json().state.value.命运点数).toBe(-1);
+    const granted = await app.inject({
+      method: 'PATCH', url: `/api/conversations/${first.id}/scene-state`,
+      payload: { revision: unconstrained.json().state.revision, patch: [{ op: 'replace', path: '/主角/属性点', value: 1 }] },
+    });
+    const allocated = await app.inject({
+      method: 'PATCH', url: `/api/conversations/${first.id}/scene-state`,
+      payload: {
+        revision: granted.json().state.revision,
+        patch: [
+          { op: 'delta', path: '/主角/属性点', value: -1 },
+          { op: 'delta', path: '/主角/属性/力量', value: 1 },
+        ],
+      },
+    });
+    expect(allocated.statusCode).toBe(200);
+    expect(allocated.json().state.value.主角).toMatchObject({ 属性点: 0, 属性: { 力量: 1 } });
+    expect(repositories.sceneStateTransitions.listByConversationId(first.id).map((item) => item.sourceKind))
+      .toEqual(['sdk-patch', 'sdk-patch', 'sdk-patch', 'sdk-patch']);
     const unchanged = (await app.inject({ method: 'GET', url: `/api/conversations/${second.id}/scene-state` })).json();
     expect(unchanged.value.命运点数).toBe(0);
+    const secondMessages = repositories.messages.listByConversationId(second.id);
+    const secondVariants = repositories.messageVariants.listByConversationId(second.id);
+    const deletedSave = await app.inject({
+      method: 'DELETE', url: `/api/conversations/${second.id}?revision=${second.revision}`,
+    });
+    expect(deletedSave.statusCode).toBe(204);
+    expect(repositories.conversations.get(second.id)).toBeUndefined();
+    expect(repositories.personas.get(second.personaId)).toBeUndefined();
+    expect(repositories.conversationSceneStates.getByConversationId(second.id)).toBeUndefined();
+    expect(repositories.sceneStateTransitions.listByConversationId(second.id)).toEqual([]);
+    expect(secondMessages.every((message) => repositories.messages.get(message.id) === undefined)).toBe(true);
+    expect(secondVariants.every((variant) => repositories.messageVariants.get(variant.id) === undefined)).toBe(true);
+    expect(repositories.conversations.get(first.id)).toBeDefined();
 
     const scene = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     const removed = await app.inject({
@@ -119,7 +178,12 @@ describe('Scene Package API', () => {
     const conversation = created.json();
     const response = await app.inject({
       method: 'POST', url: `/api/conversations/${conversation.id}/generations`,
-      payload: { conversationRevision: conversation.revision, mode: 'normal', userText: '继续前进' },
+      payload: {
+        conversationRevision: conversation.revision,
+        mode: 'normal',
+        userText: '继续前进',
+        scenePromptAdditions: [{ role: 'system', content: 'MALICIOUS-CLIENT-INJECTION' }],
+      },
     });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('event: completed');
@@ -128,7 +192,181 @@ describe('Scene Package API', () => {
     const assistant = repositories.messages.listByConversationId(conversation.id).at(-1)!;
     const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
     expect(variant.content).toBe('钟声落下，命运向前推进。');
+    expect(variant.diagnostics).toEqual([]);
+    const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id)!;
+    expect(transition.value.命运点数).toBe(7);
+    expect(state.headTransitionId).toBe(transition.id);
     expect(provider.chat).toHaveLength(1);
-    expect(JSON.stringify(provider.chat[0])).toContain('<scene_state>');
+    const prompt = JSON.stringify(provider.chat[0]);
+    expect(prompt.match(/<scene_state>/g)).toHaveLength(1);
+    expect(prompt).toContain('保持阿斯塔利亚世界观一致');
+    expect(prompt).toContain('Always append exactly one legacy MVU block');
+    expect(prompt).toContain('Use an empty [] operation list');
+    expect(prompt).toContain('Use only replace, delta, insert, remove, or move operations');
+    expect(prompt).not.toContain('ONLY permitted to output the variable update content');
+    expect(prompt).not.toContain('MALICIOUS-CLIENT-INJECTION');
+  }, 60_000);
+
+  it('keeps valid narrative and reports an invalid model state patch without changing Scene State', async () => {
+    const provider = capturedProvider([
+      { type: 'delta', text: '风仍在吹。<UpdateVariable><JSONPatch>{not-json}</JSONPatch></UpdateVariable>' },
+      { type: 'completed', finishReason: 'stop' },
+    ]);
+    const { app, repositories } = await context(provider);
+    await app.inject({ method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/install` });
+    const connection = repositories.providerProfiles.create({
+      id: randomUUID(), name: 'Mock', baseUrl: 'http://127.0.0.1:9999/v1', model: 'mock', apiMode: 'chat',
+    });
+    repositories.globalGenerationConfig.update(0, { providerId: connection.id });
+    const created = (await app.inject({
+      method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/conversations`,
+      payload: { title: '诊断测试', playerProfile: { name: '旅人', description: '' }, setup: { origin: '梵尼亚' } },
+    })).json();
+    const before = repositories.conversationSceneStates.getByConversationId(created.id)!;
+    const response = await app.inject({
+      method: 'POST', url: `/api/conversations/${created.id}/generations`,
+      payload: { conversationRevision: created.revision, mode: 'normal', userText: '继续' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('event: completed');
+    const after = repositories.conversationSceneStates.getByConversationId(created.id)!;
+    expect(after.revision).toBe(before.revision);
+    expect(after.value).toEqual(before.value);
+    expect(repositories.sceneStateTransitions.listByConversationId(created.id)).toEqual([]);
+    const assistant = repositories.messages.listByConversationId(created.id).at(-1)!;
+    const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
+    expect(variant.content).toBe('风仍在吹。');
+    expect(variant.diagnostics).toEqual([
+      { source: 'scene-output-protocol', code: 'scene_patch_json_invalid', failures: [] },
+    ]);
+  }, 60_000);
+
+  it('keeps narrative and diagnoses a missing mandatory MVU block', async () => {
+    const provider = capturedProvider([
+      { type: 'delta', text: '你收起新获得的药水，但没有输出变量块。' },
+      { type: 'completed', finishReason: 'stop' },
+    ]);
+    const { app, repositories } = await context(provider);
+    await app.inject({ method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/install` });
+    const connection = repositories.providerProfiles.create({
+      id: randomUUID(), name: 'Mock', baseUrl: 'http://127.0.0.1:9999/v1', model: 'mock', apiMode: 'chat',
+    });
+    repositories.globalGenerationConfig.update(0, { providerId: connection.id });
+    const created = (await app.inject({
+      method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/conversations`,
+      payload: { title: '缺失变量块测试', playerProfile: { name: '旅人', description: '' }, setup: { origin: '梵尼亚' } },
+    })).json();
+    const before = repositories.conversationSceneStates.getByConversationId(created.id)!;
+    const response = await app.inject({
+      method: 'POST', url: `/api/conversations/${created.id}/generations`,
+      payload: { conversationRevision: created.revision, mode: 'normal', userText: '拾取药水' },
+    });
+    expect(response.statusCode).toBe(200);
+    const after = repositories.conversationSceneStates.getByConversationId(created.id)!;
+    expect(after.revision).toBe(before.revision);
+    const assistant = repositories.messages.listByConversationId(created.id).at(-1)!;
+    const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
+    expect(variant.content).toBe('你收起新获得的药水，但没有输出变量块。');
+    expect(variant.diagnostics).toEqual([
+      { source: 'scene-output-protocol', code: 'scene_patch_block_missing', failures: [] },
+    ]);
+  }, 60_000);
+
+  it('accepts the legacy MVU wrapper and commits successful operations when siblings fail', async () => {
+    const provider = capturedProvider([
+      { type: 'delta', text: '命运发生变化。<UpdateVariable><Analysis>Apply the available changes.</Analysis><JSONPatch>[{"op":"replace","path":"/命运点数","value":8},{"op":"delta","path":"/不存在","value":1},{"op":"insert","path":"/主角/技能/直觉","value":{"等级":1}}]</JSONPatch></UpdateVariable>' },
+      { type: 'completed', finishReason: 'stop' },
+    ]);
+    const { app, repositories } = await context(provider);
+    await app.inject({ method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/install` });
+    const connection = repositories.providerProfiles.create({
+      id: randomUUID(), name: 'Mock', baseUrl: 'http://127.0.0.1:9999/v1', model: 'mock', apiMode: 'chat',
+    });
+    repositories.globalGenerationConfig.update(0, { providerId: connection.id });
+    const created = (await app.inject({
+      method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/conversations`,
+      payload: { title: '部分更新测试', playerProfile: { name: '旅人', description: '' }, setup: { origin: '梵尼亚' } },
+    })).json();
+    const response = await app.inject({
+      method: 'POST', url: `/api/conversations/${created.id}/generations`,
+      payload: { conversationRevision: created.revision, mode: 'normal', userText: '继续' },
+    });
+    expect(response.statusCode).toBe(200);
+    const state = repositories.conversationSceneStates.getByConversationId(created.id)!;
+    expect(state.value).toMatchObject({ 命运点数: 8, 主角: { 技能: { 直觉: { 等级: 1 } } } });
+    const assistant = repositories.messages.listByConversationId(created.id).at(-1)!;
+    const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
+    expect(variant.content).toBe('命运发生变化。');
+    expect(variant.diagnostics).toEqual([{
+      source: 'scene-output-protocol',
+      code: 'scene_patch_partial_failure',
+      appliedCount: 2,
+      failures: [expect.objectContaining({
+        operationIndex: 1, op: 'delta', path: '/不存在', code: 'scene_patch_invalid',
+      })],
+    }]);
+    const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id)!;
+    expect(transition.operations).toHaveLength(2);
+  }, 60_000);
+
+  it('restores tail variant state and blocks switching after a descendant transition', async () => {
+    const provider = queuedCapturedProvider([
+      [
+        { type: 'delta', text: '第一条命运。<UpdateVariable><JSONPatch>[{"op":"replace","path":"/命运点数","value":1}]</JSONPatch></UpdateVariable>' },
+        { type: 'completed', finishReason: 'stop' },
+      ],
+      [
+        { type: 'delta', text: '第二条命运。<UpdateVariable><JSONPatch>[{"op":"replace","path":"/命运点数","value":2}]</JSONPatch></UpdateVariable>' },
+        { type: 'completed', finishReason: 'stop' },
+      ],
+    ]);
+    const { app, repositories } = await context(provider);
+    await app.inject({ method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/install` });
+    const connection = repositories.providerProfiles.create({
+      id: randomUUID(), name: 'Mock', baseUrl: 'http://127.0.0.1:9999/v1', model: 'mock', apiMode: 'chat',
+    });
+    repositories.globalGenerationConfig.update(0, { providerId: connection.id });
+    const conversation = (await app.inject({
+      method: 'POST', url: `/api/scenes/${DESTINED_POEM_SCENE_ID}/conversations`,
+      payload: { title: '分支测试', playerProfile: { name: '旅人', description: '' }, setup: { origin: '梵尼亚' } },
+    })).json();
+    await app.inject({
+      method: 'POST', url: `/api/conversations/${conversation.id}/generations`,
+      payload: { conversationRevision: conversation.revision, mode: 'normal', userText: '开始' },
+    });
+    const afterFirst = repositories.conversations.get(conversation.id)!;
+    await app.inject({
+      method: 'POST', url: `/api/conversations/${conversation.id}/generations`,
+      payload: { conversationRevision: afterFirst.revision, mode: 'swipe' },
+    });
+    const assistant = repositories.messages.listByConversationId(conversation.id).at(-1)!;
+    const variants = repositories.messageVariants.listByMessageId(assistant.id);
+    expect(variants).toHaveLength(2);
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(2);
+    const switched = await app.inject({
+      method: 'PUT', url: `/api/messages/${assistant.id}/active-variant`,
+      payload: { revision: assistant.revision, variantId: variants[0]!.id },
+    });
+    expect(switched.statusCode).toBe(200);
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(1);
+    const current = repositories.conversationSceneStates.getByConversationId(conversation.id)!;
+    const descendant = await app.inject({
+      method: 'PATCH', url: `/api/conversations/${conversation.id}/scene-state`,
+      payload: { revision: current.revision, patch: [{ op: 'replace', path: '/命运点数', value: 9 }] },
+    });
+    expect(descendant.statusCode).toBe(200);
+    const latestMessage = repositories.messages.get(assistant.id)!;
+    const blocked = await app.inject({
+      method: 'PUT', url: `/api/messages/${assistant.id}/active-variant`,
+      payload: { revision: latestMessage.revision, variantId: variants[1]!.id },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toEqual({ error: 'scene_branch_has_descendants' });
+    const deleted = await app.inject({
+      method: 'DELETE', url: `/api/messages/${assistant.id}?revision=${latestMessage.revision}`,
+    });
+    expect(deleted.statusCode).toBe(204);
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(0);
+    expect(repositories.sceneStateTransitions.listByConversationId(conversation.id)).toEqual([]);
   }, 60_000);
 });

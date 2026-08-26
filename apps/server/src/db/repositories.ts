@@ -25,6 +25,7 @@ import {
   WorldbookRuntimeStateSchema,
   WorldbookSchema,
   ConversationSceneStateSchema,
+  SceneStateTransitionSchema,
   type Character,
   type Conversation,
   type ExtensionAsset,
@@ -48,6 +49,8 @@ import {
   type WorldbookEntry,
   type WorldbookRuntimeState,
   type ConversationSceneState,
+  type SceneStateTransition,
+  type SceneStateTransitionSourceKind,
 } from '@tavernnext/domain';
 import {
   characters,
@@ -71,6 +74,7 @@ import {
   worldbookRuntimeStates,
   worldbooks,
   conversationSceneStates,
+  sceneStateTransitions,
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
 import {
@@ -126,7 +130,8 @@ type DefaultedField =
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
   | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
-  | 'diagnostics' | 'setup' | 'schemaVersion' | 'value' | 'sceneInternal';
+  | 'diagnostics' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
+  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -164,6 +169,13 @@ export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRun
 export interface ConversationSceneStateRepository extends Repository<ConversationSceneState> {
   getByConversationId(conversationId: string): ConversationSceneState | undefined;
   deleteByConversationId(conversationId: string): number;
+}
+
+export interface SceneStateTransitionRepository extends Repository<SceneStateTransition> {
+  listByConversationId(conversationId: string): SceneStateTransition[];
+  getBySource(sourceKind: SceneStateTransitionSourceKind, sourceId: string): SceneStateTransition | undefined;
+  hasChildren(transitionId: string): boolean;
+  deleteBySource(sourceKind: SceneStateTransitionSourceKind, sourceId: string): number;
 }
 
 export type AvatarAssetKind = 'characters' | 'personas';
@@ -863,6 +875,7 @@ export interface Repositories {
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
   conversationSceneStates: ConversationSceneStateRepository;
+  sceneStateTransitions: SceneStateTransitionRepository;
   avatarAssets: AvatarAssetRepository;
   extensionAssets: ExtensionAssetRepository;
   extensionStates: ExtensionStateRepository;
@@ -889,6 +902,52 @@ function createConversationSceneStateRepository(database: TavernDatabase): Conve
     deleteByConversationId(conversationId) {
       return database.sqlite.prepare('DELETE FROM conversation_scene_states WHERE conversation_id = ?')
         .run(conversationId).changes;
+    },
+  };
+}
+
+function createSceneStateTransitionRepository(database: TavernDatabase): SceneStateTransitionRepository {
+  const base = createRepository(database, {
+    table: entityTable(sceneStateTransitions),
+    schema: SceneStateTransitionSchema,
+    toRow: (value: SceneStateTransition) => ({
+      ...baseRow(value),
+      conversationId: value.conversationId,
+      parentTransitionId: value.parentTransitionId,
+      sourceKind: value.sourceKind,
+      sourceId: value.sourceId,
+    }),
+  });
+  return {
+    ...base,
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: sceneStateTransitions.payload })
+        .from(sceneStateTransitions)
+        .where(eq(sceneStateTransitions.conversationId, conversationId))
+        .orderBy(asc(sceneStateTransitions.createdAt), asc(sceneStateTransitions.id))
+        .limit(MAX_VARIANTS_PER_RELATION + 1)
+        .all()
+        .map((row) => SceneStateTransitionSchema.parse(row.payload));
+    },
+    getBySource(sourceKind, sourceId) {
+      const row = database.orm.select({ payload: sceneStateTransitions.payload })
+        .from(sceneStateTransitions)
+        .where(and(eq(sceneStateTransitions.sourceKind, sourceKind), eq(sceneStateTransitions.sourceId, sourceId)))
+        .orderBy(asc(sceneStateTransitions.createdAt), asc(sceneStateTransitions.id))
+        .get();
+      return row === undefined ? undefined : SceneStateTransitionSchema.parse(row.payload);
+    },
+    hasChildren(transitionId) {
+      return database.orm.select({ id: sceneStateTransitions.id })
+        .from(sceneStateTransitions)
+        .where(eq(sceneStateTransitions.parentTransitionId, transitionId))
+        .limit(1)
+        .get() !== undefined;
+    },
+    deleteBySource(sourceKind, sourceId) {
+      return database.sqlite.prepare(
+        'DELETE FROM scene_state_transitions WHERE source_kind = ? AND source_id = ?',
+      ).run(sourceKind, sourceId).changes;
     },
   };
 }
@@ -1028,6 +1087,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),
     conversationSceneStates: createConversationSceneStateRepository(database),
+    sceneStateTransitions: createSceneStateTransitionRepository(database),
     avatarAssets: createAvatarAssetRepository(database),
     extensionAssets: createExtensionAssetRepository(database),
     extensionStates: createExtensionStateRepository(database),

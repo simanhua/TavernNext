@@ -119,21 +119,26 @@ export class GenerationSessionController {
       const requestInput: { mode: 'normal' | NonNormalMode; userText?: string } = input.mode === 'normal'
         ? { mode: 'normal', userText: input.userText }
         : { mode: input.mode };
-      const candidate = await api.createGenerationCandidate(conversation, requestInput, controller.signal);
-      candidateId = candidate.candidateId;
-      const trustedPatch = await runTrustedPromptHooks({
-        kind: candidate.kind,
-        messages: candidate.messages,
-        text: candidate.text,
-        stop: candidate.stop,
-        spreset: candidate.spreset,
-      }, false, { signal: controller.signal, timeoutMs: 10_000 });
-      const sealed = await api.sealGenerationCandidate(candidate.candidateId, trustedPatch, controller.signal);
-      candidateId = undefined;
-      const response = await api.startGeneration(conversation, {
-        ...requestInput,
-        snapshotId: sealed.snapshotId,
-      }, controller.signal);
+      let response: Response;
+      if (conversation.sceneId !== undefined) {
+        response = await api.startGeneration(conversation, requestInput, controller.signal);
+      } else {
+        const candidate = await api.createGenerationCandidate(conversation, requestInput, controller.signal);
+        candidateId = candidate.candidateId;
+        const trustedPatch = await runTrustedPromptHooks({
+          kind: candidate.kind,
+          messages: candidate.messages,
+          text: candidate.text,
+          stop: candidate.stop,
+          spreset: candidate.spreset,
+        }, false, { signal: controller.signal, timeoutMs: 10_000 });
+        const sealed = await api.sealGenerationCandidate(candidate.candidateId, trustedPatch, controller.signal);
+        candidateId = undefined;
+        response = await api.startGeneration(conversation, {
+          ...requestInput,
+          snapshotId: sealed.snapshotId,
+        }, controller.signal);
+      }
       let terminal = false;
       for await (const event of readGenerationEvents(response, controller.signal)) {
         if (!this.mounted) return accepted ? 'accepted' : 'rejected';

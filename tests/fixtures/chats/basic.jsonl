@@ -1,3 +1,0 @@
-{"user_name":"Traveler","character_name":"Aster","create_date":"2026-08-09T00:00:00.000Z","chat_metadata":{"integrity":"synthetic-basic","persona":"Traveler"}}
-{"name":"Traveler","is_user":true,"is_system":false,"send_date":"2026-08-09T00:00:01.000Z","mes":"Hello Aster","extra":{}}
-{"name":"Aster","is_user":false,"is_system":false,"send_date":"2026-08-09T00:00:02.000Z","mes":"Welcome, Traveler.","swipes":["Welcome, Traveler."],"swipe_id":0,"swipe_info":[{"send_date":"2026-08-09T00:00:02.000Z","gen_started":"2026-08-09T00:00:01.500Z","gen_finished":"2026-08-09T00:00:02.000Z","extra":{"api":"openai","model":"synthetic-model","token_count":5}}],"extra":{"api":"openai","model":"synthetic-model","token_count":5}}

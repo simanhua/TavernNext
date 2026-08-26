@@ -13,7 +13,7 @@ import { upgradeInstalledOfficialSceneRuntime } from '../src/scenes/official-sce
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
-describe('schema 17 Scene migration', () => {
+describe('schema 18 Scene migration', () => {
   it('preserves Persona and Provider while clearing the legacy asset workspace', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-migration-'));
     directories.push(directory);
@@ -30,7 +30,7 @@ describe('schema 17 Scene migration', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(17);
+    expect(CURRENT_SCHEMA_VERSION).toBe(18);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
     expect(repositories.characters.list()).toEqual([]);
@@ -80,7 +80,13 @@ describe('schema 17 Scene migration', () => {
       playerProfile: { name: 'Traveler', description: '' }, setup: { origin: '梵尼亚' }, title: 'Kept Save',
     });
     repositories.conversationSceneStates.create({
-      id: randomUUID(), conversationId: conversation.id, schemaVersion: 1, value: { points: 7 },
+      id: randomUUID(), conversationId: conversation.id, schemaVersion: 1,
+      value: { points: 7, 主角: { 背包: null } },
+    });
+    const transition = repositories.sceneStateTransitions.create({
+      id: randomUUID(), conversationId: conversation.id, parentTransitionId: null,
+      sourceKind: 'sdk-patch', sourceId: randomUUID(), operations: [],
+      value: { points: 7, 主角: { 背包: null } },
     });
 
     upgradeInstalledOfficialSceneRuntime(database, directory);
@@ -91,7 +97,47 @@ describe('schema 17 Scene migration', () => {
     expect(upgraded.archiveDigest).not.toBe(oldDigest);
     expect(upgraded.backingCharacterId).toBe(character.id);
     expect(repositories.conversations.get(conversation.id)?.title).toBe('Kept Save');
-    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)?.value).toEqual({ points: 7 });
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)?.value).toEqual({
+      points: 7, 主角: { 装备: {}, 背包: {} },
+    });
+    expect(repositories.sceneStateTransitions.get(transition.id)?.value).toEqual({
+      points: 7, 主角: { 装备: {}, 背包: {} },
+    });
     database.close();
   }, 30_000);
+
+  it('backfills the current Scene value as the base state for schema 18', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-state-kernel-migration-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    migrateDatabase(database);
+    const repositories = createRepositories(database, { snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    const character = repositories.characters.create({
+      id: randomUUID(), name: 'Character', description: '', personality: '', scenario: '',
+      firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: randomUUID(), name: 'Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Legacy Scene State',
+    });
+    const state = repositories.conversationSceneStates.create({
+      id: randomUUID(), conversationId: conversation.id, schemaVersion: 1, value: { points: 7 },
+    });
+    const legacy = { ...state, baseValue: undefined, headTransitionId: undefined };
+    delete legacy.baseValue;
+    delete legacy.headTransitionId;
+    database.sqlite.prepare('UPDATE conversation_scene_states SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), state.id);
+    database.sqlite.exec('DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version(version) VALUES (17)');
+
+    migrateDatabase(database);
+
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)).toMatchObject({
+      baseValue: { points: 7 }, headTransitionId: null, value: { points: 7 },
+    });
+    expect(repositories.sceneStateTransitions.listByConversationId(conversation.id)).toEqual([]);
+    database.close();
+  });
 });

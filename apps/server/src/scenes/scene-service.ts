@@ -12,12 +12,22 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   ConversationPlayerProfileSchema,
+  SceneActionResultSchema,
+  SceneBeforeGenerationResultSchema,
+  SceneInitializeResultSchema,
   SceneManifestSchema,
+  ScenePatchOperationSchema,
   type Conversation,
   type ConversationPlayerProfile,
   type ConversationSceneState,
   type InstalledScene,
+  type Message,
+  type MessageVariant,
   type SceneCatalog,
+  type SceneManifest,
+  type ScenePatchFailure,
+  type ScenePatchOperation,
+  type SceneStateTransitionSourceKind,
 } from '@tavernnext/domain';
 import {
   decodeEmbeddedCharacterBook,
@@ -29,29 +39,13 @@ import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { persistDecodedWorldbook } from '../services/worldbook-import-handler.js';
-import { builtInPackage, verifiedOfficialCatalog } from './official-package.js';
+import { builtInPackage, officialCatalog } from './official-package.js';
 import { SceneModuleRegistry } from './scene-module-host.js';
 
 const MAX_PACKAGE_FILES = 2_048;
 const MAX_PACKAGE_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_PACKAGE_TOTAL_BYTES = 256 * 1024 * 1024;
 const MAX_SCENE_STATE_BYTES = 4 * 1024 * 1024;
-
-const HookInitializeResultSchema = z.object({
-  title: z.string().min(1).max(200).optional(),
-  initialState: z.record(z.string(), z.unknown()),
-  openingMessages: z.array(z.object({
-    role: z.enum(['system', 'user', 'assistant']),
-    content: z.string(),
-  }).strict()).max(16).default([]),
-}).strict();
-
-const ScenePatchOperationSchema = z.object({
-  op: z.enum(['add', 'replace', 'remove', 'move', 'copy', 'test', 'delta']),
-  path: z.string().startsWith('/'),
-  from: z.string().startsWith('/').optional(),
-  value: z.unknown().optional(),
-}).strict();
 
 export class SceneServiceError extends Error {
   constructor(readonly code: string, readonly statusCode: number) {
@@ -82,7 +76,7 @@ function within(root: string, target: string): boolean {
   return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
 }
 
-function assertSceneState(value: Record<string, unknown>): void {
+export function assertSceneState(value: Record<string, unknown>, _manifest?: SceneManifest): void {
   if (Buffer.byteLength(JSON.stringify(value)) > MAX_SCENE_STATE_BYTES) {
     throw new SceneServiceError('scene_state_too_large', 422);
   }
@@ -93,7 +87,11 @@ function pointerParts(pointer: string): string[] {
   return pointer.slice(1).split('/').map((part) => part.replaceAll('~1', '/').replaceAll('~0', '~'));
 }
 
-function parentAt(root: Record<string, unknown>, pointer: string): { parent: Record<string, unknown> | unknown[]; key: string } {
+function parentAt(
+  root: Record<string, unknown>,
+  pointer: string,
+  createMissingObjects = false,
+): { parent: Record<string, unknown> | unknown[]; key: string } {
   const parts = pointerParts(pointer);
   const key = parts.pop();
   if (key === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
@@ -105,7 +103,9 @@ function parentAt(root: Record<string, unknown>, pointer: string): { parent: Rec
       current = current[index];
     } else {
       const item = record(current);
-      if (item === undefined || item[part] === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
+      if (item === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
+      if (item[part] === undefined && createMissingObjects) item[part] = {};
+      if (item[part] === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
       current = item[part];
     }
   }
@@ -125,6 +125,7 @@ function valueAt(root: Record<string, unknown>, pointer: string): unknown {
 export function applyScenePatch(
   source: Record<string, unknown>,
   rawOperations: unknown,
+  manifest?: SceneManifest,
 ): Record<string, unknown> {
   const operations = z.array(ScenePatchOperationSchema).max(512).parse(rawOperations);
   const value = structuredClone(source);
@@ -141,7 +142,7 @@ export function applyScenePatch(
     return removed;
   };
   const put = (path: string, next: unknown, replaceOnly: boolean) => {
-    const { parent, key } = parentAt(value, path);
+    const { parent, key } = parentAt(value, path, !replaceOnly);
     if (Array.isArray(parent)) {
       if (key === '-' && !replaceOnly) parent.push(next);
       else {
@@ -159,7 +160,9 @@ export function applyScenePatch(
   };
   for (const operation of operations) {
     if (operation.op === 'remove') remove(operation.path);
-    else if (operation.op === 'add') put(operation.path, structuredClone(operation.value), false);
+    else if (operation.op === 'add' || operation.op === 'insert') {
+      put(operation.path, structuredClone(operation.value), false);
+    }
     else if (operation.op === 'replace') put(operation.path, structuredClone(operation.value), true);
     else if (operation.op === 'delta') {
       const current = valueAt(value, operation.path);
@@ -169,14 +172,67 @@ export function applyScenePatch(
       if (JSON.stringify(valueAt(value, operation.path)) !== JSON.stringify(operation.value)) {
         throw new SceneServiceError('scene_patch_test_failed', 409);
       }
+    } else if (operation.op === 'copy') {
+      put(operation.path, structuredClone(valueAt(value, operation.from)), false);
+    } else if (operation.op === 'move') {
+      const target = 'to' in operation ? operation.to : operation.path;
+      put(target, remove(operation.from), false);
     } else {
-      if (operation.from === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
-      const moved = operation.op === 'move' ? remove(operation.from) : structuredClone(valueAt(value, operation.from));
-      put(operation.path, moved, false);
+      throw new SceneServiceError('scene_patch_invalid', 400);
     }
   }
-  assertSceneState(value);
+  assertSceneState(value, manifest);
   return value;
+}
+
+export interface ScenePatchApplication {
+  value: Record<string, unknown>;
+  operations: ScenePatchOperation[];
+  failures: ScenePatchFailure[];
+}
+
+function patchFailure(operationIndex: number, raw: unknown, code: string): ScenePatchFailure {
+  const operation = record(raw);
+  const field = (key: string) => typeof operation?.[key] === 'string' ? operation[key] as string : undefined;
+  return {
+    operationIndex,
+    code,
+    ...(field('op') === undefined ? {} : { op: field('op') }),
+    ...(field('path') === undefined ? {} : { path: field('path') }),
+    ...(field('from') === undefined ? {} : { from: field('from') }),
+    ...(field('to') === undefined ? {} : { to: field('to') }),
+  };
+}
+
+export function applyScenePatchPartial(
+  source: Record<string, unknown>,
+  rawOperations: unknown,
+  manifest?: SceneManifest,
+): ScenePatchApplication {
+  if (!Array.isArray(rawOperations) || rawOperations.length > 512) {
+    throw new SceneServiceError('scene_patch_invalid', 400);
+  }
+  let value = structuredClone(source);
+  const operations: ScenePatchOperation[] = [];
+  const failures: ScenePatchFailure[] = [];
+  for (const [operationIndex, raw] of rawOperations.entries()) {
+    const parsed = ScenePatchOperationSchema.safeParse(raw);
+    if (!parsed.success) {
+      failures.push(patchFailure(operationIndex, raw, 'scene_patch_operation_invalid'));
+      continue;
+    }
+    try {
+      value = applyScenePatch(value, [parsed.data], manifest);
+      operations.push(parsed.data);
+    } catch (error) {
+      failures.push(patchFailure(
+        operationIndex,
+        raw,
+        error instanceof SceneServiceError ? error.code : 'scene_patch_operation_failed',
+      ));
+    }
+  }
+  return { value, operations, failures };
 }
 
 function characterDepthPrompt(extensions: Record<string, unknown>): string {
@@ -277,7 +333,23 @@ export interface SceneService {
   listConversations(sceneId: string): Conversation[];
   createConversation(sceneId: string, input: unknown): Promise<Conversation>;
   state(conversationId: string): ConversationSceneState | undefined;
-  patchState(conversationId: string, expectedRevision: number, patch: unknown): ConversationSceneState;
+  patchState(conversationId: string, expectedRevision: number, patch: unknown): {
+    state: ConversationSceneState;
+    failures: ScenePatchFailure[];
+  };
+  commitStateTransition(
+    conversationId: string,
+    expectedRevision: number,
+    patch: unknown,
+    source: {
+      kind: SceneStateTransitionSourceKind;
+      id: string;
+      parentTransitionId?: string | null;
+      baseValue?: Record<string, unknown>;
+    },
+  ): ConversationSceneState;
+  switchVariantState(message: Message, variant: MessageVariant): ConversationSceneState | undefined;
+  deleteMessageState(message: Message): void;
   module(scene: InstalledScene): ReturnType<SceneModuleRegistry['get']> | undefined;
   assetPath(sceneId: string, path: string): string;
   uninstall(sceneId: string, expectedRevision: number): Promise<{ backupPath: string }>;
@@ -299,22 +371,78 @@ export function createSceneService(options: {
     ? undefined
     : moduleRegistry.get(scene.id, pathToFileURL(join(scene.installPath, scene.manifest.serverEntry)).href);
 
+  const sceneForConversation = (conversationId: string) => {
+    const conversation = repositories.conversations.get(conversationId);
+    const scene = conversation?.sceneId === undefined ? undefined : get(conversation.sceneId);
+    if (conversation === undefined || scene === undefined) throw new SceneServiceError('scene_not_found', 404);
+    return { conversation, scene };
+  };
+
+  const commitStateTransition: SceneService['commitStateTransition'] = (
+    conversationId,
+    expectedRevision,
+    rawPatch,
+    source,
+  ) => {
+    const current = repositories.conversationSceneStates.getByConversationId(conversationId);
+    if (current === undefined) throw new SceneServiceError('scene_state_not_found', 404);
+    if (current.revision !== expectedRevision) throw new SceneServiceError('conflict', 409);
+    const { scene } = sceneForConversation(conversationId);
+    const operations = z.array(ScenePatchOperationSchema).max(512).parse(rawPatch) as ScenePatchOperation[];
+    const baseValue = source.baseValue ?? current.value;
+    const value = applyScenePatch(baseValue, operations, scene.manifest);
+    return database.transaction(() => {
+      const existing = repositories.sceneStateTransitions.getBySource(source.kind, source.id);
+      if (existing !== undefined) {
+        if (source.kind !== 'message-variant' || current.headTransitionId !== existing.id) {
+          throw new SceneServiceError('scene_transition_conflict', 409);
+        }
+        const updatedTransition = repositories.sceneStateTransitions.update(existing.id, existing.revision, {
+          operations: [...existing.operations, ...operations],
+          value,
+        });
+        if (!updatedTransition.ok) throw new SceneServiceError(updatedTransition.reason, 409);
+        const updatedState = repositories.conversationSceneStates.update(current.id, current.revision, { value });
+        if (!updatedState.ok) throw new SceneServiceError(updatedState.reason, 409);
+        return updatedState.value;
+      }
+      const transition = repositories.sceneStateTransitions.create({
+        id: randomUUID(), conversationId,
+        parentTransitionId: source.parentTransitionId === undefined ? current.headTransitionId : source.parentTransitionId,
+        sourceKind: source.kind, sourceId: source.id, operations, value,
+      });
+      const updated = repositories.conversationSceneStates.update(current.id, current.revision, {
+        headTransitionId: transition.id,
+        value,
+      });
+      if (!updated.ok) throw new SceneServiceError(updated.reason, updated.reason === 'not_found' ? 404 : 409);
+      return updated.value;
+    });
+  };
+
+  const tailMessage = (message: Message): void => {
+    const messages = repositories.messages.listByConversationId(message.conversationId);
+    const index = messages.findIndex((item) => item.id === message.id);
+    if (index < 0) throw new SceneServiceError('not_found', 404);
+    if (index !== messages.length - 1) throw new SceneServiceError('scene_branch_has_descendants', 409);
+  };
+
   return {
-    catalog: verifiedOfficialCatalog,
+    catalog: officialCatalog,
     list: () => repositories.installedScenes.list(512),
     get,
     async install(sceneId) {
-      const entry = verifiedOfficialCatalog().scenes.find((candidate) => candidate.sceneId === sceneId);
+      const entry = officialCatalog().scenes.find((candidate) => candidate.sceneId === sceneId);
       if (entry === undefined) throw new SceneServiceError('scene_not_found', 404);
       const existing = get(sceneId);
       if (existing !== undefined) {
-        if (existing.archiveDigest === entry.archiveSha256) return existing;
+        if (existing.version === entry.version) return existing;
         throw new SceneServiceError('scene_update_not_supported', 409);
       }
       const builtIn = builtInPackage(entry.packageUrl);
-      const bytes = builtIn?.bytes ?? new Uint8Array(await (await fetch(entry.packageUrl)).arrayBuffer());
+      if (builtIn === undefined) throw new SceneServiceError('scene_package_source_unsupported', 422);
+      const bytes = builtIn.bytes;
       const digest = createHash('sha256').update(bytes).digest('hex');
-      if (digest !== entry.archiveSha256) throw new SceneServiceError('scene_package_digest_invalid', 422);
       const files = packageFiles(bytes);
       const rawManifest = files['manifest.json'];
       if (rawManifest === undefined) throw new SceneServiceError('scene_manifest_missing', 422);
@@ -384,10 +512,10 @@ export function createSceneService(options: {
       };
       const initialized = scene.manifest.serverEntry === undefined
         ? { initialState: {}, openingMessages: [] }
-        : HookInitializeResultSchema.parse(await module(scene)!.call('initializeConversation', {
+        : SceneInitializeResultSchema.parse(await module(scene)!.call('initializeConversation', {
           setup: parsed.data.setup, playerProfile, manifest: scene.manifest,
         }));
-      assertSceneState(initialized.initialState);
+      assertSceneState(initialized.initialState, scene.manifest);
       return database.transaction(() => {
         const persona = repositories.personas.create({
           id: randomUUID(), name: playerProfile.name, description: playerProfile.description,
@@ -405,7 +533,8 @@ export function createSceneService(options: {
           maxResponseTokens: parsed.data.maxResponseTokens,
         });
         repositories.conversationSceneStates.create({
-          id: randomUUID(), conversationId: conversation.id, schemaVersion: 1, value: initialized.initialState,
+          id: randomUUID(), conversationId: conversation.id, schemaVersion: 1,
+          baseValue: initialized.initialState, headTransitionId: null, value: initialized.initialState,
         });
         for (const opening of initialized.openingMessages) {
           const message = repositories.messages.create({
@@ -429,10 +558,90 @@ export function createSceneService(options: {
       const current = repositories.conversationSceneStates.getByConversationId(conversationId);
       if (current === undefined) throw new SceneServiceError('scene_state_not_found', 404);
       if (current.revision !== expectedRevision) throw new SceneServiceError('conflict', 409);
-      const value = applyScenePatch(current.value, patch);
-      const updated = repositories.conversationSceneStates.update(current.id, current.revision, { value });
-      if (!updated.ok) throw new SceneServiceError(updated.reason, updated.reason === 'not_found' ? 404 : 409);
+      const { scene } = sceneForConversation(conversationId);
+      const applied = applyScenePatchPartial(current.value, patch, scene.manifest);
+      const state = applied.operations.length === 0
+        ? current
+        : commitStateTransition(conversationId, expectedRevision, applied.operations, {
+          kind: 'sdk-patch', id: randomUUID(),
+        });
+      return { state, failures: applied.failures };
+    },
+    commitStateTransition,
+    switchVariantState(message, variant) {
+      const conversation = repositories.conversations.get(message.conversationId);
+      if (conversation?.sceneId === undefined) return undefined;
+      tailMessage(message);
+      const current = repositories.conversationSceneStates.getByConversationId(message.conversationId);
+      if (current === undefined) throw new SceneServiceError('scene_state_not_found', 404);
+      const siblings = new Set(repositories.messageVariants.listByMessageId(message.id).map((item) => item.id));
+      const siblingTransitions = [...siblings].flatMap((id) => {
+        const transition = repositories.sceneStateTransitions.getBySource('message-variant', id);
+        return transition === undefined ? [] : [transition];
+      });
+      const fallbackParentId = siblingTransitions.length > 0
+        ? siblingTransitions[0]!.parentTransitionId
+        : current.headTransitionId;
+      const head = current.headTransitionId === null ? undefined : repositories.sceneStateTransitions.get(current.headTransitionId);
+      if (head !== undefined && head.id !== fallbackParentId
+        && (head.sourceKind !== 'message-variant' || !siblings.has(head.sourceId))) {
+        throw new SceneServiceError('scene_branch_has_descendants', 409);
+      }
+      const selected = repositories.sceneStateTransitions.getBySource('message-variant', variant.id);
+      const fallbackParent = fallbackParentId === null ? undefined : repositories.sceneStateTransitions.get(fallbackParentId);
+      const value = selected?.value ?? fallbackParent?.value ?? current.baseValue;
+      const updated = repositories.conversationSceneStates.update(current.id, current.revision, {
+        headTransitionId: selected?.id ?? fallbackParent?.id ?? null,
+        value,
+      });
+      if (!updated.ok) throw new SceneServiceError(updated.reason, 409);
       return updated.value;
+    },
+    deleteMessageState(message) {
+      const conversation = repositories.conversations.get(message.conversationId);
+      if (conversation?.sceneId === undefined) return;
+      tailMessage(message);
+      if (message.role !== 'assistant') return;
+      const current = repositories.conversationSceneStates.getByConversationId(message.conversationId);
+      if (current === undefined) throw new SceneServiceError('scene_state_not_found', 404);
+      const variants = repositories.messageVariants.listByMessageId(message.id);
+      const variantTransitions = variants.flatMap((variant) => {
+        const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id);
+        return transition === undefined ? [] : [transition];
+      });
+      if (variantTransitions.length === 0) return;
+      const removedIds = new Set(variantTransitions.map((transition) => transition.id));
+      const all = repositories.sceneStateTransitions.listByConversationId(message.conversationId);
+      for (;;) {
+        const priorSize = removedIds.size;
+        for (const transition of all) {
+          if (transition.parentTransitionId !== null && removedIds.has(transition.parentTransitionId)) {
+            removedIds.add(transition.id);
+          }
+        }
+        if (removedIds.size === priorSize) break;
+      }
+      const fallbackParentId = variantTransitions[0]?.parentTransitionId ?? null;
+      if (current.headTransitionId !== null && current.headTransitionId !== fallbackParentId
+        && !removedIds.has(current.headTransitionId)) {
+        throw new SceneServiceError('scene_branch_has_descendants', 409);
+      }
+      const active = message.activeVariantId === null
+        ? undefined
+        : repositories.sceneStateTransitions.getBySource('message-variant', message.activeVariantId);
+      const activeParentId = active?.parentTransitionId ?? fallbackParentId;
+      const parent = activeParentId === null
+        ? undefined
+        : repositories.sceneStateTransitions.get(activeParentId);
+      const updated = repositories.conversationSceneStates.update(current.id, current.revision, {
+        headTransitionId: parent?.id ?? null,
+        value: parent?.value ?? current.baseValue,
+      });
+      if (!updated.ok) throw new SceneServiceError(updated.reason, 409);
+      for (const transition of all.filter((item) => removedIds.has(item.id)).reverse()) {
+        const deleted = repositories.sceneStateTransitions.delete(transition.id, transition.revision);
+        if (!deleted.ok) throw new SceneServiceError(deleted.reason, 409);
+      }
     },
     module,
     assetPath(sceneId, rawPath) {

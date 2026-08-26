@@ -649,4 +649,34 @@ describe('two-stage import API', () => {
     }, { timeout: 500, interval: 10 });
     await expect(access(join(workspaceRoot, unrelated))).resolves.toBeUndefined();
   });
+
+  it('rejects legacy chat JSONL and exposes no chat-specific commit or export routes', async () => {
+    const { directory, database } = await fixture();
+    const app = createApp({ database, config: serverConfig(directory) });
+    apps.push(app);
+    await app.ready();
+
+    const inspected = await app.inject({
+      method: 'POST',
+      url: '/api/imports/inspect',
+      ...multipart(
+        'legacy-chat.jsonl',
+        encoder.encode('{"user_name":"Traveler","character_name":"Aster"}\n'),
+        'application/x-ndjson',
+      ),
+    });
+    expect(inspected.statusCode).toBe(422);
+    expect(inspected.json()).toMatchObject({
+      detected: { kind: 'unknown' },
+      blockingErrors: [expect.objectContaining({ code: 'jsonl_import_unsupported' })],
+    });
+    expect(inspected.json()).not.toHaveProperty('inspectionToken');
+
+    expect((await app.inject({
+      method: 'POST', url: '/api/chats/imports/commit', payload: { inspectionToken: 'removed' },
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: 'GET', url: '/api/conversations/018f0000-0000-7000-8000-000000000001/export?format=st-jsonl',
+    })).statusCode).toBe(404);
+  });
 });

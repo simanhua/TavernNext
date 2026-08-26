@@ -19,6 +19,7 @@ import {
   sceneSaveWindowName,
   type SceneRuntimeSignal,
 } from './scene-window.js';
+import { mountSceneStatusRail } from './status-rail.js';
 
 type LeaseState = 'checking' | 'active' | 'duplicate';
 
@@ -250,10 +251,11 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
           requireWorkspace();
           try {
             const current = latest.current.state ?? await api.getSceneState(conversationId!);
-            const updated = await api.patchSceneState(conversationId!, current.revision, operations);
-            queryClient.setQueryData(['scene-state', conversationId], updated);
+            const result = await api.patchSceneState(conversationId!, current.revision, operations);
+            queryClient.setQueryData(['scene-state', conversationId], result.state);
+            latest.current = { ...latest.current, state: result.state };
             announceSceneChanged(sceneId, conversationId!);
-            return updated;
+            return result;
           } catch (error) {
             return refreshAfterConflict(error);
           }
@@ -265,6 +267,7 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
           try {
             const result = await api.runSceneAction(conversationId!, action);
             queryClient.setQueryData(['scene-state', conversationId], result.state);
+            latest.current = { ...latest.current, state: result.state };
             announceSceneChanged(sceneId, conversationId!);
             return result;
           } catch (error) {
@@ -293,6 +296,9 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
           listener({ scheme: latest.current.theme.scheme, tokens: latest.current.theme.tokens });
           return () => themeListeners.current.delete(listener);
         },
+      },
+      ui: {
+        statusRail: { mount: mountSceneStatusRail },
       },
     };
   }, [conversationId, mode, navigate, queryClient, sceneId]);

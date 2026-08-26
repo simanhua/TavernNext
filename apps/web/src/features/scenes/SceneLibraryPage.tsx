@@ -27,7 +27,11 @@ export function SceneLibraryPage() {
         <div className="scene-card-grid">
           {(installed.data ?? []).map((scene) => (
             <Link className="scene-card" to={`/scenes/${scene.id}`} key={scene.id}>
-              <div className="scene-card-cover"><span>✦</span></div>
+              <div className="scene-card-cover">
+                {scene.coverUrl === undefined
+                  ? <span aria-hidden="true">✦</span>
+                  : <img className="scene-cover-image" src={scene.coverUrl} alt={`${scene.manifest.name} 封面`} />}
+              </div>
               <div><small>{scene.manifest.author}</small><h3>{scene.manifest.name}</h3><p>{scene.manifest.summary}</p><strong>{scene.conversationCount} 个存档</strong></div>
             </Link>
           ))}
@@ -39,7 +43,11 @@ export function SceneLibraryPage() {
         <div className="scene-card-grid">
           {(catalog.data ?? []).map((scene) => (
             <article className="scene-card" key={scene.sceneId}>
-              <div className="scene-card-cover catalog"><span>♜</span></div>
+              <div className="scene-card-cover catalog">
+                {scene.coverUrl === undefined
+                  ? <span aria-hidden="true">♜</span>
+                  : <img className="scene-cover-image" src={scene.coverUrl} alt={`${scene.name} 封面`} />}
+              </div>
               <div><small>{scene.author} · v{scene.version}</small><h3>{scene.name}</h3><p>{scene.summary}</p><button type="button" disabled={scene.installed || install.isPending} onClick={() => install.mutate(scene.sceneId)}>{scene.installed ? '已安装' : '安装官方场景'}</button></div>
             </article>
           ))}

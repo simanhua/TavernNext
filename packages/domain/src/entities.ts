@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CompatibilityMetadataSchema } from './compatibility.js';
 import { WorldbookTimedStateSchema } from './generation.js';
+import { ScenePatchOperationSchema, SceneStateDiagnosticSchema } from './scene-state.js';
 
 export const DomainIdSchema = z.string().uuid();
 export const TimestampSchema = z.string().datetime({ offset: true });
@@ -237,7 +238,6 @@ export const SceneCatalogEntrySchema = z.object({
   sceneId: DomainIdSchema,
   version: SceneManifestSchema.shape.version,
   packageUrl: z.string().min(1),
-  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
   minimumTavernNextVersion: SceneManifestSchema.shape.minimumTavernNextVersion,
   name: z.string().min(1),
   summary: z.string(),
@@ -286,6 +286,20 @@ export const ConversationSchema = MutableEntitySchema.extend({
 export const ConversationSceneStateSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   schemaVersion: z.number().int().positive().default(1),
+  baseValue: z.record(z.string(), z.unknown()).default({}),
+  headTransitionId: DomainIdSchema.nullable().default(null),
+  value: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const SceneStateTransitionSourceKindSchema = z.enum([
+  'message-variant', 'scene-action', 'sdk-patch',
+]);
+export const SceneStateTransitionSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  parentTransitionId: DomainIdSchema.nullable().default(null),
+  sourceKind: SceneStateTransitionSourceKindSchema,
+  sourceId: DomainIdSchema,
+  operations: z.array(ScenePatchOperationSchema).default([]),
   value: z.record(z.string(), z.unknown()).default({}),
 });
 
@@ -313,6 +327,7 @@ export const MessageVariantSchema = MutableEntitySchema.extend({
   model: z.string().optional(),
   tokenCount: z.number().finite().nonnegative().optional(),
   reasoningDuration: z.number().finite().nonnegative().optional(),
+  diagnostics: z.array(SceneStateDiagnosticSchema).default([]),
 }).extend(WithCompatibilitySchema.shape);
 
 export const ProviderProfileSchema = MutableEntitySchema.extend({
@@ -371,6 +386,8 @@ export type InstalledScene = z.infer<typeof InstalledSceneSchema>;
 export type ConversationPlayerProfile = z.infer<typeof ConversationPlayerProfileSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type ConversationSceneState = z.infer<typeof ConversationSceneStateSchema>;
+export type SceneStateTransitionSourceKind = z.infer<typeof SceneStateTransitionSourceKindSchema>;
+export type SceneStateTransition = z.infer<typeof SceneStateTransitionSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageVariant = z.infer<typeof MessageVariantSchema>;
 export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;

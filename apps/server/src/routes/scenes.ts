@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
+import { SceneActionResultSchema } from '@tavernnext/domain';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Repositories } from '../db/repositories.js';
-import { SceneServiceError, applyScenePatch, type SceneService } from '../scenes/scene-service.js';
+import { SceneServiceError, type SceneService } from '../scenes/scene-service.js';
 
 const mediaTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -53,7 +55,16 @@ export function registerSceneRoutes(
     try {
       const catalog = scenes.catalog();
       const installed = new Map(scenes.list().map((scene) => [scene.id, scene]));
-      return catalog.scenes.map((entry) => ({ ...entry, installed: installed.has(entry.sceneId) }));
+      return catalog.scenes.map((entry) => {
+        const scene = installed.get(entry.sceneId);
+        return {
+          ...entry,
+          installed: scene !== undefined,
+          ...(scene?.manifest.coverPath === undefined ? {} : {
+            coverUrl: `/api/scenes/${encodeURIComponent(scene.id)}/assets/${scene.manifest.coverPath}`,
+          }),
+        };
+      });
     } catch (error) {
       return sceneError(error, reply);
     }
@@ -126,16 +137,15 @@ export function registerSceneRoutes(
     const host = scenes.module(scene);
     if (host === undefined) return reply.status(400).send({ error: 'scene_action_unsupported' });
     try {
-      const raw = await host.call<{ statePatch?: unknown; result?: unknown }>('handleAction', {
+      const raw = SceneActionResultSchema.parse(await host.call('handleAction', {
         action: request.body, state: state.value, setup: conversation.setup,
         playerProfile: conversation.playerProfile, manifest: scene.manifest,
-      });
-      const next = raw.statePatch === undefined ? state : (() => {
-        const value = applyScenePatch(state.value, raw.statePatch);
-        const updated = repositories.conversationSceneStates.update(state.id, state.revision, { value });
-        if (!updated.ok) throw new SceneServiceError(updated.reason, 409);
-        return updated.value;
-      })();
+      }));
+      const next = raw.statePatch === undefined
+        ? state
+        : scenes.commitStateTransition(conversation.id, state.revision, raw.statePatch, {
+          kind: 'scene-action', id: randomUUID(),
+        });
       return { state: next, result: raw.result ?? null };
     } catch (error) {
       return sceneError(error, reply);

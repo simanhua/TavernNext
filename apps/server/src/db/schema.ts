@@ -109,6 +109,16 @@ export const conversationSceneStates = sqliteTable('conversation_scene_states', 
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
 }, (table) => [index('conversation_scene_states_conversation_id_idx').on(table.conversationId)]);
+export const sceneStateTransitions = sqliteTable('scene_state_transitions', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  parentTransitionId: text('parent_transition_id'),
+  sourceKind: text('source_kind').notNull(),
+  sourceId: text('source_id').notNull(),
+}, (table) => [
+  index('scene_state_transitions_conversation_idx').on(table.conversationId),
+  index('scene_state_transitions_source_idx').on(table.sourceKind, table.sourceId),
+]);
 export const conversationWorldbooks = sqliteTable('conversation_worldbooks', {
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
   worldbookId: text('worldbook_id').notNull().references(() => worldbooks.id),

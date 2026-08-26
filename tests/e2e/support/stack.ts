@@ -114,7 +114,6 @@ async function startMockProvider(): Promise<MockProvider> {
     },
   };
 }
-
 async function assertPortAvailable(port: number): Promise<void> {
   const reservation = createServer();
   try {
@@ -282,7 +281,6 @@ export async function exportArtifact(baseUrl: string, path: string): Promise<Exp
 export async function importArtifact(
   baseUrl: string,
   source: string | ExportedArtifact,
-  chatOptions?: { characterId: string; personaId: string; title: string },
 ): Promise<string> {
   const artifact = typeof source === 'string'
     ? {
@@ -296,11 +294,9 @@ export async function importArtifact(
   const inspected = await checkedResponse(await fetch(new URL('/api/imports/inspect', baseUrl), { method: 'POST', body: form }));
   const preview = await inspected.json() as { inspectionToken?: string; detected: { kind: string } };
   if (preview.inspectionToken === undefined) throw new Error(`No inspection token for ${artifact.fileName}.`);
-  const chat = preview.detected.kind === 'chat';
-  if (chat && chatOptions === undefined) throw new Error('Chat import requires Character, Persona, and title options.');
-  const receipt = await apiJson<{ entityId?: string }>(baseUrl, chat ? '/api/chats/imports/commit' : '/api/imports/commit', {
+  const receipt = await apiJson<{ entityId?: string }>(baseUrl, '/api/imports/commit', {
     method: 'POST',
-    body: { inspectionToken: preview.inspectionToken, ...(chatOptions ?? {}) },
+    body: { inspectionToken: preview.inspectionToken },
   });
   if (receipt.entityId === undefined) throw new Error(`Import did not create an entity for ${artifact.fileName}.`);
   return receipt.entityId;
@@ -338,29 +334,4 @@ export function normalizeWorldbook(value: any): unknown {
       return stable;
     }),
   };
-}
-
-export function normalizeChat(value: any): unknown {
-  return value.messages.map((message: any) => {
-    const variants = [...message.variants].sort((left, right) => left.ordinal - right.ordinal);
-    const {
-      id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
-      conversationId: _conversationId, activeVariantId: _activeVariantId,
-      variants: _variants, ...semanticMessage
-    } = message;
-    return {
-      ...semanticMessage,
-      activeVariantIndex: variants.findIndex((variant) => variant.id === message.activeVariantId),
-      variants: variants.map((variant) => {
-        const {
-          id: _variantId, revision: _variantRevision, createdAt: _variantCreatedAt, updatedAt: _variantUpdatedAt,
-          messageId: _messageId, ...semanticVariant
-        } = variant;
-        return {
-          ...semanticVariant,
-          content: message.role === 'assistant' ? variant.content : message.content,
-        };
-      }),
-    };
-  });
 }

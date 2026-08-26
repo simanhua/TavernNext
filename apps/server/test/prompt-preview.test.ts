@@ -136,7 +136,6 @@ describe('full prompt preview', () => {
     expect(first.worldbook.activated.map((entry: { content: string }) => entry.content)).toEqual([
       'GLOBAL-LORE',
       'CHARACTER-LORE',
-      'EMBEDDED-LORE',
       'CONVERSATION-LORE',
     ]);
     expect(first.worldbook.excluded).toEqual(expect.arrayContaining([

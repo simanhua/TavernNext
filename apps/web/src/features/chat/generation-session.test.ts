@@ -41,6 +41,12 @@ const conversation = {
   authorNote: '', authorNotePosition: 1, authorNoteDepth: 4, authorNoteRole: 0,
 } satisfies Conversation;
 
+const sceneConversation = {
+  ...conversation,
+  id: '018f0000-0000-7000-8000-000000000004',
+  sceneId: '018f0000-0000-7000-8000-000000000005',
+} satisfies Conversation;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.createCandidate.mockResolvedValue({
@@ -70,5 +76,22 @@ describe('GenerationSessionController', () => {
       { type: 'text-delta', text: ' world' },
     ]);
     expect(controller.getSnapshot()).toMatchObject({ status: 'idle', streamedText: '', streamedReasoning: '' });
+  });
+
+  it('uses the server-owned Scene recipe without sealing a client candidate', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const controller = new GenerationSessionController({ refreshAuthoritativeState: refresh });
+
+    await expect(controller.start(sceneConversation, { mode: 'normal', userText: 'go' })).resolves.toBe('accepted');
+
+    expect(mocks.createCandidate).not.toHaveBeenCalled();
+    expect(mocks.trustedHooks).not.toHaveBeenCalled();
+    expect(mocks.sealCandidate).not.toHaveBeenCalled();
+    expect(mocks.startGeneration).toHaveBeenCalledWith(
+      sceneConversation,
+      { mode: 'normal', userText: 'go' },
+      expect.any(AbortSignal),
+    );
+    expect(refresh).toHaveBeenCalledWith(sceneConversation.id);
   });
 });

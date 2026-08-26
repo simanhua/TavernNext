@@ -23,11 +23,20 @@ export function registerConversationRoutes(
     return conversation;
   }),
   (id, revision) => database.transaction(() => {
+    const conversation = repositories.conversations.get(id);
+    const internalPersona = conversation === undefined
+      ? undefined
+      : repositories.personas.get(conversation.personaId);
     const variants = repositories.messageVariants.listByConversationId(id);
     const result = repositories.conversations.delete(id, revision);
     if (result.ok) {
       repositories.extensionStates.deleteByScope('conversation', id);
       for (const variant of variants) repositories.extensionStates.deleteByScope('message-variant', variant.id);
+      if (internalPersona?.sceneInternal
+        && !repositories.conversations.list(4_096).some((item) => item.personaId === internalPersona.id)) {
+        const deletedPersona = repositories.personas.delete(internalPersona.id, internalPersona.revision);
+        if (!deletedPersona.ok && deletedPersona.reason !== 'not_found') throw new Error(deletedPersona.reason);
+      }
     }
     return result;
   }));

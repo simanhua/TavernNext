@@ -644,7 +644,7 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 
 function jsonCandidates(value: unknown): ArtifactKind[] {
   const object = objectRecord(value);
-  if (object === undefined) return Array.isArray(value) ? ['chat'] : [];
+  if (object === undefined) return [];
   const data = objectRecord(object.data);
   const candidates: ArtifactKind[] = [];
   const isWorldbook = 'entries' in object
@@ -714,7 +714,7 @@ function inspectJson(preview: ImportPreview, input: SourceArtifact, limits: Insp
   applyJsonDetection(preview, parseJson(input.bytes), 'json');
 }
 
-function inspectJsonLines(preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits): void {
+function inspectJsonLines(_preview: ImportPreview, input: SourceArtifact, limits: InspectionLimits): void {
   checkTextLines(input.bytes, limits.maxTextLineBytes);
   const lines = strictText(input.bytes).split(/\r?\n/).filter((line) => line.trim() !== '');
   if (lines.length === 0) throw new InspectionFailure(diagnostic('invalid_jsonl', 'The JSONL document contains no records.'));
@@ -723,8 +723,10 @@ function inspectJsonLines(preview: ImportPreview, input: SourceArtifact, limits:
   } catch {
     throw new InspectionFailure(diagnostic('invalid_jsonl', 'Every non-empty JSONL line must be valid JSON.'));
   }
-  preview.detected = { container: 'jsonl', kind: 'chat', version: '1', candidates: ['chat'] };
-  preview.normalizedPreview = { lineCount: lines.length };
+  throw new InspectionFailure(diagnostic(
+    'jsonl_import_unsupported',
+    'Legacy chat JSONL import is not supported.',
+  ));
 }
 
 function strictBase64(

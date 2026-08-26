@@ -31,7 +31,6 @@ import { registerProviderRoutes } from './routes/providers.js';
 import type { ProviderProbeFactory } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
-import { registerChatImportExportRoutes } from './routes/chat-import-export.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
@@ -40,7 +39,6 @@ import { createGenerationCandidateService } from './services/generation-candidat
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
-import { createChatImportHandler } from './services/chat-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
 import {
@@ -217,7 +215,6 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       createCharacterImportHandler(),
       createPresetImportHandler(),
       createWorldbookImportHandler(),
-      createChatImportHandler(),
     ],
     ...(options.importClock === undefined ? {} : { clock: options.importClock }),
     ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
@@ -314,7 +311,6 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     || process.env.TAVERNNEXT_ENABLE_LEGACY_ASSET_API === 'true';
   if (legacyAssetApiEnabled) {
     registerImportRoutes(app, imports);
-    registerChatImportExportRoutes(app, imports, repositories);
     registerCharacterRoutes(app, database, repositories);
     registerAvatarRoutes(
       app,
@@ -369,7 +365,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   }, options.providerProbeFactory ?? ((profile: OpenAICompatibleProfile) => createOpenAICompatibleClient(profile)));
   registerGlobalGenerationConfigRoutes(app, repositories);
   registerConversationRoutes(app, database, repositories, generations);
-  registerMessageRoutes(app, database, repositories, generations);
+  registerMessageRoutes(app, database, repositories, generations, scenes);
   registerPromptPreviewRoutes(app, promptPreviews);
   registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);

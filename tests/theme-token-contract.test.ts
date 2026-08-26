@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { buildDestinedPoemPackage, verifiedOfficialCatalog } from '../apps/server/src/scenes/official-package.js';
+import { buildDestinedPoemPackage, officialCatalog } from '../apps/server/src/scenes/official-package.js';
 
 const requiredTokens = [
   '--vp-c-bg', '--vp-c-bg-alt', '--vp-c-bg-elv', '--vp-c-bg-soft',
@@ -13,7 +13,7 @@ const requiredTokens = [
 ] as const;
 
 describe('host and Scene theme token contract', () => {
-  it('keeps every allowlisted VitePress token in both signed stylesheets', () => {
+  it('keeps every allowlisted VitePress token in both trusted built-in stylesheets', () => {
     const hostCss = readFileSync(resolve('apps/web/src/styles.css'), 'utf8');
     const scenePackage = buildDestinedPoemPackage();
     const sceneCss = strFromU8(unzipSync(scenePackage.bytes)['frontend/styles.css']!);
@@ -21,7 +21,10 @@ describe('host and Scene theme token contract', () => {
       expect(hostCss, `host ${token}`).toContain(`${token}:`);
       expect(sceneCss, `scene ${token}`).toContain(`${token}:`);
     }
-    expect(scenePackage.manifest.version).toBe('2.0.0');
-    expect(verifiedOfficialCatalog().scenes[0]?.archiveSha256).toBe(scenePackage.digest);
+    expect(scenePackage.manifest.version).toBe('2.5.0');
+    expect(officialCatalog().scenes[0]).toMatchObject({
+      sceneId: scenePackage.manifest.id,
+      version: scenePackage.manifest.version,
+    });
   });
 });

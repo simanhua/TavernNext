@@ -64,6 +64,30 @@ export function capturedProvider(
   };
 }
 
+export function queuedCapturedProvider(
+  batches: readonly (readonly ProviderEvent[])[],
+): CapturedProvider {
+  const chat: ChatRequest[] = [];
+  const text: TextRequest[] = [];
+  let call = 0;
+  const events = () => batches[Math.min(call++, batches.length - 1)] ?? [];
+  return {
+    chat,
+    text,
+    client: {
+      listModels: async () => [],
+      async *streamChat(request) {
+        chat.push(structuredClone(request));
+        for (const event of events()) yield event;
+      },
+      async *streamText(request) {
+        text.push(structuredClone(request));
+        for (const event of events()) yield event;
+      },
+    },
+  };
+}
+
 export interface TestTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
   countText(text: string, decision: TokenizerDecision): Promise<number>;

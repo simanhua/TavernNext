@@ -52,13 +52,33 @@ export function SceneDetailPage() {
       navigate('/');
     },
   });
+  const deleteSave = useMutation({
+    mutationFn: async (conversation: NonNullable<typeof conversations.data>[number]) => {
+      const accepted = window.confirm(`永久删除存档“${conversation.title}”及其全部消息和状态？此操作不可撤销。`);
+      if (!accepted) return undefined;
+      await api.deleteConversation(conversation);
+      return conversation.id;
+    },
+    onSuccess: async (conversationId) => {
+      if (conversationId === undefined) return;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['scene', sceneId] }),
+        queryClient.invalidateQueries({ queryKey: ['scene-conversations', sceneId] }),
+        queryClient.invalidateQueries({ queryKey: ['scenes'] }),
+      ]);
+    },
+  });
   if (scene.isLoading) return <main className="scene-detail-page"><p>正在加载场景…</p></main>;
   if (scene.data === undefined) return <main className="scene-detail-page"><p role="alert">场景不存在。</p></main>;
   return (
     <main className="scene-detail-page">
       <Link to="/" className="back-link"><span aria-hidden="true">←</span> 返回角色卡</Link>
       <section className="scene-detail-hero">
-        <div className="scene-detail-cover" aria-hidden="true"><span>✦</span><small>Scene Package</small></div>
+        <div className={`scene-detail-cover${scene.data.coverUrl === undefined ? '' : ' has-image'}`}>
+          {scene.data.coverUrl === undefined
+            ? <><span aria-hidden="true">✦</span><small>Scene Package</small></>
+            : <img className="scene-cover-image" src={scene.data.coverUrl} alt={`${scene.data.manifest.name} 封面`} />}
+        </div>
         <div className="scene-detail-hero-content">
           <span className="eyebrow">{scene.data.manifest.author}<i aria-hidden="true">·</i>v{scene.data.version}</span>
           <h1>{scene.data.manifest.name}</h1>
@@ -78,13 +98,23 @@ export function SceneDetailPage() {
         <header className="scene-section-header"><div><span className="eyebrow">Saved Sessions</span><h2>存档</h2></div><span className="scene-save-count">{conversations.data?.length ?? 0}</span></header>
         <div className="save-list">
           {(conversations.data ?? []).map((conversation) => (
-            <button type="button" key={conversation.id} onClick={() => launch(`/scene-runtime/${sceneId}/conversations/${conversation.id}`, sceneSaveWindowName(conversation.id))}>
-              <span className="save-list-primary"><strong>{conversation.title}</strong><small>{conversation.playerProfile?.name ?? '旅人'}</small></span>
-              <span className="save-list-meta"><time>{new Date(conversation.updatedAt).toLocaleString()}</time><i aria-hidden="true">→</i></span>
-            </button>
+            <article className="save-list-item" key={conversation.id}>
+              <button className="save-open" type="button" onClick={() => launch(`/scene-runtime/${sceneId}/conversations/${conversation.id}`, sceneSaveWindowName(conversation.id))}>
+                <span className="save-list-primary"><strong>{conversation.title}</strong><small>{conversation.playerProfile?.name ?? '旅人'}</small></span>
+                <span className="save-list-meta"><time>{new Date(conversation.updatedAt).toLocaleString()}</time><i aria-hidden="true">→</i></span>
+              </button>
+              <button
+                className="save-delete"
+                type="button"
+                disabled={deleteSave.isPending}
+                aria-label={`删除存档 ${conversation.title}`}
+                onClick={() => deleteSave.mutate(conversation)}
+              >{deleteSave.isPending && deleteSave.variables?.id === conversation.id ? '删除中…' : '删除'}</button>
+            </article>
           ))}
           {conversations.data?.length === 0 ? <p className="empty-state">还没有存档，从自定义开局开始。</p> : null}
         </div>
+        {deleteSave.error ? <p className="scene-save-delete-error" role="alert">删除失败：{errorCode(deleteSave.error)}</p> : null}
       </section>
       <section className="danger-zone">
         <div><span className="eyebrow">Danger Zone</span><h2>卸载场景</h2><p>卸载会在创建数据库备份后级联删除全部存档。</p>{uninstall.error ? <p role="alert">卸载失败：{errorCode(uninstall.error)}</p> : null}</div>
