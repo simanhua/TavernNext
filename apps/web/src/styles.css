@@ -1713,3 +1713,36 @@ button[type="submit"]:hover:not(:disabled),
   .tn-status-rail-body { height: calc(min(78vh, 720px) - 112px); }
   .tn-status-rail-layout.tn-status-rail-open .tn-status-rail { transform: translateY(0); }
 }
+
+.scene-view {
+  margin: .9rem 0;
+  padding: .85rem;
+  border: 1px solid color-mix(in srgb, var(--vermilion-bright) 45%, transparent);
+  border-radius: .75rem;
+  background: color-mix(in srgb, var(--ink-800) 88%, var(--vermilion) 12%);
+}
+
+.scene-view > header,
+.scene-combatant {
+  display: flex;
+  gap: .55rem;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.scene-combat-grid {
+  display: grid;
+  gap: .6rem;
+  margin-top: .65rem;
+}
+
+.scene-combatant {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) auto;
+}
+
+.scene-combatant progress,
+.scene-combatant small {
+  grid-column: 1 / -1;
+  width: 100%;
+}

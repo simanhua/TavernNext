@@ -11,6 +11,8 @@ import {
   type SceneManifest,
   roleplayDocumentFromMarkdown,
   roleplayDocumentPlainText,
+  appendRoleplayMarkdown,
+  type RoleplayDocument,
 } from '@tavernnext/domain';
 import type {
   ChatRequest,
@@ -51,6 +53,7 @@ import {
   type PiAgentRuntimeFactory,
 } from './scene-director-agent.js';
 import { createSceneAgentToolFactory, type SceneAgentToolFactory } from './scene-agent-tools.js';
+import { createSceneViewRuntimeFactory, type SceneViewRuntimeFactory } from './scene-view-runtime.js';
 
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
 
@@ -217,6 +220,10 @@ export function createGenerationService(options: {
     let content = mode === 'continue' && variant !== undefined
       ? roleplayDocumentPlainText(variant.document)
       : '';
+    const initialDocument: RoleplayDocument = mode === 'continue' && variant !== undefined
+      ? structuredClone(variant.document)
+      : roleplayDocumentFromMarkdown('');
+    let document: RoleplayDocument = structuredClone(initialDocument);
     const initialContent = content;
     let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
     let hasDelta = false;
@@ -235,7 +242,7 @@ export function createGenerationService(options: {
       if (variant === undefined) return;
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
-        document: roleplayDocumentFromMarkdown(content),
+        document,
         ...(reasoning === '' ? {} : { reasoning }),
         status,
         diagnostics: sceneDiagnostics,
@@ -267,7 +274,7 @@ export function createGenerationService(options: {
           messageId: message.id,
           ordinal: 0,
             content,
-            document: roleplayDocumentFromMarkdown(content),
+            document,
           ...(reasoning === '' ? {} : { reasoning }),
           status: 'streaming',
           continuationBoundaries: [],
@@ -282,7 +289,7 @@ export function createGenerationService(options: {
           messageId: targetMessage!.id,
           ordinal,
             content,
-            document: roleplayDocumentFromMarkdown(content),
+            document,
           ...(reasoning === '' ? {} : { reasoning }),
           status: 'streaming',
           continuationBoundaries: [],
@@ -447,6 +454,27 @@ export function createGenerationService(options: {
           hasDelta = false;
           hasReasoningDelta = false;
         }
+      }
+      if (outcome === 'completed' && prepared.sceneDirector !== undefined) {
+        const resolved = await prepared.sceneDirector.resolveRoleplayDocument(content, controller.signal);
+        if (controller.signal.aborted) {
+          outcome = 'aborted';
+        } else {
+          document = resolved.document;
+          content = roleplayDocumentPlainText(document);
+          sceneDiagnostics.push(...resolved.diagnostics);
+          if (content.trim() === '') {
+            outcome = 'failed';
+            failureCode = 'empty_narrative';
+            hasDelta = false;
+            hasReasoningDelta = false;
+          }
+        }
+      } else {
+        document = mode === 'continue'
+          ? appendRoleplayMarkdown(initialDocument, content.slice(initialContent.length))
+          : roleplayDocumentFromMarkdown(content);
+        content = roleplayDocumentPlainText(document);
       }
       let agentTerminal: SceneDirectorTerminal | undefined;
       try {
@@ -636,6 +664,7 @@ export function createGenerationService(options: {
         let sceneTransition: PreparedGenerationBase['sceneTransition'];
         let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
         let sceneAgentToolFactory: SceneAgentToolFactory | undefined;
+        let sceneViewRuntimeFactory: SceneViewRuntimeFactory | undefined;
         if (sceneService !== undefined) {
           const conversation = repositories.conversations.get(input.conversationId);
           const scene = conversation?.sceneId === undefined ? undefined : sceneService.get(conversation.sceneId);
@@ -681,6 +710,7 @@ export function createGenerationService(options: {
             };
             scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
             sceneAgentToolFactory = createSceneAgentToolFactory({ scene, host, conversation });
+            sceneViewRuntimeFactory = createSceneViewRuntimeFactory({ scene, host, conversation });
           }
         }
         let sceneDirector: SceneDirectorExecution | undefined;
@@ -717,6 +747,7 @@ export function createGenerationService(options: {
               },
             }),
             ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
+            ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
           });
           await execution.validatePromptBudget(runtimeTokenizer);
           sceneDirector = execution;
@@ -769,6 +800,7 @@ export function createGenerationService(options: {
               },
             }),
             ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
+            ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
           });
           await execution.validatePromptBudget(runtimeTokenizer);
           sceneDirector = execution;

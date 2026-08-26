@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 
 export type SceneHookName = 'initializeConversation' | 'beforeGeneration' | 'afterGeneration'
-  | 'handleAction' | 'executeAgentTool';
+  | 'handleAction' | 'executeAgentTool' | 'projectSceneView';
 
 const workerSource = `
 const { parentPort, workerData } = require('node:worker_threads');
@@ -14,8 +14,10 @@ parentPort.on('message', async message => {
   try {
     const scene = await moduleValue();
     const hook = scene[message.hook];
-    if (message.hook === 'executeAgentTool' && typeof hook !== 'function') {
-      throw new Error('scene_agent_tool_hook_missing');
+    if ((message.hook === 'executeAgentTool' || message.hook === 'projectSceneView') && typeof hook !== 'function') {
+      throw new Error(message.hook === 'executeAgentTool'
+        ? 'scene_agent_tool_hook_missing'
+        : 'scene_view_projection_hook_missing');
     }
     const value = typeof hook === 'function' ? await hook(structuredClone(message.input)) : {};
     parentPort.postMessage({ id: message.id, ok: true, value });

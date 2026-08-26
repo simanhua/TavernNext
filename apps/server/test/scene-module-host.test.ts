@@ -50,6 +50,8 @@ describe('Scene server module runtime isolation', () => {
     const host = new SceneModuleHost(moduleUrl('export default { beforeGeneration() { return {}; } }'));
     await expect(host.call('executeAgentTool', { toolName: 'missing' }))
       .rejects.toThrow('scene_agent_tool_hook_missing');
+    await expect(host.call('projectSceneView', { kind: 'missing' }))
+      .rejects.toThrow('scene_view_projection_hook_missing');
     await expect(host.call('beforeGeneration', {})).resolves.toEqual({});
     await host.close();
   });

@@ -14,8 +14,10 @@ import type {
   SceneManifest,
   ScenePatchFailure,
   ScenePatchOperation,
+  RoleplayDocument,
+  SceneStateDiagnostic,
 } from '@tavernnext/domain';
-import { roleplayDocumentPlainText } from '@tavernnext/domain';
+import { roleplayDocumentFromMarkdown, roleplayDocumentPlainText } from '@tavernnext/domain';
 import type { PiAgentModelRuntime, ProviderEvent } from '@tavernnext/provider-openai-compatible';
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
 import type { Repositories } from '../db/repositories.js';
@@ -26,6 +28,10 @@ import {
 } from './prompt-snapshot-service.js';
 import { TurnWorkspace, type TurnWorkspaceSnapshot } from './turn-workspace.js';
 import type { SceneAgentToolFactory } from './scene-agent-tools.js';
+import {
+  type SceneViewRuntime,
+  type SceneViewRuntimeFactory,
+} from './scene-view-runtime.js';
 
 export interface SceneDirectorLimits {
   maxModelTurns: number;
@@ -366,6 +372,7 @@ export class SceneDirectorExecution {
   private metricsFrozen = false;
   private promptPlanAudit: AgentRun['promptPlan'] | undefined;
   private readonly workspace: TurnWorkspace;
+  private readonly sceneViewRuntime: SceneViewRuntime | undefined;
   private readonly metrics: MutableMetrics = {
     modelTurns: 0,
     toolCalls: 0,
@@ -416,6 +423,7 @@ export class SceneDirectorExecution {
       initialFailures?: ScenePatchFailure[];
     };
     sceneAgentToolFactory?: SceneAgentToolFactory;
+    sceneViewRuntimeFactory?: SceneViewRuntimeFactory;
   }) {
     const conversation = input.repositories.conversations.get(input.payload.input.conversationId);
     const character = conversation === undefined ? undefined : input.repositories.characters.get(conversation.characterId);
@@ -446,9 +454,11 @@ export class SceneDirectorExecution {
       payload: structuredClone(input.payload),
       ...(input.workspaceState === undefined ? {} : { state: structuredClone(input.workspaceState) }),
     });
+    this.sceneViewRuntime = input.sceneViewRuntimeFactory?.(this.workspace);
     const tools = [
       ...this.workspace.tools(),
       ...(input.sceneAgentToolFactory?.(this.workspace) ?? []),
+      ...(this.sceneViewRuntime === undefined ? [] : [this.sceneViewRuntime.tool()]),
     ];
     this.plan = {
       configuration: frozenConfiguration,
@@ -774,5 +784,14 @@ export class SceneDirectorExecution {
 
   stageWorkspacePatch(rawOperations: unknown) {
     return this.workspace.stagePatch(rawOperations);
+  }
+
+  async resolveRoleplayDocument(
+    markdown: string,
+    signal?: AbortSignal,
+  ): Promise<{ document: RoleplayDocument; diagnostics: SceneStateDiagnostic[] }> {
+    return this.sceneViewRuntime === undefined
+      ? { document: roleplayDocumentFromMarkdown(markdown), diagnostics: [] }
+      : this.sceneViewRuntime.resolve(markdown, signal);
   }
 }

@@ -98,6 +98,62 @@ function runtime(contexts: Context[]): PiAgentModelRuntime {
   };
 }
 
+function viewRuntime(contexts: Context[]): PiAgentModelRuntime {
+  let turn = 0;
+  return {
+    model,
+    stream(_model, context) {
+      contexts.push({
+        ...(context.systemPrompt === undefined ? {} : { systemPrompt: context.systemPrompt }),
+        messages: structuredClone(context.messages),
+        ...(context.tools === undefined ? {} : {
+          tools: context.tools.map((tool) => ({
+            name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters),
+          })),
+        }),
+      });
+      const events = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        if (turn++ === 0) {
+          const toolCall = {
+            type: 'toolCall' as const,
+            id: 'view-1',
+            name: 'scene_view_stage',
+            arguments: { kind: 'combat', relatedEntities: ['archive_guard'], insertionIntent: 'inline' },
+          };
+          const partial: AssistantMessage = {
+            role: 'assistant', content: [toolCall], api: model.api, provider: model.provider,
+            model: model.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
+          };
+          events.push({ type: 'start', partial });
+          events.push({ type: 'toolcall_end', contentIndex: 0, toolCall, partial });
+          const message: AssistantMessage = { ...partial, stopReason: 'toolUse' };
+          events.push({ type: 'done', reason: 'toolUse', message });
+          events.end(message);
+          return;
+        }
+        const staged = context.messages.find((message) => (
+          message.role === 'toolResult' && message.toolName === 'scene_view_stage'
+        ));
+        const reference = staged?.role === 'toolResult'
+          ? (staged.details as { reference: string }).reference
+          : '';
+        const text = `战斗爆发。${reference}局势仍在变化。`;
+        const partial: AssistantMessage = {
+          role: 'assistant', content: [{ type: 'text', text: '' }], api: model.api,
+          provider: model.provider, model: model.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
+        };
+        events.push({ type: 'start', partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: text, partial });
+        const message: AssistantMessage = { ...partial, content: [{ type: 'text', text }], stopReason: 'stop' };
+        events.push({ type: 'done', reason: 'stop', message });
+        events.end(message);
+      });
+      return events;
+    },
+  };
+}
+
 function terminal(payload: string) {
   const frame = payload.trim().split(/\r?\n\r?\n/).filter(Boolean).at(-1)!;
   const lines = frame.split(/\r?\n/);
@@ -115,11 +171,20 @@ describe('bundled Scene Agent tools', () => {
     migrateDatabase(database);
     const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
     const contexts: Context[] = [];
+    let runtimeFactory = () => runtime(contexts);
     const app = createApp({
       database,
       snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
       tokenizerRuntime: unitTokenizerRuntime(),
-      piAgentRuntimeFactory: () => runtime(contexts),
+      piAgentRuntimeFactory: () => runtimeFactory(),
+      providerClientFactory: () => ({
+        listModels: async () => [],
+        async *streamChat() {
+          yield { type: 'delta' as const, text: ' 战斗余波。' };
+          yield { type: 'completed' as const, finishReason: 'stop' };
+        },
+        async *streamText() {},
+      }),
     });
     apps.push(app);
     await app.ready();
@@ -156,7 +221,7 @@ describe('bundled Scene Agent tools', () => {
     expect(terminal(response.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
       'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
-      'destined_poem_adjust_fate',
+      'destined_poem_adjust_fate', 'scene_view_stage',
     ]);
     const toolResult = contexts[1]!.messages.find((message) => (
       message.role === 'toolResult' && message.toolName === 'destined_poem_adjust_fate'
@@ -183,6 +248,72 @@ describe('bundled Scene Agent tools', () => {
       }),
     ]);
 
+    const currentState = repositories.conversationSceneStates.getByConversationId(conversation.id)!;
+    const objectiveState = structuredClone(currentState.value);
+    const protagonist = objectiveState.主角 as Record<string, unknown>;
+    protagonist.姓名 = '艾琳';
+    protagonist.生命值 = 18;
+    protagonist.生命值上限 = 24;
+    protagonist.状态效果 = { 专注: true };
+    objectiveState.事件 = { ...(objectiveState.事件 as Record<string, unknown>), 标题: '档案馆防卫战' };
+    objectiveState.关系列表 = {
+      archive_guard: {
+        姓名: '噬页兽', 生命值: 9, 生命值上限: 15, 状态效果: { 灼烧: true },
+      },
+    };
+    expect(repositories.conversationSceneStates.update(currentState.id, currentState.revision, {
+      value: objectiveState,
+    }).ok).toBe(true);
+    const viewContexts: Context[] = [];
+    runtimeFactory = () => viewRuntime(viewContexts);
+    const currentConversation = repositories.conversations.get(conversation.id)!;
+    const viewResponse = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversation.id}/generations`,
+      payload: { conversationRevision: currentConversation.revision, mode: 'normal', userText: '展示当前战况。' },
+    });
+    expect(terminal(viewResponse.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
+    expect(viewContexts[0]!.tools?.map((tool) => tool.name)).toContain('scene_view_stage');
+    const viewVariant = repositories.messageVariants.listByConversationId(conversation.id).at(-1)!;
+    expect(viewVariant.content).toBe('战斗爆发。局势仍在变化。');
+    expect(viewVariant.document.blocks).toEqual([
+      { type: 'markdown', content: '战斗爆发。' },
+      expect.objectContaining({
+        type: 'scene-view',
+        kind: 'combat',
+        schemaVersion: 1,
+        rendererId: 'destined-poem-combat-v1',
+        sourceStateRevision: 2,
+        props: {
+          title: '档案馆防卫战',
+          location: '梵尼亚',
+          protagonist: { name: '艾琳', hp: 18, maxHp: 24, statuses: ['专注'] },
+          opponents: [{
+            id: 'archive_guard', name: '噬页兽', hp: 9, maxHp: 15, statuses: ['灼烧'],
+          }],
+        },
+      }),
+      { type: 'markdown', content: '局势仍在变化。' },
+    ]);
+    const reloaded = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/messages` });
+    expect(reloaded.json().messages.at(-1).variants[0].document).toEqual(viewVariant.document);
+    const beforeContinue = structuredClone(viewVariant.document);
+    const continueResponse = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversation.id}/generations`,
+      payload: {
+        conversationRevision: repositories.conversations.get(conversation.id)!.revision,
+        mode: 'continue',
+        messageIndex: repositories.messages.listByConversationId(conversation.id).length,
+      },
+    });
+    expect(continueResponse.statusCode).toBe(200);
+    expect(terminal(continueResponse.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
+    const continued = repositories.messageVariants.get(viewVariant.id)!;
+    expect(continued.content).toBe(`${viewVariant.content} 战斗余波。`);
+    expect(continued.document.blocks.slice(0, -1)).toEqual(beforeContinue.blocks.slice(0, -1));
+    expect(continued.document.blocks.at(-1)).toEqual({
+      type: 'markdown', content: '局势仍在变化。 战斗余波。',
+    });
+
     const official = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     const firstPackage = buildDestinedPoemPackage();
     const originalFirstByte = firstPackage.bytes[0];
@@ -200,6 +331,21 @@ describe('bundled Scene Agent tools', () => {
       host: { call: async () => ({}) } as unknown as SceneModuleHost,
       conversation: repositories.conversations.get(conversation.id)!,
     })).toBeUndefined();
+    expect(() => createSceneAgentToolFactory({
+      scene: {
+        ...official,
+        manifest: {
+          ...official.manifest,
+          agentTools: [{
+            name: 'scene_view_stage',
+            description: 'Must remain reserved for the platform.',
+            parameters: { type: 'object' },
+          }],
+        },
+      },
+      host: { call: async () => ({}) } as unknown as SceneModuleHost,
+      conversation: repositories.conversations.get(conversation.id)!,
+    })).toThrow('scene_agent_tool_name_reserved');
 
     const partialWorkspace = new TurnWorkspace({
       generationId: randomUUID(),

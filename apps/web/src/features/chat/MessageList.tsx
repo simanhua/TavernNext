@@ -10,8 +10,9 @@ import { useActiveRegexScripts } from './useActiveRegexScripts.js';
 import {
   roleplayDocumentFromMarkdown,
   roleplayDocumentPlainText,
-  type RoleplayMarkdownBlock,
+  type RoleplayDocument,
 } from '@tavernnext/domain';
+import { SceneViewBlock } from './SceneViewBlock.js';
 
 interface MessageListProps {
   conversationId: string | null;
@@ -35,7 +36,7 @@ function authoritativeContent(message: MessageView): string {
     : roleplayDocumentPlainText(variant.document);
 }
 
-function markdownBlocks(content: string, document?: { blocks: RoleplayMarkdownBlock[] }): RoleplayMarkdownBlock[] {
+function roleplayBlocks(content: string, document?: RoleplayDocument): RoleplayDocument['blocks'] {
   return document?.blocks ?? roleplayDocumentFromMarkdown(content).blocks;
 }
 
@@ -109,8 +110,8 @@ export function MessageList({
           ? generationTarget.mode === 'continue' ? generationTarget.baseContent + streamedText : streamedText
           : baseContent;
         const blocks = message.role === 'assistant' && generationTarget?.messageId !== message.id
-          ? markdownBlocks(content, activeVariant?.document)
-          : message.role === 'assistant' ? markdownBlocks(content) : [];
+          ? roleplayBlocks(content, activeVariant?.document)
+          : message.role === 'assistant' ? roleplayBlocks(content) : [];
         const reasoning = generationTarget?.messageId === message.id && streamedReasoning !== ''
           ? streamedReasoning
           : activeVariant?.reasoning ?? '';
@@ -164,8 +165,9 @@ export function MessageList({
                     : t('No final response was generated.')}</p>
                 ) : <div className="mes_text">{message.role !== 'assistant'
                   ? <MarkdownContent content={content} />
-                  : blocks.map((block, blockIndex) => (
-                  <RegexProjectedMarkdownContent
+                  : blocks.map((block, blockIndex) => block.type === 'scene-view' ? (
+                    <SceneViewBlock key={block.viewId} block={block} />
+                  ) : <RegexProjectedMarkdownContent
                     key={blockIndex}
                     content={block.content}
                     role={message.role}
@@ -182,8 +184,7 @@ export function MessageList({
                           hasReasoning: reasoning !== '',
                         }
                       : undefined}
-                  />
-                  ))}</div>}
+                  />)}</div>}
               </>
             )}
             {message.id === lastAssistantId ? (

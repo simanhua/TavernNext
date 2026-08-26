@@ -12,7 +12,7 @@ const MAX_TOOL_RESULT_BYTES = 64 * 1024;
 const MAX_WORLD_RESULTS = 20;
 
 export const PLATFORM_AGENT_TOOL_NAMES = [
-  'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
+  'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage', 'scene_view_stage',
 ] as const;
 
 function record(value: unknown): Record<string, unknown> | undefined {

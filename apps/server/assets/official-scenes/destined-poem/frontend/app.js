@@ -1,9 +1,9 @@
 let root;
-import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.5.0';
+import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.6.0';
 import {
   attributeAllocationPatch,
   createDestinedPoemStatusRailModel,
-} from './status-rail.mjs?v=2.5.0';
+} from './status-rail.mjs?v=2.6.0';
 
 let sdk;
 let context;
@@ -176,7 +176,7 @@ async function renderWorkspace() {
   const state = stateRow.value || {};
   const tabs = [['chat', '对话'], ['quests', '任务'], ['relationships', '关系'], ['map', '地图']];
   statusRailController?.destroy();
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.5.0</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.6.0</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
   document.querySelectorAll('[data-tab]').forEach((button) => { button.onclick = () => { activeTab = button.dataset.tab; renderWorkspace(); }; });
   bindStatusRail(state);
   const area = document.querySelector('#content');

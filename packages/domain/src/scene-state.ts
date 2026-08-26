@@ -41,10 +41,12 @@ export const ScenePatchFailureSchema = z.object({
 }).strict();
 
 export const SceneStateDiagnosticSchema = z.object({
-  source: z.enum(['scene-output-protocol', 'scene-hook']),
+  source: z.enum(['scene-output-protocol', 'scene-hook', 'scene-view']),
   code: z.string().min(1).max(160),
   appliedCount: z.number().int().nonnegative().optional(),
   failures: z.array(ScenePatchFailureSchema).max(512).default([]),
+  viewRef: z.string().max(160).optional(),
+  viewKind: z.string().max(64).optional(),
 }).strict();
 
 export const ScenePromptAdditionSchema = z.object({

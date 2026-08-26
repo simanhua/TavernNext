@@ -67,7 +67,7 @@ export function destinedPoemManifest(): SceneManifest {
   return SceneManifestSchema.parse({
     id: DESTINED_POEM_SCENE_ID,
     slug: 'destined-poem',
-    version: '2.5.0',
+    version: '2.6.0',
     name: '命定之诗与黄昏之歌',
     summary: '在阿斯塔利亚开启一段拥有独立状态、任务、关系与地图的命运旅程。',
     description: '完整迁移自命定之诗与黄昏之歌 v4.2 的官方 TavernNext 场景。每个存档拥有隔离的消息和世界状态。',
@@ -93,6 +93,44 @@ export function destinedPoemManifest(): SceneManifest {
           reason: { type: 'string', minLength: 1, maxLength: 200 },
         },
       },
+    }],
+    sceneViews: [{
+      kind: 'combat',
+      schemaVersion: 1,
+      projection: {
+        hook: 'projectSceneView',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'location', 'protagonist', 'opponents'],
+          properties: {
+            title: { type: 'string' },
+            location: { type: 'string' },
+            protagonist: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['name', 'hp', 'maxHp', 'statuses'],
+              properties: {
+                name: { type: 'string' }, hp: { type: 'number' }, maxHp: { type: 'number' },
+                statuses: { type: 'array', items: { type: 'string' } },
+              },
+            },
+            opponents: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['id', 'name', 'hp', 'maxHp', 'statuses'],
+                properties: {
+                  id: { type: 'string' }, name: { type: 'string' }, hp: { type: 'number' }, maxHp: { type: 'number' },
+                  statuses: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+      },
+      renderer: { id: 'destined-poem-combat-v1' },
     }],
     files: [
       'manifest.json', 'frontend/app.js', 'frontend/action-info.mjs', 'frontend/status-rail.mjs', 'frontend/styles.css',

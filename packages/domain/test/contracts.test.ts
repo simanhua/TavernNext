@@ -7,6 +7,8 @@ import {
   MessageVariantSchema,
   roleplayDocumentFromMarkdown,
   roleplayDocumentPlainText,
+  RoleplayDocumentSchema,
+  appendRoleplayMarkdown,
   SceneManifestSchema,
 } from '../src/index.js';
 
@@ -33,6 +35,24 @@ describe('domain contracts', () => {
       ],
     };
     expect(roleplayDocumentPlainText(document)).toBe(base.content);
+    const withView = RoleplayDocumentSchema.parse({
+      version: 1,
+      blocks: [
+        { type: 'markdown', content: 'Before ' },
+        {
+          type: 'scene-view', viewId: '018f0000-0000-7000-8000-000000000008',
+          sceneId: '018f0000-0000-7000-8000-000000000009', sceneVersion: '1.0.0',
+          sceneDigest: 'a'.repeat(64), kind: 'combat', schemaVersion: 1,
+          rendererId: 'combat-v1', sourceStateRevision: 4, props: { hp: 7 },
+        },
+        { type: 'markdown', content: 'after' },
+      ],
+    });
+    expect(roleplayDocumentPlainText(withView)).toBe('Before after');
+    expect(appendRoleplayMarkdown(withView, ' continued').blocks).toEqual([
+      ...withView.blocks.slice(0, -1),
+      { type: 'markdown', content: 'after continued' },
+    ]);
     expect(MessageVariantSchema.parse({ ...base, document }).content).toBe(base.content);
     expect(MessageVariantSchema.safeParse({ ...base, document, content: 'diverged' }).success).toBe(false);
     const legacyUnboundedContent = 'x'.repeat(4 * 1024 * 1024 + 1);
@@ -107,7 +127,7 @@ describe('domain contracts', () => {
       stateSchema: {},
       files: ['frontend/app.js', 'frontend/styles.css'],
     };
-    expect(SceneManifestSchema.parse(manifest)).toMatchObject({ sceneSdkVersion: 2, agentTools: [] });
+    expect(SceneManifestSchema.parse(manifest)).toMatchObject({ sceneSdkVersion: 2, agentTools: [], sceneViews: [] });
     const tool = {
       name: 'scene_open_gate',
       description: 'Open one Scene gate.',
@@ -121,6 +141,13 @@ describe('domain contracts', () => {
     expect(SceneManifestSchema.safeParse({
       ...manifest, agentTools: [{ ...tool, parameters: { type: 'string' } }],
     }).success).toBe(false);
+    const view = {
+      kind: 'combat', schemaVersion: 1,
+      projection: { hook: 'projectSceneView', schema: { type: 'object' } },
+      renderer: { id: 'combat-v1' },
+    } as const;
+    expect(SceneManifestSchema.parse({ ...manifest, sceneViews: [view] }).sceneViews).toEqual([view]);
+    expect(SceneManifestSchema.safeParse({ ...manifest, sceneViews: [view, view] }).success).toBe(false);
     expect(SceneManifestSchema.safeParse({ ...manifest, sceneSdkVersion: 1 }).success).toBe(false);
     expect(SceneManifestSchema.safeParse({ ...manifest, frontendEntry: 'frontend/index.html' }).success).toBe(false);
     expect(SceneManifestSchema.safeParse({ ...manifest, frontendEntry: '../app.js' }).success).toBe(false);

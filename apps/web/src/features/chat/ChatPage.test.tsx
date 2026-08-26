@@ -82,7 +82,14 @@ type MessageView = {
     messageId: string;
     ordinal?: number;
     content: string;
-    document?: { version: 1; blocks: Array<{ type: 'markdown'; content: string }> };
+    document?: { version: 1; blocks: Array<
+      | { type: 'markdown'; content: string }
+      | {
+          type: 'scene-view'; viewId: string; sceneId: string; sceneVersion: string; sceneDigest: string;
+          kind: string; schemaVersion: number; rendererId: string; sourceStateRevision: number;
+          props: Record<string, unknown>;
+        }
+    > };
     status: 'completed' | 'aborted' | 'failed';
     finishReason?: string;
     reasoning?: string;
@@ -121,6 +128,19 @@ const server = setupServer(
   http.get('/api/providers', () => HttpResponse.json([provider])),
   http.get('/api/presets', () => HttpResponse.json([chatPreset])),
   http.get('/api/settings/generation', () => HttpResponse.json(globalGenerationConfig)),
+  http.get('/api/scenes/:id', ({ params }) => HttpResponse.json({
+    id: params.id,
+    version: '2.6.0',
+    archiveDigest: 'a'.repeat(64),
+    fullyTrusted: true,
+    manifest: {
+      sceneViews: [{
+        kind: 'combat', schemaVersion: 1,
+        projection: { hook: 'projectSceneView', schema: { type: 'object' } },
+        renderer: { id: 'destined-poem-combat-v1' },
+      }],
+    },
+  })),
   http.get('/api/settings/generation/active-resource-context', ({ request }) => {
     const conversationId = new URL(request.url).searchParams.get('conversationId');
     return HttpResponse.json({
@@ -438,6 +458,23 @@ describe('ChatPage', () => {
           version: 1,
           blocks: [
             { type: 'markdown', content: '**Canonical document prose**' },
+            {
+              type: 'scene-view',
+              viewId: '018f0000-0000-7000-8000-000000000451',
+              sceneId: '018f2000-0000-7000-8000-000000000001',
+              sceneVersion: '2.6.0',
+              sceneDigest: 'a'.repeat(64),
+              kind: 'combat',
+              schemaVersion: 1,
+              rendererId: 'destined-poem-combat-v1',
+              sourceStateRevision: 7,
+              props: {
+                title: 'Archive battle',
+                location: 'Vault',
+                protagonist: { name: 'Aster', hp: 8, maxHp: 10, statuses: ['Focused'] },
+                opponents: [{ id: 'beast', name: 'Page Beast', hp: 4, maxHp: 12, statuses: [] }],
+              },
+            },
             { type: 'markdown', content: 'Second ordered block' },
           ],
         },
@@ -450,6 +487,12 @@ describe('ChatPage', () => {
     const firstBlock = await screen.findByText('Canonical document prose');
     const secondBlock = screen.getByText('Second ordered block');
     expect(firstBlock.compareDocumentPosition(secondBlock) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const combat = screen.getByRole('region', { name: 'Archive battle' });
+    expect(combat.textContent).toContain('Aster');
+    expect(combat.textContent).toContain('8 / 10 HP');
+    expect(combat.textContent).toContain('Page Beast');
+    expect(combat.querySelector('button,input,textarea,select')).toBeNull();
+    expect(combat.getAttribute('data-source-state-revision')).toBe('7');
     expect(screen.queryByText('STALE VARIANT TEXT')).toBeNull();
     expect(screen.queryByText('STALE COMPATIBILITY TEXT')).toBeNull();
   });

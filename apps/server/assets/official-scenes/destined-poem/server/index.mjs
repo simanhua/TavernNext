@@ -55,4 +55,37 @@ export default {
       statePatch: [{ op: 'delta', path: '/命运点数', value: amount }],
     };
   },
+  async projectSceneView({ kind, relatedEntities, workspace }) {
+    if (kind !== 'combat') throw new Error('scene_view_kind_not_found');
+    const state = workspace?.state ?? {};
+    const protagonist = state.主角 ?? {};
+    const relationships = state.关系列表 ?? {};
+    const statuses = protagonist.状态效果 && typeof protagonist.状态效果 === 'object'
+      ? Object.keys(protagonist.状态效果)
+      : [];
+    const opponents = relatedEntities.map((id) => {
+      const relation = relationships[id] && typeof relationships[id] === 'object' ? relationships[id] : {};
+      const combat = relation.战斗 && typeof relation.战斗 === 'object' ? relation.战斗 : relation;
+      return {
+        id,
+        name: String(relation.姓名 ?? relation.名称 ?? id),
+        hp: Number.isFinite(Number(combat.生命值)) ? Number(combat.生命值) : 0,
+        maxHp: Number.isFinite(Number(combat.生命值上限)) ? Number(combat.生命值上限) : 0,
+        statuses: combat.状态效果 && typeof combat.状态效果 === 'object' ? Object.keys(combat.状态效果) : [],
+      };
+    });
+    return {
+      props: {
+        title: String(state.事件?.标题 || '战斗态势'),
+        location: String(state.世界?.地点 || ''),
+        protagonist: {
+          name: String(protagonist.姓名 || '主角'),
+          hp: Number.isFinite(Number(protagonist.生命值)) ? Number(protagonist.生命值) : 0,
+          maxHp: Number.isFinite(Number(protagonist.生命值上限)) ? Number(protagonist.生命值上限) : 0,
+          statuses,
+        },
+        opponents,
+      },
+    };
+  },
 };

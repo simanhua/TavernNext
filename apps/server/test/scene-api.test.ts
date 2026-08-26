@@ -46,7 +46,7 @@ describe('Scene Package API', () => {
       fullyTrusted: true,
       manifest: {
         name: '命定之诗与黄昏之歌',
-        version: '2.5.0',
+        version: '2.6.0',
         serverEntry: 'server/index.mjs',
         coverPath: 'content/cover.png',
       },
