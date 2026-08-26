@@ -57,7 +57,7 @@ describe('chat UI API bindings', () => {
       method: 'POST', url: '/api/providers',
       payload: {
         id: ids.provider, name: 'Browser configured', baseUrl: 'http://127.0.0.1:8080/v1',
-        model: 'mock', apiMode: 'chat', apiKey,
+        model: 'mock', apiMode: 'chat', toolCalls: true, apiKey,
       },
     });
     expect(created.statusCode).toBe(201);
@@ -113,11 +113,20 @@ describe('chat UI API bindings', () => {
       providerId: ids.provider,
       chatPresetId: ids.preset,
     })).toMatchObject({ ok: true });
-    repositories.conversations.create({
+    const conversation = repositories.conversations.create({
       id: ids.conversation,
       characterId: ids.character,
       personaId: ids.persona,
       title: 'Chat',
+    });
+    const privatePreset = repositories.presets.get(ids.preset)!;
+    repositories.saveAgentConfigurations.create({
+      id: '018f0000-0000-7000-8000-000000000109',
+      conversationId: conversation.id,
+      sourcePresetId: privatePreset.id,
+      sourcePresetRevision: privatePreset.revision,
+      name: privatePreset.name,
+      settings: privatePreset.settings,
     });
     const userMessage = repositories.messages.create({
       id: ids.userMessage, conversationId: ids.conversation, role: 'user', content: 'Original', activeVariantId: null,

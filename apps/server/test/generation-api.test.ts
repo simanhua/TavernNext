@@ -130,6 +130,17 @@ function seed(repositories: Repositories) {
   return database === undefined ? create() : database.transaction(create);
 }
 
+function seedSaveAgentConfiguration(repositories: Repositories, entities: ReturnType<typeof seed>) {
+  return repositories.saveAgentConfigurations.create({
+    id: '018f0000-0000-7000-8000-000000000106',
+    conversationId: entities.conversation.id,
+    sourcePresetId: entities.preset.id,
+    sourcePresetRevision: entities.preset.revision,
+    name: entities.preset.name,
+    settings: entities.preset.settings,
+  });
+}
+
 interface SseEvent {
   event: string;
   data: Record<string, unknown>;
@@ -218,9 +229,9 @@ describe('generation API', () => {
     expect(response.statusCode).toBe(422);
     expect(response.json()).toEqual({ error: 'model_not_agent_capable' });
     expect(providerCalls).toBe(0);
-    expect(repositories.messages.listByConversationId(ids.conversation)).toEqual([
-      expect.objectContaining({ role: 'user', content: 'Hello' }),
-    ]);
+    expect(repositories.messages.listByConversationId(ids.conversation)).toEqual([]);
+    expect(repositories.conversations.get(ids.conversation)?.revision).toBe(0);
+    expect(repositories.generationSnapshots.list()).toEqual([]);
   });
 
   it('uses the selected Pi Provider native transport for a non-OpenAI catalog model', async () => {
@@ -250,7 +261,8 @@ describe('generation API', () => {
         'mock-secret': { providerId: ids.provider, baseUrl: model.baseUrl, value: 'native-key' },
       },
     });
-    seed(repositories);
+    const entities = seed(repositories);
+    seedSaveAgentConfiguration(repositories, entities);
     expect(repositories.providerProfiles.update(ids.provider, 0, {
       providerId: anthropic.id,
       modelId: model.id,
@@ -676,7 +688,8 @@ describe('generation API', () => {
       });
     });
     const { app, repositories } = await createTestContext();
-    seed(repositories);
+    const entities = seed(repositories);
+    seedSaveAgentConfiguration(repositories, entities);
     expect(repositories.providerProfiles.update(ids.provider, 0, { secretRef: 'PATH' })).toMatchObject({ ok: true });
 
     const response = await generate(app);
@@ -703,11 +716,14 @@ describe('generation API', () => {
         },
       },
     });
-    seed(repositories);
+    const entities = seed(repositories);
+    seedSaveAgentConfiguration(repositories, entities);
 
     expect((await generate(app)).statusCode).toBe(200);
     expect(repositories.providerProfiles.update(ids.provider, 0, { baseUrl: 'http://attacker.invalid/v1' })).toMatchObject({ ok: true });
-    expect((await generate(app, 1)).statusCode).toBe(200);
+    const rebound = await generate(app, 1);
+    expect(rebound.statusCode).toBe(200);
+    expect(parseSse(rebound.payload).at(-1)?.event).toBe('failed');
 
     expect(authorization).toEqual([true, false]);
   });

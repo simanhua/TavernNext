@@ -381,6 +381,55 @@ export const GenerationSnapshotSchema = MutableEntitySchema.extend({
   recipeSource: z.enum(['scene', 'global-fallback']).optional(),
 });
 
+export const AgentRunStatusSchema = z.enum(['running', 'completed', 'failed', 'aborted', 'budget_exhausted']);
+export const AgentRunLifecycleEventSchema = z.object({
+  sequence: z.number().int().nonnegative(),
+  type: z.enum(['agent_start', 'turn_start', 'turn_end', 'agent_end']),
+  at: z.string().datetime(),
+}).strict();
+export const AgentRunRevisionSchema = z.object({
+  id: DomainIdSchema,
+  revision: z.number().int().nonnegative(),
+}).strict();
+export const AgentRunSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  generationId: DomainIdSchema,
+  snapshotId: DomainIdSchema,
+  status: AgentRunStatusSchema,
+  startedAt: z.string().datetime(),
+  finishedAt: z.string().datetime().optional(),
+  limits: z.object({
+    maxModelTurns: z.number().int().positive().max(64),
+    maxToolCalls: z.number().int().positive().max(1_024),
+    timeoutMs: z.number().int().positive().max(600_000),
+  }).strict(),
+  counts: z.object({
+    modelTurns: z.number().int().nonnegative(),
+    toolCalls: z.number().int().nonnegative(),
+  }).strict(),
+  usage: z.object({
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+  }).strict(),
+  promptPlan: z.object({
+    schemaVersion: z.literal(1),
+    hash: z.string().regex(/^[a-f0-9]{64}$/),
+    promptTokens: z.number().int().nonnegative(),
+    messageCount: z.number().int().positive(),
+  }).strict(),
+  revisions: z.object({
+    conversation: AgentRunRevisionSchema,
+    character: AgentRunRevisionSchema,
+    persona: AgentRunRevisionSchema,
+    provider: AgentRunRevisionSchema,
+    saveAgentConfiguration: AgentRunRevisionSchema,
+    sceneState: AgentRunRevisionSchema.nullable(),
+  }).strict(),
+  lifecycle: z.array(AgentRunLifecycleEventSchema).max(64),
+  diagnostics: z.array(z.string().max(128)).max(32),
+  failureCode: z.string().max(128).optional(),
+});
+
 export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   timedState: WorldbookTimedStateSchema,
@@ -417,4 +466,5 @@ export type MessageVariant = z.infer<typeof MessageVariantSchema>;
 export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;
 export type ImportArtifact = z.infer<typeof ImportArtifactSchema>;
 export type GenerationSnapshot = z.infer<typeof GenerationSnapshotSchema>;
+export type AgentRun = z.infer<typeof AgentRunSchema>;
 export type WorldbookRuntimeState = z.infer<typeof WorldbookRuntimeStateSchema>;

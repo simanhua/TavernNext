@@ -13,7 +13,38 @@ import { upgradeInstalledOfficialSceneRuntime } from '../src/scenes/official-sce
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
-describe('schema 18 and 19 Scene migrations', () => {
+describe('Scene migrations', () => {
+  it('adds the schema 20 Agent Run audit table without resetting schema 19 Saves', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-agent-run-migration-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    migrateDatabase(database);
+    const repositories = createRepositories(database, { snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    const character = repositories.characters.create({
+      id: randomUUID(), name: 'Character', description: '', personality: '', scenario: '',
+      firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: randomUUID(), name: 'Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Preserved Save',
+    });
+    database.sqlite.exec(`
+      DROP TABLE agent_runs;
+      DELETE FROM tavernnext_schema_version;
+      INSERT INTO tavernnext_schema_version(version) VALUES (19);
+    `);
+
+    migrateDatabase(database);
+
+    expect(CURRENT_SCHEMA_VERSION).toBe(20);
+    expect(repositories.conversations.get(conversation.id)?.title).toBe('Preserved Save');
+    expect(database.sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'").get())
+      .toEqual({ name: 'agent_runs' });
+    database.close();
+  });
+
   it('preserves Persona and Provider while clearing the legacy asset workspace', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-migration-'));
     directories.push(directory);
@@ -30,7 +61,7 @@ describe('schema 18 and 19 Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(19);
+    expect(CURRENT_SCHEMA_VERSION).toBe(20);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
     expect(repositories.characters.list()).toEqual([]);

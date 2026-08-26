@@ -1,6 +1,7 @@
 import multipart from '@fastify/multipart';
 import {
   createOpenAICompatibleClient,
+  createPiAgentModelRuntime,
   createPiProviderClient,
   type OpenAICompatibleProfile,
 } from '@tavernnext/provider-openai-compatible';
@@ -38,6 +39,7 @@ import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
 import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
+import type { PiAgentRuntimeFactory } from './services/scene-director-agent.js';
 import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
@@ -70,6 +72,7 @@ export interface CreateAppOptions {
   config?: ServerConfig;
   database?: TavernDatabase;
   providerClientFactory?: ProviderClientFactory;
+  piAgentRuntimeFactory?: PiAgentRuntimeFactory;
   saveAgentRuntime?: SaveAgentRuntime;
   providerProbeFactory?: ProviderProbeFactory;
   providerSecrets?: ProviderSecretMap;
@@ -247,7 +250,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     if (secret.profileId !== profileId || normalizedBaseUrl(secret.baseUrl) !== normalizedBaseUrl(baseUrl)) return undefined;
     return secret.credential.type === 'api_key' ? secret.credential.key : undefined;
   };
-  const providerClientFactory: ProviderClientFactory = options.providerClientFactory ?? ((profile) => {
+  const resolvedProviderAuth = (profile: Parameters<ProviderClientFactory>[0]) => {
     const headers = Object.fromEntries(
       Object.entries(profile.headerSecretRefs).flatMap(([name, secretRef]) => {
         const value = resolveSecret(profile.id, profile.baseUrl, secretRef);
@@ -257,6 +260,10 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     const apiKey = profile.secretRef === undefined
       ? undefined
       : resolveSecret(profile.id, profile.baseUrl, profile.secretRef);
+    return { headers, apiKey };
+  };
+  const providerClientFactory: ProviderClientFactory = options.providerClientFactory ?? ((profile) => {
+    const { headers, apiKey } = resolvedProviderAuth(profile);
     if (profile.providerId !== 'custom-openai-compatible') {
       if (apiKey === undefined) throw new Error('Provider credential is unavailable.');
       return createPiProviderClient({
@@ -273,6 +280,23 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       headers,
     });
   });
+  const piAgentRuntimeFactory = options.piAgentRuntimeFactory ?? (
+    options.providerClientFactory === undefined
+      ? ((profile) => {
+        const { headers, apiKey } = resolvedProviderAuth(profile);
+        if (apiKey === undefined && profile.providerId !== 'custom-openai-compatible') {
+          throw new Error('Provider credential is unavailable.');
+        }
+        return createPiAgentModelRuntime({
+          providerId: profile.providerId,
+          modelId: profile.modelId,
+          baseUrl: profile.baseUrl,
+          apiKey: apiKey ?? 'tavernnext-keyless-endpoint',
+          headers,
+        });
+      }) satisfies PiAgentRuntimeFactory
+      : undefined
+  );
   const tokenizerRuntime: ServerTokenizerRuntime = options.tokenizerRuntime ?? {
     selectTokenizer,
     countText: (text, decision) => countText(text, decision, { dataDir: config.dataDir }),
@@ -285,6 +309,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     database,
     repositories,
     providerClientFactory,
+    ...(piAgentRuntimeFactory === undefined ? {} : { piAgentRuntimeFactory }),
     promptSnapshotService: promptSnapshots,
     sceneService: scenes,
   });

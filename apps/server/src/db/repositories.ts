@@ -5,6 +5,7 @@ import type { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { ZodType } from 'zod';
 import {
   CharacterSchema,
+  AgentRunSchema,
   ConversationSchema,
   ExtensionAssetSchema,
   ExtensionStateSchema,
@@ -28,6 +29,7 @@ import {
   SceneStateTransitionSchema,
   SaveAgentConfigurationSchema,
   type Character,
+  type AgentRun,
   type Conversation,
   type ExtensionAsset,
   type ExtensionOwnerKind,
@@ -56,6 +58,7 @@ import {
 } from '@tavernnext/domain';
 import {
   characters,
+  agentRuns,
   conversationWorldbooks,
   conversations,
   extensionAssets,
@@ -178,6 +181,11 @@ export interface ConversationSceneStateRepository extends Repository<Conversatio
 
 export interface SaveAgentConfigurationRepository extends Repository<SaveAgentConfiguration> {
   getByConversationId(conversationId: string): SaveAgentConfiguration | undefined;
+}
+
+export interface AgentRunRepository extends Repository<AgentRun> {
+  getByGenerationId(generationId: string): AgentRun | undefined;
+  listByConversationId(conversationId: string): AgentRun[];
 }
 
 export interface SceneStateTransitionRepository extends Repository<SceneStateTransition> {
@@ -877,6 +885,7 @@ export interface Repositories {
   presets: Repository<Preset>;
   conversations: ConversationRepository;
   saveAgentConfigurations: SaveAgentConfigurationRepository;
+  agentRuns: AgentRunRepository;
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
@@ -908,6 +917,30 @@ function createSaveAgentConfigurationRepository(database: TavernDatabase): SaveA
         .where(eq(saveAgentConfigurations.conversationId, conversationId))
         .get();
       return row === undefined ? undefined : SaveAgentConfigurationSchema.parse(row.payload);
+    },
+  };
+}
+
+function createAgentRunRepository(database: TavernDatabase): AgentRunRepository {
+  const base = createRepository(database, {
+    table: entityTable(agentRuns),
+    schema: AgentRunSchema,
+    toRow: (value: AgentRun) => ({
+      ...baseRow(value), conversationId: value.conversationId, generationId: value.generationId, status: value.status,
+    }),
+  });
+  return {
+    ...base,
+    getByGenerationId(generationId) {
+      const row = database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
+        .where(eq(agentRuns.generationId, generationId)).get();
+      return row === undefined ? undefined : AgentRunSchema.parse(row.payload);
+    },
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
+        .where(eq(agentRuns.conversationId, conversationId))
+        .orderBy(asc(agentRuns.createdAt), asc(agentRuns.id)).all()
+        .map((row) => AgentRunSchema.parse(row.payload));
     },
   };
 }
@@ -1108,6 +1141,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
     conversations: conversationsRepository,
     saveAgentConfigurations: createSaveAgentConfigurationRepository(database),
+    agentRuns: createAgentRunRepository(database),
     messages: messagesRepository,
     messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),

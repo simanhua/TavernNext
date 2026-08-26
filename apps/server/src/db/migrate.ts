@@ -6,7 +6,8 @@ import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
 const SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION = 19;
-export const CURRENT_SCHEMA_VERSION = SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION;
+const AGENT_RUN_SCHEMA_VERSION = 20;
+export const CURRENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -59,6 +60,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS extension_audit_events (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, event TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
+  CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, generation_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS consumed_generation_snapshots (snapshot_id TEXT PRIMARY KEY REFERENCES generation_snapshots(id) ON DELETE CASCADE, consumed_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS conversation_scene_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
@@ -87,6 +89,8 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS message_variants_message_ordinal_created_id_idx ON message_variants(message_id, ordinal, created_at, id);
   CREATE INDEX IF NOT EXISTS message_variants_message_id_idx ON message_variants(message_id);
   CREATE INDEX IF NOT EXISTS generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
+  CREATE INDEX IF NOT EXISTS agent_runs_conversation_id_idx ON agent_runs(conversation_id);
+  CREATE INDEX IF NOT EXISTS agent_runs_generation_id_idx ON agent_runs(generation_id);
   CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);
   CREATE INDEX IF NOT EXISTS avatar_assets_owner_idx ON avatar_assets(kind, owner_id);
   CREATE INDEX IF NOT EXISTS extension_assets_owner_kind_id_idx ON extension_assets(owner_kind, owner_id);
@@ -371,6 +375,7 @@ function resetConversationGraph(database: TavernDatabase): void {
     DELETE FROM scene_state_transitions;
     DELETE FROM conversation_scene_states;
     DELETE FROM save_agent_configurations;
+    DELETE FROM agent_runs;
     DELETE FROM message_variants;
     DELETE FROM consumed_generation_snapshots;
     DELETE FROM generation_snapshots;

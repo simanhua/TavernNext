@@ -160,6 +160,15 @@ export const generationSnapshots = sqliteTable('generation_snapshots', {
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
   integrityTag: text('integrity_tag'),
 }, (table) => [index('generation_snapshots_conversation_id_idx').on(table.conversationId)]);
+export const agentRuns = sqliteTable('agent_runs', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  generationId: text('generation_id').notNull().unique(),
+  status: text('status').notNull(),
+}, (table) => [
+  index('agent_runs_conversation_id_idx').on(table.conversationId),
+  index('agent_runs_generation_id_idx').on(table.generationId),
+]);
 export const worldbookRuntimeStates = sqliteTable('worldbook_runtime_states', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),

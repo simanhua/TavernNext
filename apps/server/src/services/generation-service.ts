@@ -23,6 +23,7 @@ import {
   createPromptSnapshotService,
   PromptSnapshotError,
   type PromptSnapshotPayload,
+  type AcceptedPromptSnapshot,
   type PromptSnapshotService,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
@@ -39,6 +40,13 @@ import {
   SceneServiceError,
   type SceneService,
 } from '../scenes/scene-service.js';
+import {
+  SceneDirectorExecution,
+  SceneDirectorRunError,
+  type SceneDirectorLimits,
+  type SceneDirectorTerminal,
+  type PiAgentRuntimeFactory,
+} from './scene-director-agent.js';
 
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
 
@@ -60,12 +68,14 @@ interface PreparedGenerationBase {
   provider: ProviderProfile;
   payload: PromptSnapshotPayload;
   reasoningCompatibility: boolean;
+  sceneDirector?: SceneDirectorExecution;
   sceneTransition?: {
     stateRevision: number;
     baseValue: Record<string, unknown>;
     parentTransitionId: string | null;
     beforeOperations: ScenePatchOperation[];
     beforeFailures: ScenePatchFailure[];
+    stagedValue: Record<string, unknown>;
   };
 }
 
@@ -74,6 +84,7 @@ type PreparedGeneration =
   | (PreparedGenerationBase & { kind: 'text'; request: TextRequest });
 
 function safeFailureCode(error: unknown): string {
+  if (error instanceof SceneDirectorRunError) return error.code;
   return error instanceof ProviderError ? error.code : 'upstream_error';
 }
 
@@ -152,12 +163,15 @@ export function createGenerationService(options: {
   promptSnapshotService?: PromptSnapshotService;
   tokenizerRuntime?: ServerTokenizerRuntime;
   sceneService?: SceneService;
+  piAgentRuntimeFactory?: PiAgentRuntimeFactory;
+  sceneDirectorLimits?: Partial<SceneDirectorLimits>;
 }): SaveAgentRuntime {
   const { database, repositories, providerClientFactory } = options;
+  const runtimeTokenizer = options.tokenizerRuntime ?? defaultTokenizerRuntime();
   const promptSnapshots = options.promptSnapshotService ?? createPromptSnapshotService({
     database,
     repositories,
-    tokenizerRuntime: options.tokenizerRuntime ?? defaultTokenizerRuntime(),
+    tokenizerRuntime: runtimeTokenizer,
   });
   const mvu = createMvuRuntimeService(repositories);
   const reasoningCompatibility = createReasoningCompatibilityService(repositories);
@@ -169,6 +183,7 @@ export function createGenerationService(options: {
     prepared: PreparedGeneration,
     signal: AbortSignal,
   ): AsyncIterable<ProviderEvent> {
+    if (prepared.sceneDirector !== undefined) return prepared.sceneDirector.events(signal);
     const client = providerClientFactory(prepared.provider);
     return prepared.kind === 'chat'
       ? client.streamChat(prepared.request, signal)
@@ -227,42 +242,40 @@ export function createGenerationService(options: {
     };
 
     const beginPersistence = () => {
-      database.transaction(() => {
-        if (mode === 'normal') {
-          const message = repositories.messages.create({
-            id: randomUUID(),
-            conversationId: prepared.conversationId,
-            role: 'assistant',
-            content: '',
-            activeVariantId: null,
-          });
-          variant = repositories.messageVariants.create({
-            id: randomUUID(),
-            messageId: message.id,
-            ordinal: 0,
-            content,
-            ...(reasoning === '' ? {} : { reasoning }),
-            status: 'streaming',
-            continuationBoundaries: [],
-          });
-          const linked = repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id });
-          if (!linked.ok) throw new Error(`Unable to link generation variant: ${linked.reason}`);
-        } else if (siblingMode) {
-          const siblings = repositories.messageVariants.listByMessageId(targetMessage!.id);
-          const ordinal = siblings.reduce((maximum, sibling) => Math.max(maximum, sibling.ordinal), -1) + 1;
-          variant = repositories.messageVariants.create({
-            id: randomUUID(),
-            messageId: targetMessage!.id,
-            ordinal,
-            content,
-            ...(reasoning === '' ? {} : { reasoning }),
-            status: 'streaming',
-            continuationBoundaries: [],
-          });
-        } else {
-          flush();
-        }
-      });
+      if (mode === 'normal') {
+        const message = repositories.messages.create({
+          id: randomUUID(),
+          conversationId: prepared.conversationId,
+          role: 'assistant',
+          content: '',
+          activeVariantId: null,
+        });
+        variant = repositories.messageVariants.create({
+          id: randomUUID(),
+          messageId: message.id,
+          ordinal: 0,
+          content,
+          ...(reasoning === '' ? {} : { reasoning }),
+          status: 'streaming',
+          continuationBoundaries: [],
+        });
+        const linked = repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id });
+        if (!linked.ok) throw new Error(`Unable to link generation variant: ${linked.reason}`);
+      } else if (siblingMode) {
+        const siblings = repositories.messageVariants.listByMessageId(targetMessage!.id);
+        const ordinal = siblings.reduce((maximum, sibling) => Math.max(maximum, sibling.ordinal), -1) + 1;
+        variant = repositories.messageVariants.create({
+          id: randomUUID(),
+          messageId: targetMessage!.id,
+          ordinal,
+          content,
+          ...(reasoning === '' ? {} : { reasoning }),
+          status: 'streaming',
+          continuationBoundaries: [],
+        });
+      } else {
+        flush();
+      }
     };
 
     const selectSibling = () => {
@@ -401,11 +414,28 @@ export function createGenerationService(options: {
             });
           }
         }
+        if (prepared.sceneDirector !== undefined && content.trim() === '') {
+          outcome = 'failed';
+          failureCode = 'empty_narrative';
+          hasDelta = false;
+          hasReasoningDelta = false;
+        }
+      }
+      let agentTerminal: SceneDirectorTerminal | undefined;
+      try {
+        agentTerminal = await prepared.sceneDirector?.settle(
+          outcome,
+          outcome === 'completed' ? undefined : failureCode,
+        );
+      } catch {
+        outcome = 'failed';
+        failureCode = 'agent_audit_failed';
       }
       try {
         database.transaction(() => {
-          if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
-          if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
+          const persistResponse = prepared.sceneDirector === undefined || outcome === 'completed';
+          if (persistResponse && variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
+          if (persistResponse && variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
           if (outcome === 'completed' && variant !== undefined && hasDelta && activeSceneId === undefined) {
             mvu.commitCompletedVariant(
               prepared.conversationId,
@@ -427,14 +457,15 @@ export function createGenerationService(options: {
               },
             );
           }
-          if (hasDelta || hasReasoningDelta) selectSibling();
+          if (persistResponse && (hasDelta || hasReasoningDelta)) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
+          if (agentTerminal !== undefined) prepared.sceneDirector!.commitTerminal(agentTerminal);
         });
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (hasDelta || hasReasoningDelta) {
+          if (prepared.sceneDirector === undefined && (hasDelta || hasReasoningDelta)) {
             const persisted = variant === undefined ? undefined : repositories.messageVariants.get(variant.id);
             if (persisted !== undefined) {
               variant = persisted;
@@ -458,6 +489,19 @@ export function createGenerationService(options: {
           }
         } catch {
           // The original persistence failure is the only externally observable code.
+        }
+        try {
+          prepared.sceneDirector?.commitFailureAfterRollback(failureCode);
+        } catch {
+          failureCode = 'agent_audit_failed';
+        }
+      }
+      if (prepared.sceneDirector !== undefined && agentTerminal === undefined) {
+        try {
+          prepared.sceneDirector.commitFailureAfterRollback(failureCode);
+        } catch {
+          outcome = 'failed';
+          failureCode = 'agent_audit_failed';
         }
       }
       active.cleanup();
@@ -580,13 +624,44 @@ export function createGenerationService(options: {
               parentTransitionId,
               beforeOperations,
               beforeFailures: beforeApplied.failures,
+              stagedValue: stagedState,
             };
             scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
           }
         }
+        let sceneDirector: SceneDirectorExecution | undefined;
+        const beforeAccept = async (candidate: AcceptedPromptSnapshot) => {
+          if (!candidate.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
+          if (input.mode !== 'normal' || candidate.payload.kind !== 'chat'
+            || options.piAgentRuntimeFactory === undefined) return;
+          const configurationRef = candidate.payload.entityRevisions.saveAgentConfiguration;
+          const configuration = candidate.saveAgentConfiguration;
+          if (configurationRef === undefined || configurationRef === null || configuration === undefined
+            || configuration.id !== configurationRef.id || configuration.revision !== configurationRef.revision) {
+            throw new PromptSnapshotError('snapshot_unsupported');
+          }
+          const execution = new SceneDirectorExecution({
+            repositories,
+            generationId,
+            snapshotId: candidate.snapshotId,
+            payload: candidate.payload,
+            provider: candidate.provider,
+            configuration,
+            runtimeFactory: options.piAgentRuntimeFactory,
+            ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
+            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
+            ...(scenePromptContext?.additions === undefined ? {} : {
+              scenePromptAdditions: scenePromptContext.additions,
+            }),
+          });
+          await execution.validatePromptBudget(runtimeTokenizer);
+          sceneDirector = execution;
+        };
         const accepted = input.snapshotId === undefined
-          ? await promptSnapshots.createAndAccept(input, generationId, scenePromptContext)
-          : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
+          ? await promptSnapshots.createAndAccept(input, generationId, scenePromptContext, beforeAccept)
+          : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId }, beforeAccept);
+        // Retain defensive validation for injected PromptSnapshotService implementations that
+        // predate the pre-accept hook, while production acceptance always invokes the hook.
         if (!accepted.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
         const prepared = preparedRequest(
           generationId,
@@ -595,6 +670,32 @@ export function createGenerationService(options: {
           reasoningCompatibility.resolve(accepted.payload),
           sceneTransition,
         );
+        if (input.mode === 'normal' && accepted.payload.kind === 'chat'
+          && options.piAgentRuntimeFactory !== undefined && sceneDirector === undefined) {
+          const configurationRef = accepted.payload.entityRevisions.saveAgentConfiguration;
+          const configuration = accepted.saveAgentConfiguration;
+          if (configurationRef === undefined || configurationRef === null || configuration === undefined
+            || configuration.id !== configurationRef.id || configuration.revision !== configurationRef.revision) {
+            throw new PromptSnapshotError('snapshot_unsupported');
+          }
+          const execution = new SceneDirectorExecution({
+            repositories,
+            generationId,
+            snapshotId: accepted.snapshotId,
+            payload: accepted.payload,
+            provider: accepted.provider,
+            configuration,
+            runtimeFactory: options.piAgentRuntimeFactory,
+            ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
+            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
+            ...(scenePromptContext?.additions === undefined ? {} : {
+              scenePromptAdditions: scenePromptContext.additions,
+            }),
+          });
+          await execution.validatePromptBudget(runtimeTokenizer);
+          sceneDirector = execution;
+        }
+        if (sceneDirector !== undefined) prepared.sceneDirector = sceneDirector;
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;
           active.controller.abort();

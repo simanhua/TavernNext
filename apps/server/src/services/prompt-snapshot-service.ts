@@ -9,6 +9,7 @@ import {
   type MessageVariant,
   type Persona,
   type Preset,
+  type SaveAgentConfiguration,
   type ProviderProfile,
   type Worldbook,
   type WorldbookEntry,
@@ -115,6 +116,7 @@ export interface PromptEntityRevisionManifest {
   persona: RevisionRef;
   provider: RevisionRef;
   presets: PresetRevisionRef[];
+  saveAgentConfiguration?: RevisionRef | null;
   globalWorldbooks: RevisionRef[];
   worldbooks: WorldbookRevisionRef[];
   messages: MessageRevisionRef[];
@@ -249,7 +251,10 @@ export interface AcceptedPromptSnapshot {
   snapshotId: string;
   payload: PromptSnapshotPayload;
   provider: ProviderProfile;
+  saveAgentConfiguration?: SaveAgentConfiguration;
 }
+
+export type PromptSnapshotBeforeAccept = (candidate: AcceptedPromptSnapshot) => Promise<void>;
 
 export interface PromptSnapshotService {
   createCandidate(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
@@ -264,8 +269,12 @@ export interface PromptSnapshotService {
     input: PromptSnapshotInput,
     snapshotId: string,
     sceneContext?: ScenePromptContext,
+    beforeAccept?: PromptSnapshotBeforeAccept,
   ): Promise<AcceptedPromptSnapshot>;
-  acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): Promise<AcceptedPromptSnapshot>;
+  acceptExisting(
+    input: PromptSnapshotInput & { snapshotId: string },
+    beforeAccept?: PromptSnapshotBeforeAccept,
+  ): Promise<AcceptedPromptSnapshot>;
   commitTimedState(payload: PromptSnapshotPayload): void;
 }
 
@@ -499,6 +508,45 @@ function requestedPreset(
   return safePreset(preset, kind);
 }
 
+function privateSavePreset(configuration: SaveAgentConfiguration): Preset {
+  const requiredMarkers = [
+    { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'worldInfoBefore', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'chatHistory', marker: true, system_prompt: true },
+    { identifier: 'worldInfoAfter', marker: true, role: 'system', system_prompt: true },
+  ];
+  const rawPrompts = Array.isArray(configuration.settings.prompts)
+    ? configuration.settings.prompts.filter(record)
+    : [];
+  const requiredIds = new Set(requiredMarkers.map(({ identifier }) => identifier));
+  const prompts = [
+    ...rawPrompts.filter((prompt) => !requiredIds.has(String(prompt.identifier))),
+    ...requiredMarkers,
+  ];
+  const rawOrders = Array.isArray(configuration.settings.prompt_order)
+    ? configuration.settings.prompt_order.filter(record)
+    : [];
+  const orders = (rawOrders.length === 0 ? [{ character_id: 100001, order: [] }] : rawOrders).map((row) => ({
+    ...row,
+    order: [
+      ...(Array.isArray(row.order) ? row.order.filter(record) : [])
+        .filter((item) => !requiredIds.has(String(item.identifier))),
+      ...requiredMarkers.map(({ identifier }) => ({ identifier, enabled: true })),
+    ],
+  }));
+  return {
+    id: configuration.id,
+    revision: configuration.revision,
+    createdAt: configuration.createdAt,
+    updatedAt: configuration.updatedAt,
+    name: configuration.name,
+    kind: 'chat',
+    settings: { ...configuration.settings, prompts, prompt_order: orders },
+    extensions: {},
+  };
+}
+
 function persistedBook(
   repositories: Repositories,
   row: Worldbook,
@@ -603,8 +651,13 @@ function loadAggregate(
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
+  const saveAgentConfiguration = input.mode === 'normal' && provider.apiMode === 'chat'
+    ? repositories.saveAgentConfigurations.getByConversationId(conversation.id)
+    : undefined;
   const binding = resolveConversationGenerationBinding(repositories, conversation, globalGenerationConfig, provider.apiMode);
-  const presets = binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings));
+  const presets = saveAgentConfiguration === undefined
+    ? binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings))
+    : [privateSavePreset(saveAgentConfiguration)];
   const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
   if (conversation.sceneId !== undefined && installedScene === undefined) throw new PromptSnapshotError('not_found');
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
@@ -723,6 +776,7 @@ function loadAggregate(
     persona: ref(persona),
     provider: ref(provider),
     presets: presets.map((preset) => ({ ...ref(preset), kind: preset.kind })),
+    ...(saveAgentConfiguration === undefined ? {} : { saveAgentConfiguration: ref(saveAgentConfiguration) }),
     globalWorldbooks,
     worldbooks: books.flatMap((loaded) => loaded.source === 'embedded' ? [] : [{
       ...ref(loaded.row),
@@ -820,18 +874,24 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
     || resolveGenerationBinding(globalGenerationConfig).providerId !== manifest.provider.id) stale();
-  const configuredPresets = resolveConversationGenerationBinding(
-    repositories, conversation, globalGenerationConfig, provider.apiMode,
-  ).presets;
-  if (configuredPresets.some(({ id }) => id === undefined)
-    || !sameCanonical(
-      manifest.presets.map(({ id, kind }) => ({ id, kind })),
-      configuredPresets,
-    )) stale();
-  for (const preset of manifest.presets) {
-    const current = repositories.presets.get(preset.id);
-    exact(current, preset);
-    if (current?.kind !== preset.kind) stale();
+  if (manifest.saveAgentConfiguration !== undefined && manifest.saveAgentConfiguration !== null) {
+    const configuration = repositories.saveAgentConfigurations.getByConversationId(conversation.id);
+    exact(configuration, manifest.saveAgentConfiguration);
+    if (!sameCanonical(manifest.presets, [{ ...manifest.saveAgentConfiguration, kind: 'chat' }])) stale();
+  } else {
+    const configuredPresets = resolveConversationGenerationBinding(
+      repositories, conversation, globalGenerationConfig, provider.apiMode,
+    ).presets;
+    if (configuredPresets.some(({ id }) => id === undefined)
+      || !sameCanonical(
+        manifest.presets.map(({ id, kind }) => ({ id, kind })),
+        configuredPresets,
+      )) stale();
+    for (const preset of manifest.presets) {
+      const current = repositories.presets.get(preset.id);
+      exact(current, preset);
+      if (current?.kind !== preset.kind) stale();
+    }
   }
   const currentGlobals = revalidatedRelation(() => repositories.worldbooks.listGlobal()).map(ref);
   if (!sameCanonical(currentGlobals, manifest.globalWorldbooks)) stale();
@@ -893,6 +953,17 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     if (grant?.bundleDigest !== expected.bundleDigest || grant.riskVersion !== expected.riskVersion
       || extensionExecutableDigest(repositories, expected.ownerKind, expected.ownerId) !== expected.bundleDigest) stale();
   }
+}
+
+function acceptedSaveAgentConfiguration(
+  repositories: Repositories,
+  payload: PromptSnapshotPayload,
+): SaveAgentConfiguration | undefined {
+  const expected = payload.entityRevisions.saveAgentConfiguration;
+  if (expected === undefined || expected === null) return undefined;
+  const configuration = repositories.saveAgentConfigurations.getByConversationId(payload.input.conversationId);
+  if (configuration === undefined || configuration.id !== expected.id || configuration.revision !== expected.revision) stale();
+  return deepJson(configuration);
 }
 
 function tokenizerRequest(preset: Preset, provider: ProviderProfile): TokenizerSelectionInput {
@@ -1398,6 +1469,7 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     || !hasOnlyKeys(value, [
       'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
       'worldbooks', 'messages', 'runtimeState', 'installedScene', 'sceneState', 'extensionState', 'extensionTrust',
+      'saveAgentConfiguration',
     ])) return false;
   if (!value.presets.every((item) => record(item)
     && typeof item.id === 'string'
@@ -1418,6 +1490,8 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     && (item.activeVariant === null || isRevisionRef(item.activeVariant))
     && hasOnlyKeys(item, ['id', 'revision', 'activeVariant']))) return false;
   return (value.runtimeState === null || isRevisionRef(value.runtimeState))
+    && (value.saveAgentConfiguration === undefined || value.saveAgentConfiguration === null
+      || isRevisionRef(value.saveAgentConfiguration))
     && (value.installedScene === undefined || value.installedScene === null || isRevisionRef(value.installedScene))
     && (value.sceneState === undefined || value.sceneState === null || isRevisionRef(value.sceneState))
     && (value.extensionState === undefined || value.extensionState === null || isRevisionRef(value.extensionState))
@@ -1892,6 +1966,24 @@ function acceptUserTurn(
   return provider;
 }
 
+function acceptanceCandidate(
+  repositories: Repositories,
+  snapshotId: string,
+  payload: PromptSnapshotPayload,
+): AcceptedPromptSnapshot {
+  revalidateManifest(repositories, payload.entityRevisions);
+  const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
+  if (provider === undefined || provider.revision !== payload.entityRevisions.provider.revision) stale();
+  return {
+    snapshotId,
+    payload: deepJson(payload),
+    provider: deepJson(provider),
+    ...(payload.entityRevisions.saveAgentConfiguration === undefined ? {} : {
+      saveAgentConfiguration: acceptedSaveAgentConfiguration(repositories, payload),
+    }),
+  };
+}
+
 export function createPromptSnapshotService(options: {
   database: TavernDatabase;
   repositories: Repositories;
@@ -1990,8 +2082,11 @@ export function createPromptSnapshotService(options: {
       transientPreviews.set(snapshotId, { payload: deepJson(built.payload), expiresAt: Date.now() + 60_000 });
       return { snapshotId, ...deepJson(built.payload) };
     },
-    async createAndAccept(input, snapshotId, sceneContext) {
+    async createAndAccept(input, snapshotId, sceneContext, beforeAccept) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input, sceneContext);
+      if (beforeAccept !== undefined) {
+        await beforeAccept(acceptanceCandidate(repositories, snapshotId, built.payload));
+      }
       const accepted = database.transaction(() => {
         revalidateManifest(repositories, built.manifest);
         repositories.generationSnapshots.create({
@@ -2003,11 +2098,18 @@ export function createPromptSnapshotService(options: {
         });
         consume(snapshotId);
         const provider = acceptUserTurn(repositories, built.payload);
-        return { snapshotId, payload: deepJson(built.payload), provider: deepJson(provider) };
+        return {
+          snapshotId,
+          payload: deepJson(built.payload),
+          provider: deepJson(provider),
+          ...(built.payload.entityRevisions.saveAgentConfiguration === undefined ? {} : {
+            saveAgentConfiguration: acceptedSaveAgentConfiguration(repositories, built.payload),
+          }),
+        };
       });
       return accepted;
     },
-    async acceptExisting(input) {
+    async acceptExisting(input, beforeAccept) {
       if (isConsumed(input.snapshotId)) throw new PromptSnapshotError('snapshot_mismatch');
       const getStoredSnapshot = () => {
         try {
@@ -2029,6 +2131,9 @@ export function createPromptSnapshotService(options: {
         throw new PromptSnapshotError('snapshot_invalid');
       }
       assertSnapshotInput(payload, input);
+      if (beforeAccept !== undefined) {
+        await beforeAccept(acceptanceCandidate(repositories, input.snapshotId, payload));
+      }
       const accepted = database.transaction(() => {
         if (liveTransient !== undefined) {
           const currentTransient = transientPreviews.get(input.snapshotId);
@@ -2045,7 +2150,14 @@ export function createPromptSnapshotService(options: {
           });
           consume(input.snapshotId);
           const provider = acceptUserTurn(repositories, payload);
-          return { snapshotId: input.snapshotId, payload, provider: deepJson(provider) };
+          return {
+            snapshotId: input.snapshotId,
+            payload,
+            provider: deepJson(provider),
+            ...(payload.entityRevisions.saveAgentConfiguration === undefined ? {} : {
+              saveAgentConfiguration: acceptedSaveAgentConfiguration(repositories, payload),
+            }),
+          };
         }
         const current = getStoredSnapshot();
         if (current === undefined) throw new PromptSnapshotError('not_found');
@@ -2060,7 +2172,14 @@ export function createPromptSnapshotService(options: {
         assertSnapshotInput(currentPayload, input);
         consume(input.snapshotId);
         const provider = acceptUserTurn(repositories, currentPayload);
-        return { snapshotId: input.snapshotId, payload: currentPayload, provider: deepJson(provider) };
+        return {
+          snapshotId: input.snapshotId,
+          payload: currentPayload,
+          provider: deepJson(provider),
+          ...(currentPayload.entityRevisions.saveAgentConfiguration === undefined ? {} : {
+            saveAgentConfiguration: acceptedSaveAgentConfiguration(repositories, currentPayload),
+          }),
+        };
       });
       return accepted;
     },
