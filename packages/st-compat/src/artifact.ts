@@ -29,7 +29,7 @@ export interface SourceArtifact {
 }
 
 export type ArtifactContainer = 'json' | 'jsonl' | 'png' | 'charx' | 'byaf' | 'yaml' | 'zip' | 'unknown';
-export type ArtifactKind = 'character' | 'preset' | 'worldbook' | 'chat' | 'unknown';
+export type ArtifactKind = 'character' | 'preset' | 'worldbook' | 'unknown';
 
 export interface DetectedArtifact {
   container: ArtifactContainer;

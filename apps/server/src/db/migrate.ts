@@ -5,7 +5,7 @@ import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -60,6 +60,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS consumed_generation_snapshots (snapshot_id TEXT PRIMARY KEY REFERENCES generation_snapshots(id) ON DELETE CASCADE, consumed_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS conversation_scene_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS scene_state_transitions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, parent_transition_id TEXT, source_kind TEXT NOT NULL, source_id TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS avatar_assets (path TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('characters', 'personas')), owner_id TEXT NOT NULL, media_type TEXT NOT NULL, bytes BLOB NOT NULL);
 `;
 
@@ -73,6 +74,8 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS conversations_scene_id_idx ON conversations(scene_id);
   CREATE INDEX IF NOT EXISTS installed_scenes_slug_idx ON installed_scenes(slug);
   CREATE INDEX IF NOT EXISTS conversation_scene_states_conversation_id_idx ON conversation_scene_states(conversation_id);
+  CREATE INDEX IF NOT EXISTS scene_state_transitions_conversation_idx ON scene_state_transitions(conversation_id);
+  CREATE INDEX IF NOT EXISTS scene_state_transitions_source_idx ON scene_state_transitions(source_kind, source_id);
   CREATE INDEX IF NOT EXISTS conversation_worldbooks_worldbook_id_idx ON conversation_worldbooks(worldbook_id);
   CREATE INDEX IF NOT EXISTS messages_conversation_created_id_idx ON messages(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
@@ -515,6 +518,24 @@ function backfillOwnerExtensionStates(database: TavernDatabase): void {
   }
 }
 
+function backfillSceneStateKernel(database: TavernDatabase): void {
+  for (const row of database.sqlite.prepare('SELECT id, payload FROM conversation_scene_states').all()) {
+    if (typeof row.id !== 'string') continue;
+    const value = parsedEntityPayload(row.payload);
+    if (value === undefined) continue;
+    const current = typeof value.value === 'object' && value.value !== null && !Array.isArray(value.value)
+      ? value.value as Record<string, unknown>
+      : {};
+    database.sqlite.prepare('UPDATE conversation_scene_states SET payload = ? WHERE id = ?').run(JSON.stringify({
+      ...value,
+      baseValue: typeof value.baseValue === 'object' && value.baseValue !== null && !Array.isArray(value.baseValue)
+        ? value.baseValue
+        : current,
+      headTransitionId: typeof value.headTransitionId === 'string' ? value.headTransitionId : null,
+    }), row.id);
+  }
+}
+
 export function migrateDatabase(database: TavernDatabase): void {
   // SQLite requires this pragma to be changed outside a transaction. It is restored in finally,
   // while all schema/data changes and the schema-version write happen in one durable transaction.
@@ -537,6 +558,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if ((startingVersion ?? 0) < 12) backfillCharacterExtensionAssets(database);
       if ((startingVersion ?? 0) < 13) backfillPresetExtensionAssets(database);
       if ((startingVersion ?? 0) < 14) backfillOwnerExtensionStates(database);
+      if ((startingVersion ?? 0) < 18) backfillSceneStateKernel(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
       if (startingVersion === 16) clearLegacyPublicAssets(database);

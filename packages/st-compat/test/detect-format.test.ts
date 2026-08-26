@@ -127,17 +127,12 @@ function makeWindowsDirectoryShared(path: string): void {
 }
 
 describe('artifact format detection', () => {
-  it('detects JSON, JSONL, PNG metadata, CharX, BYAF, and YAML without losing source identity', async () => {
+  it('detects JSON, PNG metadata, CharX, BYAF, and YAML without losing source identity', async () => {
     const cases = [
       {
         name: 'aster.json', mediaType: 'application/json',
         bytes: encoder.encode(JSON.stringify({ spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'Aster' } })),
         expected: { container: 'json', kind: 'character', version: '3.0' },
-      },
-      {
-        name: 'chat.jsonl', mediaType: 'application/x-ndjson',
-        bytes: encoder.encode('{"name":"Aster","is_user":false}\n{"name":"Traveler","is_user":true}\n'),
-        expected: { container: 'jsonl', kind: 'chat', version: '1' },
       },
       {
         name: 'aster.png', mediaType: 'image/png', bytes: metadataPng(),
@@ -170,6 +165,17 @@ describe('artifact format detection', () => {
       expect(preview.source).toMatchObject({ fileName: fixture.name, mediaType: fixture.mediaType, size: fixture.bytes.length });
       expect(preview.source.sha256).toBe(createHash('sha256').update(fixture.bytes).digest('hex'));
     }
+  });
+
+  it('rejects legacy chat JSONL as an unsupported import family', async () => {
+    const preview = await inspectArtifact({
+      fileName: 'chat.jsonl',
+      mediaType: 'application/x-ndjson',
+      bytes: encoder.encode('{"name":"Aster","is_user":false}\n'),
+    });
+    expect(preview.detected).toMatchObject({ container: 'unknown', kind: 'unknown' });
+    expect(preview.blockingErrors).toContainEqual(expect.objectContaining({ code: 'jsonl_import_unsupported' }));
+    expect(preview.inspectionToken).toBeUndefined();
   });
 
   it('reports invalid JSON, corrupt PNG, corrupt ZIP, and ambiguous JSON deterministically', async () => {

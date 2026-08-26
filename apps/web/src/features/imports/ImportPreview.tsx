@@ -48,14 +48,6 @@ function normalizedSummary(kind: string, value: unknown, t: (key: string, variab
       typeof root.enabled === 'boolean' ? t(root.enabled ? 'Enabled' : 'Disabled') : undefined,
     ].filter((item): item is string => item !== undefined);
   }
-  if (kind === 'chat') {
-    const header = record(root.header);
-    return [
-      boundedLabel(header?.characterName),
-      boundedLabel(header?.userName),
-      Array.isArray(root.messages) ? quantity(root.messages.length, 'message', t) : undefined,
-    ].filter((item): item is string => item !== undefined);
-  }
   if (kind === 'persona') return [boundedLabel(root.name) ?? t('Persona data is ready')];
   return [t('Normalized data is ready')];
 }

@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import type { GenerationMode, Message, MessageVariant, ProviderProfile } from '@tavernnext/domain';
+import {
+  SceneAfterGenerationResultSchema,
+  SceneBeforeGenerationResultSchema,
+  type GenerationMode,
+  type Message,
+  type MessageVariant,
+  type ProviderProfile,
+  type ScenePatchOperation,
+  type ScenePatchFailure,
+  type SceneStateDiagnostic,
+} from '@tavernnext/domain';
 import type {
   ChatRequest,
   OpenAICompatibleClient,
@@ -20,7 +30,11 @@ import {
 } from './prompt-snapshot-service.js';
 import { createMvuRuntimeService } from './mvu-runtime-service.js';
 import { createReasoningCompatibilityService } from './reasoning-compat-service.js';
-import { applyScenePatch, type SceneService } from '../scenes/scene-service.js';
+import {
+  applyScenePatchPartial,
+  SceneServiceError,
+  type SceneService,
+} from '../scenes/scene-service.js';
 
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
@@ -66,6 +80,13 @@ interface PreparedGenerationBase {
   provider: ProviderProfile;
   payload: PromptSnapshotPayload;
   reasoningCompatibility: boolean;
+  sceneTransition?: {
+    stateRevision: number;
+    baseValue: Record<string, unknown>;
+    parentTransitionId: string | null;
+    beforeOperations: ScenePatchOperation[];
+    beforeFailures: ScenePatchFailure[];
+  };
 }
 
 type PreparedGeneration =
@@ -96,6 +117,7 @@ function preparedRequest(
   provider: ProviderProfile,
   payload: PromptSnapshotPayload,
   reasoningCompatibility: boolean,
+  sceneTransition?: PreparedGenerationBase['sceneTransition'],
 ): PreparedGeneration {
   const base: PreparedGenerationBase = {
     generationId,
@@ -103,6 +125,7 @@ function preparedRequest(
     provider,
     payload,
     reasoningCompatibility,
+    ...(sceneTransition === undefined ? {} : { sceneTransition }),
   };
   if (payload.kind === 'chat' && 'messages' in payload.compiledRequest) {
     return { ...base, kind: 'chat', request: payload.compiledRequest };
@@ -111,6 +134,42 @@ function preparedRequest(
     return { ...base, kind: 'text', request: payload.compiledRequest };
   }
   throw new PromptSnapshotError('snapshot_invalid');
+}
+
+function sceneOutputProtocol(content: string): {
+  displayContent: string;
+  operations: unknown[];
+  diagnostics: SceneStateDiagnostic[];
+} {
+  const opening = content.search(/<UpdateVariable>/i);
+  if (opening < 0) {
+    return {
+      displayContent: content,
+      operations: [],
+      diagnostics: [{ source: 'scene-output-protocol', code: 'scene_patch_block_missing', failures: [] }],
+    };
+  }
+  const displayContent = content.slice(0, opening).trim();
+  const block = /<UpdateVariable>\s*(?:<Analysis>[\s\S]*?<\/Analysis>\s*)?<JSONPatch>\s*([\s\S]*?)\s*<\/JSONPatch>\s*<\/UpdateVariable>\s*$/i.exec(content);
+  const duplicate = content.slice(opening + '<UpdateVariable>'.length).search(/<UpdateVariable>/i) >= 0;
+  if (block === null || block.index !== opening || duplicate) {
+    return {
+      displayContent,
+      operations: [],
+      diagnostics: [{ source: 'scene-output-protocol', code: 'scene_patch_block_invalid', failures: [] }],
+    };
+  }
+  try {
+    const parsed = JSON.parse(block[1]!);
+    if (!Array.isArray(parsed) || parsed.length > 512) throw new Error('invalid');
+    return { displayContent, operations: parsed, diagnostics: [] };
+  } catch {
+    return {
+      displayContent,
+      operations: [],
+      diagnostics: [{ source: 'scene-output-protocol', code: 'scene_patch_json_invalid', failures: [] }],
+    };
+  }
 }
 
 export function createGenerationService(options: {
@@ -168,7 +227,10 @@ export function createGenerationService(options: {
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
     let providerIterator: AsyncIterator<ProviderEvent> | undefined;
-    let sceneStateUpdate: { id: string; revision: number; value: Record<string, unknown> } | undefined;
+    let sceneOperations = [...(prepared.sceneTransition?.beforeOperations ?? [])];
+    let sceneFailures = [...(prepared.sceneTransition?.beforeFailures ?? [])];
+    let sceneDiagnostics: SceneStateDiagnostic[] = [];
+    let activeSceneId: string | undefined;
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
@@ -176,6 +238,7 @@ export function createGenerationService(options: {
         content,
         ...(reasoning === '' ? {} : { reasoning }),
         status,
+        diagnostics: sceneDiagnostics,
         finishReason: status === 'completed' ? finishReason : undefined,
         ...(mode === 'continue' && hasDelta ? {
           continuationBoundaries: [
@@ -315,19 +378,54 @@ export function createGenerationService(options: {
         const scene = conversation?.sceneId === undefined ? undefined : sceneService?.get(conversation.sceneId);
         const state = scene === undefined ? undefined : sceneService?.state(prepared.conversationId);
         const host = scene === undefined ? undefined : sceneService?.module(scene);
-        if (conversation !== undefined && scene !== undefined && state !== undefined && host !== undefined) {
-          try {
-            const processed = await host.call<{ displayContent?: unknown; statePatch?: unknown }>('afterGeneration', {
-              content, reasoning, state: state.value, setup: conversation.setup ?? {},
-              playerProfile: conversation.playerProfile, manifest: scene.manifest,
-            });
-            if (typeof processed.displayContent === 'string') content = processed.displayContent;
-            if (processed.statePatch !== undefined) {
-              sceneStateUpdate = { id: state.id, revision: state.revision, value: applyScenePatch(state.value, processed.statePatch) };
+        activeSceneId = scene?.id;
+        if (conversation !== undefined && scene !== undefined && state !== undefined) {
+          let nextState = prepared.sceneTransition === undefined
+            ? state.value
+            : applyScenePatchPartial(
+              prepared.sceneTransition.baseValue,
+              prepared.sceneTransition.beforeOperations,
+              scene.manifest,
+            ).value;
+          if (scene.manifest.generationRecipe?.outputProtocol === 'mvu-json-patch-v1') {
+            const protocol = sceneOutputProtocol(content);
+            content = protocol.displayContent;
+            sceneDiagnostics.push(...protocol.diagnostics);
+            if (protocol.diagnostics.length === 0) {
+              const applied = applyScenePatchPartial(nextState, protocol.operations, scene.manifest);
+              nextState = applied.value;
+              sceneOperations.push(...applied.operations);
+              sceneFailures.push(...applied.failures);
             }
-          } catch {
-            // Preserve the raw provider response and leave Scene state unchanged.
-            // The Scene can expose a reprocess action without losing the reply.
+          }
+          try {
+            if (host !== undefined) {
+              const processed = SceneAfterGenerationResultSchema.parse(await host.call('afterGeneration', {
+                content, reasoning, state: nextState, setup: conversation.setup ?? {},
+                playerProfile: conversation.playerProfile, manifest: scene.manifest,
+              }));
+              if (processed.displayContent !== undefined) content = processed.displayContent;
+              if (processed.statePatch !== undefined) {
+                const applied = applyScenePatchPartial(nextState, processed.statePatch, scene.manifest);
+                nextState = applied.value;
+                sceneOperations.push(...applied.operations);
+                sceneFailures.push(...applied.failures);
+              }
+            }
+          } catch (error) {
+            sceneDiagnostics.push({
+              source: error instanceof SceneServiceError ? 'scene-output-protocol' : 'scene-hook',
+              code: error instanceof SceneServiceError ? error.code : 'scene_hook_invalid',
+              failures: [],
+            });
+          }
+          if (sceneFailures.length > 0) {
+            sceneDiagnostics.push({
+              source: 'scene-output-protocol',
+              code: 'scene_patch_partial_failure',
+              appliedCount: sceneOperations.length,
+              failures: sceneFailures,
+            });
           }
         }
       }
@@ -335,18 +433,26 @@ export function createGenerationService(options: {
         database.transaction(() => {
           if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
           if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
-          if (outcome === 'completed' && variant !== undefined && hasDelta) {
+          if (outcome === 'completed' && variant !== undefined && hasDelta && activeSceneId === undefined) {
             mvu.commitCompletedVariant(
               prepared.conversationId,
               variant.id,
               mode === 'continue' ? content.slice(initialContent.length) : content,
             );
           }
-          if (outcome === 'completed' && sceneStateUpdate !== undefined) {
-            const updated = repositories.conversationSceneStates.update(
-              sceneStateUpdate.id, sceneStateUpdate.revision, { value: sceneStateUpdate.value },
+          if (outcome === 'completed' && variant !== undefined
+            && prepared.sceneTransition !== undefined && sceneOperations.length > 0) {
+            sceneService!.commitStateTransition(
+              prepared.conversationId,
+              prepared.sceneTransition.stateRevision,
+              sceneOperations,
+              {
+                kind: 'message-variant',
+                id: variant.id,
+                parentTransitionId: prepared.sceneTransition.parentTransitionId,
+                baseValue: prepared.sceneTransition.baseValue,
+              },
             );
-            if (!updated.ok) throw new Error(`Unable to commit Scene state: ${updated.reason}`);
           }
           if (hasDelta || hasReasoningDelta) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
@@ -448,29 +554,61 @@ export function createGenerationService(options: {
       activeByConversation.set(input.conversationId, generationId);
       activeById.set(generationId, active);
       try {
+        let sceneTransition: PreparedGenerationBase['sceneTransition'];
+        let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
         if (sceneService !== undefined) {
           const conversation = repositories.conversations.get(input.conversationId);
           const scene = conversation?.sceneId === undefined ? undefined : sceneService.get(conversation.sceneId);
           const state = scene === undefined ? undefined : sceneService.state(input.conversationId);
           const host = scene === undefined ? undefined : sceneService.module(scene);
-          if (conversation !== undefined && scene !== undefined && state !== undefined && host !== undefined) {
-            const before = await host.call<{ statePatch?: unknown }>('beforeGeneration', {
-              state: state.value, setup: conversation.setup ?? {}, playerProfile: conversation.playerProfile,
-              manifest: scene.manifest, mode: input.mode, userText: input.userText,
-            });
-            if (before.statePatch !== undefined) sceneService.patchState(
-              conversation.id, state.revision, before.statePatch,
-            );
+          if (conversation !== undefined && scene !== undefined && state !== undefined) {
+            if (input.snapshotId !== undefined) throw new PromptSnapshotError('snapshot_mismatch');
+            let baseValue = state.value;
+            let parentTransitionId = state.headTransitionId;
+            if (input.mode === 'swipe' || input.mode === 'regenerate') {
+              const target = repositories.messages.listByConversationId(conversation.id).at(-1);
+              const activeVariantId = target?.role === 'assistant' ? target.activeVariantId : null;
+              const targetTransition = activeVariantId === null || activeVariantId === undefined
+                ? undefined
+                : repositories.sceneStateTransitions.getBySource('message-variant', activeVariantId);
+              if (targetTransition !== undefined) {
+                if (state.headTransitionId !== targetTransition.id) {
+                  throw new SceneServiceError('scene_branch_has_descendants', 409);
+                }
+                parentTransitionId = targetTransition.parentTransitionId;
+                baseValue = targetTransition.parentTransitionId === null
+                  ? state.baseValue
+                  : repositories.sceneStateTransitions.get(targetTransition.parentTransitionId)?.value ?? state.baseValue;
+              }
+            }
+            const before = host === undefined
+              ? SceneBeforeGenerationResultSchema.parse({})
+              : SceneBeforeGenerationResultSchema.parse(await host.call('beforeGeneration', {
+                state: baseValue, setup: conversation.setup ?? {}, playerProfile: conversation.playerProfile,
+                manifest: scene.manifest, mode: input.mode, userText: input.userText,
+              }));
+            const beforeApplied = applyScenePatchPartial(baseValue, before.statePatch ?? [], scene.manifest);
+            const beforeOperations = beforeApplied.operations;
+            const stagedState = beforeApplied.value;
+            sceneTransition = {
+              stateRevision: state.revision,
+              baseValue,
+              parentTransitionId,
+              beforeOperations,
+              beforeFailures: beforeApplied.failures,
+            };
+            scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
           }
         }
         const accepted = input.snapshotId === undefined
-          ? await promptSnapshots.createAndAccept(input, generationId)
+          ? await promptSnapshots.createAndAccept(input, generationId, scenePromptContext)
           : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
         const prepared = preparedRequest(
           generationId,
           accepted.provider,
           accepted.payload,
           reasoningCompatibility.resolve(accepted.payload),
+          sceneTransition,
         );
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;
@@ -482,6 +620,7 @@ export function createGenerationService(options: {
       } catch (error) {
         active.cleanup();
         if (error instanceof PromptSnapshotError) return { ok: false, reason: error.code };
+        if (error instanceof SceneServiceError) return { ok: false, reason: 'invalid_runtime_state' };
         throw error;
       }
     },

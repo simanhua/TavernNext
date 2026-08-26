@@ -14,6 +14,7 @@ import {
   type WorldbookEntry,
   type WorldbookRuntimeState,
   type WorldbookTimedState,
+  type ScenePromptAddition,
 } from '@tavernnext/domain';
 import {
   parsedRegexAssets,
@@ -82,6 +83,11 @@ export interface PromptSnapshotInput {
   continuationByteBoundary?: number;
   /** Internal /trigger path: compile the already-persisted final user message without duplicating it. */
   reuseLastUser?: boolean;
+}
+
+export interface ScenePromptContext {
+  state: Record<string, unknown>;
+  additions: ScenePromptAddition[];
 }
 
 export interface RevisionRef {
@@ -230,6 +236,7 @@ interface LoadedAggregate {
     key: string; content: string; role: 'system' | 'user' | 'assistant'; position: 'before' | 'after';
     ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string;
   }>;
+  scenePromptAdditions: ScenePromptAddition[];
 }
 
 interface BuiltSnapshot {
@@ -252,7 +259,11 @@ export interface PromptSnapshotService {
     patch: { messages?: PromptChatMessage[]; text?: string; stop?: string[] },
   ): Promise<PromptSnapshotPreview>;
   createPreview(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
-  createAndAccept(input: PromptSnapshotInput, snapshotId: string): Promise<AcceptedPromptSnapshot>;
+  createAndAccept(
+    input: PromptSnapshotInput,
+    snapshotId: string,
+    sceneContext?: ScenePromptContext,
+  ): Promise<AcceptedPromptSnapshot>;
   acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): Promise<AcceptedPromptSnapshot>;
   commitTimedState(payload: PromptSnapshotPayload): void;
 }
@@ -389,6 +400,9 @@ function appendCompatibilityWarnings(
 }
 
 function stableEmbeddedBook(character: Character): LoadedEmbeddedBook | undefined {
+  // Imports persist an embedded Character Book as a first-class linked Worldbook.
+  // Do not inject the raw embedded copy a second time when that normalized link exists.
+  if (character.worldbookId !== undefined) return undefined;
   if (character.characterBook === undefined) return undefined;
   const result = normalizeCharacterBook(
     deepJson(character.characterBook),
@@ -499,6 +513,21 @@ function persistedBook(
   };
 }
 
+function scenePromptBook(book: LoadedBook): LoadedBook {
+  return {
+    ...book,
+    book: {
+      ...book.book,
+      entries: book.book.entries.map((entry) => {
+        const label = `${entry.comment}\n${entry.displayName}`;
+        return label.includes('使用额外模型更新变量开')
+          ? { ...entry, enabled: false }
+          : entry;
+      }),
+    },
+  };
+}
+
 function runtimeStateFor(repositories: Repositories, conversationId: string): WorldbookRuntimeState | undefined {
   try {
     return repositories.worldbookRuntimeStates.getByConversationId(conversationId);
@@ -546,7 +575,11 @@ function resolveConversationGenerationBinding(
   return { providerId: fallback.providerId, presets: [{ id: scene.backingPresetId, kind: 'chat' }] };
 }
 
-function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): LoadedAggregate {
+function loadAggregate(
+  repositories: Repositories,
+  input: PromptSnapshotInput,
+  sceneContext?: ScenePromptContext,
+): LoadedAggregate {
   if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
     throw new PromptSnapshotError('invalid_user_text');
   }
@@ -575,6 +608,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   if (conversation.sceneId !== undefined && installedScene === undefined) throw new PromptSnapshotError('not_found');
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
   if (installedScene !== undefined && sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+  if (sceneContext !== undefined && installedScene === undefined) throw new PromptSnapshotError('invalid_runtime_state');
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -599,6 +633,9 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
   for (const id of conversation.worldbookIds) addPersisted(repositories.worldbooks.get(id), 'conversation');
   for (const id of [character.worldbookId, ...conversation.worldbookIds]) {
     if (id !== undefined && repositories.worldbooks.get(id) === undefined) throw new PromptSnapshotError('not_found');
+  }
+  if (installedScene !== undefined) {
+    for (let index = 0; index < books.length; index += 1) books[index] = scenePromptBook(books[index]!);
   }
 
   const history = historyRows(repositories, conversation.id);
@@ -709,12 +746,7 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
     input: snapshotInput,
     globalGenerationConfig: deepJson(globalGenerationConfig),
     conversation: deepJson(conversation),
-    character: deepJson(sceneState === undefined ? character : {
-      ...character,
-      systemPrompt: `${character.systemPrompt}\n\n<scene_state>\n${JSON.stringify(sceneState.value)}\n</scene_state>\n`
-        + 'Write the roleplay narrative first. When Scene state changes, append exactly one '
-        + '<UpdateVariable><JSONPatch>[RFC 6902 operations]</JSONPatch></UpdateVariable> block.',
-    }),
+    character: deepJson(character),
     persona: deepJson(persona),
     provider: deepJson(provider),
     presets: deepJson(presets),
@@ -732,6 +764,19 @@ function loadAggregate(repositories: Repositories, input: PromptSnapshotInput): 
       character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
     },
     promptInjections,
+    scenePromptAdditions: sceneState === undefined ? [] : [{
+      role: 'system',
+      content: '<scene_state>\n'
+        + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
+        + '</scene_state>\nScene state fields are governed by the Worldbook variable rules. '
+        + 'Write the roleplay narrative first. Always append exactly one legacy MVU block at the end of every reply:\n'
+        + '<UpdateVariable><Analysis>brief variable reasoning</Analysis><JSONPatch>[operations]</JSONPatch></UpdateVariable>\n'
+        + 'Use an empty [] operation list when no Scene State fields changed. Any narrative claim that an item was acquired, '
+        + 'used, lost, equipped, unequipped, or that a resource changed must have matching operations. '
+        + 'Use only replace, delta, insert, remove, or move operations. Move uses from and to. '
+        + 'Each operation is applied independently; a failed operation does not cancel successful operations. '
+        + 'Do not place any text after </UpdateVariable>.',
+    }, ...(sceneContext?.additions ?? [])],
   };
 }
 
@@ -1171,6 +1216,14 @@ async function compileAggregate(
       },
     };
 
+    let reservedRuntimeTokens = 0;
+    for (const content of [
+      ...aggregate.promptInjections.map((injection) => injection.content),
+      ...aggregate.scenePromptAdditions.map((addition) => addition.content),
+    ]) reservedRuntimeTokens += await tokenizer.countText(content);
+    const compilerPromptBudget = aggregate.conversation.maxPromptTokens - reservedRuntimeTokens;
+    if (compilerPromptBudget <= 0) throw new PromptSnapshotError('context_overflow');
+
     const compilation = aggregate.provider.apiMode === 'chat'
       ? await compileChatPrompt({
         character: aggregate.character,
@@ -1178,7 +1231,7 @@ async function compileAggregate(
         history,
         preset: aggregate.presets[0]!,
         tokenizer,
-        maxPromptTokens: aggregate.conversation.maxPromptTokens,
+        maxPromptTokens: compilerPromptBudget,
         generationType: aggregate.input.mode,
         promptOrderCharacterId: aggregate.character.id,
         worldInfoPlacements: placements,
@@ -1197,7 +1250,7 @@ async function compileAggregate(
         }),
         tokenizer,
         maxPromptTokens: Math.min(
-          aggregate.conversation.maxPromptTokens,
+          compilerPromptBudget,
           finiteSetting(aggregate.presets[0]!.settings, 'max_context') ?? aggregate.conversation.maxPromptTokens,
         ),
         generationType: aggregate.input.mode,
@@ -1210,13 +1263,22 @@ async function compileAggregate(
 
     const beforeInjections = aggregate.promptInjections.filter((injection) => injection.position === 'before');
     const afterInjections = aggregate.promptInjections.filter((injection) => injection.position === 'after');
-    const runtimeMessages = compilation.kind === 'chat' ? [
+    const compiledMessages = compilation.kind === 'chat' ? [
       ...beforeInjections.map(({ role, content }) => ({ role, content })),
       ...compilation.messages,
       ...afterInjections.map(({ role, content }) => ({ role, content })),
     ] : undefined;
+    const triggerIndex = compiledMessages === undefined
+      ? -1
+      : compiledMessages.map((message) => message.role).lastIndexOf('user');
+    const runtimeMessages = compiledMessages === undefined ? undefined : [
+      ...compiledMessages.slice(0, triggerIndex < 0 ? compiledMessages.length : triggerIndex),
+      ...aggregate.scenePromptAdditions,
+      ...compiledMessages.slice(triggerIndex < 0 ? compiledMessages.length : triggerIndex),
+    ];
     const runtimeText = compilation.kind === 'text' ? [
       ...beforeInjections.map(({ content }) => content),
+      ...aggregate.scenePromptAdditions.map(({ content }) => content),
       compilation.text,
       ...afterInjections.map(({ content }) => content),
     ].filter((value) => value !== '').join('\n') : undefined;
@@ -1234,6 +1296,11 @@ async function compileAggregate(
     for (const injection of aggregate.promptInjections) injectionBreakdown.push({
       source: `runtime-injection:${injection.key}`,
       includedTokens: await tokenizer.countText(injection.content),
+      omittedTokens: 0,
+    });
+    for (const [index, addition] of aggregate.scenePromptAdditions.entries()) injectionBreakdown.push({
+      source: `scene-prompt-addition:${index}`,
+      includedTokens: await tokenizer.countText(addition.content),
       omittedTokens: 0,
     });
 
@@ -1303,8 +1370,9 @@ async function buildSnapshot(
   repositories: Repositories,
   runtime: ServerTokenizerRuntime,
   input: PromptSnapshotInput,
+  sceneContext?: ScenePromptContext,
 ): Promise<BuiltSnapshot> {
-  const aggregate = database.transaction(() => loadAggregate(repositories, input));
+  const aggregate = database.transaction(() => loadAggregate(repositories, input, sceneContext));
   const payload = await compileAggregate(aggregate, runtime);
   return { payload, manifest: aggregate.manifest };
 }
@@ -1921,8 +1989,8 @@ export function createPromptSnapshotService(options: {
       transientPreviews.set(snapshotId, { payload: deepJson(built.payload), expiresAt: Date.now() + 60_000 });
       return { snapshotId, ...deepJson(built.payload) };
     },
-    async createAndAccept(input, snapshotId) {
-      const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
+    async createAndAccept(input, snapshotId, sceneContext) {
+      const built = await buildSnapshot(database, repositories, tokenizerRuntime, input, sceneContext);
       const accepted = database.transaction(() => {
         revalidateManifest(repositories, built.manifest);
         repositories.generationSnapshots.create({

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import type { GenerationService } from '../services/generation-service.js';
+import { SceneServiceError, type SceneService } from '../scenes/scene-service.js';
 
 interface Body {
   revision?: unknown;
@@ -19,6 +20,7 @@ export function registerMessageRoutes(
   database: TavernDatabase,
   repositories: Repositories,
   generations: GenerationService,
+  scenes: SceneService,
 ): void {
   const update = async (
     request: FastifyRequest<{ Params: { id: string }; Body: Body }>,
@@ -84,11 +86,19 @@ export function registerMessageRoutes(
     if (variant === undefined || variant.messageId !== message.id) {
       return reply.status(409).send({ error: 'variant_ownership_conflict' });
     }
-    const result = repositories.messages.update(message.id, revision, { activeVariantId: variant.id });
-    if (!result.ok) return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
-    const { compatibility: ignoredCompatibility, ...safe } = result.value;
-    void ignoredCompatibility;
-    return reply.send(safe);
+    try {
+      const result = database.transaction(() => {
+        scenes.switchVariantState(message, variant);
+        return repositories.messages.update(message.id, revision, { activeVariantId: variant.id });
+      });
+      if (!result.ok) return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
+      const { compatibility: ignoredCompatibility, ...safe } = result.value;
+      void ignoredCompatibility;
+      return reply.send(safe);
+    } catch (error) {
+      if (error instanceof SceneServiceError) return reply.status(error.statusCode).send({ error: error.code });
+      return reply.status(409).send({ error: 'constraint_conflict' });
+    }
   });
   app.delete<{ Params: { id: string }; Querystring: { revision?: string }; Body: Body }>('/api/messages/:id', async (request, reply) => {
     const revision = revisionFrom(request.query.revision ?? request.body?.revision ?? request.body?.expectedRevision);
@@ -100,6 +110,7 @@ export function registerMessageRoutes(
     try {
       const variants = current === undefined ? [] : repositories.messageVariants.listByMessageId(current.id);
       const result = database.transaction(() => {
+        if (current !== undefined) scenes.deleteMessageState(current);
         const deletion = repositories.messages.delete(request.params.id, revision);
         if (deletion.ok) {
           for (const variant of variants) repositories.extensionStates.deleteByScope('message-variant', variant.id);

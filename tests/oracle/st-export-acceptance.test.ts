@@ -1,10 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { decodeStChatJsonl, exportPreset, exportStChatJsonl, inspectPreset } from '@tavernnext/st-compat';
+import { exportPreset, inspectPreset } from '@tavernnext/st-compat';
 
 const oracleRoot = process.env.TAVERNNEXT_ST_ORACLE_ROOT;
 const fixtureRoot = join(import.meta.dirname, '..', 'fixtures');
@@ -56,35 +54,4 @@ describe.runIf(oracleRoot !== undefined)('pinned SillyTavern export import accep
     }
   });
 
-  it('runs an exported solo chat through the pinned getChatData parser', async () => {
-    const sourcePath = join(oracleRoot!, 'src', 'endpoints', 'chats.js');
-    const source = await readFile(sourcePath, 'utf8');
-    expect(sha256(source)).toBe('8b1e8a754692746235c557f508f3bec26a8538b209db6cf774bddf7652b80569');
-    const start = source.indexOf('export function getChatData(chatFilePath) {');
-    const nextRoute = source.indexOf("router.post('/get'", start);
-    const end = source.lastIndexOf('}', nextRoute);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    const parserSource = source.slice(start, end + 2).replace(/^export\s+/, '');
-    const getChatData = new Function(
-      'tryReadFileSync', 'tryParse', `${parserSource}\nreturn getChatData;`,
-    )(
-      (path: string) => readFileSync(path, 'utf8'),
-      (value: string) => { try { return JSON.parse(value); } catch { return null; } },
-    ) as (path: string) => unknown[];
-
-    const fixture = new Uint8Array(await readFile(join(fixtureRoot, 'chats', 'swipes.jsonl')));
-    const exported = exportStChatJsonl(decodeStChatJsonl(fixture));
-    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-st-chat-acceptance-'));
-    const exportPath = join(directory, exported.fileName);
-    try {
-      await writeFile(exportPath, exported.bytes);
-      const expected = Buffer.from(exported.bytes).toString('utf8').split('\n')
-        .map((line) => { try { return JSON.parse(line); } catch { return null; } })
-        .filter(Boolean);
-      expect(getChatData(exportPath)).toEqual(expected);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
 });

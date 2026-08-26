@@ -111,10 +111,6 @@ let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
 let promptPreviewRequests = 0;
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
-let chatImportBlocking = false;
-let chatImportExpired = false;
-let chatCommitBodies: Array<Record<string, unknown>> = [];
-let chatExportRequests = 0;
 const encoder = new TextEncoder();
 const frame = (type: string, data: object = {}) => encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
 
@@ -371,36 +367,6 @@ const server = setupServer(
     messages = messages.filter((message) => message.id !== params.id);
     return new HttpResponse(null, { status: 204 });
   }),
-  http.post('/api/imports/inspect', () => HttpResponse.json({
-    source: { fileName: 'import.jsonl', mediaType: 'application/x-ndjson', size: 10, sha256: 'chat-sha' },
-    detected: { container: 'jsonl', kind: 'chat', candidates: ['chat'] },
-    normalizedPreview: { header: { userName: 'Traveler', characterName: 'Aster' }, messages: [] },
-    warnings: [],
-    blockingErrors: chatImportBlocking ? [{ code: 'chat_blocked', message: 'Blocked chat fixture' }] : [],
-    ...(chatImportBlocking ? {} : { inspectionToken: 'chat-inspection-token', expiresAt: '2026-08-09T01:00:00.000Z' }),
-  }, { status: chatImportBlocking ? 422 : 200 })),
-  http.post('/api/chats/imports/commit', async ({ request }) => {
-    if (chatImportExpired) return HttpResponse.json({ error: 'inspection_token_expired' }, { status: 410 });
-    const body = await request.json() as Record<string, unknown>;
-    chatCommitBodies.push(body);
-    conversations.push({
-      ...conversation,
-      id: ids.importedConversation,
-      title: String(body.title),
-      characterId: String(body.characterId),
-      personaId: String(body.personaId),
-    });
-    return HttpResponse.json({ artifactId: '018f0000-0000-7000-8000-000000000113', entityId: ids.importedConversation }, { status: 201 });
-  }),
-  http.get('/api/conversations/:id/export', () => {
-    chatExportRequests += 1;
-    return new HttpResponse('{"user_name":"Traveler","character_name":"Aster"}\n', {
-      headers: {
-        'content-type': 'application/x-ndjson; charset=utf-8',
-        'content-disposition': 'attachment; filename="chat.jsonl"',
-      },
-    });
-  }),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -430,10 +396,6 @@ afterEach(() => {
   activeVariantSwitches = [];
   promptPreviewRequests = 0;
   activeStream = undefined;
-  chatImportBlocking = false;
-  chatImportExpired = false;
-  chatCommitBodies = [];
-  chatExportRequests = 0;
   window.localStorage.removeItem(CHAT_FORMAT_STORAGE_KEY);
   useChatUi.setState({ activeConversationId: null, draft: '' });
 });
@@ -838,62 +800,6 @@ describe('ChatPage', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect((composer as HTMLTextAreaElement).value).toBe(''));
     expect((await screen.findByRole('alert')).textContent).toContain('Generation error');
-  });
-
-  it('selects the default Persona for a new chat and imports then exports solo JSONL through the UI', async () => {
-    const user = userEvent.setup();
-    const createObjectUrl = vi.fn(() => 'blob:chat-export');
-    const revokeObjectUrl = vi.fn();
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
-    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    renderChatPage();
-
-    await screen.findByRole('option', { name: 'Traveler' });
-    const personaSelect = screen.getByRole('combobox', { name: 'Persona' }) as HTMLSelectElement;
-    await waitFor(() => expect(personaSelect.value).toBe(ids.persona));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
-    const title = screen.getByRole('textbox', { name: 'Imported chat title' });
-    await user.clear(title);
-    await user.type(title, 'Imported from UI');
-    await user.click(screen.getByRole('button', { name: 'Import chat' }));
-    const file = new File(['{"user_name":"Traveler","character_name":"Aster"}\n'], 'chat.jsonl', { type: 'application/x-ndjson' });
-    await user.upload(await screen.findByLabelText('Choose a file'), file);
-    await user.click(await screen.findByRole('button', { name: 'Commit import' }));
-
-    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Conversation' }) as HTMLSelectElement).value).toBe(ids.importedConversation));
-    expect(chatCommitBodies).toEqual([{
-      inspectionToken: 'chat-inspection-token',
-      characterId: ids.character,
-      personaId: ids.persona,
-      title: 'Imported from UI',
-    }]);
-    await user.click(screen.getByRole('button', { name: 'Export chat' }));
-    await waitFor(() => expect(chatExportRequests).toBe(1));
-    expect(createObjectUrl).toHaveBeenCalledOnce();
-    expect(anchorClick).toHaveBeenCalledOnce();
-    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:chat-export');
-  });
-
-  it('blocks invalid chat imports and reports an expired inspection token', async () => {
-    const user = userEvent.setup();
-    renderChatPage();
-    await screen.findByRole('option', { name: 'Traveler' });
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Character' }), ids.character);
-    await user.click(screen.getByRole('button', { name: 'Import chat' }));
-    const file = new File(['{}\n'], 'chat.jsonl', { type: 'application/x-ndjson' });
-    chatImportBlocking = true;
-    await user.upload(await screen.findByLabelText('Choose a file'), file);
-    expect(await screen.findByText('Blocked chat fixture')).not.toBeNull();
-    expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
-    await user.click(screen.getByRole('button', { name: 'Cancel import' }));
-
-    chatImportBlocking = false;
-    chatImportExpired = true;
-    await user.click(screen.getByRole('button', { name: 'Import chat' }));
-    await user.upload(await screen.findByLabelText('Choose a file'), file);
-    await user.click(await screen.findByRole('button', { name: 'Commit import' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('inspection_token_expired');
   });
 
   it('renders user, assistant, system, and narrator speaker labels distinctly', async () => {

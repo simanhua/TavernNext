@@ -16,9 +16,68 @@ function timestampPath(): string {
   return new Date().toISOString().replaceAll(':', '-');
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function normalizeDestinedPoemValue(value: unknown): boolean {
+  const protagonist = record(record(value)?.主角);
+  if (protagonist === undefined) return false;
+  let changed = false;
+  if (!Object.hasOwn(protagonist, '装备') || protagonist.装备 === null) {
+    protagonist.装备 = {};
+    changed = true;
+  }
+  if (!Object.hasOwn(protagonist, '背包') || protagonist.背包 === null) {
+    protagonist.背包 = {};
+    changed = true;
+  }
+  return changed;
+}
+
+function normalizeDestinedPoemSaveStates(database: TavernDatabase): void {
+  const now = new Date().toISOString();
+  const normalizeRows = (
+    table: 'conversation_scene_states' | 'scene_state_transitions',
+    rows: Array<Record<string, string | number | Uint8Array | null>>,
+    fields: string[],
+  ) => {
+    for (const row of rows) {
+      if (typeof row.id !== 'string' || typeof row.payload !== 'string' || typeof row.revision !== 'number') continue;
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(row.payload) as Record<string, unknown>; }
+      catch { continue; }
+      let changed = false;
+      for (const field of fields) changed = normalizeDestinedPoemValue(payload[field]) || changed;
+      if (!changed) continue;
+      const revision = row.revision + 1;
+      payload.revision = revision;
+      payload.updatedAt = now;
+      const updated = database.sqlite.prepare(`
+        UPDATE ${table} SET revision = ?, updated_at = ?, payload = ? WHERE id = ? AND revision = ?
+      `).run(revision, now, JSON.stringify(payload), row.id, row.revision);
+      if (updated.changes !== 1) throw new Error('scene_save_normalization_conflict');
+    }
+  };
+  normalizeRows('conversation_scene_states', database.sqlite.prepare(`
+    SELECT states.id, states.revision, states.payload
+    FROM conversation_scene_states states
+    INNER JOIN conversations saves ON saves.id = states.conversation_id
+    WHERE saves.scene_id = ?
+  `).all(DESTINED_POEM_SCENE_ID), ['baseValue', 'value']);
+  normalizeRows('scene_state_transitions', database.sqlite.prepare(`
+    SELECT transitions.id, transitions.revision, transitions.payload
+    FROM scene_state_transitions transitions
+    INNER JOIN conversations saves ON saves.id = transitions.conversation_id
+    WHERE saves.scene_id = ?
+  `).all(DESTINED_POEM_SCENE_ID), ['value']);
+}
+
 /**
- * One-way startup data upgrade for the only Scene SDK v1 package that shipped
- * during development. It runs before repositories parse the strict v2 schema.
+ * One-way startup asset upgrade for the bundled official Scene. It preserves
+ * backing resources and Saves while replacing the immutable package files.
  */
 export function upgradeInstalledOfficialSceneRuntime(database: TavernDatabase, dataDir: string): void {
   const row = database.sqlite.prepare('SELECT payload FROM installed_scenes WHERE id = ?')
@@ -28,12 +87,15 @@ export function upgradeInstalledOfficialSceneRuntime(database: TavernDatabase, d
   try { installed = JSON.parse(row.payload) as Record<string, unknown>; }
   catch { return; }
   const oldManifest = installed.manifest as Record<string, unknown> | undefined;
-  if (oldManifest?.sceneSdkVersion === 2) return;
-  if (oldManifest?.sceneSdkVersion !== 1) return;
+  if (oldManifest?.sceneSdkVersion !== 1 && oldManifest?.sceneSdkVersion !== 2) return;
+  const runtimePackage = buildDestinedPoemPackage();
+  if (installed.archiveDigest === runtimePackage.digest) {
+    database.transaction(() => normalizeDestinedPoemSaveStates(database));
+    return;
+  }
 
   const sceneRoot = resolve(dataDir, 'scenes');
   const oldPath = typeof installed.installPath === 'string' ? resolve(installed.installPath) : undefined;
-  const runtimePackage = buildDestinedPoemPackage();
   const target = resolve(sceneRoot, DESTINED_POEM_SCENE_ID, runtimePackage.digest);
   const stage = resolve(sceneRoot, `.stage-v2-${crypto.randomUUID()}`);
   if (!within(sceneRoot, target) || !within(sceneRoot, stage)) throw new Error('scene_upgrade_path_invalid');
@@ -83,6 +145,7 @@ export function upgradeInstalledOfficialSceneRuntime(database: TavernDatabase, d
         DESTINED_POEM_SCENE_ID,
       );
       if (result.changes !== 1) throw new Error('scene_upgrade_not_found');
+      normalizeDestinedPoemSaveStates(database);
     });
     if (oldPath !== undefined && oldPath !== target && within(sceneRoot, oldPath) && existsSync(oldPath)) {
       rmSync(oldPath, { recursive: true, force: true });

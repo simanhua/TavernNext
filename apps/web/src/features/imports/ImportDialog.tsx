@@ -7,7 +7,7 @@ import { ExtensionTrustPanel } from '../extensions/ExtensionTrustPanel.js';
 
 export interface ImportDialogProps {
   open: boolean;
-  expectedKind: 'character' | 'persona' | 'preset' | 'worldbook' | 'chat';
+  expectedKind: 'character' | 'persona' | 'preset' | 'worldbook';
   title: string;
   onOpenChange: (open: boolean) => void;
   onCommitted: (receipt: ImportReceipt) => void;

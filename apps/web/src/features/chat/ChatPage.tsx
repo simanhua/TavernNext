@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react';
 import { api, errorCode, type Conversation } from '../../api/client.js';
 import { CharacterQuickCreate } from '../characters/CharacterQuickCreate.js';
 import { PersonaQuickCreate } from '../personas/PersonaQuickCreate.js';
-import { ImportDialog } from '../imports/ImportDialog.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
@@ -31,9 +30,6 @@ export function ChatPage() {
   const [personaId, setPersonaId] = useState('');
   const [maxPromptTokens, setMaxPromptTokens] = useState(DEFAULT_PROMPT_TOKENS);
   const [maxResponseTokens, setMaxResponseTokens] = useState(DEFAULT_RESPONSE_TOKENS);
-  const [chatImportOpen, setChatImportOpen] = useState(false);
-  const [chatImportTitle, setChatImportTitle] = useState(() => t('Imported chat'));
-  const [chatTransferError, setChatTransferError] = useState<string>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [optimisticUserText, setOptimisticUserText] = useState<string | null>(null);
   const creatingConversation = useRef<Promise<Conversation> | null>(null);
@@ -78,7 +74,6 @@ export function ChatPage() {
     },
     onError: () => setDeleteOpen(false),
   });
-  const exportChat = useMutation({ mutationFn: api.exportChat });
 
   const tokenBudgetsValid = Number.isInteger(maxPromptTokens)
     && maxPromptTokens >= 1
@@ -252,48 +247,6 @@ export function ChatPage() {
         <details><summary>{t('Add Character')}</summary><CharacterQuickCreate /></details>
         <details><summary>{t('Add Persona')}</summary><PersonaQuickCreate /></details>
         <ChatFormatSettings values={chatFormat.values} onChange={chatFormat.setValue} onReset={chatFormat.reset} />
-        <label>
-          {t('Imported chat title')}
-          <input value={chatImportTitle} onChange={(event) => setChatImportTitle(event.target.value)} />
-        </label>
-        <div className="chat-transfer-actions">
-          <button
-            type="button"
-            disabled={characterId === '' || personaId === '' || chatImportTitle.trim() === '' || generation.isActive}
-            onClick={() => { setChatTransferError(undefined); setChatImportOpen(true); }}
-          >{t('Import chat')}</button>
-          <button
-            type="button"
-            disabled={activeConversationId === null || generation.isActive || exportChat.isPending}
-            onClick={() => {
-              if (activeConversationId === null) return;
-              setChatTransferError(undefined);
-              void exportChat.mutateAsync(activeConversationId).catch((error) => setChatTransferError(errorCode(error)));
-            }}
-          >{t('Export chat')}</button>
-        </div>
-        <ImportDialog
-          open={chatImportOpen}
-          expectedKind="chat"
-          title={t('Import solo chat JSONL')}
-          onOpenChange={setChatImportOpen}
-          commitImport={(inspectionToken) => api.commitChatImport(inspectionToken, {
-            characterId,
-            personaId,
-            title: chatImportTitle.trim(),
-          })}
-          onCommitted={(receipt) => {
-            if (receipt.entityId === undefined) {
-              setChatTransferError('chat_import_missing_entity');
-              return;
-            }
-            setActiveConversationId(receipt.entityId);
-            void queryClient.invalidateQueries({ queryKey: ['conversations'] });
-          }}
-        />
-        {chatTransferError === undefined && exportChat.error === null
-          ? null
-          : <p role="alert">{t('Chat transfer error: {{error}}', { error: chatTransferError ?? errorCode(exportChat.error) })}</p>}
       </aside>
       <section className="chat-main" style={chatFormatStyle(chatFormat.values)}>
         <header className="chat-header">

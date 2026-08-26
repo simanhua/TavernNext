@@ -8,6 +8,7 @@ import type {
   InstalledScene,
   ConversationSceneState,
   SceneCatalogEntry,
+  ScenePatchFailure,
   Message,
   MessageVariant,
   PresetKind,
@@ -16,7 +17,7 @@ import type {
 
 export type { Conversation, Message, MessageVariant, PresetKind };
 
-export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean }
+export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean; coverUrl?: string }
 export interface InstalledSceneView extends InstalledScene {
   coverUrl?: string;
   conversationCount: number;
@@ -590,7 +591,10 @@ export const api = {
   getSceneState: (conversationId: string) => request<ConversationSceneStateView>(
     `/api/conversations/${encodeURIComponent(conversationId)}/scene-state`,
   ),
-  patchSceneState: (conversationId: string, revision: number, patch: unknown[]) => request<ConversationSceneStateView>(
+  patchSceneState: (conversationId: string, revision: number, patch: unknown[]) => request<{
+    state: ConversationSceneStateView;
+    failures: ScenePatchFailure[];
+  }>(
     `/api/conversations/${encodeURIComponent(conversationId)}/scene-state`,
     { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
   ),
@@ -711,14 +715,6 @@ export const api = {
   commitImport: (inspectionToken: string) => request<ImportReceipt>('/api/imports/commit', {
     method: 'POST', body: JSON.stringify({ inspectionToken }),
   }),
-  commitChatImport: (inspectionToken: string, input: {
-    characterId: string;
-    personaId: string;
-    title: string;
-  }) => request<ImportReceipt>('/api/chats/imports/commit', {
-    method: 'POST', body: JSON.stringify({ inspectionToken, ...input }),
-  }),
-  exportChat: (id: string) => download(`/api/conversations/${id}/export?format=st-jsonl`),
   saveProvider: (input: {
     id?: string;
     revision?: number;
