@@ -144,7 +144,15 @@ describe('chat UI API bindings', () => {
       conversation: { id: ids.conversation },
       messages: [
         { id: userMessage.id, variants: [] },
-        { id: assistantMessage.id, variants: [{ id: variant.id, content: 'Reply' }] },
+        {
+          id: assistantMessage.id,
+          content: 'Reply',
+          variants: [{
+            id: variant.id,
+            content: 'Reply',
+            document: { version: 1, blocks: [{ type: 'markdown', content: 'Reply' }] },
+          }],
+        },
       ],
     });
     const updated = await app.inject({
@@ -152,8 +160,26 @@ describe('chat UI API bindings', () => {
       payload: { revision: 0, patch: { content: 'Edited' } },
     });
     expect(updated.json()).toMatchObject({ content: 'Edited', revision: 1 });
+    const editedAssistant = await app.inject({
+      method: 'PATCH', url: `/api/messages/${assistantMessage.id}`,
+      payload: { revision: 1, patch: { content: 'Edited **reply**' } },
+    });
+    expect(editedAssistant.json()).toMatchObject({ content: 'Edited **reply**', revision: 2 });
+    expect(repositories.messageVariants.get(variant.id)).toMatchObject({
+      revision: 1,
+      content: 'Edited **reply**',
+      document: { version: 1, blocks: [{ type: 'markdown', content: 'Edited **reply**' }] },
+    });
+    const reloaded = await app.inject({ method: 'GET', url: `/api/conversations/${ids.conversation}/messages` });
+    expect(reloaded.json().messages[1]).toMatchObject({
+      content: 'Edited **reply**',
+      variants: [{
+        content: 'Edited **reply**',
+        document: { version: 1, blocks: [{ type: 'markdown', content: 'Edited **reply**' }] },
+      }],
+    });
     expect((await app.inject({
-      method: 'DELETE', url: `/api/messages/${assistantMessage.id}?revision=1`,
+      method: 'DELETE', url: `/api/messages/${assistantMessage.id}?revision=2`,
     })).statusCode).toBe(204);
     expect(repositories.messageVariants.get(variant.id)).toBeUndefined();
 

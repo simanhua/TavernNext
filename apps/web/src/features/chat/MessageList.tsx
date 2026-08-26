@@ -5,7 +5,13 @@ import type { ActiveGenerationTarget } from './useGeneration.js';
 import { SwipeControls } from './SwipeControls.js';
 import { useI18n } from '../../app/i18n.js';
 import { RegexProjectedMarkdownContent } from './RegexProjectedMarkdownContent.js';
+import { MarkdownContent } from './MarkdownContent.js';
 import { useActiveRegexScripts } from './useActiveRegexScripts.js';
+import {
+  roleplayDocumentFromMarkdown,
+  roleplayDocumentPlainText,
+  type RoleplayMarkdownBlock,
+} from '@tavernnext/domain';
 
 interface MessageListProps {
   conversationId: string | null;
@@ -23,7 +29,14 @@ interface MessageListProps {
 function authoritativeContent(message: MessageView): string {
   if (message.role !== 'assistant') return message.content;
   const active = message.variants.find((variant) => variant.id === message.activeVariantId);
-  return (active ?? message.variants[0])?.content ?? message.content;
+  const variant = active ?? message.variants[0];
+  return variant?.document === undefined
+    ? variant?.content ?? message.content
+    : roleplayDocumentPlainText(variant.document);
+}
+
+function markdownBlocks(content: string, document?: { blocks: RoleplayMarkdownBlock[] }): RoleplayMarkdownBlock[] {
+  return document?.blocks ?? roleplayDocumentFromMarkdown(content).blocks;
 }
 
 export function MessageList({
@@ -95,6 +108,9 @@ export function MessageList({
         const content = generationTarget?.messageId === message.id && streamedText !== ''
           ? generationTarget.mode === 'continue' ? generationTarget.baseContent + streamedText : streamedText
           : baseContent;
+        const blocks = message.role === 'assistant' && generationTarget?.messageId !== message.id
+          ? markdownBlocks(content, activeVariant?.document)
+          : message.role === 'assistant' ? markdownBlocks(content) : [];
         const reasoning = generationTarget?.messageId === message.id && streamedReasoning !== ''
           ? streamedReasoning
           : activeVariant?.reasoning ?? '';
@@ -117,14 +133,16 @@ export function MessageList({
               }}>
                 <label htmlFor={`edit-${message.id}`}>{t('Edit message')}</label>
                 <textarea id={`edit-${message.id}`} value={editText} onChange={(event) => setEditText(event.target.value)} />
-                <RegexProjectedMarkdownContent
-                  content={editText}
-                  role={message.role}
-                  depth={messages.length - messageIndex - 1}
-                  scripts={regexScripts}
-                  macroValues={macroValues}
-                  isEdit
-                />
+                {message.role === 'assistant' ? (
+                  <RegexProjectedMarkdownContent
+                    content={editText}
+                    role={message.role}
+                    depth={messages.length - messageIndex - 1}
+                    scripts={regexScripts}
+                    macroValues={macroValues}
+                    isEdit
+                  />
+                ) : <MarkdownContent content={editText} />}
                 <button type="submit" disabled={edit.isPending || editText.trim() === ''}>{t('Save edit')}</button>
                 <button type="button" onClick={() => setEditingId(null)}>{t('Cancel edit')}</button>
               </form>
@@ -144,23 +162,28 @@ export function MessageList({
                   <p>{activeVariant?.status === 'streaming'
                     ? t('Waiting for final response…')
                     : t('No final response was generated.')}</p>
-                ) : <div className="mes_text"><RegexProjectedMarkdownContent
-                  content={content}
-                  role={message.role}
-                  depth={messages.length - messageIndex - 1}
-                  scripts={regexScripts}
-                  macroValues={macroValues}
-                  interactive={regexScriptsReady && message.role === 'assistant'
-                    && activeVariant?.status === 'completed'
-                    && generationTarget?.messageId !== message.id
-                    ? {
-                        conversationId: conversationId!,
-                        messageId: messageIndex,
-                        variantId: activeVariant.id,
-                        hasReasoning: reasoning !== '',
-                      }
-                    : undefined}
-                /></div>}
+                ) : <div className="mes_text">{message.role !== 'assistant'
+                  ? <MarkdownContent content={content} />
+                  : blocks.map((block, blockIndex) => (
+                  <RegexProjectedMarkdownContent
+                    key={blockIndex}
+                    content={block.content}
+                    role={message.role}
+                    depth={messages.length - messageIndex - 1}
+                    scripts={regexScripts}
+                    macroValues={macroValues}
+                    interactive={regexScriptsReady && message.role === 'assistant'
+                      && activeVariant?.status === 'completed'
+                      && generationTarget?.messageId !== message.id
+                      ? {
+                          conversationId: conversationId!,
+                          messageId: messageIndex,
+                          variantId: activeVariant.id,
+                          hasReasoning: reasoning !== '',
+                        }
+                      : undefined}
+                  />
+                  ))}</div>}
               </>
             )}
             {message.id === lastAssistantId ? (
@@ -196,7 +219,7 @@ export function MessageList({
       {optimisticUserText === null ? null : (
         <article className="message message-user message-pending" aria-live="polite">
           <header>{t('You')}</header>
-          <RegexProjectedMarkdownContent content={optimisticUserText} role="user" depth={0} scripts={regexScripts} macroValues={macroValues} />
+          <MarkdownContent content={optimisticUserText} />
           <span className="message-pending-indicator">{t('Waiting for response…')}</span>
         </article>
       )}

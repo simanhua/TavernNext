@@ -4,10 +4,42 @@ import {
   CompatibilityMetadataSchema,
   ConversationSchema,
   GenerationRequestSchema,
+  MessageVariantSchema,
+  roleplayDocumentFromMarkdown,
+  roleplayDocumentPlainText,
   SceneManifestSchema,
 } from '../src/index.js';
 
 describe('domain contracts', () => {
+  it('makes the Roleplay Document canonical and derives the plain assistant projection', () => {
+    const base = {
+      id: '018f0000-0000-7000-8000-000000000006',
+      revision: 0,
+      createdAt: '2026-08-27T00:00:00.000Z',
+      updatedAt: '2026-08-27T00:00:00.000Z',
+      messageId: '018f0000-0000-7000-8000-000000000007',
+      ordinal: 0,
+      content: 'First\n\nSecond',
+      status: 'completed',
+    };
+    expect(MessageVariantSchema.parse(base).document).toEqual(
+      roleplayDocumentFromMarkdown(base.content),
+    );
+    const document = {
+      version: 1 as const,
+      blocks: [
+        { type: 'markdown' as const, content: 'First' },
+        { type: 'markdown' as const, content: '\n\nSecond' },
+      ],
+    };
+    expect(roleplayDocumentPlainText(document)).toBe(base.content);
+    expect(MessageVariantSchema.parse({ ...base, document }).content).toBe(base.content);
+    expect(MessageVariantSchema.safeParse({ ...base, document, content: 'diverged' }).success).toBe(false);
+    const legacyUnboundedContent = 'x'.repeat(4 * 1024 * 1024 + 1);
+    expect(roleplayDocumentPlainText(roleplayDocumentFromMarkdown(legacyUnboundedContent)))
+      .toHaveLength(legacyUnboundedContent.length);
+  });
+
   it('retains unknown compatibility fields verbatim', () => {
     const metadata = CompatibilityMetadataSchema.parse({
       sourceFormat: 'st-character-v3',

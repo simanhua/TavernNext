@@ -138,7 +138,7 @@ type DefaultedField =
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
   | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
-  | 'diagnostics' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
+  | 'diagnostics' | 'document' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
   | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>

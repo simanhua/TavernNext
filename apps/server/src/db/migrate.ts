@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { GLOBAL_GENERATION_CONFIG_ID } from '@tavernnext/domain';
+import { GLOBAL_GENERATION_CONFIG_ID, roleplayDocumentFromMarkdown } from '@tavernnext/domain';
 import { attachedVariableValue, normalizeAttachedExtensions } from '@tavernnext/st-compat';
 import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
@@ -7,7 +7,8 @@ import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-sta
 
 const SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION = 19;
 const AGENT_RUN_SCHEMA_VERSION = 20;
-export const CURRENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION;
+const ROLEPLAY_DOCUMENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION + 1;
+export const CURRENT_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -548,6 +549,20 @@ function backfillSceneStateKernel(database: TavernDatabase): void {
   }
 }
 
+function backfillRoleplayDocuments(database: TavernDatabase): void {
+  for (const row of database.sqlite.prepare('SELECT id, payload FROM message_variants').all()) {
+    if (typeof row.id !== 'string') continue;
+    const value = parsedEntityPayload(row.payload);
+    if (value === undefined) continue;
+    const content = typeof value.content === 'string' ? value.content : '';
+    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?').run(JSON.stringify({
+      ...value,
+      content,
+      document: roleplayDocumentFromMarkdown(content),
+    }), row.id);
+  }
+}
+
 export function migrateDatabase(database: TavernDatabase): void {
   // SQLite requires this pragma to be changed outside a transaction. It is restored in finally,
   // while all schema/data changes and the schema-version write happen in one durable transaction.
@@ -574,6 +589,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if ((startingVersion ?? 0) < 13) backfillPresetExtensionAssets(database);
       if ((startingVersion ?? 0) < 14) backfillOwnerExtensionStates(database);
       if ((startingVersion ?? 0) < 18) backfillSceneStateKernel(database);
+      if ((startingVersion ?? 0) < ROLEPLAY_DOCUMENT_SCHEMA_VERSION) backfillRoleplayDocuments(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
       if (startingVersion === 16) clearLegacyPublicAssets(database);

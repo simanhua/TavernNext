@@ -14,7 +14,7 @@ const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 describe('Scene migrations', () => {
-  it('adds the schema 20 Agent Run audit table without resetting schema 19 Saves', async () => {
+  it('adds the Agent Run audit and Roleplay Document schemas without resetting schema 19 Saves', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-agent-run-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -38,7 +38,7 @@ describe('Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(20);
+    expect(CURRENT_SCHEMA_VERSION).toBe(21);
     expect(repositories.conversations.get(conversation.id)?.title).toBe('Preserved Save');
     expect(database.sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'").get())
       .toEqual({ name: 'agent_runs' });
@@ -61,13 +61,96 @@ describe('Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(20);
+    expect(CURRENT_SCHEMA_VERSION).toBe(21);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
     expect(repositories.characters.list()).toEqual([]);
     expect(repositories.worldbooks.list()).toEqual([]);
     expect(repositories.presets.list()).toEqual([]);
     expect(repositories.conversations.list()).toEqual([]);
+    database.close();
+  });
+
+  it('backfills schema 20 assistant Variant content into one canonical Markdown document', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-roleplay-document-migration-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    migrateDatabase(database);
+    const repositories = createRepositories(database, { snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    const character = repositories.characters.create({
+      id: randomUUID(), name: 'Character', description: '', personality: '', scenario: '',
+      firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: randomUUID(), name: 'Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Document migration',
+    });
+    const message = repositories.messages.create({
+      id: randomUUID(), conversationId: conversation.id, role: 'assistant', content: '', activeVariantId: null,
+    });
+    const variant = repositories.messageVariants.create({
+      id: randomUUID(), messageId: message.id, ordinal: 0,
+      content: 'First paragraph.\n\nSecond paragraph.', status: 'completed',
+    });
+    const oversizedContent = 'x'.repeat(256 * 1024);
+    const oversizedVariant = repositories.messageVariants.create({
+      id: randomUUID(), messageId: message.id, ordinal: 1,
+      content: oversizedContent, status: 'completed',
+    });
+    const raw = database.sqlite.prepare('SELECT payload FROM message_variants WHERE id = ?').get(variant.id) as {
+      payload: string;
+    };
+    const legacy = JSON.parse(raw.payload) as Record<string, unknown>;
+    delete legacy.document;
+    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), variant.id);
+    const oversizedRaw = database.sqlite.prepare('SELECT payload FROM message_variants WHERE id = ?')
+      .get(oversizedVariant.id) as { payload: string };
+    const oversizedLegacy = JSON.parse(oversizedRaw.payload) as Record<string, unknown>;
+    delete oversizedLegacy.document;
+    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(oversizedLegacy), oversizedVariant.id);
+    database.sqlite.exec('DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version(version) VALUES (20)');
+
+    migrateDatabase(database);
+
+    expect(repositories.messageVariants.get(variant.id)).toMatchObject({
+      id: variant.id,
+      revision: variant.revision,
+      content: 'First paragraph.\n\nSecond paragraph.',
+      document: {
+        version: 1,
+        blocks: [{ type: 'markdown', content: 'First paragraph.\n\nSecond paragraph.' }],
+      },
+    });
+    const migratedOversized = repositories.messageVariants.get(oversizedVariant.id)!;
+    expect(migratedOversized.content).toHaveLength(oversizedContent.length);
+    expect(migratedOversized.document).toEqual({
+      version: 1,
+      blocks: [{ type: 'markdown', content: oversizedContent }],
+    });
+
+    const canonical = {
+      ...repositories.messageVariants.get(variant.id)!,
+      document: {
+        version: 1,
+        blocks: [
+          { type: 'markdown', content: 'First paragraph.' },
+          { type: 'markdown', content: '\n\nSecond paragraph.' },
+        ],
+      },
+    };
+    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(canonical), variant.id);
+    const beforeRepeatedMigration = (database.sqlite.prepare(
+      'SELECT payload FROM message_variants WHERE id = ?',
+    ).get(variant.id) as { payload: string }).payload;
+    migrateDatabase(database);
+    expect((database.sqlite.prepare('SELECT payload FROM message_variants WHERE id = ?')
+      .get(variant.id) as { payload: string }).payload).toBe(beforeRepeatedMigration);
+    expect(repositories.messageVariants.get(variant.id)?.document.blocks).toHaveLength(2);
     database.close();
   });
 

@@ -366,6 +366,19 @@ describe('per-Save Pi Scene Director', () => {
     expect(contexts[1]!.messages.some((message) => (
       message.role === 'assistant' && message.content.some((block) => block.type === 'text' && block.text === 'First agent reply')
     ))).toBe(true);
+    expect(seeded.repositories.messageVariants.listByConversationId(seeded.conversation.id).map((variant) => ({
+      content: variant.content,
+      document: variant.document,
+    }))).toEqual([
+      {
+        content: 'First agent reply',
+        document: { version: 1, blocks: [{ type: 'markdown', content: 'First agent reply' }] },
+      },
+      {
+        content: 'Second agent reply',
+        document: { version: 1, blocks: [{ type: 'markdown', content: 'Second agent reply' }] },
+      },
+    ]);
     const runs = seeded.repositories.agentRuns.listByConversationId(seeded.conversation.id);
     expect(runs.map((run) => run.revisions.saveAgentConfiguration.revision)).toEqual([1, 2]);
     expect(runs).toEqual(runs.map(() => expect.objectContaining({

@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { ExtensionOwnerKindSchema, ExtensionStateScopeSchema, type ExtensionStateScope } from '@tavernnext/domain';
+import {
+  ExtensionOwnerKindSchema,
+  ExtensionStateScopeSchema,
+  roleplayDocumentFromMarkdown,
+  roleplayDocumentPlainText,
+  type ExtensionStateScope,
+} from '@tavernnext/domain';
 import {
   GENERATION_BLOCKED_TAVERN_HELPER_METHODS,
   TavernRegexSchema,
@@ -33,7 +39,9 @@ function messageView(repositories: Repositories, conversationId: string) {
       id: message.id,
       revision: message.revision,
       role: message.role,
-      message: message.role === 'assistant' && active !== undefined ? active.content : message.content,
+      message: message.role === 'assistant' && active !== undefined
+        ? roleplayDocumentPlainText(active.document)
+        : message.content,
       active_variant_id: active?.id ?? null,
       active_variant_revision: active?.revision ?? null,
     };
@@ -194,7 +202,10 @@ export function createExtensionRuntimeRpcService(
               if (row.active_variant_id !== null) {
                 const expectedVariant = update?.expected_variant_revision;
                 if (expectedVariant !== undefined && expectedVariant !== row.active_variant_revision) throw new RpcError('conflict', 409);
-                const variant = repositories.messageVariants.update(row.active_variant_id, row.active_variant_revision!, { content });
+                const variant = repositories.messageVariants.update(row.active_variant_id, row.active_variant_revision!, {
+                  content,
+                  document: roleplayDocumentFromMarkdown(content),
+                });
                 if (!variant.ok) throw new RpcError('conflict', 409);
               }
             }

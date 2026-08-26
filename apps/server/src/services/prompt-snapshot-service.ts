@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   EMPTY_WORLDBOOK_TIMED_STATE,
+  roleplayDocumentPlainText,
   WorldbookTimedStateSchema,
   type Character,
   type Conversation,
@@ -476,7 +477,9 @@ function historyRows(repositories: Repositories, conversationId: string): {
       return {
         id: message.id,
         role: message.role,
-        content: message.role === 'assistant' && variant !== undefined ? variant.content : message.content,
+        content: message.role === 'assistant' && variant !== undefined
+          ? roleplayDocumentPlainText(variant.document)
+          : message.content,
       };
     }),
     manifest: messages.map((message) => {
@@ -728,7 +731,7 @@ function loadAggregate(
     throw new PromptSnapshotError('invalid_target');
   }
   const continuationByteBoundary = input.mode === 'continue'
-    ? Buffer.byteLength(targetVariant!.content, 'utf8')
+    ? Buffer.byteLength(roleplayDocumentPlainText(targetVariant!.document), 'utf8')
     : null;
   if (input.continuationByteBoundary !== undefined
     && input.continuationByteBoundary !== continuationByteBoundary) throw new PromptSnapshotError('invalid_target');

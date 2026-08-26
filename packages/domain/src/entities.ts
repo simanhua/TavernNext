@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  RoleplayDocumentSchema,
+  roleplayDocumentPlainText,
+} from './roleplay-document.js';
 import { CompatibilityMetadataSchema } from './compatibility.js';
 import { WorldbookTimedStateSchema } from './generation.js';
 import { ScenePatchOperationSchema, SceneStateDiagnosticSchema } from './scene-state.js';
@@ -337,10 +341,11 @@ export const MessageSchema = MutableEntitySchema.extend({
 }).extend(WithCompatibilitySchema.shape);
 
 export const MessageVariantStatusSchema = z.enum(['streaming', 'completed', 'aborted', 'failed']);
-export const MessageVariantSchema = MutableEntitySchema.extend({
+const MessageVariantValueSchema = MutableEntitySchema.extend({
   messageId: DomainIdSchema,
   ordinal: z.number().int().nonnegative().default(0),
   content: z.string(),
+  document: RoleplayDocumentSchema,
   status: MessageVariantStatusSchema,
   finishReason: z.string().optional(),
   reasoning: z.string().optional(),
@@ -353,7 +358,25 @@ export const MessageVariantSchema = MutableEntitySchema.extend({
   tokenCount: z.number().finite().nonnegative().optional(),
   reasoningDuration: z.number().finite().nonnegative().optional(),
   diagnostics: z.array(SceneStateDiagnosticSchema).default([]),
-}).extend(WithCompatibilitySchema.shape);
+}).extend(WithCompatibilitySchema.shape).superRefine((variant, context) => {
+  if (variant.content !== roleplayDocumentPlainText(variant.document)) {
+    context.addIssue({ code: 'custom', message: 'message_variant_content_must_match_document', path: ['content'] });
+  }
+});
+
+export const MessageVariantSchema = z.preprocess((input) => {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return input;
+  const value = input as Record<string, unknown>;
+  return value.document === undefined && typeof value.content === 'string'
+    ? {
+        ...value,
+        document: {
+          version: 1,
+          blocks: value.content === '' ? [] : [{ type: 'markdown', content: value.content }],
+        },
+      }
+    : input;
+}, MessageVariantValueSchema);
 
 const ProviderProfileValueSchema = MutableEntitySchema.extend({
   name: z.string().min(1),

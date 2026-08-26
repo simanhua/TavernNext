@@ -15,6 +15,7 @@ import type {
   ScenePatchFailure,
   ScenePatchOperation,
 } from '@tavernnext/domain';
+import { roleplayDocumentPlainText } from '@tavernnext/domain';
 import type { PiAgentModelRuntime, ProviderEvent } from '@tavernnext/provider-openai-compatible';
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
 import type { Repositories } from '../db/repositories.js';
@@ -302,7 +303,8 @@ function assistantHistory(content: string, provider: ProviderProfile): Assistant
 
 function activeContent(message: StoredMessage, variants: Map<string, MessageVariant>): string {
   if (message.role !== 'assistant' || message.activeVariantId === null) return message.content;
-  return variants.get(message.activeVariantId)?.content ?? message.content;
+  const variant = variants.get(message.activeVariantId);
+  return variant === undefined ? message.content : roleplayDocumentPlainText(variant.document);
 }
 
 function historyMessages(

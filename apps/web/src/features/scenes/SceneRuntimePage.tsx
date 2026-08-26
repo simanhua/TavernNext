@@ -7,6 +7,7 @@ import type {
   SceneSdkV2,
   SceneThemeSnapshot,
 } from '@tavernnext/domain';
+import { roleplayDocumentPlainText } from '@tavernnext/domain';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -37,9 +38,9 @@ class SceneSdkError extends Error {
 
 function activeContent(message: MessageView): string {
   if (message.role !== 'assistant') return message.content;
-  return message.variants.find((variant) => variant.id === message.activeVariantId)?.content
-    ?? message.variants[0]?.content
-    ?? message.content;
+  const variant = message.variants.find((candidate) => candidate.id === message.activeVariantId)
+    ?? message.variants[0];
+  return variant?.document === undefined ? variant?.content ?? message.content : roleplayDocumentPlainText(variant.document);
 }
 
 function generationSnapshot(value: ReturnType<ReturnType<typeof useGeneration>['getSnapshot']>): SceneGenerationSnapshot {

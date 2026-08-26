@@ -9,6 +9,8 @@ import {
   type ScenePatchFailure,
   type SceneStateDiagnostic,
   type SceneManifest,
+  roleplayDocumentFromMarkdown,
+  roleplayDocumentPlainText,
 } from '@tavernnext/domain';
 import type {
   ChatRequest,
@@ -212,7 +214,9 @@ export function createGenerationService(options: {
       }
       if (siblingMode) variant = undefined;
     }
-    let content = mode === 'continue' ? variant?.content ?? '' : '';
+    let content = mode === 'continue' && variant !== undefined
+      ? roleplayDocumentPlainText(variant.document)
+      : '';
     const initialContent = content;
     let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
     let hasDelta = false;
@@ -231,6 +235,7 @@ export function createGenerationService(options: {
       if (variant === undefined) return;
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
+        document: roleplayDocumentFromMarkdown(content),
         ...(reasoning === '' ? {} : { reasoning }),
         status,
         diagnostics: sceneDiagnostics,
@@ -257,11 +262,12 @@ export function createGenerationService(options: {
           content: '',
           activeVariantId: null,
         });
-        variant = repositories.messageVariants.create({
+          variant = repositories.messageVariants.create({
           id: randomUUID(),
           messageId: message.id,
           ordinal: 0,
-          content,
+            content,
+            document: roleplayDocumentFromMarkdown(content),
           ...(reasoning === '' ? {} : { reasoning }),
           status: 'streaming',
           continuationBoundaries: [],
@@ -271,11 +277,12 @@ export function createGenerationService(options: {
       } else if (siblingMode) {
         const siblings = repositories.messageVariants.listByMessageId(targetMessage!.id);
         const ordinal = siblings.reduce((maximum, sibling) => Math.max(maximum, sibling.ordinal), -1) + 1;
-        variant = repositories.messageVariants.create({
+          variant = repositories.messageVariants.create({
           id: randomUUID(),
           messageId: targetMessage!.id,
           ordinal,
-          content,
+            content,
+            document: roleplayDocumentFromMarkdown(content),
           ...(reasoning === '' ? {} : { reasoning }),
           status: 'streaming',
           continuationBoundaries: [],

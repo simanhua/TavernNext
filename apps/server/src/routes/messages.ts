@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { roleplayDocumentFromMarkdown } from '@tavernnext/domain';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
@@ -51,7 +52,10 @@ export function registerMessageRoutes(
           if (active === undefined || active.messageId !== current.id) throw new Error('assistant_active_variant_invalid');
           const updatedMessage = repositories.messages.update(request.params.id, revision, { content });
           if (!updatedMessage.ok) return updatedMessage;
-          const updatedVariant = repositories.messageVariants.update(active.id, active.revision, { content });
+          const updatedVariant = repositories.messageVariants.update(active.id, active.revision, {
+            content,
+            document: roleplayDocumentFromMarkdown(content),
+          });
           if (!updatedVariant.ok) throw new Error(`assistant_variant_${updatedVariant.reason}`);
           return updatedMessage;
         })

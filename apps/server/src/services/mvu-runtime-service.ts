@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { applyMvuMessage, createMvuState } from '@tavernnext/st-compat';
+import { roleplayDocumentPlainText } from '@tavernnext/domain';
 import type { Repositories } from '../db/repositories.js';
 import { assertRuntimeStateValue } from '../runtime-state-validation.js';
 import { EXTENSION_TRUST_RISK_VERSION, extensionExecutableDigest } from './extension-trust-service.js';
@@ -41,7 +42,7 @@ export function createMvuRuntimeService(repositories: Repositories) {
         if (message.role !== 'assistant') continue;
         for (const variant of repositories.messageVariants.listByMessageId(message.id)) {
           if (repositories.extensionStates.getByScope('message-variant', variant.id) !== undefined) continue;
-          const value = createMvuState(entries, variant.content);
+          const value = createMvuState(entries, roleplayDocumentPlainText(variant.document));
           assertRuntimeStateValue(value);
           repositories.extensionStates.create({
             id: randomUUID(), scope: 'message-variant', scopeId: variant.id, value,

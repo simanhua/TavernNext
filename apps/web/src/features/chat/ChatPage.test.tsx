@@ -82,6 +82,7 @@ type MessageView = {
     messageId: string;
     ordinal?: number;
     content: string;
+    document?: { version: 1; blocks: Array<{ type: 'markdown'; content: string }> };
     status: 'completed' | 'aborted' | 'failed';
     finishReason?: string;
     reasoning?: string;
@@ -415,6 +416,44 @@ function renderChatPage() {
 }
 
 describe('ChatPage', () => {
+  it('renders assistant Markdown from the Roleplay Document instead of a divergent compatibility field', async () => {
+    conversations = [conversation];
+    messages = [{
+      id: ids.assistantMessage,
+      revision: 0,
+      createdAt: now,
+      updatedAt: now,
+      conversationId: ids.conversation,
+      role: 'assistant',
+      content: 'STALE COMPATIBILITY TEXT',
+      activeVariantId: ids.assistantVariant,
+      variants: [{
+        id: ids.assistantVariant,
+        revision: 0,
+        createdAt: now,
+        updatedAt: now,
+        messageId: ids.assistantMessage,
+        content: 'STALE VARIANT TEXT',
+        document: {
+          version: 1,
+          blocks: [
+            { type: 'markdown', content: '**Canonical document prose**' },
+            { type: 'markdown', content: 'Second ordered block' },
+          ],
+        },
+        status: 'completed',
+      }],
+    }];
+    useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
+    renderChatPage();
+
+    const firstBlock = await screen.findByText('Canonical document prose');
+    const secondBlock = screen.getByText('Second ordered block');
+    expect(firstBlock.compareDocumentPosition(secondBlock) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByText('STALE VARIANT TEXT')).toBeNull();
+    expect(screen.queryByText('STALE COMPATIBILITY TEXT')).toBeNull();
+  });
+
   it('confirms deletion of the active conversation, then clears the selection and refreshes the list', async () => {
     const user = userEvent.setup();
     conversations = [conversation, otherConversation];
