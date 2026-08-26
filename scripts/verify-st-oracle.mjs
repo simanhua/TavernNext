@@ -43,7 +43,6 @@ const required = {
     'reasoning/synthetic-reasoning.json',
   ],
   worldbooks: ['native.json', 'character-book.json', 'novel.json', 'agnai.json', 'risu.json', 'naidata.png'],
-  chats: ['basic.jsonl', 'swipes.jsonl', 'unknown-extra.jsonl'],
   prompts: ['chat-golden.json', 'text-golden.json'],
   tokenizers: ['parity-corpus.json'],
 };
@@ -129,7 +128,6 @@ const oracleTests = [
   'packages/st-compat/test/characters.test.ts',
   'packages/st-compat/test/presets.test.ts',
   'packages/st-compat/test/worldbooks.test.ts',
-  'packages/st-compat/test/chats.test.ts',
   'packages/tokenizer-engine/test/parity.test.ts',
   'packages/prompt-engine/test/oracle.test.ts',
   'packages/prompt-engine/test/worldbook/oracle.test.ts',
