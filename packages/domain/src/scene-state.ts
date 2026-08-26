@@ -76,6 +76,12 @@ export const SceneActionResultSchema = z.object({
   result: z.unknown().optional(),
 }).strict();
 
+export const SceneAgentToolResultSchema = z.object({
+  content: z.string().max(32_768).optional(),
+  detail: z.unknown().optional(),
+  statePatch: z.array(z.unknown()).max(32).optional(),
+}).strict();
+
 export type ScenePatchOperation = z.infer<typeof ScenePatchOperationSchema>;
 export type ScenePatchFailure = z.infer<typeof ScenePatchFailureSchema>;
 export type SceneStateDiagnostic = z.infer<typeof SceneStateDiagnosticSchema>;
@@ -84,3 +90,4 @@ export type SceneInitializeResult = z.infer<typeof SceneInitializeResultSchema>;
 export type SceneBeforeGenerationResult = z.infer<typeof SceneBeforeGenerationResultSchema>;
 export type SceneAfterGenerationResult = z.infer<typeof SceneAfterGenerationResultSchema>;
 export type SceneActionResult = z.infer<typeof SceneActionResultSchema>;
+export type SceneAgentToolResult = z.infer<typeof SceneAgentToolResultSchema>;

@@ -24,6 +24,7 @@ import {
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
 import { TurnWorkspace, type TurnWorkspaceSnapshot } from './turn-workspace.js';
+import type { SceneAgentToolFactory } from './scene-agent-tools.js';
 
 export interface SceneDirectorLimits {
   maxModelTurns: number;
@@ -412,6 +413,7 @@ export class SceneDirectorExecution {
       initialOperations?: ScenePatchOperation[];
       initialFailures?: ScenePatchFailure[];
     };
+    sceneAgentToolFactory?: SceneAgentToolFactory;
   }) {
     const conversation = input.repositories.conversations.get(input.payload.input.conversationId);
     const character = conversation === undefined ? undefined : input.repositories.characters.get(conversation.characterId);
@@ -442,7 +444,10 @@ export class SceneDirectorExecution {
       payload: structuredClone(input.payload),
       ...(input.workspaceState === undefined ? {} : { state: structuredClone(input.workspaceState) }),
     });
-    const tools = this.workspace.tools();
+    const tools = [
+      ...this.workspace.tools(),
+      ...(input.sceneAgentToolFactory?.(this.workspace) ?? []),
+    ];
     this.plan = {
       configuration: frozenConfiguration,
       conversation: frozenConversation,

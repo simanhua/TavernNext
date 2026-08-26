@@ -5,6 +5,7 @@ import {
   SceneCatalogSchema,
   SceneManifestSchema,
   type SceneCatalog,
+  type InstalledScene,
   type SceneManifest,
 } from '@tavernnext/domain';
 import {
@@ -80,6 +81,19 @@ export function destinedPoemManifest(): SceneManifest {
     setupSchema: { type: 'object', required: ['origin'], properties: { origin: { type: 'string', minLength: 1 } } },
     stateSchema: destinedPoemStateSchema(),
     generationRecipe: { source: 'scene', outputProtocol: 'mvu-json-patch-v1' },
+    agentTools: [{
+      name: 'destined_poem_adjust_fate',
+      description: 'Adjust the Save\'s fate points for a concrete in-world cause and report the deterministic before/after values.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['amount', 'reason'],
+        properties: {
+          amount: { type: 'integer', minimum: -10, maximum: 10 },
+          reason: { type: 'string', minLength: 1, maxLength: 200 },
+        },
+      },
+    }],
     files: [
       'manifest.json', 'frontend/app.js', 'frontend/action-info.mjs', 'frontend/status-rail.mjs', 'frontend/styles.css',
       'server/index.mjs', 'content/initial-state.json', 'content/state-schema.json',
@@ -94,7 +108,10 @@ export interface OfficialScenePackage {
   digest: string;
 }
 
-export function buildDestinedPoemPackage(): OfficialScenePackage {
+let destinedPoemPackageCache: OfficialScenePackage | undefined;
+
+function cachedDestinedPoemPackage(): OfficialScenePackage {
+  if (destinedPoemPackageCache !== undefined) return destinedPoemPackageCache;
   const manifest = destinedPoemManifest();
   const cardBytes = new Uint8Array(readFileSync(characterCardPath()));
   const files: Record<string, Uint8Array> = {
@@ -112,7 +129,17 @@ export function buildDestinedPoemPackage(): OfficialScenePackage {
   // ZIP stores DOS local-time fields. Constructing the same local calendar
   // value on every host keeps the signed archive digest platform-independent.
   const bytes = zipSync(files, { level: 0, mtime: new Date(1980, 0, 1, 0, 0, 0) });
-  return { manifest, bytes, digest: createHash('sha256').update(bytes).digest('hex') };
+  destinedPoemPackageCache = { manifest, bytes, digest: createHash('sha256').update(bytes).digest('hex') };
+  return destinedPoemPackageCache;
+}
+
+export function buildDestinedPoemPackage(): OfficialScenePackage {
+  const bundled = cachedDestinedPoemPackage();
+  return {
+    manifest: structuredClone(bundled.manifest),
+    bytes: new Uint8Array(bundled.bytes),
+    digest: bundled.digest,
+  };
 }
 
 export function officialCatalog(): SceneCatalog {
@@ -134,4 +161,10 @@ export function officialCatalog(): SceneCatalog {
 
 export function builtInPackage(url: string): OfficialScenePackage | undefined {
   return url === PACKAGE_URL ? buildDestinedPoemPackage() : undefined;
+}
+
+export function isBundledOfficialScene(scene: InstalledScene): boolean {
+  if (scene.id !== DESTINED_POEM_SCENE_ID) return false;
+  const bundled = cachedDestinedPoemPackage();
+  return scene.version === bundled.manifest.version && scene.archiveDigest === bundled.digest;
 }

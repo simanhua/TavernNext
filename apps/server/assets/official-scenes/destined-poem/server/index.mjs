@@ -40,4 +40,19 @@ export default {
       }],
     };
   },
+  async executeAgentTool({ toolName, arguments: args, workspace }) {
+    if (toolName !== 'destined_poem_adjust_fate') throw new Error('scene_agent_tool_not_found');
+    const amount = Number(args?.amount);
+    const reason = String(args?.reason ?? '').trim();
+    if (!Number.isInteger(amount) || amount < -10 || amount > 10 || reason === '') {
+      throw new Error('scene_agent_tool_arguments_invalid');
+    }
+    const before = Number(workspace?.state?.命运点数);
+    if (!Number.isFinite(before)) throw new Error('scene_agent_tool_state_invalid');
+    return {
+      content: `命运点数因“${reason}”${amount >= 0 ? '增加' : '减少'}${Math.abs(amount)}点。`,
+      detail: { before, after: before + amount, amount, reason },
+      statePatch: [{ op: 'delta', path: '/命运点数', value: amount }],
+    };
+  },
 };

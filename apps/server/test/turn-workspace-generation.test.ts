@@ -177,6 +177,7 @@ async function context(runtimeFactory: () => PiAgentModelRuntime) {
       frontendStyles: [],
       setupSchema: {},
       stateSchema: {},
+      agentTools: [],
       files: ['frontend.js'],
     },
     backingCharacterId: character.id,

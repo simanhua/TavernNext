@@ -75,7 +75,20 @@ describe('domain contracts', () => {
       stateSchema: {},
       files: ['frontend/app.js', 'frontend/styles.css'],
     };
-    expect(SceneManifestSchema.parse(manifest).sceneSdkVersion).toBe(2);
+    expect(SceneManifestSchema.parse(manifest)).toMatchObject({ sceneSdkVersion: 2, agentTools: [] });
+    const tool = {
+      name: 'scene_open_gate',
+      description: 'Open one Scene gate.',
+      parameters: {
+        type: 'object', additionalProperties: false, required: ['gate'],
+        properties: { gate: { type: 'string' } },
+      },
+    };
+    expect(SceneManifestSchema.parse({ ...manifest, agentTools: [tool] }).agentTools).toEqual([tool]);
+    expect(SceneManifestSchema.safeParse({ ...manifest, agentTools: [tool, tool] }).success).toBe(false);
+    expect(SceneManifestSchema.safeParse({
+      ...manifest, agentTools: [{ ...tool, parameters: { type: 'string' } }],
+    }).success).toBe(false);
     expect(SceneManifestSchema.safeParse({ ...manifest, sceneSdkVersion: 1 }).success).toBe(false);
     expect(SceneManifestSchema.safeParse({ ...manifest, frontendEntry: 'frontend/index.html' }).success).toBe(false);
     expect(SceneManifestSchema.safeParse({ ...manifest, frontendEntry: '../app.js' }).success).toBe(false);

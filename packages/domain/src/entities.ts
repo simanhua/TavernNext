@@ -201,6 +201,15 @@ const SceneStylesheetPathSchema = SceneRelativePathSchema.refine(
   'scene_frontend_stylesheet_invalid',
 );
 
+export const SceneAgentToolDeclarationSchema = z.object({
+  name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+  description: z.string().min(1).max(2_000),
+  parameters: z.record(z.string(), z.unknown()).refine(
+    (value) => value.type === 'object',
+    'scene_agent_tool_parameters_must_be_object_schema',
+  ),
+}).strict();
+
 export const SceneManifestSchema = z.object({
   id: DomainIdSchema,
   slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(96),
@@ -218,8 +227,16 @@ export const SceneManifestSchema = z.object({
   setupSchema: z.record(z.string(), z.unknown()).default({}),
   stateSchema: z.record(z.string(), z.unknown()).default({}),
   generationRecipe: z.record(z.string(), z.unknown()).optional(),
+  agentTools: z.array(SceneAgentToolDeclarationSchema).max(32).default([]),
   files: z.array(SceneRelativePathSchema).min(1).max(2_048),
 }).strict().superRefine((manifest, context) => {
+  const toolNames = new Set<string>();
+  for (const [index, tool] of manifest.agentTools.entries()) {
+    if (toolNames.has(tool.name)) {
+      context.addIssue({ code: 'custom', message: 'scene_agent_tool_name_duplicate', path: ['agentTools', index, 'name'] });
+    }
+    toolNames.add(tool.name);
+  }
   const declared = new Set(manifest.files);
   const required = [
     manifest.frontendEntry,
@@ -455,6 +472,7 @@ export type SceneManifest = z.infer<typeof SceneManifestSchema>;
 export type SceneCatalogEntry = z.infer<typeof SceneCatalogEntrySchema>;
 export type SceneCatalog = z.infer<typeof SceneCatalogSchema>;
 export type InstalledScene = z.infer<typeof InstalledSceneSchema>;
+export type SceneAgentToolDeclaration = z.infer<typeof SceneAgentToolDeclarationSchema>;
 export type ConversationPlayerProfile = z.infer<typeof ConversationPlayerProfileSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type SaveAgentConfiguration = z.infer<typeof SaveAgentConfigurationSchema>;

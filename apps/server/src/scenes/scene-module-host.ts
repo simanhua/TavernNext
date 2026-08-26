@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 
-export type SceneHookName = 'initializeConversation' | 'beforeGeneration' | 'afterGeneration' | 'handleAction';
+export type SceneHookName = 'initializeConversation' | 'beforeGeneration' | 'afterGeneration'
+  | 'handleAction' | 'executeAgentTool';
 
 const workerSource = `
 const { parentPort, workerData } = require('node:worker_threads');
@@ -13,6 +14,9 @@ parentPort.on('message', async message => {
   try {
     const scene = await moduleValue();
     const hook = scene[message.hook];
+    if (message.hook === 'executeAgentTool' && typeof hook !== 'function') {
+      throw new Error('scene_agent_tool_hook_missing');
+    }
     const value = typeof hook === 'function' ? await hook(structuredClone(message.input)) : {};
     parentPort.postMessage({ id: message.id, ok: true, value });
   } catch (error) {
@@ -22,9 +26,11 @@ parentPort.on('message', async message => {
 `;
 
 interface PendingCall {
+  worker: Worker;
   resolve(value: unknown): void;
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout>;
+  removeAbort?: () => void;
 }
 
 export class SceneModuleHost {
@@ -33,6 +39,17 @@ export class SceneModuleHost {
   private readonly pending = new Map<number, PendingCall>();
 
   constructor(private readonly moduleUrl: string, private readonly timeoutMs = 10_000) {}
+
+  private failWorker(worker: Worker, error: Error): void {
+    if (this.worker === worker) this.worker = undefined;
+    for (const [id, pending] of this.pending) {
+      if (pending.worker !== worker) continue;
+      this.pending.delete(id);
+      clearTimeout(pending.timeout);
+      pending.removeAbort?.();
+      pending.reject(error);
+    }
+  }
 
   private start(): Worker {
     if (this.worker !== undefined) return this.worker;
@@ -43,38 +60,52 @@ export class SceneModuleHost {
       if (pending === undefined) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timeout);
+      pending.removeAbort?.();
       if (message.ok === true) pending.resolve(message.value);
       else pending.reject(new Error(typeof message.error === 'string' ? message.error : 'scene_hook_failed'));
     });
-    const failed = (error: Error) => {
-      if (this.worker !== worker) return;
-      this.worker = undefined;
-      for (const [id, pending] of this.pending) {
-        this.pending.delete(id);
-        clearTimeout(pending.timeout);
-        pending.reject(error);
-      }
-    };
-    worker.on('error', (error) => failed(error instanceof Error ? error : new Error(String(error))));
+    worker.on('error', (error) => this.failWorker(
+      worker,
+      error instanceof Error ? error : new Error(String(error)),
+    ));
     worker.on('exit', (code) => {
-      if (code !== 0) failed(new Error('scene_worker_exited'));
-      else if (this.worker === worker) this.worker = undefined;
+      if (this.worker === worker || [...this.pending.values()].some((pending) => pending.worker === worker)) {
+        this.failWorker(worker, new Error(code === 0 ? 'scene_worker_closed' : 'scene_worker_exited'));
+      }
     });
     this.worker = worker;
     return worker;
   }
 
-  call<T>(hook: SceneHookName, input: unknown): Promise<T> {
+  call<T>(hook: SceneHookName, input: unknown, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) return Promise.reject(new Error('scene_hook_aborted'));
     const worker = this.start();
     const id = this.sequence += 1;
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pending.delete(id);
+        if (!this.pending.has(id)) return;
         void worker.terminate();
-        if (this.worker === worker) this.worker = undefined;
-        reject(new Error('scene_hook_timeout'));
+        this.failWorker(worker, new Error('scene_hook_timeout'));
       }, this.timeoutMs);
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timeout });
+      const abort = () => {
+        const pending = this.pending.get(id);
+        if (pending === undefined) return;
+        void worker.terminate();
+        this.failWorker(worker, new Error('scene_hook_aborted'));
+      };
+      const pending: PendingCall = {
+        worker,
+        resolve: (value) => resolve(value as T),
+        reject,
+        timeout,
+      };
+      this.pending.set(id, pending);
+      if (signal !== undefined) {
+        pending.removeAbort = () => signal.removeEventListener('abort', abort);
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      }
+      if (!this.pending.has(id)) return;
       worker.postMessage({ id, hook, input });
     });
   }
@@ -82,7 +113,10 @@ export class SceneModuleHost {
   async close(): Promise<void> {
     const worker = this.worker;
     this.worker = undefined;
-    if (worker !== undefined) await worker.terminate();
+    if (worker !== undefined) {
+      this.failWorker(worker, new Error('scene_worker_closed'));
+      await worker.terminate();
+    }
   }
 }
 

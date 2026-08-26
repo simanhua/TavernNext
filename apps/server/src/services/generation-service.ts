@@ -48,6 +48,7 @@ import {
   type SceneDirectorTerminal,
   type PiAgentRuntimeFactory,
 } from './scene-director-agent.js';
+import { createSceneAgentToolFactory, type SceneAgentToolFactory } from './scene-agent-tools.js';
 
 export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
 
@@ -627,6 +628,7 @@ export function createGenerationService(options: {
       try {
         let sceneTransition: PreparedGenerationBase['sceneTransition'];
         let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
+        let sceneAgentToolFactory: SceneAgentToolFactory | undefined;
         if (sceneService !== undefined) {
           const conversation = repositories.conversations.get(input.conversationId);
           const scene = conversation?.sceneId === undefined ? undefined : sceneService.get(conversation.sceneId);
@@ -671,6 +673,7 @@ export function createGenerationService(options: {
               manifest: structuredClone(scene.manifest),
             };
             scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
+            sceneAgentToolFactory = createSceneAgentToolFactory({ scene, host, conversation });
           }
         }
         let sceneDirector: SceneDirectorExecution | undefined;
@@ -706,6 +709,7 @@ export function createGenerationService(options: {
                 initialFailures: sceneTransition.beforeFailures,
               },
             }),
+            ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
           });
           await execution.validatePromptBudget(runtimeTokenizer);
           sceneDirector = execution;
@@ -757,6 +761,7 @@ export function createGenerationService(options: {
                 initialFailures: sceneTransition.beforeFailures,
               },
             }),
+            ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
           });
           await execution.validatePromptBudget(runtimeTokenizer);
           sceneDirector = execution;

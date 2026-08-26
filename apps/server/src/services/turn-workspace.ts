@@ -11,6 +11,10 @@ import type { PromptSnapshotPayload } from './prompt-snapshot-service.js';
 const MAX_TOOL_RESULT_BYTES = 64 * 1024;
 const MAX_WORLD_RESULTS = 20;
 
+export const PLATFORM_AGENT_TOOL_NAMES = [
+  'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
+] as const;
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -148,7 +152,7 @@ export class TurnWorkspace {
     if (input.state?.initialOperations !== undefined) this.stagePatch(input.state.initialOperations);
   }
 
-  stagePatch(rawOperations: unknown): ScenePatchApplication {
+  private applyPatch(rawOperations: unknown): ScenePatchApplication {
     if (this.manifest === undefined) {
       const raws = Array.isArray(rawOperations) ? rawOperations : [rawOperations];
       const failure = raws.slice(0, 512).map((raw, operationIndex): ScenePatchFailure => {
@@ -160,10 +164,17 @@ export class TurnWorkspace {
           ...(typeof operation?.path === 'string' ? { path: operation.path } : {}),
         };
       });
-      this.failures.push(...failure);
       return { value: structuredClone(this.stagedValue), operations: [], failures: failure };
     }
-    const applied = applyScenePatchPartial(this.stagedValue, rawOperations, this.manifest);
+    return applyScenePatchPartial(this.stagedValue, rawOperations, this.manifest);
+  }
+
+  previewPatch(rawOperations: unknown): ScenePatchApplication {
+    return structuredClone(this.applyPatch(rawOperations));
+  }
+
+  stagePatch(rawOperations: unknown): ScenePatchApplication {
+    const applied = this.applyPatch(rawOperations);
     this.stagedValue = applied.value;
     this.operations.push(...structuredClone(applied.operations));
     this.failures.push(...structuredClone(applied.failures));
