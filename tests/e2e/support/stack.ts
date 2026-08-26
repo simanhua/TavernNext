@@ -6,9 +6,12 @@ import { basename, extname, join, resolve } from 'node:path';
 
 const repositoryRoot = resolve(process.cwd());
 interface MockReply {
-  chunks: string[];
+  chunks?: string[];
   hold?: boolean;
+  toolCalls?: Array<{ id?: string; name: string; arguments: Record<string, unknown> }>;
 }
+
+type MockReplyFactory = (request: MockProviderRequest) => MockReply;
 
 export interface MockProviderRequest {
   path: string;
@@ -19,7 +22,7 @@ export interface MockProviderRequest {
 export interface MockProvider {
   readonly baseUrl: string;
   readonly requests: MockProviderRequest[];
-  queue(reply: MockReply): void;
+  queue(reply: MockReply | MockReplyFactory): void;
   close(): Promise<void>;
 }
 
@@ -65,7 +68,19 @@ function sendSse(response: ServerResponse, reply: MockReply, textMode: boolean):
     'cache-control': 'no-cache',
     connection: 'keep-alive',
   });
-  for (const chunk of reply.chunks) {
+  if (!textMode && reply.toolCalls !== undefined) {
+    response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {
+      role: 'assistant',
+      tool_calls: reply.toolCalls.map((call, index) => ({
+        index, id: call.id ?? `tool-${index + 1}`, type: 'function',
+        function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+      })),
+    }, finish_reason: null }] })}\n\n`);
+    response.write('data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+    response.end('data: [DONE]\n\n');
+    return;
+  }
+  for (const chunk of reply.chunks ?? []) {
     const choice = textMode ? { text: chunk } : { delta: { content: chunk } };
     response.write(`data: ${JSON.stringify({ choices: [choice] })}\n\n`);
   }
@@ -75,7 +90,7 @@ function sendSse(response: ServerResponse, reply: MockReply, textMode: boolean):
 }
 
 async function startMockProvider(): Promise<MockProvider> {
-  const replies: MockReply[] = [];
+  const replies: Array<MockReply | MockReplyFactory> = [];
   const requests: MockProviderRequest[] = [];
   const server = createServer(async (request, response) => {
     try {
@@ -92,7 +107,8 @@ async function startMockProvider(): Promise<MockProvider> {
         return;
       }
       const queued = replies.shift() ?? { chunks: [`Local reply ${requests.length}`] };
-      sendSse(response, queued, path === '/v1/completions');
+      const reply = typeof queued === 'function' ? queued(requests.at(-1)!) : queued;
+      sendSse(response, reply, path === '/v1/completions');
     } catch (error) {
       response.writeHead(500, { 'content-type': 'text/plain' });
       response.end(error instanceof Error ? error.message : 'mock provider failure');
@@ -107,7 +123,13 @@ async function startMockProvider(): Promise<MockProvider> {
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     requests,
-    queue(reply) { replies.push({ chunks: [...reply.chunks], ...(reply.hold === true ? { hold: true } : {}) }); },
+    queue(reply) {
+      replies.push(typeof reply === 'function' ? reply : {
+        ...(reply.chunks === undefined ? {} : { chunks: [...reply.chunks] }),
+        ...(reply.toolCalls === undefined ? {} : { toolCalls: structuredClone(reply.toolCalls) }),
+        ...(reply.hold === true ? { hold: true } : {}),
+      });
+    },
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolveClose, reject) => server.close((error) => error === undefined ? resolveClose() : reject(error)));

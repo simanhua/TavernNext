@@ -132,7 +132,7 @@ const server = setupServer(
   http.get('/api/settings/generation', () => HttpResponse.json(globalGenerationConfig)),
   http.get('/api/scenes/:id', ({ params }) => HttpResponse.json({
     id: params.id,
-    version: '2.6.0',
+    version: '2.7.0',
     archiveDigest: 'a'.repeat(64),
     fullyTrusted: true,
     manifest: {
@@ -509,7 +509,7 @@ describe('ChatPage', () => {
               type: 'scene-view',
               viewId: '018f0000-0000-7000-8000-000000000451',
               sceneId: '018f2000-0000-7000-8000-000000000001',
-              sceneVersion: '2.6.0',
+              sceneVersion: '2.7.0',
               sceneDigest: 'a'.repeat(64),
               kind: 'combat',
               schemaVersion: 1,
@@ -585,7 +585,7 @@ describe('ChatPage', () => {
             { type: 'markdown', content: 'Before ' },
             {
               type: 'scene-view', viewId: '018f0000-0000-7000-8000-000000000451',
-              sceneId: '018f2000-0000-7000-8000-000000000001', sceneVersion: '2.6.0',
+              sceneId: '018f2000-0000-7000-8000-000000000001', sceneVersion: '2.7.0',
               sceneDigest: 'a'.repeat(64), kind: 'combat', schemaVersion: 1,
               rendererId: 'destined-poem-combat-v1', sourceStateRevision: 7,
               props: {

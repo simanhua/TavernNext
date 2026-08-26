@@ -154,7 +154,7 @@ describe('Scene migrations', () => {
     database.close();
   });
 
-  it('upgrades the installed official 2.5 package without changing its saves or backing resources', async () => {
+  it('upgrades the installed official 2.6 package without changing its saves or backing resources', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-runtime-upgrade-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -207,10 +207,11 @@ describe('Scene migrations', () => {
 
     const upgraded = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     expect(upgraded.manifest.sceneSdkVersion).toBe(2);
-    expect(upgraded.version).toBe('2.6.0');
-    expect(upgraded.manifest.sceneViews).toEqual([
+    expect(upgraded.version).toBe('2.7.0');
+    expect(upgraded.manifest.sceneViews).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'combat', schemaVersion: 1, renderer: { id: 'destined-poem-combat-v1' } }),
-    ]);
+      ...['status', 'map', 'relationship', 'progress'].map((kind) => expect.objectContaining({ kind })),
+    ]));
     expect(upgraded.manifest.frontendEntry).toBe('frontend/app.js');
     expect(upgraded.archiveDigest).not.toBe(oldDigest);
     expect(upgraded.backingCharacterId).toBe(character.id);

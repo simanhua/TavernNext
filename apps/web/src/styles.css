@@ -1736,6 +1736,42 @@ button[type="submit"]:hover:not(:disabled),
   margin-top: .65rem;
 }
 
+.scene-view-meters,
+.scene-view-card-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.scene-view-meters > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.scene-view-meters progress {
+  width: 100%;
+}
+
+.scene-view-card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+}
+
+.scene-view-card-grid article {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  background: var(--ink-850);
+}
+
+.scene-view-card-grid article[data-active='true'] {
+  border-color: var(--jade-400);
+}
+
+.scene-view-card-grid p {
+  margin: 0;
+}
+
 .scene-combatant {
   display: grid;
   grid-template-columns: minmax(7rem, 1fr) auto;

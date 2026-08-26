@@ -1,9 +1,9 @@
 let root;
-import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.6.0';
+import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.7.0';
 import {
   attributeAllocationPatch,
   createDestinedPoemStatusRailModel,
-} from './status-rail.mjs?v=2.6.0';
+} from './status-rail.mjs?v=2.7.0';
 
 let sdk;
 let context;
@@ -47,26 +47,23 @@ function updateGeneration(value) {
   if (send) send.disabled = running;
   if (draft) draft.disabled = running;
   if (status) {
+    const latestActivity = Array.isArray(generationView.activities) ? generationView.activities.at(-1)?.label : '';
     status.className = `generation-status${generationView.error ? ' error' : ''}`;
     status.innerHTML = generationView.error
       ? esc(generationView.error)
-      : running ? '<span>正在生成回复…</span><div class="progress"></div>' : '';
+      : running ? `<span>${esc(latestActivity || '正在生成回复…')}</span><div class="progress"></div>` : '';
   }
   const messages = document.querySelector('.messages');
   if (!messages) return;
   let streaming = document.querySelector('#streaming-message');
-  if (running && (generationView.streamedText || generationView.streamedReasoning)) {
+  if (running && (generationView.streamedText || generationView.streamedReasoning || generationView.viewPlaceholders?.length)) {
     if (!streaming) {
       streaming = document.createElement('article');
       streaming.id = 'streaming-message';
       streaming.className = 'message assistant streaming';
       messages.append(streaming);
     }
-    streaming.innerHTML = renderCombatActionInfoMessage(
-      generationView.streamedText || generationView.streamedReasoning,
-      'streaming-action',
-      { suppressIncomplete: true },
-    );
+    streaming.innerHTML = streamingMarkup();
     bindActionInfoPanels(streaming);
   } else streaming?.remove();
 }
@@ -122,9 +119,63 @@ function activeDiagnostics(message) {
   return variant?.diagnostics || [];
 }
 
+function activeVariant(message) {
+  return message.variants?.find((item) => item.id === message.activeVariantId);
+}
+
+function sceneViewMarkup(block) {
+  const props = block?.props && typeof block.props === 'object' ? block.props : {};
+  const shell = (kind, title, body) => `<section class="inline-scene-view ${kind}" role="region" aria-label="${esc(title)}" data-scene-view-id="${esc(block.viewId)}"><header><strong>${esc(title)}</strong></header>${body}</section>`;
+  if (block.kind === 'combat') {
+    const entries = [props.protagonist, ...(Array.isArray(props.opponents) ? props.opponents : [])].filter(Boolean);
+    return shell('combat', props.title || '战斗态势', `<div class="inline-view-grid">${entries.map((item) => `<article><strong>${esc(item.name)}</strong><span>${esc(item.hp)} / ${esc(item.maxHp)} HP</span></article>`).join('')}</div>`);
+  }
+  if (block.kind === 'status') {
+    const resources = props.resources || {};
+    return shell('status', `${props.name || '主角'}状态`, `<p>等级 ${esc(props.level)} · ${esc(props.rank)} · 命运 ${esc(props.fate)}</p><div class="inline-view-grid"><article>HP ${esc(resources.hp)} / ${esc(resources.maxHp)}</article><article>MP ${esc(resources.mp)} / ${esc(resources.maxMp)}</article><article>体力 ${esc(resources.stamina)} / ${esc(resources.maxStamina)}</article></div>`);
+  }
+  if (block.kind === 'map') {
+    const markers = Array.isArray(props.markers) ? props.markers : [];
+    return shell('map', `${props.location || '世界'}地图`, `<p>${esc(props.time)}</p><div class="inline-view-grid">${markers.map((item) => `<article data-active="${item.active === true}"><strong>${esc(item.name)}</strong><span>${esc(item.description)}</span></article>`).join('')}</div>`);
+  }
+  if (block.kind === 'relationship') {
+    const entries = Array.isArray(props.entries) ? props.entries : [];
+    return shell('relationship', '关系进展', `<div class="inline-view-grid">${entries.map((item) => `<article><strong>${esc(item.name)}</strong><span>好感 ${esc(item.affinity)}</span><p>${esc(item.description)}</p></article>`).join('')}</div>`);
+  }
+  if (block.kind === 'progress') {
+    const quests = Array.isArray(props.quests) ? props.quests : [];
+    return shell('progress', props.event?.title || '旅程进展', `<p>${esc(props.event?.stage)} · Lv.${esc(props.level)} · XP ${esc(props.experience)} / ${esc(props.nextExperience)}</p><div class="inline-view-grid">${quests.map((item) => `<article><strong>${esc(item.title)}</strong><span>${esc(item.status)}</span><p>${esc(item.description)}</p></article>`).join('')}</div>`);
+  }
+  return '';
+}
+
+function roleplayDocumentMarkup(message) {
+  const variant = activeVariant(message);
+  const blocks = variant?.document?.blocks;
+  if (!Array.isArray(blocks)) return renderCombatActionInfoMessage(message.content, `action-${message.id}`);
+  return blocks.map((block, index) => block.type === 'scene-view'
+    ? sceneViewMarkup(block)
+    : renderCombatActionInfoMessage(block.content || '', `action-${message.id}-${index}`)).join('');
+}
+
+function streamingMarkup() {
+  const text = generationView.streamedText || generationView.streamedReasoning || '';
+  const placeholders = Array.isArray(generationView.viewPlaceholders) ? generationView.viewPlaceholders : [];
+  const chunks = [];
+  let cursor = 0;
+  for (const placeholder of [...placeholders].sort((left, right) => left.offset - right.offset)) {
+    const offset = Math.max(cursor, Math.min(text.length, Number(placeholder.offset) || 0));
+    chunks.push(renderCombatActionInfoMessage(text.slice(cursor, offset), `streaming-action-${cursor}`, { suppressIncomplete: true }));
+    chunks.push(`<span class="inline-view-placeholder" data-view-id="${esc(placeholder.viewId)}">正在准备 ${esc(placeholder.kind)} 视图…</span>`);
+    cursor = offset;
+  }
+  chunks.push(renderCombatActionInfoMessage(text.slice(cursor), `streaming-action-tail`, { suppressIncomplete: true }));
+  return chunks.join('');
+}
+
 function messageMarkup(message) {
   return message.role === 'assistant'
-    ? renderCombatActionInfoMessage(message.content, `action-${message.id}`)
+    ? roleplayDocumentMarkup(message)
     : `<div class="action-message-narrative">${esc(message.content)}</div>`;
 }
 
@@ -176,7 +227,7 @@ async function renderWorkspace() {
   const state = stateRow.value || {};
   const tabs = [['chat', '对话'], ['quests', '任务'], ['relationships', '关系'], ['map', '地图']];
   statusRailController?.destroy();
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.6.0</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.7.0</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
   document.querySelectorAll('[data-tab]').forEach((button) => { button.onclick = () => { activeTab = button.dataset.tab; renderWorkspace(); }; });
   bindStatusRail(state);
   const area = document.querySelector('#content');
@@ -197,7 +248,9 @@ async function renderWorkspace() {
       const draft = document.querySelector('#draft');
       const text = draft.value.trim();
       if (!text) return;
-      updateGeneration({ status: 'starting', error: null, streamedText: '', streamedReasoning: '' });
+      updateGeneration({
+        status: 'starting', error: null, streamedText: '', streamedReasoning: '', activities: [], viewPlaceholders: [],
+      });
       try { await request('messages.send', [text]); draft.value = ''; await renderWorkspace(); }
       catch (error) { updateGeneration({ status: 'idle', error: error.message || String(error) }); }
     };
@@ -236,6 +289,8 @@ export async function mount(input) {
     if (event.type === 'snapshot') updateGeneration(event.value);
     else if (event.type === 'text-delta') updateGeneration({ ...generationView, streamedText: generationView.streamedText + event.text });
     else if (event.type === 'reasoning-delta') updateGeneration({ ...generationView, streamedReasoning: generationView.streamedReasoning + event.text });
+    else if (event.type === 'activity') updateGeneration({ ...generationView, activities: [...(generationView.activities || []), { kind: event.kind, label: event.label }].slice(-32) });
+    else if (event.type === 'view-placeholder') updateGeneration({ ...generationView, viewPlaceholders: [...(generationView.viewPlaceholders || []), event].slice(-16) });
   });
   if (input.mode === 'setup') renderSetup(); else await renderWorkspace();
   return () => {

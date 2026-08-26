@@ -16,7 +16,7 @@ const block: RoleplaySceneViewBlock = {
   type: 'scene-view',
   viewId: '018f0000-0000-7000-8000-000000000451',
   sceneId: '018f2000-0000-7000-8000-000000000001',
-  sceneVersion: '2.6.0',
+  sceneVersion: '2.7.0',
   sceneDigest: 'a'.repeat(64),
   kind: 'combat',
   schemaVersion: 1,
@@ -34,17 +34,17 @@ function renderBlock(value: RoleplaySceneViewBlock) {
   return render(<QueryClientProvider client={client}><SceneViewBlock block={value} /></QueryClientProvider>);
 }
 
-function trustScene() {
+function trustScene(value = block) {
   vi.spyOn(api, 'getScene').mockResolvedValue({
-    id: block.sceneId,
-    version: block.sceneVersion,
-    archiveDigest: block.sceneDigest,
+    id: value.sceneId,
+    version: value.sceneVersion,
+    archiveDigest: value.sceneDigest,
     fullyTrusted: true,
     manifest: {
       sceneViews: [{
-        kind: block.kind, schemaVersion: block.schemaVersion,
+        kind: value.kind, schemaVersion: value.schemaVersion,
         projection: { hook: 'projectSceneView', schema: { type: 'object' } },
-        renderer: { id: block.rendererId },
+        renderer: { id: value.rendererId },
       }],
     },
   } as unknown as Awaited<ReturnType<typeof api.getScene>>);
@@ -55,6 +55,32 @@ describe('SceneViewBlock trust dispatch', () => {
     trustScene();
     renderBlock(block);
     expect(await screen.findByRole('region', { name: 'Archive battle' })).not.toBeNull();
+  });
+
+  it.each([
+    ['status', 'destined-poem-status-v1', {
+      name: 'Aster', level: 4, rank: 'Silver', fate: 3,
+      resources: { hp: 8, maxHp: 10, mp: 4, maxMp: 8, stamina: 6, maxStamina: 9 },
+      attributes: { Strength: 2 }, statuses: ['Focused'],
+    }, 'Aster status'],
+    ['map', 'destined-poem-map-v1', {
+      location: 'Vault', time: 'Dusk', markers: [{
+        id: 'vault', name: 'Archive Vault', group: 'City', description: 'Sealed stacks', active: true,
+      }],
+    }, 'Vault map'],
+    ['relationship', 'destined-poem-relationship-v1', {
+      entries: [{ id: 'lyra', name: 'Lyra', affinity: 12, description: 'Trusted guide' }],
+    }, 'Relationship view'],
+    ['progress', 'destined-poem-progress-v1', {
+      event: { title: 'Archive defense', stage: 'Aftermath' },
+      quests: [{ id: 'guard', title: 'Guard the archive', status: 'completed', description: 'The vault is safe.' }],
+      level: 4, experience: 90, nextExperience: 120,
+    }, 'Progress view'],
+  ] as const)('renders the reviewed %s renderer', async (kind, rendererId, props, label) => {
+    const candidate = { ...block, kind, rendererId, props };
+    trustScene(candidate);
+    renderBlock(candidate);
+    expect(await screen.findByRole('region', { name: label })).not.toBeNull();
   });
 
   it.each([

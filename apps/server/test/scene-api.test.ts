@@ -46,7 +46,7 @@ describe('Scene Package API', () => {
       fullyTrusted: true,
       manifest: {
         name: '命定之诗与黄昏之歌',
-        version: '2.6.0',
+        version: '2.7.0',
         serverEntry: 'server/index.mjs',
         coverPath: 'content/cover.png',
       },
@@ -252,7 +252,7 @@ describe('Scene Package API', () => {
     expect(repositories.conversations.get(second.id)).toBeUndefined();
   }, 60_000);
 
-  it('uses the Scene recipe and commits a model JSON Patch only to the active save', async () => {
+  it('does not execute prose-embedded state commands after the official Scene becomes Agent-first', async () => {
     const provider = capturedProvider([
       { type: 'delta', text: '钟声落下，命运向前推进。<UpdateVariable><JSONPatch>[{"op":"replace","path":"/命运点数","value":7}]</JSONPatch></UpdateVariable>' },
       { type: 'completed', finishReason: 'stop' },
@@ -280,21 +280,20 @@ describe('Scene Package API', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('event: completed');
     const state = repositories.conversationSceneStates.getByConversationId(conversation.id)!;
-    expect(state.value.命运点数).toBe(7);
+    expect(state.value.命运点数).toBe(0);
     const assistant = repositories.messages.listByConversationId(conversation.id).at(-1)!;
     const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
-    expect(variant.content).toBe('钟声落下，命运向前推进。');
+    expect(variant.content).toContain('<UpdateVariable>');
     expect(variant.diagnostics).toEqual([]);
-    const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id)!;
-    expect(transition.value.命运点数).toBe(7);
-    expect(state.headTransitionId).toBe(transition.id);
+    expect(repositories.sceneStateTransitions.getBySource('message-variant', variant.id)).toBeUndefined();
+    expect(state.headTransitionId).toBeNull();
     expect(provider.chat).toHaveLength(1);
     const prompt = JSON.stringify(provider.chat[0]);
     expect(prompt.match(/<scene_state>/g)).toHaveLength(1);
     expect(prompt).toContain('保持阿斯塔利亚世界观一致');
-    expect(prompt).toContain('Always append exactly one legacy MVU block');
-    expect(prompt).toContain('Use an empty [] operation list');
-    expect(prompt).toContain('Use only replace, delta, insert, remove, or move operations');
+    expect(prompt).not.toContain('Always append exactly one legacy MVU block');
+    expect(prompt).not.toContain('Use an empty [] operation list');
+    expect(prompt).not.toContain('Use only replace, delta, insert, remove, or move operations');
     expect(prompt).not.toContain('ONLY permitted to output the variable update content');
     expect(prompt).not.toContain('MALICIOUS-CLIENT-INJECTION');
   }, 60_000);
@@ -327,10 +326,8 @@ describe('Scene Package API', () => {
     expect(repositories.sceneStateTransitions.listByConversationId(created.id)).toEqual([]);
     const assistant = repositories.messages.listByConversationId(created.id).at(-1)!;
     const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
-    expect(variant.content).toBe('风仍在吹。');
-    expect(variant.diagnostics).toEqual([
-      { source: 'scene-output-protocol', code: 'scene_patch_json_invalid', failures: [] },
-    ]);
+    expect(variant.content).toContain('<UpdateVariable>');
+    expect(variant.diagnostics).toEqual([]);
   }, 60_000);
 
   it('keeps narrative and diagnoses a missing mandatory MVU block', async () => {
@@ -359,12 +356,10 @@ describe('Scene Package API', () => {
     const assistant = repositories.messages.listByConversationId(created.id).at(-1)!;
     const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
     expect(variant.content).toBe('你收起新获得的药水，但没有输出变量块。');
-    expect(variant.diagnostics).toEqual([
-      { source: 'scene-output-protocol', code: 'scene_patch_block_missing', failures: [] },
-    ]);
+    expect(variant.diagnostics).toEqual([]);
   }, 60_000);
 
-  it('accepts the legacy MVU wrapper and commits successful operations when siblings fail', async () => {
+  it('keeps a legacy MVU wrapper inert instead of mutating canonical Scene State', async () => {
     const provider = capturedProvider([
       { type: 'delta', text: '命运发生变化。<UpdateVariable><Analysis>Apply the available changes.</Analysis><JSONPatch>[{"op":"replace","path":"/命运点数","value":8},{"op":"delta","path":"/不存在","value":1},{"op":"insert","path":"/主角/技能/直觉","value":{"等级":1}}]</JSONPatch></UpdateVariable>' },
       { type: 'completed', finishReason: 'stop' },
@@ -385,23 +380,15 @@ describe('Scene Package API', () => {
     });
     expect(response.statusCode).toBe(200);
     const state = repositories.conversationSceneStates.getByConversationId(created.id)!;
-    expect(state.value).toMatchObject({ 命运点数: 8, 主角: { 技能: { 直觉: { 等级: 1 } } } });
+    expect(state.value).toMatchObject({ 命运点数: 0, 主角: { 技能: {} } });
     const assistant = repositories.messages.listByConversationId(created.id).at(-1)!;
     const variant = repositories.messageVariants.get(assistant.activeVariantId!)!;
-    expect(variant.content).toBe('命运发生变化。');
-    expect(variant.diagnostics).toEqual([{
-      source: 'scene-output-protocol',
-      code: 'scene_patch_partial_failure',
-      appliedCount: 2,
-      failures: [expect.objectContaining({
-        operationIndex: 1, op: 'delta', path: '/不存在', code: 'scene_patch_invalid',
-      })],
-    }]);
-    const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id)!;
-    expect(transition.operations).toHaveLength(2);
+    expect(variant.content).toContain('<UpdateVariable>');
+    expect(variant.diagnostics).toEqual([]);
+    expect(repositories.sceneStateTransitions.getBySource('message-variant', variant.id)).toBeUndefined();
   }, 60_000);
 
-  it('restores tail variant state and blocks switching after a descendant transition', async () => {
+  it('does not synthesize Variant state anchors from legacy prose generations', async () => {
     const provider = queuedCapturedProvider([
       [
         { type: 'delta', text: '第一条命运。<UpdateVariable><JSONPatch>[{"op":"replace","path":"/命运点数","value":1}]</JSONPatch></UpdateVariable>' },
@@ -434,13 +421,13 @@ describe('Scene Package API', () => {
     const assistant = repositories.messages.listByConversationId(conversation.id).at(-1)!;
     const variants = repositories.messageVariants.listByMessageId(assistant.id);
     expect(variants).toHaveLength(2);
-    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(2);
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(0);
     const switched = await app.inject({
       method: 'PUT', url: `/api/messages/${assistant.id}/active-variant`,
       payload: { revision: assistant.revision, variantId: variants[0]!.id },
     });
     expect(switched.statusCode).toBe(200);
-    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(1);
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(0);
     const current = repositories.conversationSceneStates.getByConversationId(conversation.id)!;
     const descendant = await app.inject({
       method: 'PATCH', url: `/api/conversations/${conversation.id}/scene-state`,
@@ -452,13 +439,12 @@ describe('Scene Package API', () => {
       method: 'PUT', url: `/api/messages/${assistant.id}/active-variant`,
       payload: { revision: latestMessage.revision, variantId: variants[1]!.id },
     });
-    expect(blocked.statusCode).toBe(409);
-    expect(blocked.json()).toEqual({ error: 'scene_branch_has_descendants' });
+    expect(blocked.statusCode).toBe(200);
     const deleted = await app.inject({
       method: 'DELETE', url: `/api/messages/${assistant.id}?revision=${latestMessage.revision}`,
     });
-    expect(deleted.statusCode).toBe(204);
-    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(0);
-    expect(repositories.sceneStateTransitions.listByConversationId(conversation.id)).toEqual([]);
+    expect(deleted.statusCode).toBe(409);
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)!.value.命运点数).toBe(9);
+    expect(repositories.sceneStateTransitions.listByConversationId(conversation.id)).toHaveLength(1);
   }, 60_000);
 });

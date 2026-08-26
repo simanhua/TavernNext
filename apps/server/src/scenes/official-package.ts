@@ -67,7 +67,7 @@ export function destinedPoemManifest(): SceneManifest {
   return SceneManifestSchema.parse({
     id: DESTINED_POEM_SCENE_ID,
     slug: 'destined-poem',
-    version: '2.6.0',
+    version: '2.7.0',
     name: '命定之诗与黄昏之歌',
     summary: '在阿斯塔利亚开启一段拥有独立状态、任务、关系与地图的命运旅程。',
     description: '完整迁移自命定之诗与黄昏之歌 v4.2 的官方 TavernNext 场景。每个存档拥有隔离的消息和世界状态。',
@@ -80,7 +80,7 @@ export function destinedPoemManifest(): SceneManifest {
     coverPath: 'content/cover.png',
     setupSchema: { type: 'object', required: ['origin'], properties: { origin: { type: 'string', minLength: 1 } } },
     stateSchema: destinedPoemStateSchema(),
-    generationRecipe: { source: 'scene', outputProtocol: 'mvu-json-patch-v1' },
+    generationRecipe: { source: 'scene' },
     agentTools: [{
       name: 'destined_poem_adjust_fate',
       description: 'Adjust the Save\'s fate points for a concrete in-world cause and report the deterministic before/after values.',
@@ -91,6 +91,65 @@ export function destinedPoemManifest(): SceneManifest {
         properties: {
           amount: { type: 'integer', minimum: -10, maximum: 10 },
           reason: { type: 'string', minLength: 1, maxLength: 200 },
+        },
+      },
+    }, {
+      name: 'destined_poem_adjust_vitals',
+      description: 'Apply bounded changes to the protagonist resources or status effects after an in-world event.',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          hpDelta: { type: 'integer', minimum: -100000, maximum: 100000 },
+          mpDelta: { type: 'integer', minimum: -100000, maximum: 100000 },
+          staminaDelta: { type: 'integer', minimum: -100000, maximum: 100000 },
+          addStatus: { type: 'string', minLength: 1, maxLength: 80 },
+          removeStatus: { type: 'string', minLength: 1, maxLength: 80 },
+        },
+      },
+    }, {
+      name: 'destined_poem_travel',
+      description: 'Move the Save to a known place and optionally advance its in-world time.',
+      parameters: {
+        type: 'object', additionalProperties: false, required: ['location'],
+        properties: {
+          location: { type: 'string', minLength: 1, maxLength: 160 },
+          time: { type: 'string', minLength: 1, maxLength: 160 },
+        },
+      },
+    }, {
+      name: 'destined_poem_update_relationship',
+      description: 'Create or update one relationship using a stable entity id and an affinity change.',
+      parameters: {
+        type: 'object', additionalProperties: false, required: ['entityId', 'name', 'affinityDelta', 'description'],
+        properties: {
+          entityId: { type: 'string', minLength: 1, maxLength: 120 },
+          name: { type: 'string', minLength: 1, maxLength: 160 },
+          affinityDelta: { type: 'integer', minimum: -100, maximum: 100 },
+          description: { type: 'string', maxLength: 500 },
+        },
+      },
+    }, {
+      name: 'destined_poem_update_quest',
+      description: 'Create or update a quest milestone in the canonical Save state.',
+      parameters: {
+        type: 'object', additionalProperties: false, required: ['questId', 'title', 'status', 'description'],
+        properties: {
+          questId: { type: 'string', minLength: 1, maxLength: 120 },
+          title: { type: 'string', minLength: 1, maxLength: 160 },
+          status: { type: 'string', enum: ['active', 'completed', 'failed'] },
+          description: { type: 'string', maxLength: 1000 },
+        },
+      },
+    }, {
+      name: 'destined_poem_rule_check',
+      description: 'Resolve a deterministic Scene rule check from a stable key, difficulty, and modifier.',
+      parameters: {
+        type: 'object', additionalProperties: false, required: ['key', 'difficulty'],
+        properties: {
+          key: { type: 'string', minLength: 1, maxLength: 160 },
+          difficulty: { type: 'integer', minimum: 1, maximum: 100 },
+          modifier: { type: 'integer', minimum: -100, maximum: 100 },
+          sides: { type: 'integer', minimum: 2, maximum: 100 },
         },
       },
     }],
@@ -104,26 +163,26 @@ export function destinedPoemManifest(): SceneManifest {
           additionalProperties: false,
           required: ['title', 'location', 'protagonist', 'opponents'],
           properties: {
-            title: { type: 'string' },
-            location: { type: 'string' },
+            title: { type: 'string', maxLength: 160 },
+            location: { type: 'string', maxLength: 160 },
             protagonist: {
               type: 'object',
               additionalProperties: false,
               required: ['name', 'hp', 'maxHp', 'statuses'],
               properties: {
-                name: { type: 'string' }, hp: { type: 'number' }, maxHp: { type: 'number' },
-                statuses: { type: 'array', items: { type: 'string' } },
+                name: { type: 'string', maxLength: 160 }, hp: { type: 'number' }, maxHp: { type: 'number' },
+                statuses: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 80 } },
               },
             },
             opponents: {
-              type: 'array',
+              type: 'array', maxItems: 16,
               items: {
                 type: 'object',
                 additionalProperties: false,
                 required: ['id', 'name', 'hp', 'maxHp', 'statuses'],
                 properties: {
-                  id: { type: 'string' }, name: { type: 'string' }, hp: { type: 'number' }, maxHp: { type: 'number' },
-                  statuses: { type: 'array', items: { type: 'string' } },
+                  id: { type: 'string', maxLength: 120 }, name: { type: 'string', maxLength: 160 }, hp: { type: 'number' }, maxHp: { type: 'number' },
+                  statuses: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 40 } },
                 },
               },
             },
@@ -131,6 +190,63 @@ export function destinedPoemManifest(): SceneManifest {
         },
       },
       renderer: { id: 'destined-poem-combat-v1' },
+    }, {
+      kind: 'status', schemaVersion: 1,
+      projection: { hook: 'projectSceneView', schema: {
+        type: 'object', additionalProperties: false,
+        required: ['name', 'level', 'rank', 'fate', 'resources', 'attributes', 'statuses'],
+        properties: {
+          name: { type: 'string', maxLength: 160 }, level: { type: 'number' }, rank: { type: 'string', maxLength: 80 }, fate: { type: 'number' },
+          resources: { type: 'object', additionalProperties: false, required: ['hp', 'maxHp', 'mp', 'maxMp', 'stamina', 'maxStamina'], properties: {
+            hp: { type: 'number' }, maxHp: { type: 'number' }, mp: { type: 'number' }, maxMp: { type: 'number' },
+            stamina: { type: 'number' }, maxStamina: { type: 'number' },
+          } },
+          attributes: { type: 'object', maxProperties: 32, additionalProperties: { type: 'number' } },
+          statuses: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 80 } },
+        },
+      } },
+      renderer: { id: 'destined-poem-status-v1' },
+    }, {
+      kind: 'map', schemaVersion: 1,
+      projection: { hook: 'projectSceneView', schema: {
+        type: 'object', additionalProperties: false, required: ['location', 'time', 'markers'],
+        properties: {
+          location: { type: 'string', maxLength: 160 }, time: { type: 'string', maxLength: 160 },
+          markers: { type: 'array', maxItems: 12, items: { type: 'object', additionalProperties: false,
+            required: ['id', 'name', 'group', 'description', 'active'], properties: {
+              id: { type: 'string', maxLength: 120 }, name: { type: 'string', maxLength: 160 }, group: { type: 'string', maxLength: 80 },
+              description: { type: 'string', maxLength: 320 }, active: { type: 'boolean' },
+            } } },
+        },
+      } },
+      renderer: { id: 'destined-poem-map-v1' },
+    }, {
+      kind: 'relationship', schemaVersion: 1,
+      projection: { hook: 'projectSceneView', schema: {
+        type: 'object', additionalProperties: false, required: ['entries'], properties: {
+          entries: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
+            required: ['id', 'name', 'affinity', 'description'], properties: {
+              id: { type: 'string', maxLength: 120 }, name: { type: 'string', maxLength: 160 }, affinity: { type: 'number' }, description: { type: 'string', maxLength: 500 },
+            } } },
+        },
+      } },
+      renderer: { id: 'destined-poem-relationship-v1' },
+    }, {
+      kind: 'progress', schemaVersion: 1,
+      projection: { hook: 'projectSceneView', schema: {
+        type: 'object', additionalProperties: false,
+        required: ['event', 'quests', 'level', 'experience', 'nextExperience'], properties: {
+          event: { type: 'object', additionalProperties: false, required: ['title', 'stage'], properties: {
+            title: { type: 'string', maxLength: 160 }, stage: { type: 'string', maxLength: 160 },
+          } },
+          quests: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
+            required: ['id', 'title', 'status', 'description'], properties: {
+              id: { type: 'string', maxLength: 120 }, title: { type: 'string', maxLength: 160 }, status: { type: 'string', maxLength: 32 }, description: { type: 'string', maxLength: 1000 },
+            } } },
+          level: { type: 'number' }, experience: { type: 'number' }, nextExperience: { type: 'number' },
+        },
+      } },
+      renderer: { id: 'destined-poem-progress-v1' },
     }],
     files: [
       'manifest.json', 'frontend/app.js', 'frontend/action-info.mjs', 'frontend/status-rail.mjs', 'frontend/styles.css',

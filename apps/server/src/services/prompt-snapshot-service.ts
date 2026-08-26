@@ -828,8 +828,9 @@ function loadAggregate(
       character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
     },
     promptInjections,
-    scenePromptAdditions: sceneState === undefined ? [] : [{
-      role: 'system',
+    scenePromptAdditions: sceneState === undefined ? [] : [
+      ...(installedScene?.manifest.generationRecipe?.outputProtocol === 'mvu-json-patch-v1' ? [{
+      role: 'system' as const,
       content: '<scene_state>\n'
         + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
         + '</scene_state>\nScene state fields are governed by the Worldbook variable rules. '
@@ -840,7 +841,14 @@ function loadAggregate(
         + 'Use only replace, delta, insert, remove, or move operations. Move uses from and to. '
         + 'Each operation is applied independently; a failed operation does not cancel successful operations. '
         + 'Do not place any text after </UpdateVariable>.',
-    }, ...(sceneContext?.additions ?? [])],
+      }] : [{
+        role: 'system' as const,
+        content: '<scene_state>\n'
+          + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
+          + '</scene_state>\nCanonical Scene State may be changed only through the provided Agent tools.',
+      }]),
+      ...(sceneContext?.additions ?? []),
+    ],
   };
 }
 

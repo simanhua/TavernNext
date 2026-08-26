@@ -137,11 +137,14 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
 
   const refresh = async () => {
     if (conversationId === undefined) return;
-    await Promise.all([
-      queryClient.refetchQueries({ queryKey: ['conversation', conversationId] }),
-      queryClient.refetchQueries({ queryKey: ['scene-state', conversationId] }),
-      queryClient.invalidateQueries({ queryKey: ['scene-conversations', sceneId] }),
+    const [freshDetail, freshState] = await Promise.all([
+      api.getConversationMessages(conversationId),
+      api.getSceneState(conversationId),
     ]);
+    queryClient.setQueryData(['conversation', conversationId], freshDetail);
+    queryClient.setQueryData(['scene-state', conversationId], freshState);
+    latest.current = { ...latest.current, detail: freshDetail, state: freshState };
+    await queryClient.invalidateQueries({ queryKey: ['scene-conversations', sceneId] });
     announceSceneChanged(sceneId, conversationId);
   };
 

@@ -105,9 +105,15 @@ function parentAt(
     } else {
       const item = record(current);
       if (item === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
-      if (item[part] === undefined && createMissingObjects) item[part] = {};
-      if (item[part] === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
-      current = item[part];
+      let child = Object.hasOwn(item, part) ? item[part] : undefined;
+      if (child === undefined && createMissingObjects) {
+        child = {};
+        Object.defineProperty(item, part, {
+          value: child, enumerable: true, configurable: true, writable: true,
+        });
+      }
+      if (child === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
+      current = child;
     }
   }
   if (!Array.isArray(current) && record(current) === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
@@ -117,7 +123,11 @@ function parentAt(
 function valueAt(root: Record<string, unknown>, pointer: string): unknown {
   let value: unknown = root;
   for (const part of pointerParts(pointer)) {
-    value = Array.isArray(value) ? value[Number(part)] : record(value)?.[part];
+    if (Array.isArray(value)) value = value[Number(part)];
+    else {
+      const item = record(value);
+      value = item !== undefined && Object.hasOwn(item, part) ? item[part] : undefined;
+    }
     if (value === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
   }
   return value;
@@ -157,7 +167,9 @@ export function applyScenePatch(
       return;
     }
     if (replaceOnly && !Object.hasOwn(parent, key)) throw new SceneServiceError('scene_patch_invalid', 400);
-    parent[key] = next;
+    Object.defineProperty(parent, key, {
+      value: next, enumerable: true, configurable: true, writable: true,
+    });
   };
   for (const operation of operations) {
     if (operation.op === 'remove') remove(operation.path);
