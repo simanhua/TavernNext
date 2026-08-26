@@ -332,15 +332,15 @@ describe('migration backup and recovery', () => {
 
     for (let index = 0; index < 7; index += 1) {
       const instant = new Date(Date.UTC(2026, 7, 9, 12, 0, index));
-      const app = createApp({
-        config,
-        snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
-        backupClock: () => instant,
-      });
-      await app.ready();
-      expect(app.startupMigrationResult).toBe('writable');
-      await app.close();
       if (index === 0) {
+        const app = createApp({
+          config,
+          snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
+          backupClock: () => instant,
+        });
+        await app.ready();
+        expect(app.startupMigrationResult).toBe('writable');
+        await app.close();
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
@@ -365,6 +365,13 @@ describe('migration backup and recovery', () => {
         } finally {
           checkpointed.close();
         }
+      } else {
+        createPreMigrationBackup({
+          dataDir: config.dataDir,
+          databasePath: config.databasePath,
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          clock: () => instant,
+        });
       }
     }
 

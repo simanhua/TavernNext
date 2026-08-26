@@ -410,7 +410,7 @@ const ProviderProfileValueSchema = MutableEntitySchema.extend({
   toolCalls: z.boolean(),
   model: z.string().min(1),
   secretRef: z.string().min(1).optional(),
-  apiMode: z.enum(['chat', 'text']).default('chat'),
+  apiMode: z.literal('chat').default('chat'),
   headerSecretRefs: z.record(z.string(), z.string()).default({}),
 }).extend(WithCompatibilitySchema.shape);
 
@@ -419,6 +419,7 @@ export const ProviderProfileSchema = z.preprocess((value) => {
   const record = value as Record<string, unknown>;
   return {
     ...record,
+    apiMode: 'chat',
     providerId: record.providerId ?? 'custom-openai-compatible',
     modelId: record.modelId ?? record.model,
     toolCalls: record.toolCalls ?? true,

@@ -2,7 +2,6 @@ import multipart from '@fastify/multipart';
 import {
   createOpenAICompatibleClient,
   createPiAgentModelRuntime,
-  createPiProviderClient,
   type OpenAICompatibleProfile,
 } from '@tavernnext/provider-openai-compatible';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
@@ -12,14 +11,13 @@ import { dirname } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loadConfig, loadProviderSecrets, type ProviderSecretMap, type ServerConfig } from './config.js';
 import { createDatabase, type TavernDatabase } from './db/client.js';
-import { migrateDatabase, readSchemaVersion } from './db/migrate.js';
+import { AGENT_FIRST_RESET_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, migrateDatabase, readSchemaVersion } from './db/migrate.js';
 import { createRepositories } from './db/repositories.js';
 import { registerCharacterRoutes } from './routes/characters.js';
 import { registerAvatarRoutes } from './routes/avatars.js';
 import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
-import { registerGenerationCandidateRoutes } from './routes/generation-candidates.js';
 import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
 import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
 import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
@@ -29,7 +27,6 @@ import { registerMessageRoutes } from './routes/messages.js';
 import { registerInteractiveActionRoutes } from './routes/interactive-actions.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
-import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
 import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
@@ -39,12 +36,10 @@ import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
 import { registerAgentRunRoutes } from './routes/agent-runs.js';
-import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
+import { createGenerationService } from './services/generation-service.js';
 import type { PiAgentRuntimeFactory } from './services/scene-director-agent.js';
 import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
-import { createPromptPreviewService } from './services/prompt-preview-service.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
-import { createGenerationCandidateService } from './services/generation-candidate-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
@@ -72,7 +67,6 @@ declare module 'fastify' {
 export interface CreateAppOptions {
   config?: ServerConfig;
   database?: TavernDatabase;
-  providerClientFactory?: ProviderClientFactory;
   piAgentRuntimeFactory?: PiAgentRuntimeFactory;
   saveAgentRuntime?: SaveAgentRuntime;
   providerProbeFactory?: ProviderProbeFactory;
@@ -121,13 +115,18 @@ function startupDatabase(config: ServerConfig, options: CreateAppOptions): {
         // connection is its boundary before WAL validation/checkpoint backup.
         closedConnection.close();
       }
-      backupPath = createPreMigrationBackup({
-        dataDir: config.dataDir,
-        databasePath: config.databasePath,
-        schemaVersion,
-        ...(ownership === undefined ? {} : { databaseOwnership: ownership }),
-        ...(options.backupClock === undefined ? {} : { clock: options.backupClock }),
-      }).path;
+      const needsMigration = schemaVersion !== CURRENT_SCHEMA_VERSION || options.migrationRunner !== undefined;
+      const hasRecoveryWal = existsSync(`${config.databasePath}-wal`);
+      if (needsMigration || hasRecoveryWal) {
+        backupPath = createPreMigrationBackup({
+          dataDir: config.dataDir,
+          databasePath: config.databasePath,
+          schemaVersion,
+          retention: schemaVersion === null || schemaVersion < AGENT_FIRST_RESET_SCHEMA_VERSION ? 'pinned' : 'rolling',
+          ...(ownership === undefined ? {} : { databaseOwnership: ownership }),
+          ...(options.backupClock === undefined ? {} : { clock: options.backupClock }),
+        }).path;
+      }
     }
 
     const database = options.database ?? createDatabase(config.databasePath);
@@ -251,7 +250,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     if (secret.profileId !== profileId || normalizedBaseUrl(secret.baseUrl) !== normalizedBaseUrl(baseUrl)) return undefined;
     return secret.credential.type === 'api_key' ? secret.credential.key : undefined;
   };
-  const resolvedProviderAuth = (profile: Parameters<ProviderClientFactory>[0]) => {
+  const resolvedProviderAuth = (profile: Parameters<PiAgentRuntimeFactory>[0]) => {
     const headers = Object.fromEntries(
       Object.entries(profile.headerSecretRefs).flatMap(([name, secretRef]) => {
         const value = resolveSecret(profile.id, profile.baseUrl, secretRef);
@@ -263,27 +262,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       : resolveSecret(profile.id, profile.baseUrl, profile.secretRef);
     return { headers, apiKey };
   };
-  const providerClientFactory: ProviderClientFactory = options.providerClientFactory ?? ((profile) => {
-    const { headers, apiKey } = resolvedProviderAuth(profile);
-    if (profile.providerId !== 'custom-openai-compatible') {
-      if (apiKey === undefined) throw new Error('Provider credential is unavailable.');
-      return createPiProviderClient({
-        providerId: profile.providerId,
-        modelId: profile.modelId,
-        baseUrl: profile.baseUrl,
-        apiKey,
-        headers,
-      });
-    }
-    return createOpenAICompatibleClient({
-      baseUrl: profile.baseUrl,
-      ...(apiKey === undefined ? {} : { apiKey }),
-      headers,
-    });
-  });
-  const piAgentRuntimeFactory = options.piAgentRuntimeFactory ?? (
-    options.providerClientFactory === undefined
-      ? ((profile) => {
+  const piAgentRuntimeFactory = options.piAgentRuntimeFactory ?? ((profile) => {
         const { headers, apiKey } = resolvedProviderAuth(profile);
         if (apiKey === undefined && profile.providerId !== 'custom-openai-compatible') {
           throw new Error('Provider credential is unavailable.');
@@ -295,22 +274,17 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
           apiKey: apiKey ?? 'tavernnext-keyless-endpoint',
           headers,
         });
-      }) satisfies PiAgentRuntimeFactory
-      : undefined
-  );
+      }) satisfies PiAgentRuntimeFactory;
   const tokenizerRuntime: ServerTokenizerRuntime = options.tokenizerRuntime ?? {
     selectTokenizer,
     countText: (text, decision) => countText(text, decision, { dataDir: config.dataDir }),
     countMessages: (messages, decision) => countMessages(messages, decision, { dataDir: config.dataDir }),
   };
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
-  const promptPreviews = createPromptPreviewService(promptSnapshots);
-  const generationCandidates = createGenerationCandidateService(promptSnapshots, repositories);
   const generations = options.saveAgentRuntime ?? createGenerationService({
     database,
     repositories,
-    providerClientFactory,
-    ...(piAgentRuntimeFactory === undefined ? {} : { piAgentRuntimeFactory }),
+    piAgentRuntimeFactory,
     promptSnapshotService: promptSnapshots,
     sceneService: scenes,
   });
@@ -421,8 +395,6 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerGlobalGenerationConfigRoutes(app, repositories);
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations, scenes);
-  registerPromptPreviewRoutes(app, promptPreviews);
-  registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);
   registerSaveAgentConfigurationRoutes(app, repositories);
   registerSceneRoutes(app, scenes, repositories);

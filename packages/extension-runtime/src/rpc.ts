@@ -26,7 +26,7 @@ export type ExtensionRuntimeRpcRequest = z.infer<typeof ExtensionRuntimeRpcReque
 export const MUTATING_TAVERN_HELPER_METHODS = new Set<string>([
   'setChatMessages', 'createChatMessages', 'deleteChatMessages',
   'replaceVariables', 'updateVariablesWith', 'insertVariables', 'deleteVariable',
-  'replaceTavernRegexes', 'updateLorebookEntriesWith', 'injectPrompts', 'uninjectPrompts',
+  'replaceTavernRegexes', 'updateLorebookEntriesWith',
   'generate', 'generateRaw', 'triggerSlash',
 ]);
 export const GENERATION_BLOCKED_TAVERN_HELPER_METHODS = new Set<string>([

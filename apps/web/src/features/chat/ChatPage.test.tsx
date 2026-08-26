@@ -218,30 +218,6 @@ const server = setupServer(
       messages,
     });
   }),
-  http.post('/api/conversations/:id/generation-candidates', async ({ request }) => {
-    const body = await request.json() as { mode: string; userText?: string };
-    return HttpResponse.json({
-      candidateId: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      executableDigest: 'a'.repeat(64), kind: 'chat',
-      messages: body.mode === 'normal' ? [{ role: 'user', content: body.userText ?? '' }] : [],
-      stop: [], tokenBreakdown: [], totalTokens: 1,
-      tokenizerDecision: { tokenizerId: 0, tokenizerName: 'None / Estimated' },
-      worldbook: {
-        activated: [], excluded: [], timedState: { messageIndex: 0, sticky: [], cooldown: [] },
-        tokenUsage: { budget: 0, used: 0, overflowed: false }, recursionSteps: 0, warnings: [],
-      },
-      previousTimedState: { messageIndex: null, sticky: [], cooldown: [] }, warnings: [],
-      entityRevisions: {
-        globalGenerationConfig: { id: globalGenerationConfig.id, revision: 0 },
-        conversation: { id: ids.conversation, revision: conversationRevision },
-        character: { id: ids.character, revision: 0 }, persona: { id: ids.persona, revision: 0 },
-        provider: { id: ids.provider, revision: 0 }, presets: [], globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
-      },
-      compiledRequestHash: 'b'.repeat(64),
-    }, { status: 201 });
-  }),
-  http.post('/api/generation-candidates/:id/seal', () => HttpResponse.json({ snapshotId: crypto.randomUUID() }, { status: 201 })),
-  http.delete('/api/generation-candidates/:id', () => new HttpResponse(null, { status: 204 })),
   http.post('/api/conversations/:id/generations', async ({ request }) => {
     if (generationNetworkFailure) return HttpResponse.error();
     if (generationStartupFailureStatus !== undefined) {

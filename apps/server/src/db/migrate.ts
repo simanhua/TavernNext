@@ -8,7 +8,8 @@ import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-sta
 const SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION = 19;
 const AGENT_RUN_SCHEMA_VERSION = 20;
 const ROLEPLAY_DOCUMENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION + 1;
-export const CURRENT_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION;
+export const AGENT_FIRST_RESET_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION + 1;
+export const CURRENT_SCHEMA_VERSION = AGENT_FIRST_RESET_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -239,31 +240,6 @@ function addVariantColumns(database: TavernDatabase): void {
 
 function addSceneColumns(database: TavernDatabase): void {
   addColumn(database, 'conversations', 'scene_id', 'TEXT REFERENCES installed_scenes(id) ON DELETE CASCADE');
-}
-
-function clearLegacyPublicAssets(database: TavernDatabase): void {
-  resetConversationExtensionStates(database);
-  database.sqlite.exec(`
-    DELETE FROM consumed_generation_snapshots;
-    DELETE FROM message_variants;
-    DELETE FROM generation_snapshots;
-    DELETE FROM worldbook_runtime_states;
-    DELETE FROM messages;
-    DELETE FROM conversation_worldbooks;
-    DELETE FROM conversations;
-    DELETE FROM conversation_scene_states;
-    DELETE FROM extension_audit_events;
-    DELETE FROM extension_remote_resources;
-    DELETE FROM extension_trust_grants;
-    DELETE FROM extension_states;
-    DELETE FROM extension_assets;
-    DELETE FROM import_artifacts;
-    DELETE FROM worldbook_entries;
-    DELETE FROM worldbooks;
-    DELETE FROM presets;
-    DELETE FROM avatar_assets WHERE kind = 'characters';
-    DELETE FROM characters;
-  `);
 }
 
 function backfillCharacterDepthPrompt(database: TavernDatabase): void {
@@ -549,6 +525,28 @@ function backfillSceneStateKernel(database: TavernDatabase): void {
   }
 }
 
+function contractGlobalGenerationConfig(database: TavernDatabase): void {
+  database.sqlite.exec(`
+    UPDATE global_generation_config
+    SET payload = json_set(
+      payload,
+      '$.textPresetId', NULL,
+      '$.contextPresetId', NULL,
+      '$.instructPresetId', NULL,
+      '$.systemPresetId', NULL
+    )
+    WHERE json_valid(payload);
+  `);
+}
+
+function contractProviderProfiles(database: TavernDatabase): void {
+  database.sqlite.exec(`
+    UPDATE provider_profiles
+    SET payload = json_set(payload, '$.apiMode', 'chat')
+    WHERE json_valid(payload);
+  `);
+}
+
 function backfillRoleplayDocuments(database: TavernDatabase): void {
   for (const row of database.sqlite.prepare('SELECT id, payload FROM message_variants').all()) {
     if (typeof row.id !== 'string') continue;
@@ -569,6 +567,7 @@ export function migrateDatabase(database: TavernDatabase): void {
   database.sqlite.pragma('foreign_keys = OFF');
   try {
     const startingVersion = readSchemaVersion(database);
+    const hadConversationTable = tableExists(database, 'conversations');
     database.transaction(() => {
       database.sqlite.exec('CREATE TABLE IF NOT EXISTS tavernnext_schema_version (version INTEGER NOT NULL)');
       normalizeExtensionStatesTable(database);
@@ -577,7 +576,8 @@ export function migrateDatabase(database: TavernDatabase): void {
       if (hasCascadeWorldbookEntries(database)) rebuildWorldbookEntries(database);
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
       if (hasConversationGenerationBindings(database)
-        || (startingVersion !== null && startingVersion < SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION)) {
+        || (startingVersion !== null && startingVersion < AGENT_FIRST_RESET_SCHEMA_VERSION)
+        || (startingVersion === null && hadConversationTable)) {
         resetConversationGraph(database);
       }
 
@@ -592,7 +592,8 @@ export function migrateDatabase(database: TavernDatabase): void {
       if ((startingVersion ?? 0) < ROLEPLAY_DOCUMENT_SCHEMA_VERSION) backfillRoleplayDocuments(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
-      if (startingVersion === 16) clearLegacyPublicAssets(database);
+      contractGlobalGenerationConfig(database);
+      contractProviderProfiles(database);
       database.sqlite.exec(indexes);
       database.sqlite.exec(`DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION});`);
     });

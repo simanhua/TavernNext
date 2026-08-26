@@ -1,5 +1,7 @@
 import type { Character, GenerationMode, Persona, Preset } from '@tavernnext/domain';
 
+export type PromptGenerationType = GenerationMode | 'continue';
+
 export type PromptRole = 'system' | 'user' | 'assistant';
 
 export interface PromptChatMessage {
@@ -96,7 +98,7 @@ export interface CompileChatPromptInput extends CompilationInputBase {
   preset: Preset;
   /** This compiler models solo chat only; group and forced-avatar name rules are intentionally outside its contract. */
   chatMode?: 'solo';
-  generationType?: GenerationMode;
+  generationType?: PromptGenerationType;
   promptOrderCharacterId?: string | number;
   worldInfoBefore?: string;
   worldInfoAfter?: string;
@@ -113,7 +115,7 @@ export interface CompileTextPromptInput extends CompilationInputBase {
   worldInfoPlacements?: WorldInfoCompilerPlacements;
   anchorBefore?: string;
   anchorAfter?: string;
-  generationType?: GenerationMode;
+  generationType?: PromptGenerationType;
 }
 
 interface CompilationResultBase {

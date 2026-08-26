@@ -1,12 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  ChatRequest,
-  OpenAICompatibleClient,
-  ProviderEvent,
-  TextRequest,
-} from '@tavernnext/provider-openai-compatible';
 import { TokenizerId, type TokenizerDecision, type TokenizerSelectionInput } from '@tavernnext/tokenizer-engine';
 import { createApp, type CreateAppOptions } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
@@ -35,58 +29,6 @@ export const integrationIds = {
   historyAssistant: '018f1000-0000-7000-8000-000000000118',
   historyVariant: '018f1000-0000-7000-8000-000000000119',
 } as const;
-
-export interface CapturedProvider {
-  chat: ChatRequest[];
-  text: TextRequest[];
-  client: OpenAICompatibleClient;
-}
-
-export function capturedProvider(
-  events: readonly ProviderEvent[] = [{ type: 'completed', finishReason: 'stop' }],
-): CapturedProvider {
-  const chat: ChatRequest[] = [];
-  const text: TextRequest[] = [];
-  return {
-    chat,
-    text,
-    client: {
-      listModels: async () => [],
-      async *streamChat(request) {
-        chat.push(structuredClone(request));
-        for (const event of events) yield event;
-      },
-      async *streamText(request) {
-        text.push(structuredClone(request));
-        for (const event of events) yield event;
-      },
-    },
-  };
-}
-
-export function queuedCapturedProvider(
-  batches: readonly (readonly ProviderEvent[])[],
-): CapturedProvider {
-  const chat: ChatRequest[] = [];
-  const text: TextRequest[] = [];
-  let call = 0;
-  const events = () => batches[Math.min(call++, batches.length - 1)] ?? [];
-  return {
-    chat,
-    text,
-    client: {
-      listModels: async () => [],
-      async *streamChat(request) {
-        chat.push(structuredClone(request));
-        for (const event of events()) yield event;
-      },
-      async *streamText(request) {
-        text.push(structuredClone(request));
-        for (const event of events()) yield event;
-      },
-    },
-  };
-}
 
 export interface TestTokenizerRuntime {
   selectTokenizer(input: TokenizerSelectionInput): TokenizerDecision;
@@ -122,7 +64,6 @@ export async function closePromptIntegrationContexts(): Promise<void> {
 }
 
 export async function createPromptIntegrationContext(options: {
-  provider?: CapturedProvider;
   tokenizerRuntime?: TestTokenizerRuntime;
   appOptions?: Partial<CreateAppOptions>;
 } = {}) {
@@ -133,17 +74,15 @@ export async function createPromptIntegrationContext(options: {
   const snapshotIntegrityKey = options.appOptions?.snapshotIntegrityKey ?? TEST_SNAPSHOT_INTEGRITY_KEY;
   const repositories = createRepositories(database, { snapshotIntegrityKey });
   databasesByRepository.set(repositories, database);
-  const provider = options.provider ?? capturedProvider();
   const app = createApp({
     database,
-    providerClientFactory: () => provider.client,
     tokenizerRuntime: options.tokenizerRuntime ?? unitTokenizerRuntime(),
     snapshotIntegrityKey,
     ...options.appOptions,
   });
   apps.push(app);
   await app.ready();
-  return { app, database, repositories, provider };
+  return { app, database, repositories };
 }
 
 function createBook(
@@ -175,7 +114,7 @@ function createBook(
   return { book, entry };
 }
 
-export function seedFullPromptGraph(repositories: Repositories, mode: 'chat' | 'text' = 'chat') {
+export function seedFullPromptGraph(repositories: Repositories, _mode: 'chat' | 'text' = 'chat') {
   const seed = () => {
   const global = createBook(repositories, {
     id: integrationIds.globalBook,
@@ -250,7 +189,7 @@ export function seedFullPromptGraph(repositories: Repositories, mode: 'chat' | '
     name: 'Local mock',
     baseUrl: 'http://127.0.0.1:8080/v1',
     model: 'mock-model',
-    apiMode: mode,
+    apiMode: 'chat',
     secretRef: 'TOP-SECRET-API-KEY-REFERENCE',
     headerSecretRefs: { 'x-private': 'TOP-SECRET-HEADER-REFERENCE' },
     compatibility: {
@@ -410,35 +349,4 @@ function expectGlobalGenerationConfig(
   const current = repositories.globalGenerationConfig.get();
   const result = repositories.globalGenerationConfig.update(current.revision, selection);
   if (!result.ok) throw new Error('Could not seed global generation configuration.');
-}
-
-export function previewPayload(overrides: Record<string, unknown> = {}) {
-  return {
-    conversationRevision: 0,
-    mode: 'normal',
-    userText: 'Open the portal',
-    seed: 'snapshot-seed',
-    messageIndex: 2,
-    ...overrides,
-  };
-}
-
-export async function requestPreview(app: ReturnType<typeof createApp>, overrides: Record<string, unknown> = {}) {
-  return app.inject({
-    method: 'POST',
-    url: `/api/conversations/${integrationIds.conversation}/prompt-preview`,
-    payload: previewPayload(overrides),
-  });
-}
-
-export async function requestGeneration(
-  app: ReturnType<typeof createApp>,
-  snapshotId?: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return app.inject({
-    method: 'POST',
-    url: `/api/conversations/${integrationIds.conversation}/generations`,
-    payload: previewPayload({ ...(snapshotId === undefined ? {} : { snapshotId }), ...overrides }),
-  });
 }

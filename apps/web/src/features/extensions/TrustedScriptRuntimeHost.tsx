@@ -13,7 +13,6 @@ import {
   type ScriptRuntimeFrame,
 } from './SameOriginScriptRuntime.js';
 import { useActiveExtensionAssetCollections } from './useActiveExtensionAssetCollections.js';
-import type { TrustedPromptHookRequest } from './TrustedPromptHooks.js';
 
 export type ScriptRuntimeFrameFactory = (
   document: Document,
@@ -56,29 +55,6 @@ export function TrustedScriptRuntimeHost({
     window.addEventListener('tavernnext:runtime-mutated', refresh);
     return () => window.removeEventListener('tavernnext:runtime-mutated', refresh);
   }, [conversationId, queryClient]);
-  useEffect(() => {
-    const run = (event: Event) => {
-      const detail = (event as CustomEvent<TrustedPromptHookRequest>).detail;
-      if (detail === undefined) return;
-      detail.handled = true;
-      const runtime = runtimeRef.current;
-      if (runtime === undefined) {
-        detail.resolve(structuredClone({
-          messages: detail.candidate.messages, text: detail.candidate.text, stop: detail.candidate.stop,
-        }));
-        return;
-      }
-      const epoch = runtimeReadyRef.current;
-      void runtime.runPromptHook(detail.candidate, detail.dryRun)
-        .then((value) => {
-          if (runtimeRef.current !== runtime || runtimeReadyRef.current !== epoch) throw new Error('runtime_epoch_changed');
-          return value;
-        })
-        .then(detail.resolve, detail.reject);
-    };
-    window.addEventListener('tavernnext:run-prompt-hooks', run);
-    return () => window.removeEventListener('tavernnext:run-prompt-hooks', run);
-  }, []);
   const inputs = active.owners.flatMap((owner, index): TrustedScriptOwnerInput[] => {
     const collection = active.assetQueries[index]?.data;
     const trust = trustQueries[index]?.data;

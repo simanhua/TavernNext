@@ -183,14 +183,6 @@ describe('bundled Scene Agent tools', () => {
       snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
       tokenizerRuntime: unitTokenizerRuntime(),
       piAgentRuntimeFactory: () => runtimeFactory(),
-      providerClientFactory: () => ({
-        listModels: async () => [],
-        async *streamChat() {
-          yield { type: 'delta' as const, text: ' 战斗余波。' };
-          yield { type: 'completed' as const, finishReason: 'stop' };
-        },
-        async *streamText() {},
-      }),
     });
     apps.push(app);
     await app.ready();
@@ -478,23 +470,6 @@ describe('bundled Scene Agent tools', () => {
     expect(repositories.conversationSceneStates.getByConversationId(conversation.id)?.revision).toBe(3);
     const reloaded = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/messages` });
     expect(reloaded.json().messages.at(-1).variants[0].document).toEqual(viewVariant.document);
-    const beforeContinue = structuredClone(viewVariant.document);
-    const continueResponse = await app.inject({
-      method: 'POST', url: `/api/conversations/${conversation.id}/generations`,
-      payload: {
-        conversationRevision: repositories.conversations.get(conversation.id)!.revision,
-        mode: 'continue',
-        messageIndex: repositories.messages.listByConversationId(conversation.id).length,
-      },
-    });
-    expect(continueResponse.statusCode).toBe(200);
-    expect(terminal(continueResponse.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
-    const continued = repositories.messageVariants.get(viewVariant.id)!;
-    expect(continued.content).toBe(`${viewVariant.content} 战斗余波。`);
-    expect(continued.document.blocks.slice(0, -1)).toEqual(beforeContinue.blocks.slice(0, -1));
-    expect(continued.document.blocks.at(-1)).toEqual({
-      type: 'markdown', content: '局势仍在变化。 战斗余波。',
-    });
 
     const official = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     const firstPackage = buildDestinedPoemPackage();

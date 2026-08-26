@@ -14,7 +14,7 @@ const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 describe('Scene migrations', () => {
-  it('adds the Agent Run audit and Roleplay Document schemas without resetting schema 19 Saves', async () => {
+  it('resets schema 19 Saves while retaining the new Agent-owned tables', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-agent-run-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -38,14 +38,14 @@ describe('Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(21);
-    expect(repositories.conversations.get(conversation.id)?.title).toBe('Preserved Save');
+    expect(CURRENT_SCHEMA_VERSION).toBe(22);
+    expect(repositories.conversations.get(conversation.id)).toBeUndefined();
     expect(database.sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'").get())
       .toEqual({ name: 'agent_runs' });
     database.close();
   });
 
-  it('preserves Persona and Provider while clearing the legacy asset workspace', async () => {
+  it('preserves reusable libraries and Provider while clearing schema 16 Saves', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -55,23 +55,23 @@ describe('Scene migrations', () => {
     const provider = repositories.providerProfiles.create({ id: randomUUID(), name: 'Local', baseUrl: 'http://127.0.0.1:1234', model: 'model' });
     const worldbook = repositories.worldbooks.create({ id: randomUUID(), name: 'Legacy lore', description: '', enabled: true });
     const character = repositories.characters.create({ id: randomUUID(), name: 'Legacy card', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], worldbookId: worldbook.id });
-    repositories.presets.create({ id: randomUUID(), name: 'Legacy preset', kind: 'chat', settings: {} });
+    const preset = repositories.presets.create({ id: randomUUID(), name: 'Legacy preset', kind: 'chat', settings: {} });
     repositories.conversations.create({ id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Legacy chat' });
     database.sqlite.exec('DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version(version) VALUES (16)');
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(21);
+    expect(CURRENT_SCHEMA_VERSION).toBe(22);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
-    expect(repositories.characters.list()).toEqual([]);
-    expect(repositories.worldbooks.list()).toEqual([]);
-    expect(repositories.presets.list()).toEqual([]);
+    expect(repositories.characters.get(character.id)?.name).toBe('Legacy card');
+    expect(repositories.worldbooks.get(worldbook.id)?.name).toBe('Legacy lore');
+    expect(repositories.presets.get(preset.id)?.name).toBe('Legacy preset');
     expect(repositories.conversations.list()).toEqual([]);
     database.close();
   });
 
-  it('backfills schema 20 assistant Variant content into one canonical Markdown document', async () => {
+  it('resets schema 20 assistant Variants instead of carrying legacy generation artifacts forward', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-roleplay-document-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -116,41 +116,10 @@ describe('Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(repositories.messageVariants.get(variant.id)).toMatchObject({
-      id: variant.id,
-      revision: variant.revision,
-      content: 'First paragraph.\n\nSecond paragraph.',
-      document: {
-        version: 1,
-        blocks: [{ type: 'markdown', content: 'First paragraph.\n\nSecond paragraph.' }],
-      },
-    });
-    const migratedOversized = repositories.messageVariants.get(oversizedVariant.id)!;
-    expect(migratedOversized.content).toHaveLength(oversizedContent.length);
-    expect(migratedOversized.document).toEqual({
-      version: 1,
-      blocks: [{ type: 'markdown', content: oversizedContent }],
-    });
-
-    const canonical = {
-      ...repositories.messageVariants.get(variant.id)!,
-      document: {
-        version: 1,
-        blocks: [
-          { type: 'markdown', content: 'First paragraph.' },
-          { type: 'markdown', content: '\n\nSecond paragraph.' },
-        ],
-      },
-    };
-    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?')
-      .run(JSON.stringify(canonical), variant.id);
-    const beforeRepeatedMigration = (database.sqlite.prepare(
-      'SELECT payload FROM message_variants WHERE id = ?',
-    ).get(variant.id) as { payload: string }).payload;
+    expect(repositories.messageVariants.get(variant.id)).toBeUndefined();
+    expect(repositories.messageVariants.get(oversizedVariant.id)).toBeUndefined();
     migrateDatabase(database);
-    expect((database.sqlite.prepare('SELECT payload FROM message_variants WHERE id = ?')
-      .get(variant.id) as { payload: string }).payload).toBe(beforeRepeatedMigration);
-    expect(repositories.messageVariants.get(variant.id)?.document.blocks).toHaveLength(2);
+    expect(repositories.messageVariants.listByConversationId(conversation.id)).toEqual([]);
     database.close();
   });
 

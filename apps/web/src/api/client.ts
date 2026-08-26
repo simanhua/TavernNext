@@ -1,8 +1,6 @@
-import { GenerationCandidateTransportSchema } from '@tavernnext/domain';
 import type {
   Conversation,
   GenerationMode,
-  GenerationCandidateTransport,
   GlobalGenerationConfig,
   GlobalGenerationSelection,
   InstalledScene,
@@ -14,7 +12,6 @@ import type {
   MessageVariant,
   AgentRun,
   PresetKind,
-  TrustedPromptPatch,
 } from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind, SaveAgentConfiguration };
@@ -251,85 +248,6 @@ export interface ImportReceipt {
   assetPath?: string;
 }
 
-export interface PromptTimedEntryView {
-  entryKey: string;
-  start: number;
-  end: number;
-  protected: boolean;
-}
-
-export interface PromptTimedStateView {
-  messageIndex: number | null;
-  stickyCount: number;
-  cooldownCount: number;
-  sticky: PromptTimedEntryView[];
-  cooldown: PromptTimedEntryView[];
-}
-
-export interface PromptPreviewView {
-  snapshotId: string;
-  kind: 'chat' | 'text';
-  messages?: Array<{ role: string; content: string }>;
-  text?: string;
-  stop: string[];
-  tokenBreakdown: Array<{ source: string; includedTokens: number; omittedTokens: number; reason?: string }>;
-  totalTokens: number;
-  tokenizerDecision: { requestedId?: number; tokenizerId: number; tokenizerName: string; model?: string; warning?: string; fallbackFrom?: number; fallbackTokenizerId?: number };
-  worldbook: {
-    activated: Array<{ entryKey: string; bookName?: string; sourceUid?: string | number; content?: string; activation?: string; tokenUsageAfter?: number }>;
-    excluded: Array<{ entryKey: string; reason: string }>;
-    timedState: PromptTimedStateView;
-    tokenUsage: { budget: number; used: number; overflowed: boolean };
-    recursionSteps: number;
-    warnings: Array<{ code: string; message: string }>;
-  };
-  previousTimedState?: PromptTimedStateView;
-  warnings: Array<{ code: string; message: string; source?: string }>;
-  entityRevisions: {
-    globalGenerationConfig: { revision: number };
-    conversation: { revision: number };
-    character: { revision: number };
-    persona: { revision: number };
-    provider: { revision: number };
-    presets: Array<{ revision: number; kind: string }>;
-    globalWorldbookCount: number;
-    worldbookCount: number;
-    messageCount: number;
-    runtimeStateRevision: number | null;
-  };
-}
-
-export type GenerationCandidateView = GenerationCandidateTransport & { preview: PromptPreviewView };
-
-interface PromptTimedStateResponse {
-  messageIndex: number | null;
-  sticky: unknown[];
-  cooldown: unknown[];
-}
-
-interface PromptPreviewResponse extends Omit<PromptPreviewView, 'worldbook' | 'previousTimedState' | 'entityRevisions'> {
-  worldbook: Omit<PromptPreviewView['worldbook'], 'timedState'> & { timedState: PromptTimedStateResponse };
-  previousTimedState?: PromptTimedStateResponse;
-  entityRevisions: {
-    globalGenerationConfig: { id?: string; revision: number };
-    conversation: { id?: string; revision: number };
-    character: { id?: string; revision: number };
-    persona: { id?: string; revision: number };
-    provider: { id?: string; revision: number };
-    presets: Array<{ id?: string; revision: number; kind: string }>;
-    globalWorldbooks?: Array<{ id?: string; revision: number }>;
-    worldbooks?: Array<{ id?: string; revision: number }>;
-    messages?: Array<{ id?: string; revision: number }>;
-    runtimeState?: { id?: string; revision: number } | null;
-  };
-}
-interface GenerationCandidateResponse extends Omit<PromptPreviewResponse, 'snapshotId' | 'messages'> {
-  candidateId: string;
-  expiresAt: string;
-  executableDigest: string;
-  compiledRequestHash: string;
-  messages?: GenerationCandidateTransport['messages'];
-}
 
 export interface ProviderProfileView {
   id: string;
@@ -507,83 +425,6 @@ async function multipartFile(file: File): Promise<{ body: BodyInit; headers?: He
 async function uploadAvatar<T>(kind: 'characters' | 'personas', id: string, revision: number, file: File): Promise<T> {
   const multipart = await multipartFile(file);
   return request<T>(`/api/${kind}/${id}/avatar?revision=${revision}`, { method: 'PUT', ...multipart });
-}
-
-function projectTimedState(state: PromptTimedStateResponse): PromptTimedStateView {
-  return {
-    messageIndex: state.messageIndex,
-    stickyCount: state.sticky.length,
-    cooldownCount: state.cooldown.length,
-    sticky: state.sticky.flatMap(projectTimedEntry),
-    cooldown: state.cooldown.flatMap(projectTimedEntry),
-  };
-}
-
-function projectTimedEntry(value: unknown): PromptTimedEntryView[] {
-  if (typeof value !== 'object' || value === null) return [];
-  const entry = value as Record<string, unknown>;
-  if (
-    typeof entry.entryKey !== 'string'
-    || typeof entry.start !== 'number'
-    || typeof entry.end !== 'number'
-    || typeof entry.protected !== 'boolean'
-  ) return [];
-  return [{ entryKey: entry.entryKey, start: entry.start, end: entry.end, protected: entry.protected }];
-}
-
-function projectPromptPreview(response: PromptPreviewResponse): PromptPreviewView {
-  const revisions = response.entityRevisions;
-  return {
-    snapshotId: response.snapshotId,
-    kind: response.kind,
-    ...(response.messages === undefined
-      ? {}
-      : { messages: response.messages.map(({ role, content }) => ({ role, content })) }),
-    ...(response.text === undefined ? {} : { text: response.text }),
-    stop: [...response.stop],
-    tokenBreakdown: response.tokenBreakdown.map(({ source, includedTokens, omittedTokens, reason }) => ({
-      source, includedTokens, omittedTokens, ...(reason === undefined ? {} : { reason }),
-    })),
-    totalTokens: response.totalTokens,
-    tokenizerDecision: {
-      tokenizerId: response.tokenizerDecision.tokenizerId,
-      tokenizerName: response.tokenizerDecision.tokenizerName,
-      ...(response.tokenizerDecision.requestedId === undefined ? {} : { requestedId: response.tokenizerDecision.requestedId }),
-      ...(response.tokenizerDecision.model === undefined ? {} : { model: response.tokenizerDecision.model }),
-      ...(response.tokenizerDecision.warning === undefined ? {} : { warning: response.tokenizerDecision.warning }),
-      ...(response.tokenizerDecision.fallbackFrom === undefined ? {} : { fallbackFrom: response.tokenizerDecision.fallbackFrom }),
-      ...(response.tokenizerDecision.fallbackTokenizerId === undefined ? {} : { fallbackTokenizerId: response.tokenizerDecision.fallbackTokenizerId }),
-    },
-    worldbook: {
-      activated: response.worldbook.activated.map((entry) => ({
-        entryKey: entry.entryKey,
-        ...(entry.bookName === undefined ? {} : { bookName: entry.bookName }),
-        ...(entry.sourceUid === undefined ? {} : { sourceUid: entry.sourceUid }),
-        ...(entry.content === undefined ? {} : { content: entry.content }),
-        ...(entry.activation === undefined ? {} : { activation: entry.activation }),
-        ...(entry.tokenUsageAfter === undefined ? {} : { tokenUsageAfter: entry.tokenUsageAfter }),
-      })),
-      excluded: response.worldbook.excluded.map(({ entryKey, reason }) => ({ entryKey, reason })),
-      timedState: projectTimedState(response.worldbook.timedState),
-      tokenUsage: { ...response.worldbook.tokenUsage },
-      recursionSteps: response.worldbook.recursionSteps,
-      warnings: response.worldbook.warnings.map(({ code, message }) => ({ code, message })),
-    },
-    ...(response.previousTimedState === undefined ? {} : { previousTimedState: projectTimedState(response.previousTimedState) }),
-    warnings: response.warnings.map(({ code, message, source }) => ({ code, message, ...(source === undefined ? {} : { source }) })),
-    entityRevisions: {
-      globalGenerationConfig: { revision: revisions.globalGenerationConfig.revision },
-      conversation: { revision: revisions.conversation.revision },
-      character: { revision: revisions.character.revision },
-      persona: { revision: revisions.persona.revision },
-      provider: { revision: revisions.provider.revision },
-      presets: revisions.presets.map(({ revision, kind }) => ({ revision, kind })),
-      globalWorldbookCount: revisions.globalWorldbooks?.length ?? 0,
-      worldbookCount: revisions.worldbooks?.length ?? 0,
-      messageCount: revisions.messages?.length ?? 0,
-      runtimeStateRevision: revisions.runtimeState?.revision ?? null,
-    },
-  };
 }
 
 export const api = {
@@ -797,33 +638,6 @@ export const api = {
     { method: 'DELETE' },
   ),
   getConversationMessages: (id: string) => request<ConversationDetail>(`/api/conversations/${id}/messages`),
-  previewPrompt: async (conversation: Conversation, userText: string) => projectPromptPreview(await request<PromptPreviewResponse>(
-    `/api/conversations/${conversation.id}/prompt-preview`,
-    { method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, mode: 'normal', userText }) },
-  )),
-  createGenerationCandidate: (
-    conversation: Conversation,
-    input: { mode: GenerationMode; userText?: string },
-    signal?: AbortSignal,
-  ) => request<unknown>(`/api/conversations/${conversation.id}/generation-candidates`, {
-    method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, ...input }), signal,
-  }).then((raw): GenerationCandidateView => {
-    const response = GenerationCandidateTransportSchema.parse(raw) as unknown as GenerationCandidateResponse;
-    return {
-      ...response,
-      preview: projectPromptPreview({ ...response, snapshotId: response.candidateId }),
-    };
-  }),
-  sealGenerationCandidate: (
-    candidateId: string,
-    patch: TrustedPromptPatch,
-    signal?: AbortSignal,
-  ) => request<{ snapshotId: string }>(`/api/generation-candidates/${candidateId}/seal`, {
-    method: 'POST', body: JSON.stringify({ patch }), signal,
-  }),
-  discardGenerationCandidate: (candidateId: string) => request<void>(`/api/generation-candidates/${candidateId}`, {
-    method: 'DELETE',
-  }),
   updateMessage: (message: Message, content: string) => request<Message>(`/api/messages/${message.id}`, {
     method: 'PATCH', body: JSON.stringify({ revision: message.revision, patch: { content } }),
   }),
@@ -833,7 +647,7 @@ export const api = {
   }),
   startGeneration: async (
     conversation: Conversation,
-    input: { mode: GenerationMode; userText?: string; snapshotId?: string },
+    input: { mode: GenerationMode; userText?: string },
     signal?: AbortSignal,
   ) => {
     const response = await fetch(`/api/conversations/${conversation.id}/generations`, {

@@ -1,10 +1,10 @@
-import type { GenerationMode } from '@tavernnext/domain';
 import { allocateGroupedPromptBudget, type PromptBudgetBlock } from './budget.js';
 import { expandMacros } from './macros.js';
 import { booleanSetting, sanitizedPresetSettings, stringSetting } from './preset-settings.js';
 import { appendWarnings, compilationFailure, stableStops } from './shared.js';
 import type {
   CompileChatPromptInput,
+  PromptGenerationType,
   PromptChatMessage,
   ChatPromptCompilationResult,
   PromptHistoryMessage,
@@ -185,7 +185,7 @@ function historyMessage(value: PromptHistoryMessage): PromptChatMessage | undefi
   };
 }
 
-function generationType(input: CompileChatPromptInput): GenerationMode {
+function generationType(input: CompileChatPromptInput): PromptGenerationType {
   return input.generationType ?? 'normal';
 }
 

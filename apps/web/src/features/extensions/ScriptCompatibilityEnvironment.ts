@@ -1,6 +1,5 @@
 import {
   MUTATING_TAVERN_HELPER_METHODS,
-  applySPresetPromptHook,
   TAVERN_HELPER_BRIDGED_METHODS,
   type TrustedRuntimeScript,
   type TrustedScriptManifest,
@@ -19,11 +18,6 @@ interface ParentListenerRecord {
   remove: EventTarget['removeEventListener'];
 }
 const buttonEvent = (scriptId: string, name: string) => `tavernnext:script-button:${scriptId}:${name}`;
-const promptEvents = new Set([
-  'tavernnext:chat-completion-prompt-ready',
-  'tavernnext:generate-after-combine-prompts',
-  'tavernnext:trusted-prompt-hook',
-]);
 
 export class ScriptCompatibilityEnvironment {
   private listeners = new Map<string, Set<RuntimeListener>>();
@@ -36,7 +30,6 @@ export class ScriptCompatibilityEnvironment {
   private restoreParentTargets: Array<() => void> = [];
   private sourceOwners = new Map<string, Set<string>>();
   private promptHooks = new Set<symbol>();
-  private promptOnlyScripts = new Set<string>();
   private runtimeWindow?: RuntimeWindow;
   private extensionSettings: Record<string, unknown> = {};
   private scriptButtons = new Map<string, RuntimeScriptButton[]>();
@@ -49,7 +42,6 @@ export class ScriptCompatibilityEnvironment {
 
   configure(scripts: TrustedRuntimeScript[], buttons: TrustedScriptManifest['buttons'] = []): void {
     this.scripts = new Map(scripts.map((script) => [script.id, script]));
-    this.promptOnlyScripts.clear();
     this.scriptButtons = new Map(scripts.map((script) => [
       script.id,
       buttons.filter((button) => button.scriptId === script.id).map((button) => ({ name: button.name, visible: true })),
@@ -283,7 +275,6 @@ export class ScriptCompatibilityEnvironment {
     };
     const add = (event: string, callback: (...args: unknown[]) => unknown, once: boolean) => {
       const scriptId = this.activeScriptId;
-      if (promptEvents.has(event) && scriptId !== '') this.promptOnlyScripts.add(scriptId);
       const listener = { scriptId, callback, once, readOnly: this.promptHooks.size > 0 };
       const values = this.listeners.get(event) ?? new Set<RuntimeListener>();
       values.add(listener); this.listeners.set(event, values); return callback;
@@ -329,7 +320,7 @@ export class ScriptCompatibilityEnvironment {
       if (scriptId === '' || this.disabledScripts.has(scriptId)) {
         return Promise.reject(Object.assign(new Error('runtime_disabled'), { code: 'runtime_disabled' }));
       }
-      return (this.promptHooks.size > 0 || this.promptOnlyScripts.has(scriptId)) && MUTATING_TAVERN_HELPER_METHODS.has(method)
+      return this.promptHooks.size > 0 && MUTATING_TAVERN_HELPER_METHODS.has(method)
         ? Promise.resolve(undefined)
         : this.callApi(scriptId, method, args);
     };
@@ -350,35 +341,6 @@ export class ScriptCompatibilityEnvironment {
     return this.isDisabled(scriptId) ? Promise.resolve(false) : this.emit(buttonEvent(scriptId, name));
   }
 
-  async runPromptHook(candidate: {
-    kind: 'chat' | 'text'; messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string; name?: string }>;
-    text?: string; stop: string[]; spreset?: unknown;
-  }, dryRun: boolean) {
-    const transformed = applySPresetPromptHook(candidate, (source, content) => {
-      if (this.runtimeWindow === undefined) return content;
-      const execute = this.runtimeWindow.Function('content', `"use strict"; return (${source})(content);`);
-      return execute(content) as unknown;
-    });
-    const patch = structuredClone({ messages: transformed.messages, text: transformed.text, stop: transformed.stop });
-    const hook = Symbol('prompt-hook');
-    this.promptHooks.add(hook);
-    try {
-      if (candidate.kind === 'chat') {
-        const eventData = { chat: patch.messages!, stop: patch.stop, dryRun };
-        await this.emit('tavernnext:chat-completion-prompt-ready', eventData);
-        patch.messages = eventData.chat; patch.stop = eventData.stop;
-      } else {
-        const eventData = { prompt: patch.text!, stop: patch.stop, dryRun };
-        await this.emit('tavernnext:generate-after-combine-prompts', eventData);
-        patch.text = eventData.prompt; patch.stop = eventData.stop;
-      }
-      await this.emit('tavernnext:trusted-prompt-hook', { candidate: transformed, patch, dryRun });
-      return patch;
-    } finally {
-      this.promptHooks.delete(hook);
-    }
-  }
-
   destroy(manifest?: TrustedScriptManifest): void {
     if (manifest !== undefined) void this.emit('tavernnext:runtime:stop', manifest);
     this.listeners.clear();
@@ -390,7 +352,6 @@ export class ScriptCompatibilityEnvironment {
     this.scriptButtons.clear();
     this.currentMessageId = undefined;
     this.promptHooks.clear();
-    this.promptOnlyScripts.clear();
     this.runtimeWindow = undefined;
   }
 }

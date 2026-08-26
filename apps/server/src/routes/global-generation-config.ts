@@ -10,16 +10,19 @@ import {
 
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
-  patch: GlobalGenerationSelectionSchema.partial().strict().refine((patch) => Object.keys(patch).length > 0),
+  patch: z.object({
+    providerId: GlobalGenerationSelectionSchema.shape.providerId.optional(),
+    chatPresetId: GlobalGenerationSelectionSchema.shape.chatPresetId.optional(),
+    textPresetId: z.null().optional(),
+    contextPresetId: z.null().optional(),
+    instructPresetId: z.null().optional(),
+    systemPresetId: z.null().optional(),
+  }).strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
 const ActiveResourceContextQuerySchema = z.object({ conversationId: z.string().uuid().optional() }).strict();
 
 const presetKinds = {
   chatPresetId: 'chat',
-  textPresetId: 'text',
-  contextPresetId: 'context',
-  instructPresetId: 'instruct',
-  systemPresetId: 'system',
 } as const satisfies Record<string, z.infer<typeof PresetKindSchema>>;
 
 export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repositories: Repositories): void {

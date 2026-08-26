@@ -1,11 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closePromptIntegrationContexts,
-  capturedProvider,
   createPromptIntegrationContext,
   integrationIds,
-  requestPreview,
-  requestGeneration,
   seedFullPromptGraph,
 } from './prompt-integration-fixtures.js';
 
@@ -70,29 +67,7 @@ describe('trusted TavernHelper runtime RPC', () => {
     }]])).statusCode).toBe(200);
     expect(repositories.worldbookEntries.get(integrationIds.globalEntry)?.content).toBe('GLOBAL-LORE-EDITED');
 
-    expect((await call('injectPrompts', ['state-hook', { content: 'INJECTED', position: 'before' }])).statusCode).toBe(200);
-    expect((await call('getVariables', ['script'])).json().value.value).toMatchObject({
-      count: 2,
-      promptInjections: { 'state-hook': { content: 'INJECTED', position: 'before' } },
-    });
-    const injectedPreview = (await requestPreview(app)).json();
-    expect(JSON.stringify(injectedPreview.compiledRequest)).toContain('INJECTED');
-    expect((await app.inject({
-      method: 'DELETE', url: `/api/extension-trust/preset/${integrationIds.chatPreset}`,
-    })).statusCode).toBe(200);
-    const staleTrustSnapshot = await requestGeneration(app, injectedPreview.snapshotId);
-    expect(staleTrustSnapshot.statusCode).toBe(409);
-    expect(staleTrustSnapshot.json()).toEqual({ error: 'snapshot_stale' });
-    expect((await app.inject({
-      method: 'POST', url: `/api/extension-trust/preset/${integrationIds.chatPreset}/grant`,
-    })).statusCode).toBe(200);
-    const reinjectedPreview = (await requestPreview(app)).json();
-    expect((await call('uninjectPrompts', ['state-hook'])).statusCode).toBe(200);
-    const staleInjectionSnapshot = await requestGeneration(app, reinjectedPreview.snapshotId);
-    expect(staleInjectionSnapshot.statusCode).toBe(409);
-    expect(staleInjectionSnapshot.json()).toEqual({ error: 'snapshot_stale' });
-    expect(JSON.stringify((await requestPreview(app)).json().compiledRequest)).not.toContain('INJECTED');
-    expect((await call('injectPrompts', ['invalid-hook', { position: 'before' }])).statusCode).toBe(400);
+    expect((await call('injectPrompts', ['state-hook', { content: 'INJECTED', position: 'before' }])).statusCode).toBe(422);
 
     expect((await call('createChatMessages', [[
       { role: 'user', message: 'Created user' },
@@ -118,14 +93,11 @@ describe('trusted TavernHelper runtime RPC', () => {
     expect((await call('getChatMessages')).statusCode).toBe(409);
     expect((await call('getTavernRegexes', [], { ownerRevision: 1 })).json().value)
       .toEqual([expect.objectContaining({ id: 'rpc-regex', disabled: true })]);
-    expect((await call('injectPrompts', ['digest-hook', { content: 'DIGEST-INJECTION' }], { ownerRevision: 1 })).statusCode).toBe(200);
-    expect(JSON.stringify((await requestPreview(app)).json().compiledRequest)).toContain('DIGEST-INJECTION');
     const scriptAsset = repositories.extensionAssets.listByOwner('preset', integrationIds.chatPreset)
       .find((asset) => asset.kind === 'tavern_helper')!;
     expect(repositories.extensionAssets.update(scriptAsset.id, scriptAsset.revision, {
       payload: { ...(scriptAsset.payload as Record<string, unknown>), content: 'executable changed' },
     })).toMatchObject({ ok: true });
-    expect(JSON.stringify((await requestPreview(app)).json().compiledRequest)).not.toContain('DIGEST-INJECTION');
     expect(JSON.stringify([before.json(), edited.json(), variables.json()])).not.toContain('TOP-SECRET');
   });
 
@@ -145,40 +117,4 @@ describe('trusted TavernHelper runtime RPC', () => {
     expect(response.json()).toEqual({ error: 'stale_runtime' });
   });
 
-  it('routes generateRaw and /trigger through the configured global Provider without secrets', async () => {
-    const providerFixture = capturedProvider([
-      { type: 'delta', text: 'Nested answer' },
-      { type: 'completed', finishReason: 'stop' },
-    ]);
-    const { app, repositories, provider } = await createPromptIntegrationContext({ provider: providerFixture });
-    seedFullPromptGraph(repositories, 'chat');
-    repositories.extensionAssets.create({
-      id: '018f1000-0000-7000-8000-000000000302', ownerKind: 'preset', ownerId: integrationIds.chatPreset,
-      kind: 'tavern_helper', sourceKey: 'nested-generation', ordinal: 0, enabled: true,
-      payload: { id: 'nested-generation', type: 'script', name: 'Nested', enabled: true, content: '', button: {} },
-    });
-    const trust = (await app.inject({
-      method: 'POST', url: `/api/extension-trust/preset/${integrationIds.chatPreset}/grant`,
-    })).json();
-    const call = (method: string, args: unknown[]) => app.inject({
-      method: 'POST', url: `/api/conversations/${integrationIds.conversation}/extension-runtime/rpc`,
-      payload: {
-        ownerKind: 'preset', ownerId: integrationIds.chatPreset, ownerRevision: 0,
-        bundleDigest: trust.bundleDigest, scriptId: 'nested-generation', method, args,
-      },
-    });
-
-    const generated = await call('generateRaw', ['Nested global-provider request']);
-    const triggered = await call('triggerSlash', ['/trigger Nested slash request']);
-    expect((await call('createChatMessages', [[{ role: 'user', message: 'Custom-start selection' }]])).statusCode).toBe(200);
-    const triggeredExisting = await call('triggerSlash', ['/trigger']);
-
-    expect(generated.json()).toEqual({ value: 'Nested answer' });
-    expect(generated.statusCode).toBe(200);
-    expect(triggered.statusCode).toBe(200);
-    expect(triggeredExisting.statusCode).toBe(200);
-    expect(triggeredExisting.json()).toEqual({ value: 'Nested answer' });
-    expect(provider.chat).toHaveLength(3);
-    expect(JSON.stringify(generated.json())).not.toContain('TOP-SECRET');
-  });
 });

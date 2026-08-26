@@ -3,25 +3,16 @@ import type { Conversation } from '../../api/client.js';
 import { GenerationSessionController } from './generation-session.js';
 
 const mocks = vi.hoisted(() => ({
-  createCandidate: vi.fn(),
-  sealCandidate: vi.fn(),
   startGeneration: vi.fn(),
   stopGeneration: vi.fn(),
-  discardCandidate: vi.fn(),
-  trustedHooks: vi.fn(),
 }));
 
 vi.mock('../../api/client.js', () => ({
   api: {
-    createGenerationCandidate: mocks.createCandidate,
-    sealGenerationCandidate: mocks.sealCandidate,
     startGeneration: mocks.startGeneration,
     stopGeneration: mocks.stopGeneration,
-    discardGenerationCandidate: mocks.discardCandidate,
   },
 }));
-
-vi.mock('../extensions/TrustedPromptHooks.js', () => ({ runTrustedPromptHooks: mocks.trustedHooks }));
 
 vi.mock('../../api/generation-stream.js', () => ({
   readGenerationEvents: async function* () {
@@ -52,11 +43,6 @@ const sceneConversation = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.createCandidate.mockResolvedValue({
-    candidateId: 'candidate-1', kind: 'chat', messages: [], stop: [], spreset: {},
-  });
-  mocks.trustedHooks.mockResolvedValue({});
-  mocks.sealCandidate.mockResolvedValue({ snapshotId: 'snapshot-1' });
   mocks.startGeneration.mockResolvedValue({});
 });
 
@@ -69,10 +55,11 @@ describe('GenerationSessionController', () => {
 
     await expect(controller.start(conversation, { mode: 'normal', userText: 'go' })).resolves.toBe('accepted');
 
-    expect(mocks.createCandidate).toHaveBeenCalledOnce();
-    expect(mocks.trustedHooks).toHaveBeenCalledOnce();
-    expect(mocks.sealCandidate).toHaveBeenCalledOnce();
-    expect(mocks.startGeneration).toHaveBeenCalledOnce();
+    expect(mocks.startGeneration).toHaveBeenCalledWith(
+      conversation,
+      { mode: 'normal', userText: 'go' },
+      expect.any(AbortSignal),
+    );
     expect(refresh).toHaveBeenCalledWith(conversation.id);
     expect(events.filter((event) => event.type === 'text-delta')).toEqual([
       { type: 'text-delta', text: 'hello' },
@@ -88,15 +75,12 @@ describe('GenerationSessionController', () => {
     });
   });
 
-  it('uses the server-owned Scene recipe without sealing a client candidate', async () => {
+  it('uses the same server-owned Agent runtime for Scene saves', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
     const controller = new GenerationSessionController({ refreshAuthoritativeState: refresh });
 
     await expect(controller.start(sceneConversation, { mode: 'normal', userText: 'go' })).resolves.toBe('accepted');
 
-    expect(mocks.createCandidate).not.toHaveBeenCalled();
-    expect(mocks.trustedHooks).not.toHaveBeenCalled();
-    expect(mocks.sealCandidate).not.toHaveBeenCalled();
     expect(mocks.startGeneration).toHaveBeenCalledWith(
       sceneConversation,
       { mode: 'normal', userText: 'go' },

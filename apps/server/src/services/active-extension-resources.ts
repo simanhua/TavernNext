@@ -25,7 +25,7 @@ function resolvePrimaryPreset(repositories: Repositories): {
   const config = repositories.globalGenerationConfig.get();
   const provider = config.providerId === null ? undefined : repositories.providerProfiles.get(config.providerId);
   const mode = provider?.apiMode ?? null;
-  const presetId = mode === 'chat' ? config.chatPresetId : mode === 'text' ? config.textPresetId : null;
+  const presetId = mode === 'chat' ? config.chatPresetId : null;
   const selectedPreset = presetId === null ? undefined : repositories.presets.get(presetId);
   return {
     globalGenerationConfigRevision: config.revision,

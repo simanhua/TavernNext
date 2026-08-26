@@ -17,7 +17,6 @@ export interface SaveAgentRunInput {
   readonly conversationRevision: number;
   readonly mode: GenerationMode;
   readonly userText?: string;
-  readonly snapshotId?: string;
   readonly seed?: string | number;
   readonly messageIndex?: number;
   readonly reuseLastUser?: boolean;

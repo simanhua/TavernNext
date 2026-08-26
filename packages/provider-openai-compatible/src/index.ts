@@ -1,4 +1,4 @@
-export { createOpenAICompatibleClient, createPiProviderClient, listModels } from './client.js';
+export { createOpenAICompatibleClient, listModels } from './client.js';
 export { createPiAgentModelRuntime, type PiAgentModelRuntime } from './pi-agent-runtime.js';
 export { agentToolCallCapability, piProviderCatalog, type PiProviderCatalogEntry } from './provider-catalog.js';
 export { ProviderError } from './errors.js';
@@ -11,5 +11,4 @@ export type {
   PiProviderProfile,
   ProviderErrorCode,
   ProviderEvent,
-  TextRequest,
 } from './types.js';

@@ -35,7 +35,7 @@ export const TAVERN_HELPER_BRIDGED_METHODS = Object.freeze([
   'getVariables', 'getAllVariables', 'replaceVariables', 'updateVariablesWith', 'insertVariables', 'deleteVariable',
   'getTavernRegexes', 'replaceTavernRegexes',
   'getWorldbookNames', 'getWorldbook', 'getLorebookEntries', 'updateLorebookEntriesWith',
-  'substitudeMacros', 'injectPrompts', 'uninjectPrompts',
+  'substitudeMacros',
   'generate', 'generateRaw', 'triggerSlash',
 ] as const);
 export type TavernHelperBridgedMethod = typeof TAVERN_HELPER_BRIDGED_METHODS[number];

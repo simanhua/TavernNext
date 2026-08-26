@@ -8,7 +8,7 @@ import {
   type Model,
   type Usage,
 } from '@earendil-works/pi-ai';
-import type { OpenAICompatibleClient, PiAgentModelRuntime } from '@tavernnext/provider-openai-compatible';
+import type { PiAgentModelRuntime } from '@tavernnext/provider-openai-compatible';
 import { TokenizerId } from '@tavernnext/tokenizer-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -218,14 +218,6 @@ function hangingRuntime(release: Promise<void>): PiAgentModelRuntime {
   };
 }
 
-function mockClient(): OpenAICompatibleClient {
-  return {
-    listModels: async () => [],
-    streamChat: async function* () {},
-    streamText: async function* () {},
-  };
-}
-
 async function context(runtime: () => PiAgentModelRuntime) {
   const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-director-'));
   directories.push(directory);
@@ -303,6 +295,31 @@ describe('per-Save Pi Scene Director', () => {
       id: '018f0000-0000-7000-8000-000000000221', worldbookId: worldbook.id,
       keys: [], content: 'The archive must never burn.', enabled: true, constant: true, position: 0, order: 0,
     });
+    seeded.repositories.presets.create({
+      id: seeded.configuration.id, name: 'Legacy private owner', kind: 'chat', settings: {},
+    });
+    seeded.repositories.extensionAssets.create({
+      id: '018f0000-0000-7000-8000-000000000223', ownerKind: 'preset', ownerId: seeded.configuration.id,
+      kind: 'tavern_helper', sourceKey: 'legacy-hook', ordinal: 0, enabled: true,
+      payload: { id: 'legacy-hook', type: 'script', name: 'Legacy hook', enabled: true, content: '', button: {} },
+    });
+    const legacyTrust = (await seeded.app.inject({
+      method: 'POST', url: `/api/extension-trust/preset/${seeded.configuration.id}/grant`,
+    })).json() as { bundleDigest: string };
+    const ignoredLegacyInjection = 'LEGACY-PROMPT-INJECTION-MUST-BE-IGNORED'.repeat(10_000);
+    seeded.repositories.extensionStates.create({
+      id: '018f0000-0000-7000-8000-000000000222',
+      scope: 'conversation',
+      scopeId: ids.conversation,
+      value: {
+        runtimePromptInjections: {
+          legacy: {
+            ownerKind: 'preset', ownerId: seeded.configuration.id, bundleDigest: legacyTrust.bundleDigest,
+            value: { role: 'system', position: 'before', content: ignoredLegacyInjection },
+          },
+        },
+      },
+    });
     expect(seeded.repositories.saveAgentConfigurations.update(seeded.configuration.id, 0, {
       settings: {
         temperature: 0.4,
@@ -320,8 +337,19 @@ describe('per-Save Pi Scene Director', () => {
     }).ok).toBe(true);
 
     const first = await generate(seeded.app, 0);
+    expect(first.statusCode).toBe(200);
     expect(parse(first.payload).filter(({ event }) => event === 'delta').map(({ data }) => data.text).join(''))
       .toBe('First agent reply');
+    expect((await seeded.app.inject({
+      method: 'POST', url: `/api/conversations/${ids.conversation}/prompt-preview`, payload: {},
+    })).statusCode).toBe(404);
+    expect((await seeded.app.inject({
+      method: 'POST', url: `/api/conversations/${ids.conversation}/generation-candidates`, payload: {},
+    })).statusCode).toBe(404);
+    expect((await seeded.app.inject({
+      method: 'POST', url: `/api/conversations/${ids.conversation}/generations`,
+      payload: { conversationRevision: 1, mode: 'continue' },
+    })).statusCode).toBe(400);
     expect(first.payload).not.toContain('PRIVATE-CHAIN-OF-THOUGHT');
     expect(seeded.repositories.saveAgentConfigurations.update(seeded.configuration.id, 1, {
       settings: {
@@ -339,6 +367,7 @@ describe('per-Save Pi Scene Director', () => {
     expect(firstSystem).toContain('The archive must never burn.');
     expect(firstSystem).toContain(seeded.character.description);
     expect(firstSystem).toContain('Write in clipped sentences.');
+    expect(JSON.stringify(contexts[0])).not.toContain('LEGACY-PROMPT-INJECTION-MUST-BE-IGNORED');
     expect(firstSystem).not.toContain('Template style');
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
       'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
@@ -498,7 +527,7 @@ describe('per-Save Pi Scene Director', () => {
     const entered = deferred<void>();
     runtime = cancellableRuntime(entered);
     const cancelService = createGenerationService({
-      database: seeded.database, repositories: seeded.repositories, providerClientFactory: mockClient,
+      database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => runtime,
     });
     const controller = new AbortController();
@@ -516,7 +545,7 @@ describe('per-Save Pi Scene Director', () => {
 
     const release = deferred<void>();
     const timeoutService = createGenerationService({
-      database: seeded.database, repositories: seeded.repositories, providerClientFactory: mockClient,
+      database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => hangingRuntime(release.promise), sceneDirectorLimits: { timeoutMs: 20 },
     });
     const timed = await timeoutService.start({
@@ -534,7 +563,7 @@ describe('per-Save Pi Scene Director', () => {
     const preAbortContexts: Context[] = [];
     runtime = completedRuntime(['Must not run'], preAbortContexts);
     const preAbortService = createGenerationService({
-      database: seeded.database, repositories: seeded.repositories, providerClientFactory: mockClient,
+      database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => runtime,
     });
     const alreadyAborted = new AbortController();
@@ -548,50 +577,9 @@ describe('per-Save Pi Scene Director', () => {
     expect(preAbortEvents.at(-1)).toEqual({ type: 'aborted' });
     expect(preAbortContexts).toEqual([]);
 
-    const legacyCandidate = await createPromptSnapshotService({
-      database: seeded.database,
-      repositories: seeded.repositories,
-      tokenizerRuntime: unitTokenizerRuntime(),
-    }).createCandidate({
-      conversationId: ids.conversation,
-      conversationRevision: 6,
-      mode: 'normal',
-      userText: 'Legacy unbound snapshot',
-    });
-    const { snapshotId: _legacySnapshotId, ...candidatePayload } = legacyCandidate;
-    const legacyPayload = structuredClone(candidatePayload) as PromptSnapshotPayload;
-    delete legacyPayload.entityRevisions.saveAgentConfiguration;
-    legacyPayload.input = {
-      ...legacyPayload.input,
-      conversationRevision: 6,
-      userText: 'Legacy unbound snapshot',
-    };
-    const unboundSnapshots = {
-      createAndAccept: async () => ({
-        snapshotId: '018f0000-0000-7000-8000-000000000240',
-        payload: legacyPayload,
-        provider: seeded.repositories.providerProfiles.get(ids.provider)!,
-      }),
-      createCandidate: async () => { throw new Error('unused'); },
-      sealCandidate: async () => { throw new Error('unused'); },
-      createPreview: async () => { throw new Error('unused'); },
-      acceptExisting: async () => { throw new Error('unused'); },
-      commitDeferredSnapshot() {},
-      completeDeferredSnapshot() {},
-      releaseDeferredSnapshot() {},
-      commitTimedState() {},
-    } satisfies PromptSnapshotService;
-    const unboundService = createGenerationService({
-      database: seeded.database, repositories: seeded.repositories, providerClientFactory: mockClient,
-      piAgentRuntimeFactory: () => runtime, promptSnapshotService: unboundSnapshots,
-    });
-    await expect(unboundService.start({
-      conversationId: ids.conversation, conversationRevision: 6, mode: 'normal', userText: 'Legacy unbound snapshot',
-    })).resolves.toEqual({ ok: false, reason: 'snapshot_unsupported' });
-
     runtime = completedRuntime(['Must roll back']);
     const auditFailureService = createGenerationService({
-      database: seeded.database, repositories: seeded.repositories, providerClientFactory: mockClient,
+      database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => runtime,
     });
     const originalAgentRunUpdate = seeded.repositories.agentRuns.update;
@@ -623,7 +611,6 @@ describe('per-Save Pi Scene Director', () => {
     const overBudgetService = createGenerationService({
       database: seeded.database,
       repositories: seeded.repositories,
-      providerClientFactory: mockClient,
       piAgentRuntimeFactory: () => completedRuntime(['Must not run'], overBudgetContexts),
       tokenizerRuntime: unitTokenizerRuntime({
         countMessages: async (messages) => messages[0]?.content.includes('[1 PLATFORM CONTRACT')

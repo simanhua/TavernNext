@@ -3,7 +3,6 @@ import { roleplayDocumentPlainText } from '@tavernnext/domain';
 import type { TavernDatabase } from '../db/client.js';
 import { RelationshipLimitError, type Repositories } from '../db/repositories.js';
 import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
-import { createMvuRuntimeService } from '../services/mvu-runtime-service.js';
 import { registerCrudRoutes } from './crud.js';
 
 export function registerConversationRoutes(
@@ -12,7 +11,6 @@ export function registerConversationRoutes(
   repositories: Repositories,
   generations: SaveAgentRuntime,
 ): void {
-  const mvu = createMvuRuntimeService(repositories);
   registerCrudRoutes(app, '/api/conversations', repositories.conversations, (conversation) => {
     const { compatibility: ignoredCompatibility, ...safe } = conversation;
     void ignoredCompatibility;
@@ -20,7 +18,6 @@ export function registerConversationRoutes(
   }, (conversation) => generations.isConversationActive(conversation.id) ? 'generation_active' : undefined,
   (input) => database.transaction(() => {
     const conversation = repositories.conversations.createWithGreeting(input);
-    mvu.initializeGreetingVariants(conversation.id);
     return conversation;
   }),
   (id, revision) => database.transaction(() => {

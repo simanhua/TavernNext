@@ -38,7 +38,7 @@ async function testDatabase(label: string) {
 }
 
 describe('new conversation Character greetings', () => {
-  it('atomically seeds firstMessage and ordered alternates once for route creation and prompt history', async () => {
+  it('atomically seeds firstMessage and ordered alternates once for route creation and active selection', async () => {
     const { directory, database } = await testDatabase('greeting-route');
     const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
     repositories.characters.create({
@@ -95,13 +95,12 @@ describe('new conversation Character greetings', () => {
     });
     expect(switched.statusCode).toBe(200);
 
-    const preview = await app.inject({
-      method: 'POST', url: `/api/conversations/${ids.conversation}/prompt-preview`,
-      payload: { conversationRevision: 0, mode: 'normal', userText: 'Next turn' },
+    const selected = await app.inject({ method: 'GET', url: `/api/conversations/${ids.conversation}/messages` });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json().messages[0]).toMatchObject({
+      activeVariantId: alternateVariantId,
+      variants: expect.arrayContaining([expect.objectContaining({ id: alternateVariantId, content: 'Alternate one' })]),
     });
-    expect(preview.statusCode).toBe(201);
-    const assistantHistory = preview.json().messages.filter((message: { role: string }) => message.role === 'assistant');
-    expect(assistantHistory).toEqual([expect.objectContaining({ content: 'Alternate one' })]);
 
     expect((await app.inject({ method: 'POST', url: '/api/conversations', payload })).statusCode).toBe(400);
     const afterRetry = (await app.inject({ method: 'GET', url: `/api/conversations/${ids.conversation}/messages` })).json();
