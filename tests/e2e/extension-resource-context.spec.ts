@@ -26,7 +26,7 @@ test('Current Context follows the primary Preset and active Conversation Charact
   };
   await page.request.post('/api/providers', { data: {
     id: ids.provider, name: 'Context provider', baseUrl: `${stack.provider.baseUrl}/v1`,
-    model: 'mock-model', apiMode: 'chat', apiKey: 'local-test-key',
+    model: 'mock-model', apiMode: 'chat', toolCalls: true, apiKey: 'local-test-key',
   } });
   for (const [id, name] of [[ids.firstPreset, 'First preset'], [ids.secondPreset, 'Second preset']] as const) {
     await page.request.post('/api/presets', { data: { id, name, kind: 'chat', settings: { prompts: [], prompt_order: [] } } });

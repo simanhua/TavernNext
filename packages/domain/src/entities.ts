@@ -338,14 +338,29 @@ export const MessageVariantSchema = MutableEntitySchema.extend({
   diagnostics: z.array(SceneStateDiagnosticSchema).default([]),
 }).extend(WithCompatibilitySchema.shape);
 
-export const ProviderProfileSchema = MutableEntitySchema.extend({
+const ProviderProfileValueSchema = MutableEntitySchema.extend({
   name: z.string().min(1),
+  providerId: z.string().min(1),
+  modelId: z.string().min(1),
   baseUrl: z.string().url(),
+  customBaseUrl: z.string().url().optional(),
+  toolCalls: z.boolean(),
   model: z.string().min(1),
   secretRef: z.string().min(1).optional(),
   apiMode: z.enum(['chat', 'text']).default('chat'),
   headerSecretRefs: z.record(z.string(), z.string()).default({}),
 }).extend(WithCompatibilitySchema.shape);
+
+export const ProviderProfileSchema = z.preprocess((value) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  return {
+    ...record,
+    providerId: record.providerId ?? 'custom-openai-compatible',
+    modelId: record.modelId ?? record.model,
+    toolCalls: record.toolCalls ?? true,
+  };
+}, ProviderProfileValueSchema);
 
 export const ImportArtifactSchema = MutableEntitySchema.extend({
   kind: z.string().min(1),

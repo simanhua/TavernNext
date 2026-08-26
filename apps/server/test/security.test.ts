@@ -40,9 +40,9 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 const providerId = '018f0000-0000-7000-8000-000000001601';
 const providerSecret = (value: string): StoredProviderSecret => ({
-  providerId,
+  profileId: providerId,
   baseUrl: 'http://127.0.0.1:8080/v1',
-  value,
+  credential: { type: 'api_key', key: value },
 });
 
 class CaptureStream extends Writable {
@@ -70,6 +70,7 @@ describe('operational security', () => {
 
   it('redacts case-insensitive credentials, nested provider payloads, and cycles without mutating the source', () => {
     const apiKey = 'task-16-redaction-api-key';
+    const structuredKey = 'task-16-structured-credential-key';
     const customSecret = 'task-16-custom-header-value';
     const providerError = new Error(`provider echoed ${apiKey}`) as Error & { response?: unknown };
     providerError.response = {
@@ -85,8 +86,9 @@ describe('operational security', () => {
         Accept: 'application/json',
       },
       body: { profile: { apiKey }, harmless: 'retained' },
+      stored: { credential: { type: 'api_key', key: structuredKey } },
       providerError,
-      echoed: `upstream included ${customSecret}`,
+      echoed: `upstream included ${customSecret} and ${structuredKey}`,
     };
     source.self = source;
 
@@ -99,6 +101,7 @@ describe('operational security', () => {
 
     expect(serialized).not.toContain(apiKey);
     expect(serialized).not.toContain(customSecret);
+    expect(serialized).not.toContain(structuredKey);
     expect(serialized).toContain(REDACTED_LOG_VALUE);
     expect(serialized).toContain('retained');
     expect(serialized).toContain('[Circular]');
@@ -148,6 +151,34 @@ describe('operational security', () => {
       expect(lstatSync(directory).mode & 0o777).toBe(0o700);
     }
     expect(readFileSync(join(directory, SECRET_STORE_FILE), 'utf8')).not.toContain(failedValue);
+  });
+
+  it('reads legacy scalar credentials and publishes structured version 2 on the next write', async () => {
+    const directory = await temporaryDirectory('tavernnext-secret-upgrade-');
+    const initialized = createSecretStore(directory);
+    initialized.set('provider:legacy', providerSecret('temporary'));
+    writeFileSync(join(directory, SECRET_STORE_FILE), JSON.stringify({
+      version: 1,
+      entries: {
+        'provider:legacy': {
+          providerId,
+          baseUrl: 'http://127.0.0.1:8080/v1',
+          value: 'legacy-key',
+        },
+      },
+    }));
+
+    const upgraded = createSecretStore(directory);
+    expect(upgraded.get('provider:legacy')).toEqual(providerSecret('legacy-key'));
+    upgraded.set('provider:new', providerSecret('new-key'));
+
+    const published = JSON.parse(readFileSync(join(directory, SECRET_STORE_FILE), 'utf8')) as {
+      version: number;
+      entries: Record<string, unknown>;
+    };
+    expect(published.version).toBe(2);
+    expect(published.entries['provider:legacy']).toEqual(providerSecret('legacy-key'));
+    expect(JSON.stringify(published.entries)).not.toContain('"value"');
   });
 
   it('refuses linked secret files and linked data directories without following them', async () => {

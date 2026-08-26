@@ -587,6 +587,7 @@ export function createGenerationService(options: {
         const accepted = input.snapshotId === undefined
           ? await promptSnapshots.createAndAccept(input, generationId, scenePromptContext)
           : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
+        if (!accepted.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
         const prepared = preparedRequest(
           generationId,
           accepted.provider,

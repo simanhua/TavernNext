@@ -13,7 +13,7 @@ import { upgradeInstalledOfficialSceneRuntime } from '../src/scenes/official-sce
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
-describe('schema 18 Scene migration', () => {
+describe('schema 18 and 19 Scene migrations', () => {
   it('preserves Persona and Provider while clearing the legacy asset workspace', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-migration-'));
     directories.push(directory);
@@ -30,7 +30,7 @@ describe('schema 18 Scene migration', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(18);
+    expect(CURRENT_SCHEMA_VERSION).toBe(19);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
     expect(repositories.characters.list()).toEqual([]);
@@ -106,7 +106,7 @@ describe('schema 18 Scene migration', () => {
     database.close();
   }, 30_000);
 
-  it('backfills the current Scene value as the base state for schema 18', async () => {
+  it('does not retain the schema 18 Scene state after the schema 19 Save reset', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-state-kernel-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -134,9 +134,8 @@ describe('schema 18 Scene migration', () => {
 
     migrateDatabase(database);
 
-    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)).toMatchObject({
-      baseValue: { points: 7 }, headTransitionId: null, value: { points: 7 },
-    });
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)).toBeUndefined();
+    expect(repositories.conversations.get(conversation.id)).toBeUndefined();
     expect(repositories.sceneStateTransitions.listByConversationId(conversation.id)).toEqual([]);
     database.close();
   });

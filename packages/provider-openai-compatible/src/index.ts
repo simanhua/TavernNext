@@ -1,4 +1,5 @@
-export { createOpenAICompatibleClient, listModels } from './client.js';
+export { createOpenAICompatibleClient, createPiProviderClient, listModels } from './client.js';
+export { agentToolCallCapability, piProviderCatalog, type PiProviderCatalogEntry } from './provider-catalog.js';
 export { ProviderError } from './errors.js';
 export type {
   ChatMessage,
@@ -6,6 +7,7 @@ export type {
   ModelInfo,
   OpenAICompatibleClient,
   OpenAICompatibleProfile,
+  PiProviderProfile,
   ProviderErrorCode,
   ProviderEvent,
   TextRequest,

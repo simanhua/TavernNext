@@ -17,9 +17,9 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   await page.goto('/settings');
   await page.getByLabel('Display name').fill('Local Mock');
   await page.getByLabel('Base URL').fill(`${stack.provider.baseUrl}/v1`);
-  await page.getByLabel('Model').fill('mock-model');
+  await page.getByLabel('Model', { exact: true }).fill('mock-model');
+  await page.getByLabel('Model supports tool calls').check();
   await page.getByLabel('API key').fill('scene-e2e-key');
-  await page.locator('select[name="apiMode"]').selectOption('chat');
   await page.getByRole('button', { name: 'Save connection' }).click();
   await expect(page.getByRole('status')).toContainText('Connection saved');
   await page.getByLabel('Active Provider').selectOption({ label: 'Local Mock' });

@@ -153,7 +153,7 @@ describe('chat UI API bindings', () => {
       method: 'PATCH', url: `/api/providers/${ids.provider}`,
       payload: { revision: 0, patch: { model: 'mock-updated', apiKey: rotatedApiKey } },
     });
-    expect(updatedProvider.json()).toMatchObject({ revision: 1, model: 'mock-updated', hasApiKey: true });
+    expect(updatedProvider.json()).toMatchObject({ revision: 1, modelId: 'mock-updated', hasApiKey: true });
     expect(updatedProvider.payload).not.toContain(rotatedApiKey);
     expect(updatedProvider.json()).not.toHaveProperty('secretRef');
     const metadataOnlyUpdate = await app.inject({

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { ProviderError, createOpenAICompatibleClient } from '../src/index.js';
+import {
+  ProviderError,
+  createOpenAICompatibleClient,
+  createPiProviderClient,
+  piProviderCatalog,
+} from '../src/index.js';
 import { beginSse, type MockServer, sendJson, startMockServer } from './mock-server.js';
 
 const servers: MockServer[] = [];
@@ -25,6 +30,48 @@ async function collect<T>(events: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe('OpenAI-compatible provider client', () => {
+  it('dispatches catalog models through their native Pi Provider transport', async () => {
+    const anthropic = piProviderCatalog().find((provider) => provider.id === 'anthropic')!;
+    const model = anthropic.models.find((candidate) => candidate.toolCalls)!;
+    let requestUrl = '';
+    let requestHeaders = new Headers();
+    const native = createPiProviderClient({
+      providerId: anthropic.id,
+      modelId: model.id,
+      baseUrl: model.baseUrl,
+      apiKey: 'native-anthropic-key',
+    }, {
+      fetch: async (input, init) => {
+        requestUrl = String(input);
+        requestHeaders = new Headers(init?.headers);
+        return new Response(JSON.stringify({ type: 'error', error: { message: 'invalid credential' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+
+    await expect(collect(native.streamChat({
+      model: model.id,
+      messages: [{ role: 'user', content: 'Hello' }],
+    }))).rejects.toMatchObject({ code: 'auth', status: 401 });
+    expect(requestUrl).toContain('api.anthropic.com/v1/messages');
+    expect(requestUrl).not.toContain('chat/completions');
+    expect(requestHeaders.get('x-api-key')).toBe('native-anthropic-key');
+  });
+
+  it('refuses to send a bound credential after Pi catalog endpoint drift', () => {
+    const anthropic = piProviderCatalog().find((provider) => provider.id === 'anthropic')!;
+    const model = anthropic.models.find((candidate) => candidate.toolCalls)!;
+
+    expect(() => createPiProviderClient({
+      providerId: anthropic.id,
+      modelId: model.id,
+      baseUrl: 'https://catalog-drift.invalid',
+      apiKey: 'must-not-be-sent',
+    })).toThrow(expect.objectContaining({ code: 'auth' }));
+  });
+
   it('normalizes a trailing /v1/ URL, lists models, and sends only profile credentials', async () => {
     const server = await mock((request, response) => {
       expect(request.method).toBe('GET');

@@ -32,9 +32,9 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await page.goto('/connection');
   await page.getByLabel('Display name').fill('Local Mock');
   await page.getByLabel('Base URL').fill(`${stack.provider.baseUrl}/v1`);
-  await page.getByLabel('Model').fill('mock-model');
+  await page.getByLabel('Model', { exact: true }).fill('mock-model');
+  await page.getByLabel('Model supports tool calls').check();
   await page.getByLabel('API key').fill('e2e-local-key');
-  await page.locator('select[name="apiMode"]').selectOption('chat');
   await page.getByRole('button', { name: 'Save connection' }).click();
   await expect(page.getByRole('status')).toContainText('Connection saved with an API key');
 

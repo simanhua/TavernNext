@@ -335,10 +335,24 @@ export interface ProviderProfileView {
   createdAt: string;
   updatedAt: string;
   name: string;
+  providerId: string;
+  modelId: string;
   baseUrl: string;
-  model: string;
-  apiMode: 'chat' | 'text';
+  customBaseUrl?: string;
+  toolCalls: boolean;
   hasApiKey: boolean;
+}
+
+export interface ProviderCatalogEntryView {
+  id: string;
+  name: string;
+  authentication: 'api_key' | 'oauth' | 'subscription' | 'composite';
+  available: boolean;
+  customBaseUrl: boolean;
+  baseUrl?: string;
+  credentialLabel?: string;
+  unavailableReason?: string;
+  models: Array<{ id: string; name: string; baseUrl: string; toolCalls: boolean }>;
 }
 
 export interface ProviderModelView {
@@ -631,6 +645,7 @@ export const api = {
   deletePersona: (id: string, revision: number) => request<void>(`/api/personas/${id}?revision=${revision}`, { method: 'DELETE' }),
   uploadPersonaAvatar: (id: string, revision: number, file: File) => uploadAvatar<PersonaView>('personas', id, revision, file),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
+  listProviderCatalog: () => request<ProviderCatalogEntryView[]>('/api/providers/catalog'),
   getGlobalGenerationConfig: () => request<GlobalGenerationConfigView>('/api/settings/generation'),
   saveGlobalGenerationConfig: (revision: number, patch: GlobalGenerationConfigPatch) => request<GlobalGenerationConfigView>(
     '/api/settings/generation', { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
@@ -741,9 +756,10 @@ export const api = {
     id?: string;
     revision?: number;
     name: string;
-    baseUrl: string;
-    model: string;
-    apiMode: 'chat' | 'text';
+    providerId: string;
+    modelId: string;
+    customBaseUrl?: string;
+    toolCalls?: boolean;
     apiKey?: string;
   }) => {
     const { id, revision, ...fields } = input;

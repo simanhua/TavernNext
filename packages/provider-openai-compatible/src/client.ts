@@ -1,5 +1,7 @@
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
+import { builtinModels } from '@earendil-works/pi-ai/providers/all';
 import type {
+  Api,
   AssistantMessage,
   Context,
   Message,
@@ -7,8 +9,17 @@ import type {
   Usage,
 } from '@earendil-works/pi-ai';
 import { abortedError, isProviderError, ProviderError } from './errors.js';
+import { agentToolCallCapability } from './provider-catalog.js';
 import { parseSse } from './sse.js';
-import type { ChatRequest, ModelInfo, OpenAICompatibleClient, OpenAICompatibleProfile, ProviderEvent, TextRequest } from './types.js';
+import type {
+  ChatRequest,
+  ModelInfo,
+  OpenAICompatibleClient,
+  OpenAICompatibleProfile,
+  PiProviderProfile,
+  ProviderEvent,
+  TextRequest,
+} from './types.js';
 
 type CompletionRequest = ChatRequest | TextRequest;
 
@@ -194,7 +205,7 @@ function piModel(profile: OpenAICompatibleProfile, request: ChatRequest): Model<
   };
 }
 
-function assistantHistory(content: string, model: Model<'openai-completions'>): AssistantMessage {
+function assistantHistory(content: string, model: Model<Api>): AssistantMessage {
   return {
     role: 'assistant',
     content: [{ type: 'text', text: content }],
@@ -207,7 +218,7 @@ function assistantHistory(content: string, model: Model<'openai-completions'>): 
   };
 }
 
-function piContext(request: ChatRequest, model: Model<'openai-completions'>): Context {
+function piContext(request: ChatRequest, model: Model<Api>): Context {
   const systemPrompt = request.messages
     .filter((message) => message.role === 'system')
     .map((message) => message.content)
@@ -365,6 +376,67 @@ export function createOpenAICompatibleClient(profile: OpenAICompatibleProfile): 
     },
     streamChat: (request, signal) => streamChatWithPi(profile, request, signal),
     streamText: (request, signal) => streamCompletion(profile, request, signal, false),
+  };
+}
+
+export function createPiProviderClient(
+  profile: PiProviderProfile,
+  dependencies: { fetch?: typeof fetch } = {},
+): OpenAICompatibleClient {
+  const models = builtinModels();
+  const provider = models.getProvider(profile.providerId);
+  const model = models.getModel(profile.providerId, profile.modelId);
+  if (provider === undefined || model === undefined || !agentToolCallCapability(model.api)) {
+    throw new ProviderError('protocol');
+  }
+  if (normalizeBaseUrl(model.baseUrl) !== normalizeBaseUrl(profile.baseUrl)) {
+    throw new ProviderError('auth');
+  }
+  return {
+    async listModels(): Promise<ModelInfo[]> {
+      return provider.getModels().map((candidate) => ({ id: candidate.id }));
+    },
+    async *streamChat(request, signal): AsyncIterable<ProviderEvent> {
+      if (signal?.aborted) throw abortedError();
+      let responseStatus: number | undefined;
+      let responseHeaders: Record<string, string> = {};
+      const events = models.stream(model, piContext(request, model), {
+        signal,
+        apiKey: profile.apiKey,
+        headers: profile.headers,
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        maxRetries: 0,
+        ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
+        ...(request.stop === undefined ? {} : { samplingParams: { stop: request.stop } }),
+        onResponse(response) {
+          responseStatus = response.status;
+          responseHeaders = response.headers;
+        },
+      });
+      for await (const event of events) {
+        if (event.type === 'thinking_delta' && event.delta !== '') {
+          yield { type: 'reasoning_delta', text: event.delta };
+        } else if (event.type === 'text_delta' && event.delta !== '') {
+          yield { type: 'delta', text: event.delta };
+        } else if (event.type === 'done') {
+          const usage = event.message.usage;
+          if (usage.input !== 0 || usage.output !== 0 || usage.cacheRead !== 0 || usage.cacheWrite !== 0) {
+            yield {
+              type: 'usage',
+              inputTokens: usage.input + usage.cacheRead + usage.cacheWrite,
+              outputTokens: usage.output,
+            };
+          }
+          yield { type: 'completed', finishReason: event.message.rawStopReason ?? event.reason };
+        } else if (event.type === 'error') {
+          throw piFailure(responseStatus, responseHeaders, event.error.errorMessage ?? '', signal);
+        }
+      }
+    },
+    async *streamText(): AsyncIterable<ProviderEvent> {
+      throw new ProviderError('protocol');
+    },
   };
 }
 

@@ -8,16 +8,11 @@ export function useGlobalGenerationConfiguration() {
     queryKey: ['global-generation-config'], queryFn: api.getGlobalGenerationConfig,
   });
   const provider = providers.data?.find((candidate) => candidate.id === configuration.data?.providerId);
-  const primaryId = provider?.apiMode === 'text' ? configuration.data?.textPresetId : configuration.data?.chatPresetId;
-  const primaryKind = provider?.apiMode === 'text' ? 'text' : 'chat';
-  const primaryValid = presets.data?.some((preset) => preset.id === primaryId && preset.kind === primaryKind) === true;
-  const companionsValid = provider?.apiMode !== 'text' || (
-    presets.data?.some((preset) => preset.id === configuration.data?.contextPresetId && preset.kind === 'context') === true
-    && presets.data?.some((preset) => preset.id === configuration.data?.instructPresetId && preset.kind === 'instruct') === true
-    && presets.data?.some((preset) => preset.id === configuration.data?.systemPresetId && preset.kind === 'system') === true
-  );
+  const primaryValid = presets.data?.some((preset) => (
+    preset.id === configuration.data?.chatPresetId && preset.kind === 'chat'
+  )) === true;
   return {
-    ready: provider !== undefined && primaryValid && companionsValid,
+    ready: provider !== undefined && primaryValid,
     isLoading: providers.isLoading || presets.isLoading || configuration.isLoading,
     error: providers.error ?? presets.error ?? configuration.error,
   };

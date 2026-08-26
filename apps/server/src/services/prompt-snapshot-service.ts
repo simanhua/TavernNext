@@ -172,6 +172,7 @@ export type PromptSnapshotErrorCode =
   | 'unsupported_mode'
   | 'not_found'
   | 'provider_not_configured'
+  | 'model_not_agent_capable'
   | 'preset_not_configured'
   | 'invalid_preset'
   | 'revision_conflict'

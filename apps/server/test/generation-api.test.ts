@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChatRequest, OpenAICompatibleClient } from '@tavernnext/provider-openai-compatible';
-import { ProviderError } from '@tavernnext/provider-openai-compatible';
+import { ProviderError, piProviderCatalog } from '@tavernnext/provider-openai-compatible';
 import { TokenizerId } from '@tavernnext/tokenizer-engine';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -203,6 +203,71 @@ describe('resource CRUD API', () => {
 });
 
 describe('generation API', () => {
+  it('rejects an active profile that loses tool-call capability before Provider execution', async () => {
+    let providerCalls = 0;
+    const client = mockClient(async function* () {
+      providerCalls += 1;
+      yield { type: 'delta', text: 'must not run' };
+    });
+    const { app, repositories } = await createTestContext(client);
+    seed(repositories);
+    expect(repositories.providerProfiles.update(ids.provider, 0, { toolCalls: false }).ok).toBe(true);
+
+    const response = await generate(app);
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({ error: 'model_not_agent_capable' });
+    expect(providerCalls).toBe(0);
+    expect(repositories.messages.listByConversationId(ids.conversation)).toEqual([
+      expect.objectContaining({ role: 'user', content: 'Hello' }),
+    ]);
+  });
+
+  it('uses the selected Pi Provider native transport for a non-OpenAI catalog model', async () => {
+    const anthropic = piProviderCatalog().find((provider) => provider.id === 'anthropic')!;
+    const model = anthropic.models.find((candidate) => candidate.toolCalls)!;
+    let providerUrl = '';
+    vi.stubGlobal('fetch', async (input: string | URL | Request) => {
+      providerUrl = String(input);
+      const frames = [
+        ['message_start', { type: 'message_start', message: {
+          id: 'msg_native', type: 'message', role: 'assistant', model: model.id, content: [],
+          stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 },
+        } }],
+        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Native reply' } }],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+        ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 2 } }],
+        ['message_stop', { type: 'message_stop' }],
+      ];
+      return new Response(frames.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    const { app, repositories } = await createTestContext(undefined, {
+      providerSecrets: {
+        'mock-secret': { providerId: ids.provider, baseUrl: model.baseUrl, value: 'native-key' },
+      },
+    });
+    seed(repositories);
+    expect(repositories.providerProfiles.update(ids.provider, 0, {
+      providerId: anthropic.id,
+      modelId: model.id,
+      baseUrl: model.baseUrl,
+      model: model.id,
+      toolCalls: true,
+    }).ok).toBe(true);
+
+    const response = await generate(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(providerUrl).toContain('api.anthropic.com/v1/messages');
+    expect(providerUrl).not.toContain('chat/completions');
+    expect(parseSse(response.payload).filter(({ event }) => event === 'delta').map(({ data }) => data.text).join(''))
+      .toBe('Native reply');
+  });
+
   it('streams a complete role-chat turn and persists its transactional snapshot and messages', async () => {
     const requests: ChatRequest[] = [];
     const client = mockClient(async function* (request) {

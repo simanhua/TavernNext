@@ -52,6 +52,9 @@ export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repos
     const candidate = { ...current, ...patch };
     const provider = candidate.providerId === null ? undefined : repositories.providerProfiles.get(candidate.providerId);
     if (candidate.providerId !== null && provider === undefined) return reply.status(400).send({ error: 'invalid_selection' });
+    if (provider !== undefined && !provider.toolCalls) {
+      return reply.status(400).send({ error: 'model_not_agent_capable' });
+    }
     for (const [key, kind] of Object.entries(presetKinds) as Array<[
       keyof typeof presetKinds,
       z.infer<typeof PresetKindSchema>,

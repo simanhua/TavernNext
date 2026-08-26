@@ -122,6 +122,8 @@ type MutableEntity = {
 };
 type DefaultedField =
   | 'enabled' | 'position' | 'order' | 'settings' | 'worldbookIds' | 'apiMode' | 'headerSecretRefs'
+  | 'providerId' | 'modelId'
+  | 'toolCalls'
   | 'examples' | 'systemPrompt' | 'postHistoryInstructions' | 'creatorNotes' | 'creator' | 'characterVersion'
   | 'depthPrompt' | 'authorNote' | 'authorNotePosition' | 'authorNoteDepth' | 'authorNoteRole'
   | 'description' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning' | 'extensions'

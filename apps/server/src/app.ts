@@ -1,5 +1,9 @@
 import multipart from '@fastify/multipart';
-import { createOpenAICompatibleClient, type OpenAICompatibleProfile } from '@tavernnext/provider-openai-compatible';
+import {
+  createOpenAICompatibleClient,
+  createPiProviderClient,
+  type OpenAICompatibleProfile,
+} from '@tavernnext/provider-openai-compatible';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import { existsSync } from 'node:fs';
@@ -229,14 +233,19 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const providerSecrets = options.providerSecrets ?? loadProviderSecrets();
   for (const [secretRef, secret] of Object.entries(providerSecrets)) {
     const existing = secretStore.get(secretRef);
-    if (existing?.providerId === secret.providerId && existing.baseUrl === secret.baseUrl && existing.value === secret.value) continue;
-    secretStore.set(secretRef, secret);
+    if (existing?.profileId === secret.providerId && existing.baseUrl === secret.baseUrl
+      && existing.credential.type === 'api_key' && existing.credential.key === secret.value) continue;
+    secretStore.set(secretRef, {
+      profileId: secret.providerId,
+      baseUrl: secret.baseUrl,
+      credential: { type: 'api_key', key: secret.value },
+    });
   }
   const resolveSecret = (profileId: string, baseUrl: string, secretRef: string): string | undefined => {
     const secret = secretStore.get(secretRef);
     if (secret === undefined) return undefined;
-    if (secret.providerId !== profileId || normalizedBaseUrl(secret.baseUrl) !== normalizedBaseUrl(baseUrl)) return undefined;
-    return secret.value;
+    if (secret.profileId !== profileId || normalizedBaseUrl(secret.baseUrl) !== normalizedBaseUrl(baseUrl)) return undefined;
+    return secret.credential.type === 'api_key' ? secret.credential.key : undefined;
   };
   const providerClientFactory: ProviderClientFactory = options.providerClientFactory ?? ((profile) => {
     const headers = Object.fromEntries(
@@ -245,9 +254,22 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
         return value === undefined ? [] : [[name, value]];
       }),
     );
+    const apiKey = profile.secretRef === undefined
+      ? undefined
+      : resolveSecret(profile.id, profile.baseUrl, profile.secretRef);
+    if (profile.providerId !== 'custom-openai-compatible') {
+      if (apiKey === undefined) throw new Error('Provider credential is unavailable.');
+      return createPiProviderClient({
+        providerId: profile.providerId,
+        modelId: profile.modelId,
+        baseUrl: profile.baseUrl,
+        apiKey,
+        headers,
+      });
+    }
     return createOpenAICompatibleClient({
       baseUrl: profile.baseUrl,
-      ...(profile.secretRef === undefined ? {} : { apiKey: resolveSecret(profile.id, profile.baseUrl, profile.secretRef) }),
+      ...(apiKey === undefined ? {} : { apiKey }),
       headers,
     });
   });
@@ -347,7 +369,11 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     put(profileId, baseUrl, apiKey) {
       const secretRef = `browser:${profileId}`;
       const previous = secretStore.get(secretRef);
-      secretStore.set(secretRef, { providerId: profileId, baseUrl, value: apiKey });
+      secretStore.set(secretRef, {
+        profileId,
+        baseUrl,
+        credential: { type: 'api_key', key: apiKey },
+      });
       return {
         secretRef,
         rollback() {
