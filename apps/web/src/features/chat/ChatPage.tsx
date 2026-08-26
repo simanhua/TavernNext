@@ -8,7 +8,6 @@ import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
 import { AgentRunInspector } from './AgentRunInspector.js';
-import { PromptPreviewDialog } from './PromptPreviewDialog.js';
 import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
 import { ChatFormatSettings, chatFormatStyle, useChatFormat } from './ChatFormatSettings.js';
@@ -260,7 +259,6 @@ export function ChatPage() {
                 onClick={() => { void createSelectedConversation().catch(() => undefined); }}
               >{t('Start chat')}</button>
             ) : null}
-            {detail.data?.conversation === undefined ? null : <PromptPreviewDialog conversation={detail.data.conversation} userText={draft} />}
             {detail.data?.conversation === undefined ? null : (
               <button
                 type="button"

@@ -148,10 +148,9 @@ export interface SceneSdkV2 {
     stop(): Promise<void>;
     edit(messageId: string, content: string): Promise<Message>;
     delete(messageId: string): Promise<void>;
-    switchVariant(messageId: string, variantId: string): Promise<Message>;
-    continue(messageId: string): Promise<unknown>;
-    regenerate(messageId: string): Promise<unknown>;
-    swipe(messageId: string): Promise<unknown>;
+    switchVariant(variantId: string): Promise<Message>;
+    regenerate(): Promise<unknown>;
+    swipe(): Promise<unknown>;
   };
   state: {
     get(): Promise<ConversationSceneState>;

@@ -95,6 +95,9 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   await firstScene.getByPlaceholder('你准备做什么？').fill('继续探索皇城');
   await firstScene.getByRole('button', { name: '发送' }).click();
   await expect(firstScene.getByText('判定完成后，艾琳继续向皇城深处前进。')).toBeVisible({ timeout: 30_000 });
+  await expect(firstScene.getByRole('button', { name: '重生成' })).toHaveCount(1);
+  await expect(firstScene.getByRole('button', { name: '换一个回复' })).toHaveCount(1);
+  await expect(firstScene.getByRole('button', { name: '续写' })).toHaveCount(0);
 
   const [secondScene] = await Promise.all([
     page.waitForEvent('popup'),

@@ -25,7 +25,7 @@ interface MessageListProps {
   generationTarget: ActiveGenerationTarget | null;
   controlsDisabled: boolean;
   generationDisabled: boolean;
-  onGenerate(mode: 'swipe' | 'regenerate' | 'continue', message: MessageView, baseContent: string): void;
+  onGenerate(mode: 'swipe' | 'regenerate', message: MessageView, baseContent: string): void;
   macroValues?: Readonly<Record<string, string>>;
 }
 
@@ -148,7 +148,7 @@ export function MessageList({
           : undefined;
         const baseContent = authoritativeContent(message);
         const content = generationTarget?.messageId === message.id && streamedText !== ''
-          ? generationTarget.mode === 'continue' ? generationTarget.baseContent + streamedText : streamedText
+          ? streamedText
           : baseContent;
         const blocks = message.role === 'assistant' && generationTarget?.messageId !== message.id
           ? roleplayBlocks(content, activeVariant?.document)
@@ -209,7 +209,7 @@ export function MessageList({
                     : t('No final response was generated.')}</p>
                 ) : <div className="mes_text">{message.role !== 'assistant'
                   ? <MarkdownContent content={content} />
-                  : generationTarget?.messageId === message.id && generationTarget.mode !== 'continue'
+                  : generationTarget?.messageId === message.id
                     ? renderStreaming(streamedText)
                     : <>{blocks.map((block, blockIndex) => block.type === 'scene-view' ? (
                     <SceneViewBlock key={block.viewId} block={block} />
@@ -230,9 +230,7 @@ export function MessageList({
                           hasReasoning: reasoning !== '',
                         }
                       : undefined}
-                  />)}{generationTarget?.messageId === message.id && generationTarget.mode === 'continue'
-                    ? renderStreaming(streamedText)
-                    : null}</>}</div>}
+                  />)}</>}</div>}
               </>
             )}
             {message.id === lastAssistantId ? (

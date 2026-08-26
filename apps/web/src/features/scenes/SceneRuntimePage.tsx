@@ -172,9 +172,14 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       }
       throw asSdkError(error);
     };
-    const generate = async (messageId: string, generationMode: 'continue' | 'regenerate' | 'swipe') => {
+    const tailAssistant = () => {
       const current = requireWorkspace();
-      const message = findMessage(messageId);
+      const message = current.messages.at(-1);
+      if (message?.role !== 'assistant') throw new SceneSdkError('tail_assistant_required', 409);
+      return { current, message };
+    };
+    const generate = async (generationMode: 'regenerate' | 'swipe') => {
+      const { current, message } = tailAssistant();
       const result = await latest.current.generation.start(current.conversation, {
         mode: generationMode,
         target: message,
@@ -241,13 +246,12 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
           try { await api.deleteMessage(findMessage(messageId)); await refresh(); }
           catch (error) { return refreshAfterConflict(error); }
         },
-        switchVariant: async (messageId, variantId) => {
-          try { const result = await api.switchActiveVariant(findMessage(messageId), variantId); await refresh(); return result; }
+        switchVariant: async (variantId) => {
+          try { const result = await api.switchActiveVariant(tailAssistant().message, variantId); await refresh(); return result; }
           catch (error) { return refreshAfterConflict(error); }
         },
-        continue: (messageId) => generate(messageId, 'continue'),
-        regenerate: (messageId) => generate(messageId, 'regenerate'),
-        swipe: (messageId) => generate(messageId, 'swipe'),
+        regenerate: () => generate('regenerate'),
+        swipe: () => generate('swipe'),
       },
       state: {
         get: async () => {

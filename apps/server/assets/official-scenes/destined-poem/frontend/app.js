@@ -234,7 +234,8 @@ async function renderWorkspace() {
   if (activeTab === 'chat') {
     area.innerHTML = `<div class="panel chat"><div class="messages">${detail.messages.map((message) => {
       const diagnostics = activeDiagnostics(message);
-      return `<article class="message ${message.role}"><div class="message-body">${messageMarkup(message)}</div>${diagnosticMarkup(diagnostics, message.id)}<menu><button data-op="edit" data-id="${message.id}">编辑</button><button data-op="delete" data-id="${message.id}">删除</button>${message.role === 'assistant' ? `<button data-op="continue" data-id="${message.id}">续写</button><button data-op="regenerate" data-id="${message.id}">重生成</button><button data-op="swipe" data-id="${message.id}">换一个回复</button>` : ''}</menu></article>`;
+      const tailAssistant = message.role === 'assistant' && message === detail.messages.at(-1);
+      return `<article class="message ${message.role}"><div class="message-body">${messageMarkup(message)}</div>${diagnosticMarkup(diagnostics, message.id)}<menu><button data-op="edit" data-id="${message.id}">编辑</button><button data-op="delete" data-id="${message.id}">删除</button>${tailAssistant ? `<button data-op="regenerate" data-id="${message.id}">重生成</button><button data-op="swipe" data-id="${message.id}">换一个回复</button>` : ''}</menu></article>`;
     }).join('')}</div><div class="composer-wrap"><div class="composer"><textarea id="draft" placeholder="你准备做什么？"></textarea><button class="action primary" id="send">发送</button><button class="action" id="stop">停止</button></div><div id="generation-status" class="generation-status"></div></div></div>`;
     bindActionInfoPanels(area);
     document.querySelectorAll('[data-diagnostic]').forEach((button) => { button.onclick = () => {
@@ -264,7 +265,7 @@ async function renderWorkspace() {
           if (next === null) return;
           await request('messages.edit', [id, next]);
         } else if (op === 'delete') await request('messages.delete', [id]);
-        else await request(`messages.${op}`, [id]);
+        else await request(`messages.${op}`);
         await renderWorkspace();
       } catch (error) { updateGeneration({ status: 'idle', error: error.message || String(error) }); }
     }; });

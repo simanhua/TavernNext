@@ -4,7 +4,7 @@ import { api } from '../../api/client.js';
 import { readGenerationEvents } from '../../api/generation-stream.js';
 import { runTrustedPromptHooks } from '../extensions/TrustedPromptHooks.js';
 
-type NonNormalMode = 'swipe' | 'regenerate' | 'continue';
+type NonNormalMode = 'swipe' | 'regenerate';
 
 export type GenerationStartInput =
   | { mode: 'normal'; userText: string }

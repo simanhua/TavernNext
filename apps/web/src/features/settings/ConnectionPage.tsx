@@ -58,6 +58,7 @@ export function ConnectionPage() {
   const selectedCatalogId = watch('providerId');
   const selectedCatalog = catalog.data?.find((provider) => provider.id === selectedCatalogId);
   const customEndpoint = selectedCatalog?.customBaseUrl ?? selectedCatalogId === 'custom-openai-compatible';
+  const providerActionable = selectedCatalog?.available !== false;
 
   useEffect(() => {
     if (providers.data === undefined) return;
@@ -207,16 +208,19 @@ export function ConnectionPage() {
             <p key={provider.id}><strong>{provider.name}</strong>: {t(provider.unavailableReason ?? 'This Provider is unavailable.')}</p>
           ))}
         </section>
+        {!providerActionable ? (
+          <p role="status">{t('This Provider is documentation-only and cannot be configured in TavernNext.')}</p>
+        ) : null}
         {customEndpoint ? (
           <>
-            <label>{t('Model')}<input list="detected-provider-models" {...register('modelId')} /></label>
-            <label>Base URL<input type="url" {...register('customBaseUrl')} /></label>
-            <label><input type="checkbox" {...register('toolCalls')} />{t('Model supports tool calls')}</label>
+            <label>{t('Model')}<input disabled={!providerActionable} list="detected-provider-models" {...register('modelId')} /></label>
+            <label>Base URL<input disabled={!providerActionable} type="url" {...register('customBaseUrl')} /></label>
+            <label><input disabled={!providerActionable} type="checkbox" {...register('toolCalls')} />{t('Model supports tool calls')}</label>
           </>
         ) : (
           <label>
             {t('Model')}
-            <select {...register('modelId')}>
+            <select disabled={!providerActionable} {...register('modelId')}>
               {(selectedCatalog?.models ?? []).filter((model) => model.toolCalls).map((model) => (
                 <option value={model.id} key={model.id}>{model.name}</option>
               ))}
@@ -226,18 +230,18 @@ export function ConnectionPage() {
         <datalist id="detected-provider-models">{detectedModels.map((model) => <option value={model.id} key={model.id} />)}</datalist>
         <label>
           {t(selectedCatalog?.credentialLabel ?? 'API key')}
-          <input type="password" aria-label={t('API key')} autoComplete="new-password" placeholder={current?.hasApiKey ? t('Saved key (leave blank to keep)') : ''} {...register('apiKey')} />
+          <input disabled={!providerActionable} type="password" aria-label={t('API key')} autoComplete="new-password" placeholder={current?.hasApiKey ? t('Saved key (leave blank to keep)') : ''} {...register('apiKey')} />
         </label>
         {customEndpoint ? (
           <div className="connection-probe-actions">
             <button
               type="button"
-              disabled={probing}
+              disabled={probing || !providerActionable}
               onClick={() => { void validateCustomEndpointThen(() => connectionProbe.mutate(probeInput())); }}
             >{connectionProbe.isPending ? t('Checking connection…') : t('Test connection')}</button>
             <button
               type="button"
-              disabled={probing}
+              disabled={probing || !providerActionable}
               onClick={() => { void validateCustomEndpointThen(() => modelProbe.mutate(probeInput())); }}
             >{modelProbe.isPending ? t('Detecting models…') : t('Detect models')}</button>
           </div>
@@ -250,7 +254,7 @@ export function ConnectionPage() {
             <div><strong>{t('Detected models')}</strong><span>{t('{{count}} models', { count: detectedModels.length })}</span></div>
             <div className="detected-model-list">
               {detectedModels.map((model) => (
-                <button type="button" key={model.id} onClick={() => setValue('modelId', model.id, { shouldDirty: true, shouldValidate: true })}>
+                <button disabled={!providerActionable} type="button" key={model.id} onClick={() => setValue('modelId', model.id, { shouldDirty: true, shouldValidate: true })}>
                   {model.id}
                 </button>
               ))}
@@ -262,7 +266,7 @@ export function ConnectionPage() {
         ) : null}
         {Object.values(formState.errors).map((error) => <span role="alert" key={error.message}>{t(error.message ?? '')}</span>)}
         {save.error ? <span role="alert">{t('Unable to save connection: {{error}}', { error: errorCode(save.error) })}</span> : null}
-        <button className="save-connection-button" type="submit" disabled={save.isPending || probing}>{t('Save connection')}</button>
+        <button className="save-connection-button" type="submit" disabled={!providerActionable || save.isPending || probing}>{t('Save connection')}</button>
         {save.isSuccess ? <span role="status">{t(save.data.hasApiKey ? 'Connection saved with an API key.' : 'Connection saved.')}</span> : null}
       </form>
     </main>

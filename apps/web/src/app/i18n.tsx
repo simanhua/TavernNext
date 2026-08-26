@@ -83,7 +83,6 @@ const zhCN: Record<string, string> = {
   'Next variant': '下一个版本',
   'Swipe response': '换一个回复',
   'Regenerate response': '重新生成',
-  'Continue response': '续写回复',
   'Quick-create Character': '快速创建角色',
   'Quick-create Persona': '快速创建用户身份',
   'Name': '名称',

@@ -118,7 +118,6 @@ let conversationConfigurationPatches = 0;
 let lastConversationConfigurationPatch: Record<string, unknown> | undefined;
 let requestedGenerationModes: string[] = [];
 let activeVariantSwitches: string[] = [];
-let promptPreviewRequests = 0;
 let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
 let agentRuns: unknown[] = [];
 const encoder = new TextEncoder();
@@ -219,36 +218,12 @@ const server = setupServer(
       messages,
     });
   }),
-  http.post('/api/conversations/:id/prompt-preview', async ({ request }) => {
-    promptPreviewRequests += 1;
-    expect(await request.json()).toEqual({ conversationRevision, mode: 'normal', userText: 'Preview me' });
-    return HttpResponse.json({
-      snapshotId: '018f0000-0000-7000-8000-000000000119', kind: 'chat',
-      messages: [{ role: 'system', content: 'Preview from ChatPage' }], stop: [], tokenBreakdown: [], totalTokens: 3,
-      tokenizerDecision: { requestedId: 12, tokenizerId: 12, tokenizerName: 'Llama 3' },
-      worldbook: {
-        activated: [], excluded: [], timedState: { messageIndex: 0, sticky: [], cooldown: [] },
-        tokenUsage: { budget: 0, used: 0, overflowed: false }, recursionSteps: 1, warnings: [],
-      },
-      previousTimedState: { messageIndex: null, sticky: [], cooldown: [] }, warnings: [],
-      entityRevisions: {
-        globalGenerationConfig: { id: globalGenerationConfig.id, revision: 0 },
-        conversation: { id: ids.conversation, revision: conversationRevision },
-        character: { id: ids.character, revision: 0 }, persona: { id: ids.persona, revision: 0 },
-        provider: { id: ids.provider, revision: 0 }, presets: [], globalWorldbooks: [], worldbooks: [], messages: [], runtimeState: null,
-      },
-    }, { status: 201 });
-  }),
   http.post('/api/conversations/:id/generation-candidates', async ({ request }) => {
     const body = await request.json() as { mode: string; userText?: string };
-    const previewing = body.userText === 'Preview me';
-    if (previewing) promptPreviewRequests += 1;
     return HttpResponse.json({
       candidateId: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
       executableDigest: 'a'.repeat(64), kind: 'chat',
-      messages: previewing
-        ? [{ role: 'system', content: 'Preview from ChatPage' }]
-        : body.mode === 'normal' ? [{ role: 'user', content: body.userText ?? '' }] : [],
+      messages: body.mode === 'normal' ? [{ role: 'user', content: body.userText ?? '' }] : [],
       stop: [], tokenBreakdown: [], totalTokens: 1,
       tokenizerDecision: { tokenizerId: 0, tokenizerName: 'None / Estimated' },
       worldbook: {
@@ -289,11 +264,9 @@ const server = setupServer(
 
     const delta = mode === 'regenerate'
       ? 'Third answer'
-      : mode === 'continue'
-        ? ' continued'
-        : generationCount === 1 && !holdFirstGeneration
-          ? 'Hello'
-          : 'Partial answer';
+      : generationCount === 1 && !holdFirstGeneration
+        ? 'Hello'
+        : 'Partial answer';
     const commitNonNormal = () => {
       const assistant = messages.find((message) => message.id === ids.assistantMessage)!;
       if (mode === 'regenerate') {
@@ -303,10 +276,6 @@ const server = setupServer(
         });
         assistant.activeVariantId = ids.generatedVariant;
         assistant.revision += 1;
-      } else if (mode === 'continue') {
-        const active = assistant.variants.find((variant) => variant.id === assistant.activeVariantId)!;
-        active.content += delta;
-        active.revision += 1;
       }
     };
 
@@ -426,7 +395,6 @@ afterEach(() => {
   lastConversationConfigurationPatch = undefined;
   requestedGenerationModes = [];
   activeVariantSwitches = [];
-  promptPreviewRequests = 0;
   activeStream = undefined;
   agentRuns = [];
   window.localStorage.removeItem(CHAT_FORMAT_STORAGE_KEY);
@@ -670,20 +638,7 @@ describe('ChatPage', () => {
     expect(messages.find((message) => message.id === ids.assistantMessage)?.activeVariantId).toBe(ids.assistantSibling);
   });
 
-  it('opens Prompt Preview for the configured conversation without starting generation', async () => {
-    const user = userEvent.setup();
-    conversations = [conversation];
-    useChatUi.setState({ activeConversationId: conversation.id, draft: 'Preview me' });
-    renderChatPage();
-
-    await user.click(await screen.findByRole('button', { name: 'Preview prompt' }));
-    expect(await screen.findByText('Preview from ChatPage')).not.toBeNull();
-    expect(promptPreviewRequests).toBe(1);
-    expect(generationCount).toBe(0);
-    expect(conversationRevision).toBe(0);
-  });
-
-  it('persists per-message Swipe selection and exposes Regenerate and Continue without a user turn', async () => {
+  it('persists tail Swipe selection and exposes only Regenerate/Swipe without a user turn', async () => {
     const user = userEvent.setup();
     conversations = [conversation];
     messages = [{
@@ -715,9 +670,8 @@ describe('ChatPage', () => {
     expect(requestedGenerationModes).toEqual(['regenerate']);
     expect(messages).toHaveLength(1);
 
-    await user.click(screen.getByRole('button', { name: 'Continue response' }));
-    expect(await screen.findByText('Third answer continued')).not.toBeNull();
-    expect(requestedGenerationModes).toEqual(['regenerate', 'continue']);
+    expect(screen.queryByRole('button', { name: 'Continue response' })).toBeNull();
+    expect(requestedGenerationModes).toEqual(['regenerate']);
     expect(messages).toHaveLength(1);
     expect(conversationRevision).toBe(0);
   });

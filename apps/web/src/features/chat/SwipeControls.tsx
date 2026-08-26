@@ -6,7 +6,7 @@ interface SwipeControlsProps {
   selectionDisabled: boolean;
   generationDisabled: boolean;
   onSelect(variantId: string): void;
-  onGenerate(mode: 'swipe' | 'regenerate' | 'continue'): void;
+  onGenerate(mode: 'swipe' | 'regenerate'): void;
 }
 
 export function SwipeControls({ message, selectionDisabled, generationDisabled, onSelect, onGenerate }: SwipeControlsProps) {
@@ -35,7 +35,6 @@ export function SwipeControls({ message, selectionDisabled, generationDisabled, 
       >→</button>
       <button type="button" disabled={generationDisabled} onClick={() => onGenerate('swipe')}>{t('Swipe response')}</button>
       <button type="button" disabled={generationDisabled} onClick={() => onGenerate('regenerate')}>{t('Regenerate response')}</button>
-      <button type="button" disabled={generationDisabled} onClick={() => onGenerate('continue')}>{t('Continue response')}</button>
     </div>
   );
 }
