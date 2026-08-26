@@ -18,10 +18,11 @@ import { createRepositories, type Repositories } from '../src/db/repositories.js
 import { createGenerationService } from '../src/services/generation-service.js';
 import { SceneDirectorExecution } from '../src/services/scene-director-agent.js';
 import type { SaveAgentRuntimeEvent } from '../src/services/save-agent-runtime.js';
-import type {
-  PromptSnapshotPayload,
-  PromptSnapshotService,
-  ServerTokenizerRuntime,
+import {
+  createPromptSnapshotService,
+  type PromptSnapshotPayload,
+  type PromptSnapshotService,
+  type ServerTokenizerRuntime,
 } from '../src/services/prompt-snapshot-service.js';
 import { unitTokenizerRuntime } from './prompt-integration-fixtures.js';
 import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
@@ -75,7 +76,17 @@ function completedRuntime(
   return {
     model: runtimeModel,
     stream(_model, context, options) {
-      contexts.push(structuredClone(context));
+      contexts.push({
+        ...(context.systemPrompt === undefined ? {} : { systemPrompt: context.systemPrompt }),
+        messages: structuredClone(context.messages),
+        ...(context.tools === undefined ? {} : {
+          tools: context.tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            parameters: structuredClone(tool.parameters),
+          })),
+        }),
+      });
       const text = outputs.shift() ?? '';
       const events = createAssistantMessageEventStream();
       queueMicrotask(async () => {
@@ -279,7 +290,7 @@ async function generate(app: ReturnType<typeof createApp>, revision: number) {
 }
 
 describe('per-Save Pi Scene Director', () => {
-  it('reconstructs a fresh zero-tool Agent with immutable precedence and current private Preset', async () => {
+  it('reconstructs a fresh platform-tool-only Agent with immutable precedence and current private Preset', async () => {
     const contexts: Context[] = [];
     const requests: Array<{ options: Record<string, unknown>; payload: unknown }> = [];
     const customModel = { ...model, provider: 'custom-openai-compatible' } as Model<'openai-completions'>;
@@ -329,6 +340,12 @@ describe('per-Save Pi Scene Director', () => {
     expect(firstSystem).toContain(seeded.character.description);
     expect(firstSystem).toContain('Write in clipped sentences.');
     expect(firstSystem).not.toContain('Template style');
+    expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
+      'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
+    ]);
+    expect(contexts[0]!.tools?.map((tool) => tool.name).join(' ')).not.toMatch(
+      /bash|shell|file|network|http|code|exec/i,
+    );
     expect(contexts[1]!.systemPrompt).toContain('Write with lyrical cadence.');
     expect(requests[0]).toMatchObject({
       options: {
@@ -517,9 +534,18 @@ describe('per-Save Pi Scene Director', () => {
     expect(preAbortEvents.at(-1)).toEqual({ type: 'aborted' });
     expect(preAbortContexts).toEqual([]);
 
-    const legacyPayload = structuredClone(
-      seeded.repositories.generationSnapshots.list().at(-1)!.payload,
-    ) as unknown as PromptSnapshotPayload;
+    const legacyCandidate = await createPromptSnapshotService({
+      database: seeded.database,
+      repositories: seeded.repositories,
+      tokenizerRuntime: unitTokenizerRuntime(),
+    }).createCandidate({
+      conversationId: ids.conversation,
+      conversationRevision: 6,
+      mode: 'normal',
+      userText: 'Legacy unbound snapshot',
+    });
+    const { snapshotId: _legacySnapshotId, ...candidatePayload } = legacyCandidate;
+    const legacyPayload = structuredClone(candidatePayload) as PromptSnapshotPayload;
     delete legacyPayload.entityRevisions.saveAgentConfiguration;
     legacyPayload.input = {
       ...legacyPayload.input,
@@ -536,6 +562,9 @@ describe('per-Save Pi Scene Director', () => {
       sealCandidate: async () => { throw new Error('unused'); },
       createPreview: async () => { throw new Error('unused'); },
       acceptExisting: async () => { throw new Error('unused'); },
+      commitDeferredSnapshot() {},
+      completeDeferredSnapshot() {},
+      releaseDeferredSnapshot() {},
       commitTimedState() {},
     } satisfies PromptSnapshotService;
     const unboundService = createGenerationService({
@@ -613,6 +642,10 @@ describe('per-Save Pi Scene Director', () => {
     expect(runs[4]).toMatchObject({
       limits: { maxModelTurns: 8, maxToolCalls: 16, timeoutMs: 20 }, failureCode: 'timeout_budget_exhausted',
     });
+    expect(seeded.repositories.generationSnapshots.list()).toEqual([]);
+    expect((seeded.database.sqlite.prepare(
+      'SELECT COUNT(*) AS count FROM consumed_generation_snapshots',
+    ).get() as { count: number }).count).toBe(0);
     expect(JSON.stringify(runs)).not.toContain('AUDIT-SECRET');
   });
 });

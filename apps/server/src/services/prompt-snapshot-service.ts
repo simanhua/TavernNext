@@ -252,9 +252,12 @@ export interface AcceptedPromptSnapshot {
   payload: PromptSnapshotPayload;
   provider: ProviderProfile;
   saveAgentConfiguration?: SaveAgentConfiguration;
+  deferredSnapshotCommit?: true;
 }
 
-export type PromptSnapshotBeforeAccept = (candidate: AcceptedPromptSnapshot) => Promise<void>;
+export type PromptSnapshotBeforeAccept = (
+  candidate: AcceptedPromptSnapshot,
+) => Promise<void | { deferSnapshotCommit: true }>;
 
 export interface PromptSnapshotService {
   createCandidate(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
@@ -275,6 +278,9 @@ export interface PromptSnapshotService {
     input: PromptSnapshotInput & { snapshotId: string },
     beforeAccept?: PromptSnapshotBeforeAccept,
   ): Promise<AcceptedPromptSnapshot>;
+  commitDeferredSnapshot(snapshotId: string, payload: PromptSnapshotPayload): void;
+  completeDeferredSnapshot(snapshotId: string): void;
+  releaseDeferredSnapshot(snapshotId: string): void;
   commitTimedState(payload: PromptSnapshotPayload): void;
 }
 
@@ -1942,19 +1948,26 @@ function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapsh
 function acceptUserTurn(
   repositories: Repositories,
   payload: PromptSnapshotPayload,
-): ProviderProfile {
+): { provider: ProviderProfile; createdUserMessage?: MessageRevisionRef } {
   revalidateManifest(repositories, payload.entityRevisions);
   const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
   if (provider === undefined) stale();
   if (payload.input.mode === 'normal') {
     if (payload.input.reuseLastUser !== true) {
-      repositories.messages.create({
+      const message = repositories.messages.create({
         id: randomUUID(),
         conversationId: payload.input.conversationId,
         role: 'user',
         content: payload.input.userText!,
         activeVariantId: null,
       });
+      const revision = repositories.conversations.update(
+        payload.input.conversationId,
+        payload.input.conversationRevision,
+        {},
+      );
+      if (!revision.ok) stale();
+      return { provider, createdUserMessage: { ...ref(message), activeVariant: null } };
     }
     const revision = repositories.conversations.update(
       payload.input.conversationId,
@@ -1963,7 +1976,7 @@ function acceptUserTurn(
     );
     if (!revision.ok) stale();
   }
-  return provider;
+  return { provider };
 }
 
 function acceptanceCandidate(
@@ -1991,6 +2004,11 @@ export function createPromptSnapshotService(options: {
 }): PromptSnapshotService {
   const { database, repositories, tokenizerRuntime } = options;
   const transientPreviews = new Map<string, { payload: PromptSnapshotPayload; expiresAt: number }>();
+  const pendingSnapshots = new Map<string, {
+    payload: PromptSnapshotPayload;
+    source: 'new' | 'transient' | 'stored';
+    createdUserMessage?: MessageRevisionRef;
+  }>();
   const isConsumed = (snapshotId: string) => database.sqlite.prepare(`
     SELECT snapshot_id FROM consumed_generation_snapshots WHERE snapshot_id = ?
   `).get(snapshotId) !== undefined;
@@ -2084,8 +2102,19 @@ export function createPromptSnapshotService(options: {
     },
     async createAndAccept(input, snapshotId, sceneContext, beforeAccept) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input, sceneContext);
-      if (beforeAccept !== undefined) {
-        await beforeAccept(acceptanceCandidate(repositories, snapshotId, built.payload));
+      const candidate = acceptanceCandidate(repositories, snapshotId, built.payload);
+      const directive = beforeAccept === undefined ? undefined : await beforeAccept(candidate);
+      if (directive?.deferSnapshotCommit === true) {
+        if (pendingSnapshots.has(snapshotId) || isConsumed(snapshotId)) {
+          throw new PromptSnapshotError('snapshot_mismatch');
+        }
+        const turn = database.transaction(() => acceptUserTurn(repositories, built.payload));
+        pendingSnapshots.set(snapshotId, {
+          payload: deepJson(built.payload),
+          source: 'new',
+          ...(turn.createdUserMessage === undefined ? {} : { createdUserMessage: turn.createdUserMessage }),
+        });
+        return { ...candidate, deferredSnapshotCommit: true };
       }
       const accepted = database.transaction(() => {
         revalidateManifest(repositories, built.manifest);
@@ -2097,7 +2126,7 @@ export function createPromptSnapshotService(options: {
           ...sceneSnapshotMetadata(repositories, built.payload.input.conversationId),
         });
         consume(snapshotId);
-        const provider = acceptUserTurn(repositories, built.payload);
+        const { provider } = acceptUserTurn(repositories, built.payload);
         return {
           snapshotId,
           payload: deepJson(built.payload),
@@ -2110,7 +2139,9 @@ export function createPromptSnapshotService(options: {
       return accepted;
     },
     async acceptExisting(input, beforeAccept) {
-      if (isConsumed(input.snapshotId)) throw new PromptSnapshotError('snapshot_mismatch');
+      if (isConsumed(input.snapshotId) || pendingSnapshots.has(input.snapshotId)) {
+        throw new PromptSnapshotError('snapshot_mismatch');
+      }
       const getStoredSnapshot = () => {
         try {
           return repositories.generationSnapshots.get(input.snapshotId);
@@ -2131,8 +2162,16 @@ export function createPromptSnapshotService(options: {
         throw new PromptSnapshotError('snapshot_invalid');
       }
       assertSnapshotInput(payload, input);
-      if (beforeAccept !== undefined) {
-        await beforeAccept(acceptanceCandidate(repositories, input.snapshotId, payload));
+      const candidate = acceptanceCandidate(repositories, input.snapshotId, payload);
+      const directive = beforeAccept === undefined ? undefined : await beforeAccept(candidate);
+      if (directive?.deferSnapshotCommit === true) {
+        const turn = database.transaction(() => acceptUserTurn(repositories, payload));
+        pendingSnapshots.set(input.snapshotId, {
+          payload: deepJson(payload),
+          source: liveTransient === undefined ? 'stored' : 'transient',
+          ...(turn.createdUserMessage === undefined ? {} : { createdUserMessage: turn.createdUserMessage }),
+        });
+        return { ...candidate, deferredSnapshotCommit: true };
       }
       const accepted = database.transaction(() => {
         if (liveTransient !== undefined) {
@@ -2149,7 +2188,7 @@ export function createPromptSnapshotService(options: {
             ...sceneSnapshotMetadata(repositories, payload.input.conversationId),
           });
           consume(input.snapshotId);
-          const provider = acceptUserTurn(repositories, payload);
+          const { provider } = acceptUserTurn(repositories, payload);
           return {
             snapshotId: input.snapshotId,
             payload,
@@ -2171,7 +2210,7 @@ export function createPromptSnapshotService(options: {
         if (!sameCanonical(currentPayload, payload)) throw new PromptSnapshotError('snapshot_invalid');
         assertSnapshotInput(currentPayload, input);
         consume(input.snapshotId);
-        const provider = acceptUserTurn(repositories, currentPayload);
+        const { provider } = acceptUserTurn(repositories, currentPayload);
         return {
           snapshotId: input.snapshotId,
           payload: currentPayload,
@@ -2182,6 +2221,53 @@ export function createPromptSnapshotService(options: {
         };
       });
       return accepted;
+    },
+    commitDeferredSnapshot(snapshotId, payload) {
+      const pending = pendingSnapshots.get(snapshotId);
+      if (pending === undefined || !sameCanonical(pending.payload, payload) || isConsumed(snapshotId)) {
+        throw new PromptSnapshotError('snapshot_mismatch');
+      }
+      const acceptedManifest: PromptEntityRevisionManifest = {
+        ...payload.entityRevisions,
+        conversation: {
+          ...payload.entityRevisions.conversation,
+          revision: payload.entityRevisions.conversation.revision + (payload.input.mode === 'normal' ? 1 : 0),
+        },
+        messages: [
+          ...payload.entityRevisions.messages,
+          ...(pending.createdUserMessage === undefined ? [] : [pending.createdUserMessage]),
+        ],
+      };
+      revalidateManifest(repositories, acceptedManifest);
+      if (pending.source === 'transient') {
+        const current = transientPreviews.get(snapshotId);
+        if (current === undefined || !sameCanonical(current.payload, payload)) {
+          throw new PromptSnapshotError('snapshot_invalid');
+        }
+      }
+      if (pending.source === 'stored') {
+        const current = repositories.generationSnapshots.get(snapshotId);
+        if (current === undefined || !sameCanonical(current.payload, payload)) {
+          throw new PromptSnapshotError('snapshot_invalid');
+        }
+      } else {
+        repositories.generationSnapshots.create({
+          id: snapshotId,
+          conversationId: payload.input.conversationId,
+          conversationRevision: payload.input.conversationRevision,
+          payload: Object.fromEntries(Object.entries(deepJson(payload))),
+          ...sceneSnapshotMetadata(repositories, payload.input.conversationId),
+        });
+      }
+      consume(snapshotId);
+    },
+    completeDeferredSnapshot(snapshotId) {
+      const pending = pendingSnapshots.get(snapshotId);
+      if (pending?.source === 'transient') transientPreviews.delete(snapshotId);
+      pendingSnapshots.delete(snapshotId);
+    },
+    releaseDeferredSnapshot(snapshotId) {
+      pendingSnapshots.delete(snapshotId);
     },
     commitTimedState(payload) {
       if (payload.input.mode !== 'normal') return;

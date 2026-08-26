@@ -8,6 +8,7 @@ import {
   type ScenePatchOperation,
   type ScenePatchFailure,
   type SceneStateDiagnostic,
+  type SceneManifest,
 } from '@tavernnext/domain';
 import type {
   ChatRequest,
@@ -57,6 +58,7 @@ interface ActiveGeneration {
   state: 'reserved' | 'iterating' | 'closed';
   reservationTimer?: ReturnType<typeof setTimeout>;
   detachExternalAbort?: () => void;
+  releaseDeferredSnapshot?: () => void;
   cleanup(): void;
 }
 
@@ -69,6 +71,7 @@ interface PreparedGenerationBase {
   payload: PromptSnapshotPayload;
   reasoningCompatibility: boolean;
   sceneDirector?: SceneDirectorExecution;
+  deferredSnapshotCommit?: true;
   sceneTransition?: {
     stateRevision: number;
     baseValue: Record<string, unknown>;
@@ -76,6 +79,7 @@ interface PreparedGenerationBase {
     beforeOperations: ScenePatchOperation[];
     beforeFailures: ScenePatchFailure[];
     stagedValue: Record<string, unknown>;
+    manifest: SceneManifest;
   };
 }
 
@@ -85,6 +89,7 @@ type PreparedGeneration =
 
 function safeFailureCode(error: unknown): string {
   if (error instanceof SceneDirectorRunError) return error.code;
+  if (error instanceof SceneServiceError) return error.code;
   return error instanceof ProviderError ? error.code : 'upstream_error';
 }
 
@@ -215,8 +220,9 @@ export function createGenerationService(options: {
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
     let providerIterator: AsyncIterator<ProviderEvent> | undefined;
-    let sceneOperations = [...(prepared.sceneTransition?.beforeOperations ?? [])];
-    let sceneFailures = [...(prepared.sceneTransition?.beforeFailures ?? [])];
+    const initialWorkspace = prepared.sceneDirector?.workspaceSnapshot();
+    let sceneOperations = initialWorkspace?.operations ?? [...(prepared.sceneTransition?.beforeOperations ?? [])];
+    let sceneFailures = initialWorkspace?.failures ?? [...(prepared.sceneTransition?.beforeFailures ?? [])];
     let sceneDiagnostics: SceneStateDiagnostic[] = [];
     let activeSceneId: string | undefined;
 
@@ -366,19 +372,24 @@ export function createGenerationService(options: {
         const host = scene === undefined ? undefined : sceneService?.module(scene);
         activeSceneId = scene?.id;
         if (conversation !== undefined && scene !== undefined && state !== undefined) {
-          let nextState = prepared.sceneTransition === undefined
+          const workspace = prepared.sceneDirector?.workspaceSnapshot();
+          let nextState = workspace?.stateRevision === null || workspace === undefined
+            ? prepared.sceneTransition === undefined
             ? state.value
             : applyScenePatchPartial(
               prepared.sceneTransition.baseValue,
               prepared.sceneTransition.beforeOperations,
               scene.manifest,
-            ).value;
+            ).value
+            : workspace.stagedValue;
           if (scene.manifest.generationRecipe?.outputProtocol === 'mvu-json-patch-v1') {
             const protocol = sceneOutputProtocol(content);
             content = protocol.displayContent;
             sceneDiagnostics.push(...protocol.diagnostics);
             if (protocol.diagnostics.length === 0) {
-              const applied = applyScenePatchPartial(nextState, protocol.operations, scene.manifest);
+              const applied = prepared.sceneDirector === undefined
+                ? applyScenePatchPartial(nextState, protocol.operations, scene.manifest)
+                : prepared.sceneDirector.stageWorkspacePatch(protocol.operations);
               nextState = applied.value;
               sceneOperations.push(...applied.operations);
               sceneFailures.push(...applied.failures);
@@ -392,7 +403,9 @@ export function createGenerationService(options: {
               }));
               if (processed.displayContent !== undefined) content = processed.displayContent;
               if (processed.statePatch !== undefined) {
-                const applied = applyScenePatchPartial(nextState, processed.statePatch, scene.manifest);
+                const applied = prepared.sceneDirector === undefined
+                  ? applyScenePatchPartial(nextState, processed.statePatch, scene.manifest)
+                  : prepared.sceneDirector.stageWorkspacePatch(processed.statePatch);
                 nextState = applied.value;
                 sceneOperations.push(...applied.operations);
                 sceneFailures.push(...applied.failures);
@@ -404,6 +417,12 @@ export function createGenerationService(options: {
               code: error instanceof SceneServiceError ? error.code : 'scene_hook_invalid',
               failures: [],
             });
+          }
+          if (prepared.sceneDirector !== undefined) {
+            const finalizedWorkspace = prepared.sceneDirector.workspaceSnapshot();
+            nextState = finalizedWorkspace.stagedValue;
+            sceneOperations = finalizedWorkspace.operations;
+            sceneFailures = finalizedWorkspace.failures;
           }
           if (sceneFailures.length > 0) {
             sceneDiagnostics.push({
@@ -431,9 +450,23 @@ export function createGenerationService(options: {
         outcome = 'failed';
         failureCode = 'agent_audit_failed';
       }
+      let completedDeferredSnapshot = false;
       try {
         database.transaction(() => {
           const persistResponse = prepared.sceneDirector === undefined || outcome === 'completed';
+          if (outcome === 'completed' && prepared.sceneDirector !== undefined) {
+            const workspace = prepared.sceneDirector.workspaceSnapshot();
+            if (workspace.stateRevision !== null) {
+              const current = repositories.conversationSceneStates.getByConversationId(prepared.conversationId);
+              if (current === undefined || current.revision !== workspace.stateRevision) {
+                throw new SceneServiceError('conflict', 409);
+              }
+            }
+          }
+          if (outcome === 'completed' && prepared.deferredSnapshotCommit === true) {
+            promptSnapshots.commitDeferredSnapshot(prepared.generationId, prepared.payload);
+            completedDeferredSnapshot = true;
+          }
           if (persistResponse && variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
           if (persistResponse && variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
           if (outcome === 'completed' && variant !== undefined && hasDelta && activeSceneId === undefined) {
@@ -495,6 +528,14 @@ export function createGenerationService(options: {
         } catch {
           failureCode = 'agent_audit_failed';
         }
+      }
+      if (prepared.deferredSnapshotCommit === true) {
+        if (outcome === 'completed' && completedDeferredSnapshot) {
+          promptSnapshots.completeDeferredSnapshot(prepared.generationId);
+        } else {
+          promptSnapshots.releaseDeferredSnapshot(prepared.generationId);
+        }
+        active.releaseDeferredSnapshot = undefined;
       }
       if (prepared.sceneDirector !== undefined && agentTerminal === undefined) {
         try {
@@ -572,6 +613,8 @@ export function createGenerationService(options: {
           active.reservationTimer = undefined;
           active.detachExternalAbort?.();
           active.detachExternalAbort = undefined;
+          active.releaseDeferredSnapshot?.();
+          active.releaseDeferredSnapshot = undefined;
           active.state = 'closed';
           if (activeByConversation.get(active.conversationId) === active.generationId) {
             activeByConversation.delete(active.conversationId);
@@ -625,6 +668,7 @@ export function createGenerationService(options: {
               beforeOperations,
               beforeFailures: beforeApplied.failures,
               stagedValue: stagedState,
+              manifest: structuredClone(scene.manifest),
             };
             scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
           }
@@ -633,7 +677,7 @@ export function createGenerationService(options: {
         const beforeAccept = async (candidate: AcceptedPromptSnapshot) => {
           if (!candidate.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
           if (input.mode !== 'normal' || candidate.payload.kind !== 'chat'
-            || options.piAgentRuntimeFactory === undefined) return;
+            || options.piAgentRuntimeFactory === undefined) return undefined;
           const configurationRef = candidate.payload.entityRevisions.saveAgentConfiguration;
           const configuration = candidate.saveAgentConfiguration;
           if (configurationRef === undefined || configurationRef === null || configuration === undefined
@@ -653,13 +697,26 @@ export function createGenerationService(options: {
             ...(scenePromptContext?.additions === undefined ? {} : {
               scenePromptAdditions: scenePromptContext.additions,
             }),
+            ...(sceneTransition === undefined ? {} : {
+              workspaceState: {
+                revision: sceneTransition.stateRevision,
+                value: sceneTransition.baseValue,
+                manifest: sceneTransition.manifest,
+                initialOperations: sceneTransition.beforeOperations,
+                initialFailures: sceneTransition.beforeFailures,
+              },
+            }),
           });
           await execution.validatePromptBudget(runtimeTokenizer);
           sceneDirector = execution;
+          return { deferSnapshotCommit: true as const };
         };
         const accepted = input.snapshotId === undefined
           ? await promptSnapshots.createAndAccept(input, generationId, scenePromptContext, beforeAccept)
           : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId }, beforeAccept);
+        if (accepted.deferredSnapshotCommit === true) {
+          active.releaseDeferredSnapshot = () => promptSnapshots.releaseDeferredSnapshot(generationId);
+        }
         // Retain defensive validation for injected PromptSnapshotService implementations that
         // predate the pre-accept hook, while production acceptance always invokes the hook.
         if (!accepted.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
@@ -691,11 +748,23 @@ export function createGenerationService(options: {
             ...(scenePromptContext?.additions === undefined ? {} : {
               scenePromptAdditions: scenePromptContext.additions,
             }),
+            ...(sceneTransition === undefined ? {} : {
+              workspaceState: {
+                revision: sceneTransition.stateRevision,
+                value: sceneTransition.baseValue,
+                manifest: sceneTransition.manifest,
+                initialOperations: sceneTransition.beforeOperations,
+                initialFailures: sceneTransition.beforeFailures,
+              },
+            }),
           });
           await execution.validatePromptBudget(runtimeTokenizer);
           sceneDirector = execution;
         }
         if (sceneDirector !== undefined) prepared.sceneDirector = sceneDirector;
+        if (accepted.deferredSnapshotCommit === true) {
+          prepared.deferredSnapshotCommit = true;
+        }
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;
           active.controller.abort();
