@@ -94,7 +94,10 @@ describe('TurnWorkspace', () => {
     expect(read.values).toEqual([
       { path: '/points', ok: true, value: 5 },
       { path: '/map/place', ok: true, value: 'vault' },
-      { path: '/missing', ok: false, code: 'state_path_not_found' },
+      {
+        path: '/missing', ok: false, code: 'state_path_not_found', nearestPath: '',
+        suggestions: ['/map', '/points'],
+      },
     ]);
 
     const lore = detail<{ results: Array<{ entryKey: string; content: string }> }>(
@@ -170,5 +173,56 @@ describe('TurnWorkspace', () => {
       stagedOperationCount: 0,
     });
     expect(workspace.snapshot().stagedValue).toEqual({});
+  });
+
+  it('discovers state paths, suggests the nearest legal children, and degrades oversized full reads to a catalog', async () => {
+    const workspace = new TurnWorkspace({
+      generationId: '018f0000-0000-7000-8000-000000000306',
+      payload: payload(),
+      state: {
+        revision: 9,
+        value: {
+          主角: { 生命值: 20, 生命值上限: 30, 法力值: 12, 状态效果: { 专注: true } },
+          世界: { 地点: '档案馆' },
+          large: 'x'.repeat(80 * 1024),
+        },
+        manifest: {} as SceneManifest,
+      },
+    });
+
+    const targeted = detail<any>(await execute(workspace, 'save_state_read', {
+      paths: ['/主角/生命', '/不存在'],
+    }));
+    expect(targeted).toMatchObject({
+      ok: true,
+      mode: 'paths',
+      topLevelKeys: ['主角', '世界', 'large'],
+      topLevelPaths: ['/主角', '/世界', '/large'],
+      values: [{
+        path: '/主角/生命', ok: false, code: 'state_path_not_found', nearestPath: '/主角',
+        suggestions: ['/主角/生命值', '/主角/生命值上限'],
+      }, {
+        path: '/不存在', ok: false, code: 'state_path_not_found', nearestPath: '',
+        suggestions: expect.arrayContaining(['/主角', '/世界', '/large']),
+      }],
+    });
+
+    const full = detail<any>(await execute(workspace, 'save_state_read', {}));
+    expect(full).toMatchObject({
+      ok: true,
+      mode: 'catalog',
+      stateRevision: 9,
+      bytes: expect.any(Number),
+      topLevelKeys: ['主角', '世界', 'large'],
+      topLevelPaths: ['/主角', '/世界', '/large'],
+      catalog: expect.arrayContaining([
+        expect.objectContaining({ path: '/主角', type: 'object' }),
+        expect.objectContaining({ path: '/主角/生命值', type: 'number' }),
+        expect.objectContaining({ path: '/large', type: 'string', chars: 80 * 1024 }),
+      ]),
+    });
+    expect(full.bytes).toBeGreaterThan(64 * 1024);
+    expect(full).not.toHaveProperty('code', 'tool_result_too_large');
+    expect(Buffer.byteLength(JSON.stringify(full))).toBeLessThanOrEqual(64 * 1024);
   });
 });

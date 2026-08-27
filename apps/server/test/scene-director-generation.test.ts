@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,6 +114,55 @@ function completedRuntime(
           ...partial,
           content: [{ type: 'thinking', thinking: 'PRIVATE-CHAIN-OF-THOUGHT' }, { type: 'text', text }],
           usage: usage(), stopReason: 'stop',
+        };
+        events.push({ type: 'done', reason: 'stop', message });
+        events.end(message);
+      });
+      return events;
+    },
+  };
+}
+
+function oneToolRuntime(
+  contexts: Context[],
+  toolName: string,
+  args: Record<string, unknown>,
+  text: string,
+): PiAgentModelRuntime {
+  let turn = 0;
+  return {
+    model,
+    stream(_model, context) {
+      contexts.push({
+        ...(context.systemPrompt === undefined ? {} : { systemPrompt: context.systemPrompt }),
+        messages: structuredClone(context.messages),
+        ...(context.tools === undefined ? {} : { tools: context.tools.map((tool) => ({
+          name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters),
+        })) }),
+      });
+      const events = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        if (turn++ === 0) {
+          const toolCall = { type: 'toolCall' as const, id: 'tier-query', name: toolName, arguments: args };
+          const partial: AssistantMessage = {
+            role: 'assistant', content: [toolCall], api: model.api, provider: model.provider,
+            model: model.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
+          };
+          events.push({ type: 'start', partial });
+          events.push({ type: 'toolcall_end', contentIndex: 0, toolCall, partial });
+          const message: AssistantMessage = { ...partial, stopReason: 'toolUse' };
+          events.push({ type: 'done', reason: 'toolUse', message });
+          events.end(message);
+          return;
+        }
+        const partial: AssistantMessage = {
+          role: 'assistant', content: [{ type: 'text', text: '' }], api: model.api, provider: model.provider,
+          model: model.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
+        };
+        events.push({ type: 'start', partial });
+        events.push({ type: 'text_delta', contentIndex: 0, delta: text, partial });
+        const message: AssistantMessage = {
+          ...partial, content: [{ type: 'text', text }], stopReason: 'stop',
         };
         events.push({ type: 'done', reason: 'stop', message });
         events.end(message);
@@ -442,6 +492,34 @@ describe('per-Save Pi Scene Director', () => {
     expect(stagedContexts[0]?.systemPrompt).toContain('"phase":"staged"');
     expect(stagedContexts[0]?.systemPrompt).toContain('SCENE-TURN-RULE');
 
+  });
+
+  it('tiers activated Worldbook rules to about half of the Agent prompt while keeping deferred lore queryable', async () => {
+    const contexts: Context[] = [];
+    const runtime = oneToolRuntime(contexts, 'world_query', { query: 'TIERED_RULE_6', limit: 4 }, '分级规则查询完成。');
+    const seeded = await context(() => runtime);
+    const book = seeded.repositories.worldbooks.create({
+      id: randomUUID(), name: 'Tiered rules', description: '', enabled: true, isGlobal: true,
+    });
+    for (let index = 0; index < 10; index += 1) {
+      seeded.repositories.worldbookEntries.create({
+        id: randomUUID(), worldbookId: book.id, sourceUid: `tier-${index}`, sourceOrdinal: index,
+        keys: index === 1 ? ['Hello'] : [], content: `TIERED_RULE_${index}`, enabled: true, constant: index !== 1,
+        priority: index, order: index, ignoreBudget: index === 0,
+      });
+    }
+
+    const response = await generate(seeded.app, 0);
+    expect(parse(response.payload).at(-1)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
+    const system = contexts[0]!.systemPrompt ?? '';
+    expect(system.match(/TIERED_RULE_\d/g)).toHaveLength(5);
+    for (const included of [0, 1, 7, 8, 9]) expect(system).toContain(`TIERED_RULE_${included}`);
+    for (const deferred of [2, 3, 4, 5, 6]) expect(system).not.toContain(`TIERED_RULE_${deferred}`);
+    expect(system).toContain('5 of 10 activated Worldbook entries');
+    const queryResult = contexts[1]!.messages.find((message) => (
+      message.role === 'toolResult' && message.toolName === 'world_query'
+    ));
+    expect(JSON.stringify(queryResult)).toContain('TIERED_RULE_6');
   });
 
   it('filters Save samplers by built-in Pi API and forwards the Save seed', async () => {

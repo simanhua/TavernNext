@@ -10,6 +10,10 @@ import type { PromptSnapshotPayload } from './prompt-snapshot-service.js';
 
 const MAX_TOOL_RESULT_BYTES = 64 * 1024;
 const MAX_WORLD_RESULTS = 20;
+const MAX_STATE_CATALOG_NODES = 96;
+const MAX_STATE_CATALOG_DEPTH = 3;
+const MAX_STATE_CATALOG_CHILDREN = 16;
+const MAX_STATE_PATH_SUGGESTIONS = 5;
 
 export const PLATFORM_AGENT_TOOL_NAMES = [
   'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage', 'scene_view_stage',
@@ -38,20 +42,140 @@ function pointerParts(pointer: string): string[] {
   return pointer.slice(1).split('/').map((part) => part.replaceAll('~1', '/').replaceAll('~0', '~'));
 }
 
-function valueAt(root: Record<string, unknown>, pointer: string): unknown {
+function pointerSegment(value: string): string {
+  return value.replaceAll('~', '~0').replaceAll('/', '~1');
+}
+
+function pointerPath(parts: readonly string[]): string {
+  return parts.length === 0 ? '' : `/${parts.map(pointerSegment).join('/')}`;
+}
+
+function stateType(value: unknown): 'null' | 'array' | 'object' | 'string' | 'number' | 'boolean' | 'unknown' {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (record(value) !== undefined) return 'object';
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'boolean') return 'boolean';
+  return 'unknown';
+}
+
+function stateChildren(value: unknown): string[] {
+  if (Array.isArray(value)) return value.slice(0, MAX_STATE_CATALOG_CHILDREN).map((_item, index) => String(index));
+  const object = record(value);
+  return object === undefined ? [] : Object.keys(object).slice(0, MAX_STATE_CATALOG_CHILDREN);
+}
+
+function editDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_unused, index) => index);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    const current = [leftIndex + 1];
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      current.push(Math.min(
+        current[rightIndex]! + 1,
+        previous[rightIndex + 1]! + 1,
+        previous[rightIndex]! + (left[leftIndex] === right[rightIndex] ? 0 : 1),
+      ));
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length]!;
+}
+
+function suggestedPaths(parent: unknown, resolved: readonly string[], requested: string): string[] {
+  const children = stateChildren(parent);
+  const containing = children.filter((child) => child.includes(requested) || requested.includes(child));
+  const ranked = (containing.length > 0 ? containing : children.sort((left, right) => (
+    editDistance(requested, left) - editDistance(requested, right) || left.localeCompare(right)
+  ))).slice(0, MAX_STATE_PATH_SUGGESTIONS);
+  return ranked.map((child) => pointerPath([...resolved, child]));
+}
+
+function readStatePath(root: Record<string, unknown>, pointer: string):
+  | { ok: true; value: unknown }
+  | { ok: false; code: 'state_path_invalid' | 'state_path_not_found'; nearestPath: string; suggestions: string[] } {
+  let parts: string[];
+  try {
+    parts = pointerParts(pointer);
+  } catch {
+    return {
+      ok: false, code: 'state_path_invalid', nearestPath: '', suggestions: suggestedPaths(root, [], pointer),
+    };
+  }
   let value: unknown = root;
-  for (const part of pointerParts(pointer)) {
+  const resolved: string[] = [];
+  for (const part of parts) {
     if (Array.isArray(value)) {
       const index = Number(part);
-      if (!Number.isSafeInteger(index) || index < 0 || index >= value.length) throw new Error('state_path_not_found');
+      if (!Number.isSafeInteger(index) || index < 0 || index >= value.length) return {
+        ok: false,
+        code: 'state_path_not_found',
+        nearestPath: pointerPath(resolved),
+        suggestions: suggestedPaths(value, resolved, part),
+      };
       value = value[index];
     } else {
       const item = record(value);
-      if (item === undefined || !Object.hasOwn(item, part)) throw new Error('state_path_not_found');
+      if (item === undefined || !Object.hasOwn(item, part)) return {
+        ok: false,
+        code: 'state_path_not_found',
+        nearestPath: pointerPath(resolved),
+        suggestions: suggestedPaths(value, resolved, part),
+      };
       value = item[part];
     }
+    resolved.push(part);
   }
-  return structuredClone(value);
+  return { ok: true, value: structuredClone(value) };
+}
+
+function topLevelKeys(value: Record<string, unknown>): string[] {
+  return Object.keys(value).slice(0, 32);
+}
+
+function topLevelPaths(value: Record<string, unknown>): string[] {
+  return topLevelKeys(value).map((key) => pointerPath([key]));
+}
+
+function stateCatalog(root: unknown, baseParts: readonly string[] = []): {
+  catalog: Array<Record<string, unknown>>;
+  truncated: boolean;
+} {
+  const catalog: Array<Record<string, unknown>> = [];
+  let truncated = false;
+  const visit = (value: unknown, parts: string[], depth: number) => {
+    if (catalog.length >= MAX_STATE_CATALOG_NODES) {
+      truncated = true;
+      return;
+    }
+    const path = pointerPath(parts);
+    if (path.length > 512) {
+      truncated = true;
+      return;
+    }
+    const type = stateType(value);
+    const node: Record<string, unknown> = { path, type };
+    if (type === 'string') node.chars = (value as string).length;
+    else if (type === 'array') node.length = (value as unknown[]).length;
+    else if (type === 'object') node.childCount = Object.keys(value as Record<string, unknown>).length;
+    catalog.push(node);
+    if (depth >= MAX_STATE_CATALOG_DEPTH) {
+      if (stateChildren(value).length > 0) truncated = true;
+      return;
+    }
+    const children = stateChildren(value);
+    if ((Array.isArray(value) ? value.length : Object.keys(record(value) ?? {}).length) > children.length) truncated = true;
+    for (const child of children) {
+      const nested = Array.isArray(value) ? value[Number(child)] : record(value)?.[child];
+      visit(nested, [...parts, child], depth + 1);
+    }
+  };
+  const children = stateChildren(root);
+  for (const child of children) {
+    const value = Array.isArray(root) ? root[Number(child)] : record(root)?.[child];
+    visit(value, [...baseParts, child], 1);
+  }
+  return { catalog, truncated };
 }
 
 interface WorldEntry {
@@ -197,7 +321,7 @@ export class TurnWorkspace {
       {
         name: 'save_state_read',
         label: 'Read Save State',
-        description: 'Read the current staged Save State. Later reads include successful earlier staged patches.',
+        description: 'Read the current staged Save State with exact RFC 6901 JSON Pointer paths. The state is summarized in the prompt: use its exact keys, do not guess missing paths, and use returned nearestPath/suggestions to recover. Omit paths only to request a bounded path catalog when the full state is too large. Later reads include successful earlier staged patches.',
         parameters: Type.Object({
           paths: Type.Optional(Type.Array(Type.String({ maxLength: 512 }), { maxItems: 64 })),
         }, { additionalProperties: false }),
@@ -206,14 +330,38 @@ export class TurnWorkspace {
           const args = params as { paths?: string[] };
           const snapshot = workspace.snapshot();
           if (snapshot.stateRevision === null) return result({ ok: false, code: 'scene_state_unavailable' });
+          const rootKeys = topLevelKeys(snapshot.stagedValue);
+          const rootPaths = topLevelPaths(snapshot.stagedValue);
           if (args.paths === undefined || args.paths.length === 0) {
-            return result({ ok: true, stateRevision: snapshot.stateRevision, value: snapshot.stagedValue });
+            const full = {
+              ok: true, mode: 'full', stateRevision: snapshot.stateRevision,
+              topLevelKeys: rootKeys, topLevelPaths: rootPaths, value: snapshot.stagedValue,
+            };
+            const bytes = Buffer.byteLength(JSON.stringify(full));
+            if (bytes <= MAX_TOOL_RESULT_BYTES) return result(full);
+            const catalog = stateCatalog(snapshot.stagedValue);
+            return result({
+              ok: true, mode: 'catalog', stateRevision: snapshot.stateRevision, bytes,
+              topLevelKeys: rootKeys, topLevelPaths: rootPaths,
+              catalog: catalog.catalog, catalogTruncated: catalog.truncated,
+            });
           }
           const values = args.paths.map((path) => {
-            try { return { path, ok: true as const, value: valueAt(snapshot.stagedValue, path) }; }
-            catch { return { path, ok: false as const, code: 'state_path_not_found' }; }
+            const read = readStatePath(snapshot.stagedValue, path);
+            if (!read.ok) return { path, ...read };
+            const valueResult = { path, ok: true as const, value: read.value };
+            if (Buffer.byteLength(JSON.stringify(valueResult)) <= MAX_TOOL_RESULT_BYTES / 2) return valueResult;
+            const catalog = stateCatalog(read.value, pointerParts(path));
+            return {
+              path, ok: true as const, mode: 'catalog' as const,
+              bytes: Buffer.byteLength(JSON.stringify(valueResult)),
+              catalog: catalog.catalog, catalogTruncated: catalog.truncated,
+            };
           });
-          return result({ ok: true, stateRevision: snapshot.stateRevision, values });
+          return result({
+            ok: true, mode: 'paths', stateRevision: snapshot.stateRevision,
+            topLevelKeys: rootKeys, topLevelPaths: rootPaths, values,
+          });
         },
       },
       {

@@ -380,7 +380,25 @@ function systemPrompt(
   sceneStateValue: Record<string, unknown>,
   scenePromptAdditions: readonly ScenePromptAddition[],
 ): string {
-  const worldRules = payload.worldbook.activated.map((entry) => entry.content).join('\n\n');
+  const activatedRules = payload.worldbook.activated;
+  const targetRuleCount = Math.ceil(activatedRules.length / 2);
+  const rankedRules = activatedRules.map((entry, index) => ({ entry, index })).sort((left, right) => {
+    const tier = (entry: typeof activatedRules[number]) => entry.ignoreBudget
+      ? 0
+      : entry.activation === 'keyword' || entry.activation === 'sticky' ? 1
+        : entry.priority !== null ? 2 : 3;
+    const tierDifference = tier(left.entry) - tier(right.entry);
+    if (tierDifference !== 0) return tierDifference;
+    const leftPriority = left.entry.priority ?? Number.NEGATIVE_INFINITY;
+    const rightPriority = right.entry.priority ?? Number.NEGATIVE_INFINITY;
+    return rightPriority - leftPriority
+      || right.entry.order - left.entry.order
+      || left.index - right.index;
+  });
+  const mandatoryCount = rankedRules.filter(({ entry }) => entry.ignoreBudget).length;
+  const includedKeys = new Set(rankedRules.slice(0, Math.max(targetRuleCount, mandatoryCount)).map(({ entry }) => entry.entryKey));
+  const promptRules = activatedRules.filter((entry) => includedKeys.has(entry.entryKey));
+  const worldRules = promptRules.map((entry) => entry.content).join('\n\n');
   const state = JSON.stringify({
     player: { name: persona.name, description: persona.description },
     setup: conversation.setup ?? {},
@@ -398,7 +416,8 @@ function systemPrompt(
       + 'Use only the provided platform tools for Save reads, lore queries, checks, and state changes. '
       + 'All state changes must be staged with scene_patch_stage; never invent state changes only in prose.',
     '[2 WORLD RULES]',
-    worldRules || '(No activated world rules for this turn.)',
+    `${promptRules.length} of ${activatedRules.length} activated Worldbook entries are included by priority; deferred entries remain available through world_query.\n\n`
+      + (worldRules || '(No activated world rules for this turn.)'),
     '[3 CHARACTER IDENTITY]',
     characterLayer(character),
     '[4 PRIVATE SAVE PRESET — style and turn-specific writing instructions]',
