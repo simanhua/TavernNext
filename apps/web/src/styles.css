@@ -1811,3 +1811,25 @@ button[type="submit"]:hover:not(:disabled),
 .agent-run-inspector dl div { display: flex; justify-content: space-between; gap: .5rem; }
 .agent-run-inspector dt { color: var(--muted); }
 .agent-run-inspector dd { margin: 0; }
+.agent-run-inspector pre {
+  overflow: auto;
+  max-height: 20rem;
+  padding: .55rem;
+  border-radius: .45rem;
+  background: var(--vp-code-block-bg);
+  font-size: .75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.scene-standalone-page > .agent-run-inspector {
+  position: fixed;
+  z-index: 899;
+  top: 70px;
+  left: 16px;
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100dvh - 86px);
+  overflow: auto;
+  margin: 0;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+}

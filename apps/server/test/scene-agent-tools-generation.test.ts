@@ -253,6 +253,28 @@ describe('bundled Scene Agent tools', () => {
         operations: [{ op: 'delta', path: '/命运点数', value: 3 }],
       }),
     ]);
+    const firstRun = repositories.agentRuns.listByConversationId(conversation.id)[0]!;
+    expect(firstRun.trace).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'model-request', turn: 1,
+        detail: expect.objectContaining({ model: model.id, messageCount: expect.any(Number) }),
+      }),
+      expect.objectContaining({
+        type: 'model-response', turn: 1,
+        detail: expect.objectContaining({ stopReason: 'toolUse', toolCallNames: ['destined_poem_adjust_fate'] }),
+      }),
+      expect.objectContaining({
+        type: 'tool-call', turn: 1, name: 'destined_poem_adjust_fate',
+        detail: { arguments: { amount: 3, reason: {
+          type: 'string', chars: 20, fingerprint: expect.stringMatching(/^[a-f0-9]{12}$/),
+        } } },
+      }),
+      expect.objectContaining({
+        type: 'tool-result', turn: 1, name: 'destined_poem_adjust_fate',
+        detail: expect.objectContaining({ isError: false, durationMs: expect.any(Number) }),
+      }),
+    ]));
+    expect(JSON.stringify(firstRun.trace)).not.toContain('SECRET-TOOL-ARGUMENT');
 
     const coverageScene = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     const coverageHost = new SceneModuleHost(pathToFileURL(join(coverageScene.installPath, 'server/index.mjs')).href);

@@ -414,6 +414,13 @@ describe('ChatPage', () => {
         sequence: 0, kind: 'query-lore', label: 'Querying world lore', status: 'completed',
         startedAt: now, finishedAt: now,
       }],
+      trace: [{
+        sequence: 0, type: 'model-request', at: now, turn: 1, name: 'mock-agent',
+        detail: { messageCount: 3, messageTextChars: 42, availableTools: ['world_query'] },
+      }, {
+        sequence: 1, type: 'tool-call', at: now, turn: 1, name: 'world_query',
+        detail: { arguments: { query: { type: 'string', chars: 20 } } },
+      }],
       diagnostics: ['provider_failure'], failureCode: 'connection',
     }];
     useChatUi.setState({ activeConversationId: conversation.id, draft: '' });
@@ -422,6 +429,11 @@ describe('ChatPage', () => {
     const summary = await screen.findByText('Agent Run inspector');
     await userEvent.setup().click(summary);
     expect(await screen.findByText('Querying world lore · completed')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Refresh Agent Runs' })).not.toBeNull();
+    await userEvent.setup().click(screen.getByText('Detailed request and tool trace (2)'));
+    expect(screen.getByText('Turn 1 · model-request · mock-agent')).not.toBeNull();
+    expect(screen.getByText('Turn 1 · tool-call · world_query')).not.toBeNull();
+    expect(screen.getByText(/"messageCount": 3/)).not.toBeNull();
     const inspector = summary.closest('details')!;
     expect(inspector.textContent).toContain('provider_failure');
     expect(inspector.textContent).not.toContain('SECRET-TOOL-ARGUMENT');

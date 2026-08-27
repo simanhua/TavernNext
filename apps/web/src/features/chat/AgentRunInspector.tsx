@@ -11,6 +11,9 @@ export function AgentRunInspector({ conversationId }: { conversationId: string |
   return (
     <details className="agent-run-inspector">
       <summary>Agent Run inspector</summary>
+      <button type="button" onClick={() => { void runs.refetch(); }} disabled={runs.isFetching}>
+        {runs.isFetching ? 'Refreshing Agent Runs…' : 'Refresh Agent Runs'}
+      </button>
       {runs.isLoading ? <p>Loading Agent Runs…</p> : null}
       {runs.error ? <p role="alert">Unable to load Agent Runs.</p> : null}
       {(runs.data ?? []).length === 0 && !runs.isLoading ? <p>No Agent Runs yet.</p> : null}
@@ -31,6 +34,18 @@ export function AgentRunInspector({ conversationId }: { conversationId: string |
           {run.diagnostics.length === 0 && run.failureCode === undefined ? null : (
             <p>{[...run.diagnostics, ...(run.failureCode === undefined ? [] : [run.failureCode])].join(' · ')}</p>
           )}
+          <details>
+            <summary>Detailed request and tool trace ({run.trace.length})</summary>
+            {run.trace.length === 0 ? <p>No detailed trace was captured for this run.</p> : (
+              <ol>{run.trace.map((entry) => (
+                <li key={entry.sequence}>
+                  <strong>Turn {entry.turn} · {entry.type}{entry.name === undefined ? '' : ` · ${entry.name}`}</strong>
+                  <time dateTime={entry.at}>{entry.at}</time>
+                  <pre>{JSON.stringify(entry.detail, null, 2)}</pre>
+                </li>
+              ))}</ol>
+            )}
+          </details>
         </article>
       ))}
     </details>

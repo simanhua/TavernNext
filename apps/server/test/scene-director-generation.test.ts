@@ -640,6 +640,8 @@ describe('per-Save Pi Scene Director', () => {
       'failed', 'failed', 'budget_exhausted', 'aborted', 'budget_exhausted', 'aborted', 'failed',
     ]);
     expect(runs[2]).toMatchObject({ counts: { modelTurns: 8 }, failureCode: 'run_budget_exhausted' });
+    expect(runs[2]!.trace.filter((entry) => entry.type === 'model-request')).toHaveLength(8);
+    expect(runs[2]!.trace.filter((entry) => entry.type === 'tool-call')).toHaveLength(8);
     expect(runs[4]).toMatchObject({
       limits: { maxModelTurns: 8, maxToolCalls: 16, timeoutMs: 20 }, failureCode: 'timeout_budget_exhausted',
     });

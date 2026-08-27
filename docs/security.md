@@ -15,3 +15,5 @@ Trusted TavernHelper scripts are a separate same-origin compatibility risk. Trus
 ## Sensitive data
 
 Provider credentials remain in the server-side Secret Store and are redacted from logs, browser responses, snapshots, Agent Run diagnostics, and debug views. Raw private reasoning produced during an Agent Run is neither rendered nor persisted; its audit records contain only bounded, sanitized lifecycle, activity, usage, revision, and failure data. Reasoning already present in imported compatibility artifacts follows that artifact's explicit preservation/display rules and is not Agent-private reasoning.
+
+The development Agent Run trace records model/provider identifiers, per-turn request sizes, response usage and stop reasons, tool names, numeric/boolean values, and bounded argument/result shapes. String values are represented only by type, character count, and a per-run salted fingerprint for detecting repeated values; sensitive-looking keys are redacted. Raw messages, reasoning, headers, credentials, and tool text are never stored in the trace.

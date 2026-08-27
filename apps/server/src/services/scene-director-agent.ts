@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Agent, type AgentEvent, type AgentTool } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, Message, Usage } from '@earendil-works/pi-ai';
+import type { AssistantMessage, Context, Message, Usage } from '@earendil-works/pi-ai';
 import type {
   AgentRun,
   Character,
@@ -65,6 +65,7 @@ export interface SceneDirectorTerminal {
     usage: AgentRun['usage'];
     lifecycle: AgentRun['lifecycle'];
     activities: AgentRun['activities'];
+    trace: AgentRun['trace'];
     diagnostics: AgentRun['diagnostics'];
     failureCode?: string;
   };
@@ -78,6 +79,7 @@ interface MutableMetrics {
   lifecycle: AgentRun['lifecycle'];
   diagnostics: string[];
   activities: AgentRun['activities'];
+  trace: AgentRun['trace'];
   budgetExceeded: boolean;
   timedOut: boolean;
 }
@@ -97,6 +99,123 @@ function safeActivity(toolName: string): { kind: AgentActivityKind; label: strin
   if (toolName === 'scene_patch_stage') return { kind: 'update-state', label: 'Updating staged Save state' };
   if (toolName === 'scene_view_stage') return { kind: 'stage-view', label: 'Preparing a Scene view' };
   return { kind: 'scene-action', label: 'Performing a Scene action' };
+}
+
+const TRACE_ENTRY_LIMIT = 128;
+const TRACE_OBJECT_KEYS = 24;
+const TRACE_ARRAY_ITEMS = 12;
+const TRACE_DEPTH = 4;
+const TRACE_NODE_LIMIT = 192;
+const SENSITIVE_TRACE_KEY = /(?:authorization|cookie|credential|password|secret|token|api.?key)/i;
+
+function traceValue(
+  value: unknown,
+  salt: string,
+  depth = 0,
+  seen = new WeakSet<object>(),
+  budget = { remaining: TRACE_NODE_LIMIT },
+): unknown {
+  if (budget.remaining <= 0) return { type: 'truncated', reason: 'node-limit' };
+  budget.remaining -= 1;
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : { type: 'number', value: 'non-finite' };
+  if (typeof value === 'string') return {
+    type: 'string',
+    chars: value.length,
+    fingerprint: createHash('sha256').update(salt).update(value).digest('hex').slice(0, 12),
+  };
+  if (typeof value !== 'object') return { type: typeof value };
+  if (seen.has(value)) return { type: 'circular' };
+  if (depth >= TRACE_DEPTH) return { type: Array.isArray(value) ? 'array' : 'object', truncated: true };
+  seen.add(value);
+  if (Array.isArray(value)) return {
+    type: 'array',
+    length: value.length,
+    items: value.slice(0, TRACE_ARRAY_ITEMS).map((item) => traceValue(item, salt, depth + 1, seen, budget)),
+    ...(value.length > TRACE_ARRAY_ITEMS ? { truncated: true } : {}),
+  };
+  const entries = Object.entries(value).slice(0, TRACE_OBJECT_KEYS);
+  return {
+    ...Object.fromEntries(entries.map(([key, nested]) => [
+      key,
+      SENSITIVE_TRACE_KEY.test(key) ? { type: 'redacted' } : traceValue(nested, salt, depth + 1, seen, budget),
+    ])),
+    ...(Object.keys(value).length > TRACE_OBJECT_KEYS ? { __truncatedKeys: true } : {}),
+  };
+}
+
+function contentMetrics(content: unknown): {
+  textChars: number;
+  thinkingChars: number;
+  imageCount: number;
+  toolCallNames: string[];
+} {
+  if (typeof content === 'string') return {
+    textChars: content.length, thinkingChars: 0, imageCount: 0, toolCallNames: [],
+  };
+  if (!Array.isArray(content)) return { textChars: 0, thinkingChars: 0, imageCount: 0, toolCallNames: [] };
+  const toolCallNames: string[] = [];
+  let textChars = 0;
+  let thinkingChars = 0;
+  let imageCount = 0;
+  for (const raw of content) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const block = raw as Record<string, unknown>;
+    if (block.type === 'text' && typeof block.text === 'string') textChars += block.text.length;
+    else if (block.type === 'thinking' && typeof block.thinking === 'string') thinkingChars += block.thinking.length;
+    else if (block.type === 'image') imageCount += 1;
+    else if (block.type === 'toolCall' && typeof block.name === 'string') toolCallNames.push(block.name);
+  }
+  return { textChars, thinkingChars, imageCount, toolCallNames };
+}
+
+function requestTrace(model: PiAgentModelRuntime['model'], context: Context, salt: string): Record<string, unknown> {
+  const roles: Record<string, number> = {};
+  const priorToolResults: string[] = [];
+  let textChars = 0;
+  let thinkingChars = 0;
+  let imageCount = 0;
+  for (const message of context.messages) {
+    roles[message.role] = (roles[message.role] ?? 0) + 1;
+    const metrics = contentMetrics(message.content);
+    textChars += metrics.textChars;
+    thinkingChars += metrics.thinkingChars;
+    imageCount += metrics.imageCount;
+    if (message.role === 'toolResult') priorToolResults.push(message.toolName);
+  }
+  return {
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    systemPromptChars: context.systemPrompt?.length ?? 0,
+    messageCount: context.messages.length,
+    messageRoles: roles,
+    messageTextChars: textChars,
+    messageThinkingChars: thinkingChars,
+    imageCount,
+    priorToolResults: [...new Set(priorToolResults)].slice(0, 32),
+    availableTools: (context.tools ?? []).map((tool) => tool.name).slice(0, 64),
+    systemPromptFingerprint: createHash('sha256').update(salt).update(context.systemPrompt ?? '').digest('hex').slice(0, 12),
+    contextFingerprint: createHash('sha256').update(salt).update(JSON.stringify(context.messages)).digest('hex').slice(0, 12),
+  };
+}
+
+function responseTrace(message: AssistantMessage): Record<string, unknown> {
+  const metrics = contentMetrics(message.content);
+  return {
+    api: message.api,
+    provider: message.provider,
+    model: message.model,
+    stopReason: message.stopReason,
+    inputTokens: message.usage.input,
+    outputTokens: message.usage.output,
+    cacheReadTokens: message.usage.cacheRead,
+    cacheWriteTokens: message.usage.cacheWrite,
+    textChars: metrics.textChars,
+    thinkingChars: metrics.thinkingChars,
+    imageCount: metrics.imageCount,
+    toolCallNames: metrics.toolCallNames,
+  };
 }
 
 class ViewReferenceStream {
@@ -472,6 +591,7 @@ export class SceneDirectorExecution {
   private activeAgent: Agent | undefined;
   private producer: Promise<void> | undefined;
   private metricsFrozen = false;
+  private readonly traceSalt = randomUUID();
   private promptPlanAudit: AgentRun['promptPlan'] | undefined;
   private readonly workspace: TurnWorkspace;
   private readonly sceneViewRuntime: SceneViewRuntime | undefined;
@@ -483,6 +603,7 @@ export class SceneDirectorExecution {
     lifecycle: [],
     diagnostics: [],
     activities: [],
+    trace: [],
     budgetExceeded: false,
     timedOut: false,
   };
@@ -653,6 +774,22 @@ export class SceneDirectorExecution {
     return { ...SCENE_DIRECTOR_LIMITS, ...this.input.limits };
   }
 
+  private appendTrace(
+    type: AgentRun['trace'][number]['type'],
+    detail: Record<string, unknown>,
+    name?: string,
+  ): void {
+    if (this.metricsFrozen || this.metrics.trace.length >= TRACE_ENTRY_LIMIT) return;
+    this.metrics.trace.push({
+      sequence: this.metrics.trace.length,
+      type,
+      at: this.clock().toISOString(),
+      turn: Math.max(1, this.metrics.modelTurns),
+      ...(name === undefined ? {} : { name: name.slice(0, 160) }),
+      detail: structuredClone(detail),
+    });
+  }
+
   private prepare(): {
     configuration: SaveAgentConfiguration;
     conversation: Conversation;
@@ -684,6 +821,7 @@ export class SceneDirectorExecution {
       },
       lifecycle: [],
       activities: [],
+      trace: [],
       diagnostics: [],
     });
     return { configuration, conversation, character, runtime: this.plan.runtime };
@@ -708,15 +846,18 @@ export class SceneDirectorExecution {
             tools: this.plan.tools,
             messages: this.plan.messages,
           },
-          streamFn: (model, context, options) => runtime.stream(model, context, {
-            ...options,
-            maxTokens: responseLimit,
-            ...(temperature === undefined ? {} : { temperature }),
-            samplingParams: this.plan.supportedSampling,
-            onPayload: async (raw, payloadModel) => applySamplingPayload(
-              raw, payloadModel.api, payloadModel.provider, sampling,
-            ),
-          }),
+          streamFn: (model, context, options) => {
+            this.appendTrace('model-request', requestTrace(model, context, this.traceSalt), model.id);
+            return runtime.stream(model, context, {
+              ...options,
+              maxTokens: responseLimit,
+              ...(temperature === undefined ? {} : { temperature }),
+              samplingParams: this.plan.supportedSampling,
+              onPayload: async (raw, payloadModel) => applySamplingPayload(
+                raw, payloadModel.api, payloadModel.provider, sampling,
+              ),
+            });
+          },
           shouldStopAfterTurn: ({ toolResults }) => {
             if (toolResults.length > 0 && this.metrics.modelTurns >= this.limits().maxModelTurns) {
               this.metrics.budgetExceeded = true;
@@ -729,6 +870,7 @@ export class SceneDirectorExecution {
         this.activeAgent = agent;
         const referenceStream = new ViewReferenceStream(this.sceneViewRuntime);
         const activityByCall = new Map<string, number>();
+        const toolStartedAt = new Map<string, number>();
         const abort = () => {
           agent.abort();
           queue.end(new ProviderError('aborted'));
@@ -767,6 +909,8 @@ export class SceneDirectorExecution {
               return;
             }
             this.metrics.toolCalls += 1;
+            toolStartedAt.set(event.toolCallId, Date.now());
+            this.appendTrace('tool-call', { arguments: traceValue(event.args, this.traceSalt) as Record<string, unknown> }, event.toolName);
             if (this.metrics.activities.length < 64) {
               const activity = safeActivity(event.toolName);
               const index = this.metrics.activities.length;
@@ -780,6 +924,12 @@ export class SceneDirectorExecution {
               queue.push({ type: 'activity', ...activity });
             }
           } else if (event.type === 'tool_execution_end') {
+            const startedAt = toolStartedAt.get(event.toolCallId);
+            this.appendTrace('tool-result', {
+              isError: event.isError,
+              durationMs: startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt),
+              result: traceValue(event.result, this.traceSalt),
+            }, event.toolName);
             const index = activityByCall.get(event.toolCallId);
             if (index !== undefined) {
               const activity = this.metrics.activities[index];
@@ -795,6 +945,7 @@ export class SceneDirectorExecution {
               referenceStream.push(event.assistantMessageEvent.delta, (value) => queue.push(value));
             }
           } else if (event.type === 'message_end' && event.message.role === 'assistant') {
+            this.appendTrace('model-response', responseTrace(event.message));
             this.metrics.inputTokens += event.message.usage.input
               + event.message.usage.cacheRead + event.message.usage.cacheWrite;
             this.metrics.outputTokens += event.message.usage.output;
@@ -879,6 +1030,7 @@ export class SceneDirectorExecution {
         lifecycle: structuredClone(this.metrics.lifecycle),
         diagnostics: [...this.metrics.diagnostics],
         activities: structuredClone(this.metrics.activities),
+        trace: structuredClone(this.metrics.trace),
         ...(failureCode === undefined ? {} : { failureCode }),
       },
     };
@@ -912,6 +1064,7 @@ export class SceneDirectorExecution {
         lifecycle: structuredClone(this.metrics.lifecycle),
         diagnostics: this.metrics.diagnostics.length === 0 ? ['run_failed'] : [...this.metrics.diagnostics],
         activities: structuredClone(this.metrics.activities),
+        trace: structuredClone(this.metrics.trace),
         failureCode,
       },
     };

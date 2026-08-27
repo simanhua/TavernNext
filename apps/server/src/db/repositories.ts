@@ -139,7 +139,7 @@ type DefaultedField =
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
   | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
   | 'diagnostics' | 'document' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
-  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal';
+  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal' | 'trace';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
