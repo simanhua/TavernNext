@@ -87,10 +87,12 @@ export class SceneViewRuntime {
   }
 
   tool(): AgentTool {
+    const availableKinds = [...this.definitions.keys()].join(', ');
     return {
       name: 'scene_view_stage',
       label: 'Stage Scene View',
-      description: 'Stage a Scene-defined read-only view and receive an opaque reference to place exactly once in the final prose.',
+      description: 'Stage a Scene-defined read-only view and receive an opaque reference to place exactly once in the final prose. '
+        + `Available kinds: ${availableKinds}.`,
       parameters: Type.Object({
         kind: Type.String({ minLength: 1, maxLength: 64 }),
         relatedEntities: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { maxItems: 32 })),
@@ -128,8 +130,36 @@ export class SceneViewRuntime {
   }
 
   async resolve(markdown: string, signal?: AbortSignal): Promise<ResolvedSceneViews> {
+    let source = markdown;
+    let fallbackStageFailed = false;
+    const hasStagedReference = [...source.matchAll(COMPLETE_REFERENCE)]
+      .some((match) => this.staged.has(match[1]!));
+    if (!hasStagedReference) {
+      try {
+        const alreadyStaged = this.staged.values().next().value as StagedView | undefined;
+        let reference = alreadyStaged?.reference;
+        if (reference === undefined) {
+          const fallbackKind = this.definitions.has('status')
+            ? 'status'
+            : this.definitions.keys().next().value;
+          if (fallbackKind !== undefined) {
+            const staged = await this.tool().execute(
+              'platform-post-narrative-view',
+              { kind: fallbackKind, relatedEntities: [], insertionIntent: 'after' },
+              signal,
+            );
+            reference = (staged.details as { reference?: string }).reference;
+          }
+        }
+        if (reference !== undefined) source = `${source}${reference}`;
+      } catch {
+        fallbackStageFailed = true;
+      }
+    }
     const blocks: RoleplayDocument['blocks'] = [];
-    const diagnostics: SceneStateDiagnostic[] = [];
+    const diagnostics: SceneStateDiagnostic[] = fallbackStageFailed
+      ? [diagnostic('scene_view_stage_failed')]
+      : [];
     const used = new Set<string>();
     let cursor = 0;
     const appendMarkdown = (rawContent: string) => {
@@ -140,8 +170,8 @@ export class SceneViewRuntime {
       }
       if (content !== '') blocks.push({ type: 'markdown', content });
     };
-    for (const match of markdown.matchAll(COMPLETE_REFERENCE)) {
-      appendMarkdown(markdown.slice(cursor, match.index));
+    for (const match of source.matchAll(COMPLETE_REFERENCE)) {
+      appendMarkdown(source.slice(cursor, match.index));
       cursor = match.index! + match[0].length;
       const id = match[1]!;
       if (!UUID.test(id)) {
@@ -201,7 +231,7 @@ export class SceneViewRuntime {
         diagnostics.push(diagnostic('scene_view_projection_failed', staged));
       }
     }
-    appendMarkdown(markdown.slice(cursor));
+    appendMarkdown(source.slice(cursor));
     for (const staged of this.staged.values()) {
       if (!used.has(staged.id)) diagnostics.push(diagnostic('scene_view_unused', staged));
     }

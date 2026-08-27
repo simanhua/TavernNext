@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import type { RoleplaySceneViewBlock } from '@tavernnext/domain';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../api/client.js';
@@ -81,6 +81,28 @@ describe('SceneViewBlock trust dispatch', () => {
     trustScene(candidate);
     renderBlock(candidate);
     expect(await screen.findByRole('region', { name: label })).not.toBeNull();
+  });
+
+  it('renders status attributes as structured frontend content', async () => {
+    const candidate = {
+      ...block,
+      kind: 'status',
+      rendererId: 'destined-poem-status-v1',
+      props: {
+        name: '风信子', level: 1, rank: '未评级', fate: 0,
+        resources: { hp: 10, maxHp: 10, mp: 6, maxMp: 6, stamina: 8, maxStamina: 8 },
+        attributes: { 力量: 4, 敏捷: 5, 体质: 6, 智力: 3, 精神: 6 },
+        statuses: [],
+      },
+    } satisfies RoleplaySceneViewBlock;
+    trustScene(candidate);
+    renderBlock(candidate);
+    expect(await screen.findByRole('region', { name: '风信子 status' })).not.toBeNull();
+    for (const [name, value] of [['力量', 4], ['敏捷', 5], ['体质', 6], ['智力', 3], ['精神', 6]] as const) {
+      const attribute = screen.getByRole('group', { name: `${name} attribute` });
+      expect(within(attribute).getByText(name)).not.toBeNull();
+      expect(within(attribute).getByText(String(value))).not.toBeNull();
+    }
   });
 
   it.each([

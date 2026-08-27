@@ -69,6 +69,7 @@ function resource(props: Record<string, unknown>, key: string, maximum: string) 
 
 function StatusView({ block, props }: { block: RoleplaySceneViewBlock; props: Record<string, unknown> }) {
   const resources = record(props.resources) ?? {};
+  const attributes = Object.entries(record(props.attributes) ?? {});
   const items = [
     ['HP', resource(resources, 'hp', 'maxHp')],
     ['MP', resource(resources, 'mp', 'maxMp')],
@@ -80,6 +81,11 @@ function StatusView({ block, props }: { block: RoleplaySceneViewBlock; props: Re
       <span>{label} {meter.value} / {meter.maximum}</span>
       <progress max={Math.max(1, meter.maximum)} value={Math.max(0, Math.min(meter.value, meter.maximum))} />
     </div>)}</div>
+    {attributes.length === 0 ? null : <div className="scene-view-attributes" aria-label="Attributes">
+      {attributes.map(([name, value]) => <div key={name} role="group" aria-label={`${name} attribute`}>
+        <span>{name}</span><strong>{number(value)}</strong>
+      </div>)}
+    </div>}
     <p>Fate {number(props.fate)}{statuses(props.statuses).length === 0 ? '' : ` · ${statuses(props.statuses).join(' · ')}`}</p>
   </ViewShell>;
 }

@@ -1737,6 +1737,7 @@ button[type="submit"]:hover:not(:disabled),
 }
 
 .scene-view-meters,
+.scene-view-attributes,
 .scene-view-card-grid {
   display: grid;
   gap: 0.75rem;
@@ -1749,6 +1750,21 @@ button[type="submit"]:hover:not(:disabled),
 
 .scene-view-meters progress {
   width: 100%;
+}
+
+.scene-view-attributes {
+  grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr));
+  margin-top: .75rem;
+}
+
+.scene-view-attributes > div {
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+  padding: .55rem .65rem;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: var(--ink-850);
 }
 
 .scene-view-card-grid {

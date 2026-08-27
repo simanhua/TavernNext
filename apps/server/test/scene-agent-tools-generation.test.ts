@@ -223,6 +223,14 @@ describe('bundled Scene Agent tools', () => {
     expect(terminal(response.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
     expect(response.payload).toContain('"kind":"scene-action","label":"Performing a Scene action"');
     expect(response.payload).not.toContain('SECRET-TOOL-ARGUMENT');
+    const fallbackViewVariant = repositories.messageVariants.listByConversationId(conversation.id).at(-1)!;
+    expect(fallbackViewVariant.document.blocks).toEqual([
+      { type: 'markdown', content: '守住档案馆后，命运的丝线向你偏转。' },
+      expect.objectContaining({
+        type: 'scene-view', kind: 'status', rendererId: 'destined-poem-status-v1',
+        props: expect.objectContaining({ fate: 3, attributes: expect.any(Object) }),
+      }),
+    ]);
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
       'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
       'destined_poem_adjust_fate', 'destined_poem_adjust_vitals', 'destined_poem_travel',
