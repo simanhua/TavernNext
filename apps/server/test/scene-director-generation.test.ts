@@ -482,7 +482,7 @@ describe('per-Save Pi Scene Director', () => {
       configuration: seeded.repositories.saveAgentConfigurations.getByConversationId(ids.conversation)!,
       playerInput: 'Staged state',
       runtimeFactory: () => completedRuntime(['Staged state reply'], stagedContexts),
-      effectiveSceneState: { phase: 'staged', points: 9 },
+      effectiveSceneState: { phase: 'staged', points: 9, 主角: { 金钱: 20 } },
       scenePromptAdditions: [{ role: 'system', content: 'SCENE-TURN-RULE' }],
     });
     await staged.validatePromptBudget(oneTokenRuntime);
@@ -490,6 +490,8 @@ describe('per-Save Pi Scene Director', () => {
     const stagedTerminal = await staged.settle('completed');
     if (stagedTerminal !== undefined) staged.commitTerminal(stagedTerminal);
     expect(stagedContexts[0]?.systemPrompt).toContain('"phase":"staged"');
+    expect(stagedContexts[0]?.systemPrompt).toContain('/主角/金钱 (number)');
+    expect(stagedContexts[0]?.systemPrompt).toContain('Copy these paths exactly');
     expect(stagedContexts[0]?.systemPrompt).toContain('SCENE-TURN-RULE');
 
   });

@@ -27,7 +27,7 @@ import {
   type PromptSnapshotPayload,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
-import { TurnWorkspace, type TurnWorkspaceSnapshot } from './turn-workspace.js';
+import { saveStateDirectory, TurnWorkspace, type TurnWorkspaceSnapshot } from './turn-workspace.js';
 import type { SceneAgentToolFactory } from './scene-agent-tools.js';
 import {
   type SceneViewRuntime,
@@ -405,6 +405,10 @@ function systemPrompt(
     scene: sceneStateValue,
     authorNote: conversation.authorNote,
   });
+  const stateDirectory = saveStateDirectory(sceneStateValue);
+  const statePaths = stateDirectory.catalog
+    .map((entry) => `- ${entry.path} (${entry.type})`)
+    .join('\n');
   const turnDirectives = scenePromptAdditions.map((addition) => (
     `[${addition.role}] ${addition.content}`
   )).join('\n\n');
@@ -424,7 +428,12 @@ function systemPrompt(
     presetInstructions(configuration, character.id) || '(No additional private preset instructions.)',
     '[5 SAVE STATE]',
     state,
-    ...(turnDirectives === '' ? [] : ['[5A SCENE TURN DIRECTIVES]', turnDirectives]),
+    '[5A SAVE STATE TOOL PATHS — exact Scene State JSON Pointers]',
+    'Copy these paths exactly when calling save_state_read or scene_patch_stage. '
+      + 'Never translate labels or invent container names.',
+    statePaths || '(No Scene State paths are available.)',
+    ...(stateDirectory.truncated ? ['Directory is bounded; call save_state_read for deeper paths.'] : []),
+    ...(turnDirectives === '' ? [] : ['[5B SCENE TURN DIRECTIVES]', turnDirectives]),
     '[6 HISTORY AND PLAYER INPUT]',
     'Conversation history is supplied as messages. The newest player message is the current request.',
   ].join('\n\n');

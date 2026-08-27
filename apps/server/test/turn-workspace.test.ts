@@ -225,4 +225,40 @@ describe('TurnWorkspace', () => {
     expect(full).not.toHaveProperty('code', 'tool_result_too_large');
     expect(Buffer.byteLength(JSON.stringify(full))).toBeLessThanOrEqual(64 * 1024);
   });
+
+  it('recovers a misplaced wallet replace with the exact legal Save State path', async () => {
+    const workspace = new TurnWorkspace({
+      generationId: '018f0000-0000-7000-8000-000000000307',
+      payload: payload(),
+      state: {
+        revision: 10,
+        value: {
+          主角: {
+            姓名: '风信子', 描述: '男', 种族: '', 身份: [], 职业: [], 生命层级: '第一层级/普通',
+            等级: 1, 累计经验值: 0, 升级所需经验: 120, 冒险者等级: '未评级', 属性点: 0,
+            属性: { 力量: 0, 敏捷: 0, 体质: 0, 智力: 0, 精神: 0 },
+            生命值上限: 0, 生命值: 0, 法力值上限: 0, 法力值: 0,
+            体力值上限: 0, 体力值: 0, 状态效果: {}, 金钱: 0,
+          },
+        },
+        manifest: {} as SceneManifest,
+      },
+    });
+
+    const failed = detail<any>(await execute(workspace, 'scene_patch_stage', {
+      operations: [{ op: 'replace', path: '/主钱包/金钱', value: 20 }],
+    }));
+    expect(failed).toMatchObject({
+      ok: false,
+      failures: [{
+        operationIndex: 0, code: 'scene_patch_invalid', path: '/主钱包/金钱',
+        nearestPath: '', suggestions: ['/主角/金钱'],
+      }],
+    });
+
+    expect(detail(await execute(workspace, 'scene_patch_stage', {
+      operations: [{ op: 'replace', path: '/主角/金钱', value: 20 }],
+    }))).toMatchObject({ ok: true, appliedCount: 1, failureCount: 0 });
+    expect(workspace.snapshot().stagedValue).toMatchObject({ 主角: { 金钱: 20 } });
+  });
 });

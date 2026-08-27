@@ -12,7 +12,7 @@ const MAX_TOOL_RESULT_BYTES = 64 * 1024;
 const MAX_WORLD_RESULTS = 20;
 const MAX_STATE_CATALOG_NODES = 96;
 const MAX_STATE_CATALOG_DEPTH = 3;
-const MAX_STATE_CATALOG_CHILDREN = 16;
+const MAX_STATE_CATALOG_CHILDREN = 64;
 const MAX_STATE_PATH_SUGGESTIONS = 5;
 
 export const PLATFORM_AGENT_TOOL_NAMES = [
@@ -50,7 +50,17 @@ function pointerPath(parts: readonly string[]): string {
   return parts.length === 0 ? '' : `/${parts.map(pointerSegment).join('/')}`;
 }
 
-function stateType(value: unknown): 'null' | 'array' | 'object' | 'string' | 'number' | 'boolean' | 'unknown' {
+type StateValueType = 'null' | 'array' | 'object' | 'string' | 'number' | 'boolean' | 'unknown';
+
+export interface SaveStateDirectoryEntry {
+  path: string;
+  type: StateValueType;
+  chars?: number;
+  length?: number;
+  childCount?: number;
+}
+
+function stateType(value: unknown): StateValueType {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
   if (record(value) !== undefined) return 'object';
@@ -137,11 +147,11 @@ function topLevelPaths(value: Record<string, unknown>): string[] {
   return topLevelKeys(value).map((key) => pointerPath([key]));
 }
 
-function stateCatalog(root: unknown, baseParts: readonly string[] = []): {
-  catalog: Array<Record<string, unknown>>;
+export function saveStateDirectory(root: unknown, baseParts: readonly string[] = []): {
+  catalog: SaveStateDirectoryEntry[];
   truncated: boolean;
 } {
-  const catalog: Array<Record<string, unknown>> = [];
+  const catalog: SaveStateDirectoryEntry[] = [];
   let truncated = false;
   const visit = (value: unknown, parts: string[], depth: number) => {
     if (catalog.length >= MAX_STATE_CATALOG_NODES) {
@@ -154,7 +164,7 @@ function stateCatalog(root: unknown, baseParts: readonly string[] = []): {
       return;
     }
     const type = stateType(value);
-    const node: Record<string, unknown> = { path, type };
+    const node: SaveStateDirectoryEntry = { path, type };
     if (type === 'string') node.chars = (value as string).length;
     else if (type === 'array') node.length = (value as unknown[]).length;
     else if (type === 'object') node.childCount = Object.keys(value as Record<string, unknown>).length;
@@ -176,6 +186,40 @@ function stateCatalog(root: unknown, baseParts: readonly string[] = []): {
     visit(value, [...baseParts, child], 1);
   }
   return { catalog, truncated };
+}
+
+function statePathRecovery(root: Record<string, unknown>, pointer: string): {
+  nearestPath: string;
+  suggestions: string[];
+} {
+  const read = readStatePath(root, pointer);
+  let requestedParts: string[];
+  try {
+    requestedParts = pointerParts(pointer);
+  } catch {
+    requestedParts = pointer.split('/').filter(Boolean);
+  }
+  const requestedLeaf = requestedParts.at(-1) ?? pointer;
+  const candidates = saveStateDirectory(root).catalog.filter((entry) => entry.path !== '');
+  const leaf = (path: string) => {
+    try { return pointerParts(path).at(-1) ?? path; }
+    catch { return path; }
+  };
+  const exact = candidates.filter((entry) => leaf(entry.path) === requestedLeaf);
+  const containing = candidates.filter((entry) => {
+    const candidate = leaf(entry.path);
+    return candidate.includes(requestedLeaf) || requestedLeaf.includes(candidate);
+  });
+  const pool = exact.length > 0 ? exact : containing.length > 0 ? containing : candidates;
+  const suggestions = pool.sort((left, right) => (
+    editDistance(requestedLeaf, leaf(left.path)) - editDistance(requestedLeaf, leaf(right.path))
+    || editDistance(pointer, left.path) - editDistance(pointer, right.path)
+    || left.path.localeCompare(right.path)
+  )).slice(0, MAX_STATE_PATH_SUGGESTIONS).map((entry) => entry.path);
+  return {
+    nearestPath: read.ok ? pointer : read.nearestPath,
+    suggestions,
+  };
 }
 
 interface WorldEntry {
@@ -339,7 +383,7 @@ export class TurnWorkspace {
             };
             const bytes = Buffer.byteLength(JSON.stringify(full));
             if (bytes <= MAX_TOOL_RESULT_BYTES) return result(full);
-            const catalog = stateCatalog(snapshot.stagedValue);
+            const catalog = saveStateDirectory(snapshot.stagedValue);
             return result({
               ok: true, mode: 'catalog', stateRevision: snapshot.stateRevision, bytes,
               topLevelKeys: rootKeys, topLevelPaths: rootPaths,
@@ -351,7 +395,7 @@ export class TurnWorkspace {
             if (!read.ok) return { path, ...read };
             const valueResult = { path, ok: true as const, value: read.value };
             if (Buffer.byteLength(JSON.stringify(valueResult)) <= MAX_TOOL_RESULT_BYTES / 2) return valueResult;
-            const catalog = stateCatalog(read.value, pointerParts(path));
+            const catalog = saveStateDirectory(read.value, pointerParts(path));
             return {
               path, ok: true as const, mode: 'catalog' as const,
               bytes: Buffer.byteLength(JSON.stringify(valueResult)),
@@ -411,7 +455,7 @@ export class TurnWorkspace {
       {
         name: 'scene_patch_stage',
         label: 'Stage Scene Patch',
-        description: 'Stage ordered Save State patch operations. Valid operations apply immediately; invalid operations return structured failures.',
+        description: 'Stage ordered Save State patch operations using exact RFC 6901 paths from the prompt directory. Copy paths exactly; never translate labels or invent container names. Valid operations apply immediately; invalid paths return nearestPath and legal suggestions.',
         parameters: Type.Object({
           operations: Type.Array(Type.Unknown(), { maxItems: 32 }),
         }, { additionalProperties: false }),
@@ -419,8 +463,11 @@ export class TurnWorkspace {
         async execute(_toolCallId, params) {
           const args = params as { operations: unknown[] };
           const applied = workspace.stagePatch(args.operations);
+          const failures = applied.failures.map((failure) => failure.path === undefined
+            ? failure
+            : { ...failure, ...statePathRecovery(workspace.stagedValue, failure.path) });
           return result({
-            ok: applied.failures.length === 0,
+            ok: failures.length === 0,
             appliedCount: applied.operations.length,
             applied: applied.operations.map((operation) => ({
               op: operation.op,
@@ -428,8 +475,8 @@ export class TurnWorkspace {
               ...('from' in operation ? { from: operation.from } : {}),
               ...('to' in operation ? { to: operation.to } : {}),
             })),
-            failureCount: applied.failures.length,
-            failures: applied.failures,
+            failureCount: failures.length,
+            failures,
             stagedOperationCount: workspace.operations.length,
           });
         },
