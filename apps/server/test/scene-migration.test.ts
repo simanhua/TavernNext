@@ -8,7 +8,7 @@ import { CURRENT_SCHEMA_VERSION, migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import { TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 import { DESTINED_POEM_SCENE_ID } from '../src/scenes/official-package.js';
-import { upgradeInstalledOfficialSceneRuntime } from '../src/scenes/official-scene-upgrade.js';
+import { upgradeInstalledOfficialScenes } from '../src/scenes/official-scene-upgrade.js';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
@@ -123,7 +123,7 @@ describe('Scene migrations', () => {
     database.close();
   });
 
-  it('upgrades the installed official 2.6 package without changing its saves or backing resources', async () => {
+  it('upgrades each installed official Scene Package without migrating its Saves', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-runtime-upgrade-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -172,11 +172,11 @@ describe('Scene migrations', () => {
       value: { points: 7, 主角: { 背包: null } },
     });
 
-    upgradeInstalledOfficialSceneRuntime(database, directory);
+    expect(upgradeInstalledOfficialScenes(database, directory)).toEqual([]);
 
     const upgraded = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     expect(upgraded.manifest.sceneSdkVersion).toBe(2);
-    expect(upgraded.version).toBe('2.7.0');
+    expect(upgraded.version).toBe('2.8.0');
     expect(upgraded.manifest.sceneViews).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'combat', schemaVersion: 1, renderer: { id: 'destined-poem-combat-v1' } }),
       ...['status', 'map', 'relationship', 'progress'].map((kind) => expect.objectContaining({ kind })),
@@ -186,10 +186,10 @@ describe('Scene migrations', () => {
     expect(upgraded.backingCharacterId).toBe(character.id);
     expect(repositories.conversations.get(conversation.id)?.title).toBe('Kept Save');
     expect(repositories.conversationSceneStates.getByConversationId(conversation.id)?.value).toEqual({
-      points: 7, 主角: { 装备: {}, 背包: {} },
+      points: 7, 主角: { 背包: null },
     });
     expect(repositories.sceneStateTransitions.get(transition.id)?.value).toEqual({
-      points: 7, 主角: { 装备: {}, 背包: {} },
+      points: 7, 主角: { 背包: null },
     });
     database.close();
   }, 30_000);

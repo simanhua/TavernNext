@@ -8,6 +8,7 @@ import type {
   Persona,
 } from './entities.js';
 import type { ScenePatchFailure, ScenePatchOperation } from './scene-state.js';
+import type { RoleplaySceneViewBlock } from './roleplay-document.js';
 
 export type SceneRuntimeMode = 'setup' | 'workspace';
 export type SceneGenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
@@ -189,6 +190,10 @@ export type SceneFrontendCleanup = () => void | Promise<void>;
 
 export interface SceneFrontendModule {
   mount(input: SceneFrontendMountInput):
+    | void
+    | SceneFrontendCleanup
+    | Promise<void | SceneFrontendCleanup>;
+  renderSceneView?(input: { root: HTMLElement; block: RoleplaySceneViewBlock }):
     | void
     | SceneFrontendCleanup
     | Promise<void | SceneFrontendCleanup>;

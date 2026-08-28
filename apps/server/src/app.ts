@@ -54,7 +54,7 @@ import { REDACTED_LOG_VALUE, redactLogValue } from './services/log-redaction.js'
 import { createSecretStore } from './services/secret-store.js';
 import { injectedSnapshotIntegrityKey, loadSnapshotIntegrityKey } from './snapshot-integrity-key.js';
 import { createSceneService } from './scenes/scene-service.js';
-import { upgradeInstalledOfficialSceneRuntime } from './scenes/official-scene-upgrade.js';
+import { upgradeInstalledOfficialScenes } from './scenes/official-scene-upgrade.js';
 
 export type StartupMigrationResult = 'writable' | 'read_only_migration_failed';
 
@@ -210,7 +210,11 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const startup = startupDatabase(config, options);
   try {
   const { database } = startup;
-  if (startup.result === 'writable') upgradeInstalledOfficialSceneRuntime(database, config.dataDir);
+  if (startup.result === 'writable') {
+    for (const failure of upgradeInstalledOfficialScenes(database, config.dataDir)) {
+      app.log.error(failure, 'Official Scene upgrade failed; the prior installed package remains active.');
+    }
+  }
   app.decorate('startupMigrationResult', startup.result);
   if (startup.result === 'read_only_migration_failed') {
     app.log.warn({ code: 'migration_failed' }, 'Startup migration failed; read-only recovery mode is active.');

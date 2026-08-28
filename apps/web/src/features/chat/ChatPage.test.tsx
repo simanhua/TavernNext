@@ -13,6 +13,18 @@ import type { Conversation } from '../../api/client.js';
 import { I18nProvider } from '../../app/i18n.js';
 import { CHAT_FORMAT_STORAGE_KEY } from './ChatFormatSettings.js';
 
+vi.mock('./SceneViewBlock.js', () => ({
+  SceneViewBlock: ({ block }: { block: { viewId: string; sourceStateRevision: number; props: Record<string, unknown> } }) => {
+    const protagonist = block.props.protagonist as { name?: string; hp?: number; maxHp?: number } | undefined;
+    const opponents = block.props.opponents as Array<{ name?: string; hp?: number; maxHp?: number }> | undefined;
+    return <section role="region" aria-label={String(block.props.title ?? 'Scene view')}
+      data-scene-view-id={block.viewId} data-source-state-revision={block.sourceStateRevision}>
+      {protagonist === undefined ? null : `${protagonist.name} ${protagonist.hp} / ${protagonist.maxHp} HP`}
+      {(opponents ?? []).map((opponent) => `${opponent.name} ${opponent.hp} / ${opponent.maxHp} HP`).join(' ')}
+    </section>;
+  },
+}));
+
 const now = '2026-08-08T00:00:00.000Z';
 const ids = {
   character: '018f0000-0000-7000-8000-000000000101',

@@ -243,6 +243,8 @@ export const SceneManifestSchema = z.object({
   frontendStyles: z.array(SceneStylesheetPathSchema).max(64).default([]),
   serverEntry: SceneRelativePathSchema.optional(),
   coverPath: SceneRelativePathSchema.optional(),
+  backingCharacterPath: SceneRelativePathSchema.optional(),
+  backingPresetPath: SceneRelativePathSchema.optional(),
   setupSchema: z.record(z.string(), z.unknown()).default({}),
   stateSchema: z.record(z.string(), z.unknown()).default({}),
   generationRecipe: z.record(z.string(), z.unknown()).optional(),
@@ -270,6 +272,8 @@ export const SceneManifestSchema = z.object({
     ...manifest.frontendStyles,
     manifest.serverEntry,
     manifest.coverPath,
+    manifest.backingCharacterPath,
+    manifest.backingPresetPath,
   ].filter((value): value is string => value !== undefined);
   for (const path of required) {
     if (!declared.has(path)) {

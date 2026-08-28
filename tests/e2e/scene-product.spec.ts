@@ -88,7 +88,8 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
 
   await page.goto('/');
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await page.getByRole('button', { name: '安装官方场景' }).click();
+  await page.locator('article.scene-card').filter({ hasText: '命定之诗与黄昏之歌' })
+    .getByRole('button', { name: '安装官方场景' }).click();
   const card = page.getByRole('link', { name: /命定之诗与黄昏之歌/ });
   await expect(card).toBeVisible({ timeout: 30_000 });
   await card.click();
@@ -141,13 +142,19 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   }] });
   stack.provider.queue((request) => {
     if (!JSON.stringify(request.body).includes(nextTurnStyle)) throw new Error('Private Preset edit was not active next turn');
-    return { chunks: ['判定完成后，艾琳继续向皇城深处前进。'] };
+    return { chunks: [`**判定完成**后，艾琳继续向皇城深处前进。
+
+| 属性 | 当前 |
+|------|------|
+| 力量 | 4 |`] };
   });
   await firstScene.getByPlaceholder('你准备做什么？').fill('继续探索皇城');
   await firstScene.getByRole('button', { name: '发送' }).click();
   await expect(firstScene.getByText('判定完成后，艾琳继续向皇城深处前进。')).toBeVisible({ timeout: 30_000 });
   const fallbackViewMessage = firstScene.locator('article.message.assistant')
     .filter({ hasText: '判定完成后，艾琳继续向皇城深处前进。' });
+  await expect(fallbackViewMessage.locator('.action-message-narrative strong')).toHaveText('判定完成');
+  await expect(fallbackViewMessage.locator('.action-message-narrative table')).toContainText('力量');
   await expect(fallbackViewMessage.getByRole('region', { name: '艾琳状态' })).toBeVisible();
   await expect(fallbackViewMessage.locator('.inline-scene-view.status')).toContainText('HP');
   await expect(firstScene.getByRole('button', { name: '重生成' })).toHaveCount(1);
@@ -193,4 +200,35 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   await expect(firstSave).toBeVisible();
   await firstSave.click();
   await expect.poll(() => page.context().pages().length).toBe(pageCount);
+
+  stack.provider.queue({ toolCalls: [
+    { name: 'scene_lab_adjust_signal', arguments: { delta: 4 } },
+    { name: 'scene_view_stage', arguments: { kind: 'status', relatedEntities: [], insertionIntent: 'inline' } },
+  ] });
+  stack.provider.queue((request) => {
+    const reference = JSON.stringify(request.body).match(/<!--tavernnext:view:[0-9a-f-]+-->/)?.[0];
+    if (reference === undefined) throw new Error('Scene Lab did not receive its staged status view');
+    return { chunks: [`实验信号已经稳定。${reference}`] };
+  });
+
+  await page.goto('/');
+  await page.locator('article.scene-card').filter({ hasText: '场景实验室' })
+    .getByRole('button', { name: '安装官方场景' }).click();
+  const labCard = page.getByRole('link', { name: /场景实验室/ });
+  await expect(labCard).toBeVisible({ timeout: 30_000 });
+  await labCard.click();
+  const [labScene] = await Promise.all([
+    page.waitForEvent('popup'),
+    page.getByRole('button', { name: '创建新存档' }).click(),
+  ]);
+  await labScene.getByLabel('实验名称').fill('跨场景信号');
+  await labScene.getByLabel('观察者名称').fill('林岚');
+  await labScene.getByRole('button', { name: '创建存档' }).click();
+  await expect(labScene).toHaveURL(/\/scene-runtime\/.*\/conversations\//);
+  await expect(labScene.getByText('实验“跨场景信号”已经就绪')).toBeVisible();
+  await labScene.getByPlaceholder('记录一次观察').fill('将信号提高四点');
+  await labScene.getByRole('button', { name: '发送' }).click();
+  await expect(labScene.getByText('实验信号已经稳定。')).toBeVisible({ timeout: 30_000 });
+  await expect(labScene.getByRole('region', { name: '实验状态' })).toContainText('Signal 4');
+  await expect(labScene.locator('.scene-lab-panel')).toContainText('Signal 4');
 });

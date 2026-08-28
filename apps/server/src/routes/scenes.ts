@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Repositories } from '../db/repositories.js';
 import { SceneServiceError, type SceneService } from '../scenes/scene-service.js';
+import { isBundledOfficialScene } from '../scenes/official-package.js';
 
 const mediaTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -46,7 +47,7 @@ export function registerSceneRoutes(
         : `/api/scenes/${encodeURIComponent(scene.id)}/assets/${scene.manifest.coverPath}`,
       conversationCount: conversations.length,
       messageCount,
-      fullyTrusted: true,
+      fullyTrusted: isBundledOfficialScene(scene),
       trustNotice: 'This official Scene runs as fully trusted same-origin frontend code with optional server code. It may access TavernNext APIs, browser storage, global objects, and the network.',
     };
   };

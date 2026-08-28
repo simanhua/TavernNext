@@ -38,7 +38,11 @@ import { unzipSync } from 'fflate';
 import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
-import { createSaveAgentConfiguration } from '../services/save-agent-configuration-service.js';
+import { persistPresetBytes } from '../services/preset-import-handler.js';
+import {
+  createSaveAgentConfiguration,
+  SaveAgentConfigurationError,
+} from '../services/save-agent-configuration-service.js';
 import { persistDecodedWorldbook } from '../services/worldbook-import-handler.js';
 import { builtInPackage, officialCatalog } from './official-package.js';
 import { SceneModuleRegistry } from './scene-module-host.js';
@@ -253,13 +257,18 @@ function characterDepthPrompt(extensions: Record<string, unknown>): string {
   return typeof depth?.prompt === 'string' ? depth.prompt : '';
 }
 
-function packageCharacter(files: Record<string, Uint8Array>, repositories: Repositories): {
+function packageCharacter(
+  files: Record<string, Uint8Array>,
+  manifest: SceneManifest,
+  repositories: Repositories,
+): {
   characterId: string;
-  presetId: string;
+  presetId?: string;
 } {
-  const cardBytes = files['content/character.png'];
+  const characterPath = manifest.backingCharacterPath ?? 'content/character.png';
+  const cardBytes = files[characterPath];
   if (cardBytes === undefined) throw new SceneServiceError('scene_character_missing', 422);
-  const decoded = decodeInspectedCharacter(cardBytes, 'character.png');
+  const decoded = decodeInspectedCharacter(cardBytes, characterPath);
   const character = decoded.character;
   if (character === null) throw new SceneServiceError('scene_character_invalid', 422);
   const attached = normalizeAttachedExtensions(character.extensions);
@@ -291,29 +300,16 @@ function packageCharacter(files: Record<string, Uint8Array>, repositories: Repos
     ...(character.characterBook === undefined ? {} : { characterBook: character.characterBook }),
     ...(worldbook === undefined ? {} : { worldbookId: worldbook.id }),
   });
-  const preset = repositories.presets.create({
-    id: randomUUID(), name: '命定之诗内置生成配方', kind: 'chat',
-    settings: {
-      prompts: [
-        { identifier: 'main', role: 'system', content: character.systemPrompt || 'You are the narrator and game master for {{char}}.', system_prompt: true },
-        { identifier: 'charDescription', marker: true, system_prompt: true },
-        { identifier: 'personaDescription', marker: true, system_prompt: true },
-        { identifier: 'worldInfoBefore', marker: true, role: 'system', system_prompt: true },
-        { identifier: 'chatHistory', marker: true, system_prompt: true },
-        { identifier: 'worldInfoAfter', marker: true, role: 'system', system_prompt: true },
-      ],
-      prompt_order: [{
-        character_id: id,
-        order: ['main', 'charDescription', 'personaDescription', 'worldInfoBefore', 'chatHistory', 'worldInfoAfter']
-          .map((identifier) => ({ identifier, enabled: true })),
-      }],
-      tokenizer: 0,
-      temperature: 1,
-      max_tokens: 32768,
-      wi_format: '{0}',
-      new_chat_prompt: '',
-    },
-  });
+  if (manifest.backingPresetPath === undefined) return { characterId: id };
+  const presetBytes = files[manifest.backingPresetPath];
+  if (presetBytes === undefined) throw new SceneServiceError('scene_preset_missing', 422);
+  let preset;
+  try {
+    preset = persistPresetBytes(repositories, presetBytes, manifest.backingPresetPath);
+  } catch {
+    throw new SceneServiceError('scene_preset_invalid', 422);
+  }
+  if (preset.kind !== 'chat') throw new SceneServiceError('scene_preset_invalid', 422);
   return { characterId: id, presetId: preset.id };
 }
 
@@ -478,7 +474,7 @@ export function createSceneService(options: {
         mkdirSync(dirname(target), { recursive: true });
         renameSync(stage, target);
         return database.transaction(() => {
-          const backing = packageCharacter(files, repositories);
+          const backing = packageCharacter(files, manifest, repositories);
           return repositories.installedScenes.create({
             id: manifest.id,
             slug: manifest.slug,
@@ -488,7 +484,7 @@ export function createSceneService(options: {
             installedAt: new Date().toISOString(),
             manifest,
             backingCharacterId: backing.characterId,
-            backingPresetId: backing.presetId,
+            ...(backing.presetId === undefined ? {} : { backingPresetId: backing.presetId }),
           });
         });
       } catch (error) {
@@ -545,7 +541,14 @@ export function createSceneService(options: {
           maxPromptTokens: parsed.data.maxPromptTokens,
           maxResponseTokens: parsed.data.maxResponseTokens,
         });
-        createSaveAgentConfiguration(repositories, conversation.id, scene.backingPresetId);
+        try {
+          createSaveAgentConfiguration(repositories, conversation.id, scene.backingPresetId);
+        } catch (error) {
+          if (error instanceof SaveAgentConfigurationError) {
+            throw new SceneServiceError(error.code, error.code === 'preset_not_configured' ? 409 : 422);
+          }
+          throw error;
+        }
         repositories.conversationSceneStates.create({
           id: randomUUID(), conversationId: conversation.id, schemaVersion: 1,
           baseValue: initialized.initialState, headTransitionId: null, value: initialized.initialState,

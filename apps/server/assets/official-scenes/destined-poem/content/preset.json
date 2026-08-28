@@ -1,0 +1,74 @@
+{
+  "name": "命定之诗内置生成配方",
+  "prompts": [
+    {
+      "identifier": "main",
+      "role": "system",
+      "content": "You are the narrator and game master for {{char}}.",
+      "system_prompt": true
+    },
+    {
+      "identifier": "charDescription",
+      "marker": true,
+      "system_prompt": true
+    },
+    {
+      "identifier": "personaDescription",
+      "marker": true,
+      "system_prompt": true
+    },
+    {
+      "identifier": "worldInfoBefore",
+      "marker": true,
+      "role": "system",
+      "system_prompt": true
+    },
+    {
+      "identifier": "chatHistory",
+      "marker": true,
+      "system_prompt": true
+    },
+    {
+      "identifier": "worldInfoAfter",
+      "marker": true,
+      "role": "system",
+      "system_prompt": true
+    }
+  ],
+  "prompt_order": [
+    {
+      "character_id": 100001,
+      "order": [
+        {
+          "identifier": "main",
+          "enabled": true
+        },
+        {
+          "identifier": "charDescription",
+          "enabled": true
+        },
+        {
+          "identifier": "personaDescription",
+          "enabled": true
+        },
+        {
+          "identifier": "worldInfoBefore",
+          "enabled": true
+        },
+        {
+          "identifier": "chatHistory",
+          "enabled": true
+        },
+        {
+          "identifier": "worldInfoAfter",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "tokenizer": 0,
+  "temperature": 1,
+  "max_tokens": 32768,
+  "wi_format": "{0}",
+  "new_chat_prompt": ""
+}
