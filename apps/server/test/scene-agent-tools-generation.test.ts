@@ -232,7 +232,7 @@ describe('bundled Scene Agent tools', () => {
       }),
     ]);
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
-      'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage',
+      'save_state_read', 'world_query', 'memory_query', 'deterministic_check', 'scene_patch_stage',
       'destined_poem_adjust_fate', 'destined_poem_adjust_vitals', 'destined_poem_travel',
       'destined_poem_update_relationship', 'destined_poem_update_quest', 'destined_poem_rule_check',
       'scene_view_stage',

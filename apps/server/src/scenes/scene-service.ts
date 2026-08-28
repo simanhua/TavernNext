@@ -549,6 +549,9 @@ export function createSceneService(options: {
           }
           throw error;
         }
+        repositories.saveMemoryConfigurations.create({
+          id: randomUUID(), conversationId: conversation.id, enabled: true,
+        });
         repositories.conversationSceneStates.create({
           id: randomUUID(), conversationId: conversation.id, schemaVersion: 1,
           baseValue: initialized.initialState, headTransitionId: null, value: initialized.initialState,

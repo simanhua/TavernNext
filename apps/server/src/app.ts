@@ -36,6 +36,7 @@ import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
 import { registerAgentRunRoutes } from './routes/agent-runs.js';
+import { registerMemoryRoutes } from './routes/memories.js';
 import { createGenerationService } from './services/generation-service.js';
 import type { PiAgentRuntimeFactory } from './services/scene-director-agent.js';
 import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
@@ -55,6 +56,8 @@ import { createSecretStore } from './services/secret-store.js';
 import { injectedSnapshotIntegrityKey, loadSnapshotIntegrityKey } from './snapshot-integrity-key.js';
 import { createSceneService } from './scenes/scene-service.js';
 import { upgradeInstalledOfficialScenes } from './scenes/official-scene-upgrade.js';
+import { createOpenAICompatibleDenseSearch } from './services/memory-embedding.js';
+import { createPiMemoryExtractor, createSaveMemoryService } from './services/save-memory-service.js';
 
 export type StartupMigrationResult = 'writable' | 'read_only_migration_failed';
 
@@ -87,6 +90,7 @@ export interface CreateAppOptions {
   migrationRunner?: (database: TavernDatabase) => void;
   extensionRemoteFetcher?: ExtensionRemoteFetcher;
   databaseOwnershipTimeoutMs?: number;
+  memoryWorkerIntervalMs?: number | false;
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -285,12 +289,34 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     countMessages: (messages, decision) => countMessages(messages, decision, { dataDir: config.dataDir }),
   };
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
+  const memoryDenseSearch = createOpenAICompatibleDenseSearch({
+    dataDir: config.dataDir,
+    repositories,
+    resolveSecret(secretRef) {
+      const secret = secretStore.get(secretRef);
+      return secret?.credential.type === 'api_key' ? secret.credential.key : undefined;
+    },
+  });
+  const saveMemory = createSaveMemoryService(repositories, memoryDenseSearch, database);
+  const memoryExtractor = createPiMemoryExtractor(repositories, piAgentRuntimeFactory);
+  const memoryWorkerIntervalMs = options.memoryWorkerIntervalMs
+    ?? (options.database === undefined ? 1_000 : false);
+  let memoryWorkerRunning = false;
+  const memoryWorkerTimer = memoryWorkerIntervalMs === false ? undefined : setInterval(() => {
+    if (memoryWorkerRunning) return;
+    memoryWorkerRunning = true;
+    void saveMemory.processReadyJobs(memoryExtractor).catch((error) => {
+      app.log.warn({ error }, 'Save Memory worker failed; pending jobs remain retryable.');
+    }).finally(() => { memoryWorkerRunning = false; });
+  }, Math.max(100, memoryWorkerIntervalMs));
+  memoryWorkerTimer?.unref?.();
   const generations = options.saveAgentRuntime ?? createGenerationService({
     database,
     repositories,
     piAgentRuntimeFactory,
     promptSnapshotService: promptSnapshots,
     sceneService: scenes,
+    saveMemoryService: saveMemory,
   });
   const extensionTrust = createExtensionTrustService(repositories, options.extensionRemoteFetcher ?? (async (url) => {
     const response = await fetch(url);
@@ -403,8 +429,10 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerSaveAgentConfigurationRoutes(app, repositories);
   registerSceneRoutes(app, scenes, repositories);
   registerAgentRunRoutes(app, repositories);
+  registerMemoryRoutes(app, repositories);
 
   app.addHook('onClose', async () => {
+    if (memoryWorkerTimer !== undefined) clearInterval(memoryWorkerTimer);
     try {
       await scenes.close();
     } finally {

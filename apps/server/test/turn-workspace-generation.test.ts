@@ -255,6 +255,44 @@ function toolDetails(context: Context, name: string): Record<string, unknown> {
 }
 
 describe('Scene Director Turn Workspace integration', () => {
+  it('injects visible Save Memory and exposes memory_query to the Agent', async () => {
+    const contexts: Context[] = [];
+    const seeded = await context(() => scriptedRuntime({
+      contexts,
+      toolCalls: [{ type: 'toolCall', id: 'memory-1', name: 'memory_query', arguments: { query: '黎明誓言', limit: 4 } }],
+      finalText: 'The promise is remembered.',
+    }));
+    seeded.repositories.saveMemoryConfigurations.create({
+      id: randomUUID(), conversationId: seeded.conversation.id, enabled: true,
+    });
+    seeded.repositories.saveMemories.create({
+      id: randomUUID(), conversationId: seeded.conversation.id, kind: 'commitment', tier: 'near',
+      summary: '阿斯特承诺在黎明前返回。', detail: '这项承诺仍然有效。',
+      entities: [{ kind: 'character', id: 'aster', label: '阿斯特' }], salience: 1, confidence: 0.9,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [], supersedesId: null, contentHash: 'd'.repeat(64), tokenCount: 14,
+    });
+
+    expect(terminal((await generate(seeded.app, seeded.conversation.id)).payload).event).toBe('completed');
+    expect(contexts[0]!.systemPrompt).toContain('[5C RECALLED SAVE MEMORY]');
+    expect(contexts[0]!.systemPrompt).toContain('阿斯特承诺在黎明前返回。');
+    expect(contexts[0]!.tools?.map((tool) => tool.name)).toContain('memory_query');
+    expect(toolDetails(contexts[1]!, 'memory_query')).toMatchObject({
+      ok: true,
+      query: '黎明誓言',
+      results: [expect.objectContaining({ kind: 'commitment', summary: '阿斯特承诺在黎明前返回。' })],
+    });
+    expect(seeded.repositories.generationSnapshots.list()[0]?.payload).toMatchObject({
+      schemaVersion: 5,
+      memoryRecall: [expect.objectContaining({
+        kind: 'commitment', summary: '阿斯特承诺在黎明前返回。', revision: 0,
+      })],
+      memoryQueryCorpus: [expect.objectContaining({
+        kind: 'commitment', summary: '阿斯特承诺在黎明前返回。', revision: 0,
+      })],
+    });
+  });
+
   it('runs only platform tools, exposes ordered staged changes, and commits valid operations atomically', async () => {
     const contexts: Context[] = [];
     const seeded = await context(() => scriptedRuntime({ contexts }));
@@ -302,6 +340,20 @@ describe('Scene Director Turn Workspace integration', () => {
     expect(seeded.repositories.agentRuns.listByConversationId(seeded.conversation.id)).toEqual([
       expect.objectContaining({ status: 'completed', counts: { modelTurns: 2, toolCalls: 4 } }),
     ]);
+    expect(seeded.repositories.saveMemoryConfigurations.getByConversationId(seeded.conversation.id))
+      .toMatchObject({ enabled: true });
+    expect(seeded.repositories.memoryJobs.listByConversationId(seeded.conversation.id)).toEqual([
+      expect.objectContaining({
+        kind: 'extract-turn', status: 'pending',
+        payload: expect.objectContaining({
+          generationId: expect.any(String),
+          sourceVariantId: transitions[0]!.sourceId,
+          sourceTransitionId: transitions[0]!.id,
+          narrative: 'The archive gate opens.',
+          playerInput: 'Open the vault.',
+        }),
+      }),
+    ]);
     expect(seeded.repositories.generationSnapshots.list()).toHaveLength(1);
     expect((seeded.database.sqlite.prepare(
       'SELECT COUNT(*) AS count FROM consumed_generation_snapshots',
@@ -319,6 +371,7 @@ describe('Scene Director Turn Workspace integration', () => {
       seeded.sceneState,
     );
     expect(seeded.repositories.messageVariants.listByConversationId(seeded.conversation.id)).toEqual([]);
+    expect(seeded.repositories.memoryJobs.listByConversationId(seeded.conversation.id)).toEqual([]);
     expect(seeded.repositories.generationSnapshots.list()).toEqual([]);
     expect((seeded.database.sqlite.prepare(
       'SELECT COUNT(*) AS count FROM consumed_generation_snapshots',
@@ -371,6 +424,13 @@ describe('Scene Director Turn Workspace integration', () => {
     const message = seeded.repositories.messages.listByConversationId(seeded.conversation.id).at(-1)!;
     const firstVariant = seeded.repositories.messageVariants.get(message.activeVariantId!)!;
     const firstTransition = seeded.repositories.sceneStateTransitions.getBySource('message-variant', firstVariant.id)!;
+    seeded.repositories.saveMemories.create({
+      id: randomUUID(), conversationId: seeded.conversation.id, kind: 'episode', tier: 'near',
+      summary: 'First timeline memory must stay with its sibling.', detail: '', entities: [],
+      salience: 1, confidence: 1, sourceMessageId: message.id, sourceVariantId: firstVariant.id,
+      sourceTransitionId: firstTransition.id, sourceAgentRunId: null, sourceMemoryIds: [], supersedesId: null,
+      contentHash: '9'.repeat(64), tokenCount: 10,
+    });
 
     const configuration = seeded.repositories.saveAgentConfigurations.getByConversationId(seeded.conversation.id)!;
     const updatedConfiguration = seeded.repositories.saveAgentConfigurations.update(
@@ -408,6 +468,7 @@ describe('Scene Director Turn Workspace integration', () => {
     const regenerated = await generateSibling(seeded.app, seeded.conversation.id, conversation.revision);
     expect(terminal(regenerated.payload)).toEqual({ event: 'completed', data: { finishReason: 'stop' } });
     expect(regenerationContexts[0]!.systemPrompt).toContain('LATEST PRIVATE STYLE');
+    expect(regenerationContexts[0]!.systemPrompt).not.toContain('First timeline memory must stay with its sibling.');
     expect(regenerationContexts[0]!.systemPrompt).toContain('HOOK:Open the vault.');
     expect(JSON.stringify(regenerationContexts[0]!.messages)).not.toContain('First timeline.');
     expect(regenerationContexts[0]!.messages.at(-1)).toMatchObject({

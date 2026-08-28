@@ -33,6 +33,20 @@ function detail<T>(value: { details: unknown }): T {
 }
 
 describe('TurnWorkspace', () => {
+  it('caps memory_query at four calls per Agent Run', async () => {
+    const workspace = new TurnWorkspace({
+      generationId: '018f0000-0000-7000-8000-000000000399',
+      payload: payload(),
+      memoryQuery: async (query) => [{ summary: query }],
+    });
+    for (let index = 0; index < 4; index += 1) {
+      expect(detail(await execute(workspace, 'memory_query', { query: `query-${index}` })))
+        .toMatchObject({ ok: true, query: `query-${index}` });
+    }
+    expect(detail(await execute(workspace, 'memory_query', { query: 'query-5' })))
+      .toEqual({ ok: false, code: 'memory_query_limit' });
+  });
+
   it('offers only bounded platform tools and exposes later staged state to later calls', async () => {
     const sourcePayload = payload();
     const sourceManifest = { stateSchema: { original: true } } as unknown as SceneManifest;

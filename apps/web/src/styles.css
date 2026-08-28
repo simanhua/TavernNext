@@ -1202,6 +1202,28 @@ button[type="submit"]:hover:not(:disabled),
 }
 .scene-agent-configuration-form label { display: grid; gap: 6px; }
 .scene-agent-configuration-form textarea { min-height: 180px; resize: vertical; }
+.scene-memory-center {
+  position: fixed;
+  z-index: 898;
+  top: 124px;
+  left: 16px;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 140px);
+  overflow: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+}
+.scene-memory-center > summary { cursor: pointer; font-weight: 700; }
+.memory-center-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+.memory-center-header > span { margin-right: auto; color: var(--vp-c-text-2); }
+.memory-center-list { display: grid; gap: 8px; }
+.memory-center-card { border-top: 1px solid var(--vp-c-divider); padding-top: 10px; }
+.memory-center-card > small { color: var(--vp-c-text-3); }
+.memory-center-card > p { margin: 6px 0; }
+.memory-center-card menu { display: flex; gap: 6px; margin: 8px 0 0; padding: 0; }
 
 @media (max-width: 760px) {
   .save-list > button { flex-direction: column; }

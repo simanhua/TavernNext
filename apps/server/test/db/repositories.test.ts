@@ -65,7 +65,53 @@ describe('SQLite repositories', () => {
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
       'conversation_worldbooks', 'worldbook_runtime_states', 'avatar_assets', 'global_generation_config',
+      'save_memories', 'memory_jobs', 'save_memory_configurations', 'global_embedding_configuration',
     ]));
+  });
+
+  it('stores Save Memory records and cascades them with their Save', async () => {
+    const { repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000801', name: 'Memory character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000802', name: 'Memory persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000803', characterId: character.id, personaId: persona.id,
+      title: 'Memory Save',
+    });
+    const configuration = repositories.saveMemoryConfigurations.create({
+      id: '018f0000-0000-7000-8000-000000000804', conversationId: conversation.id, enabled: true,
+    });
+    const memory = repositories.saveMemories.create({
+      id: '018f0000-0000-7000-8000-000000000805', conversationId: conversation.id,
+      kind: 'commitment', tier: 'near', summary: 'A promise was made.', detail: 'Aster promised to return.',
+      entities: [{ kind: 'character', id: 'aster', label: 'Aster' }], salience: 0.9, confidence: 0.8,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [], supersedesId: null, contentHash: 'a'.repeat(64), tokenCount: 8,
+    });
+    const job = repositories.memoryJobs.create({
+      id: '018f0000-0000-7000-8000-000000000806', conversationId: conversation.id,
+      kind: 'extract-turn', status: 'pending', attempts: 0, nextAttemptAt: null,
+      payload: { generationId: '018f0000-0000-7000-8000-000000000807' }, lastError: null,
+    });
+
+    expect(repositories.saveMemoryConfigurations.getByConversationId(conversation.id)).toMatchObject({
+      id: configuration.id, enabled: true,
+    });
+    expect(repositories.saveMemories.listByConversationId(conversation.id)).toEqual([
+      expect.objectContaining({ id: memory.id, kind: 'commitment', pinned: false, excluded: false }),
+    ]);
+    expect(repositories.memoryJobs.listByConversationId(conversation.id)).toEqual([
+      expect.objectContaining({ id: job.id, status: 'pending' }),
+    ]);
+
+    expect(repositories.conversations.delete(conversation.id, conversation.revision)).toEqual({ ok: true });
+    expect(repositories.saveMemories.get(memory.id)).toBeUndefined();
+    expect(repositories.memoryJobs.get(job.id)).toBeUndefined();
+    expect(repositories.saveMemoryConfigurations.get(configuration.id)).toBeUndefined();
   });
 
   it('keeps a clean database migration idempotent', async () => {

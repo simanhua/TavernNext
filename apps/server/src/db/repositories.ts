@@ -13,7 +13,9 @@ import {
   ExtensionRemoteResourceSchema,
   ExtensionAuditEventSchema,
   GenerationSnapshotSchema,
+  GLOBAL_EMBEDDING_CONFIGURATION_ID,
   GLOBAL_GENERATION_CONFIG_ID,
+  GlobalEmbeddingConfigurationSchema,
   GlobalGenerationConfigSchema,
   ImportArtifactSchema,
   InstalledSceneSchema,
@@ -28,6 +30,9 @@ import {
   ConversationSceneStateSchema,
   SceneStateTransitionSchema,
   SaveAgentConfigurationSchema,
+  SaveMemoryConfigurationSchema,
+  SaveMemorySchema,
+  MemoryJobSchema,
   type Character,
   type AgentRun,
   type Conversation,
@@ -39,6 +44,7 @@ import {
   type ExtensionRemoteResource,
   type ExtensionAuditEvent,
   type GenerationSnapshot,
+  type GlobalEmbeddingConfiguration,
   type GlobalGenerationConfig,
   type GlobalGenerationSelection,
   type ImportArtifact,
@@ -55,6 +61,9 @@ import {
   type SceneStateTransition,
   type SceneStateTransitionSourceKind,
   type SaveAgentConfiguration,
+  type SaveMemoryConfiguration,
+  type SaveMemory,
+  type MemoryJob,
 } from '@tavernnext/domain';
 import {
   characters,
@@ -68,6 +77,7 @@ import {
   extensionAuditEvents,
   generationSnapshots,
   globalGenerationConfigurations,
+  globalEmbeddingConfigurations,
   importArtifacts,
   installedScenes,
   messages,
@@ -81,6 +91,9 @@ import {
   conversationSceneStates,
   sceneStateTransitions,
   saveAgentConfigurations,
+  saveMemoryConfigurations,
+  saveMemories,
+  memoryJobs,
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
 import {
@@ -139,7 +152,12 @@ type DefaultedField =
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
   | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
   | 'diagnostics' | 'document' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
-  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal' | 'trace';
+  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal' | 'trace'
+  | 'disabledAt' | 'tier' | 'detail' | 'entities' | 'salience' | 'confidence'
+  | 'sourceMessageId' | 'sourceVariantId' | 'sourceTransitionId' | 'sourceAgentRunId'
+  | 'sourceMemoryIds' | 'supersedesId' | 'pinned' | 'excluded' | 'status'
+  | 'attempts' | 'nextAttemptAt' | 'payload' | 'lastError' | 'baseUrl' | 'model'
+  | 'secretRef' | 'dimensions' | 'output';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -181,6 +199,20 @@ export interface ConversationSceneStateRepository extends Repository<Conversatio
 
 export interface SaveAgentConfigurationRepository extends Repository<SaveAgentConfiguration> {
   getByConversationId(conversationId: string): SaveAgentConfiguration | undefined;
+}
+
+export interface SaveMemoryConfigurationRepository extends Repository<SaveMemoryConfiguration> {
+  getByConversationId(conversationId: string): SaveMemoryConfiguration | undefined;
+}
+
+export interface SaveMemoryRepository extends Repository<SaveMemory> {
+  listByConversationId(conversationId: string): SaveMemory[];
+  deleteBySourceVariantIds(conversationId: string, variantIds: readonly string[]): number;
+}
+
+export interface MemoryJobRepository extends Repository<MemoryJob> {
+  listByConversationId(conversationId: string): MemoryJob[];
+  listReady(now: string, limit?: number): MemoryJob[];
 }
 
 export interface AgentRunRepository extends Repository<AgentRun> {
@@ -886,11 +918,15 @@ export interface Repositories {
   presets: Repository<Preset>;
   conversations: ConversationRepository;
   saveAgentConfigurations: SaveAgentConfigurationRepository;
+  saveMemoryConfigurations: SaveMemoryConfigurationRepository;
+  saveMemories: SaveMemoryRepository;
+  memoryJobs: MemoryJobRepository;
   agentRuns: AgentRunRepository;
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
   globalGenerationConfig: GlobalGenerationConfigRepository;
+  globalEmbeddingConfiguration: GlobalEmbeddingConfigurationRepository;
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
@@ -902,6 +938,97 @@ export interface Repositories {
   extensionTrustGrants: ExtensionTrustGrantRepository;
   extensionRemoteResources: ExtensionRemoteResourceRepository;
   extensionAuditEvents: ExtensionAuditEventRepository;
+}
+
+function createSaveMemoryConfigurationRepository(database: TavernDatabase): SaveMemoryConfigurationRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveMemoryConfigurations),
+    schema: SaveMemoryConfigurationSchema,
+    toRow: (value: SaveMemoryConfiguration) => ({ ...baseRow(value), conversationId: value.conversationId }),
+  });
+  return {
+    ...base,
+    getByConversationId(conversationId) {
+      const row = database.orm.select({ payload: saveMemoryConfigurations.payload })
+        .from(saveMemoryConfigurations)
+        .where(eq(saveMemoryConfigurations.conversationId, conversationId))
+        .get();
+      return row === undefined ? undefined : SaveMemoryConfigurationSchema.parse(row.payload);
+    },
+  };
+}
+
+function createSaveMemoryRepository(database: TavernDatabase): SaveMemoryRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveMemories),
+    schema: SaveMemorySchema,
+    toRow: (value: SaveMemory) => ({
+      ...baseRow(value), conversationId: value.conversationId,
+      kind: value.kind, tier: value.tier, status: value.status,
+    }),
+  });
+  return {
+    ...base,
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: saveMemories.payload }).from(saveMemories)
+        .where(eq(saveMemories.conversationId, conversationId))
+        .orderBy(asc(saveMemories.createdAt), asc(saveMemories.id)).all()
+        .map((row) => SaveMemorySchema.parse(row.payload));
+    },
+    deleteBySourceVariantIds(conversationId, variantIds) {
+      const variants = new Set(variantIds);
+      const memories = this.listByConversationId(conversationId);
+      const removed = new Set(memories.filter((memory) => (
+        memory.sourceVariantId !== null && variants.has(memory.sourceVariantId)
+      )).map((memory) => memory.id));
+      for (;;) {
+        const size = removed.size;
+        for (const memory of memories) {
+          if (memory.sourceMemoryIds.some((id) => removed.has(id))) removed.add(memory.id);
+        }
+        if (size === removed.size) break;
+      }
+      for (const memory of [...memories].reverse()) {
+        if (!removed.has(memory.id)) continue;
+        const deleted = base.delete(memory.id, memory.revision);
+        if (!deleted.ok) throw new Error(`memory_delete_${deleted.reason}`);
+      }
+      return removed.size;
+    },
+  };
+}
+
+function createMemoryJobRepository(database: TavernDatabase): MemoryJobRepository {
+  const base = createRepository(database, {
+    table: entityTable(memoryJobs),
+    schema: MemoryJobSchema,
+    toRow: (value: MemoryJob) => ({
+      ...baseRow(value), conversationId: value.conversationId, kind: value.kind,
+      status: value.status, nextAttemptAt: value.nextAttemptAt,
+    }),
+  });
+  return {
+    ...base,
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: memoryJobs.payload }).from(memoryJobs)
+        .where(eq(memoryJobs.conversationId, conversationId))
+        .orderBy(asc(memoryJobs.createdAt), asc(memoryJobs.id)).all()
+        .map((row) => MemoryJobSchema.parse(row.payload));
+    },
+    listReady(now, limit = 16) {
+      return database.sqlite.prepare(`
+        SELECT payload FROM memory_jobs
+        WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+        ORDER BY created_at, id LIMIT ?
+      `).all(now, Math.min(64, Math.max(1, Math.floor(limit))))
+        .map((row) => MemoryJobSchema.parse(JSON.parse(String(row.payload))));
+    },
+  };
+}
+
+export interface GlobalEmbeddingConfigurationRepository {
+  get(): GlobalEmbeddingConfiguration;
+  update(expectedRevision: number, patch: Partial<CreateInput<GlobalEmbeddingConfiguration>>): UpdateResult<GlobalEmbeddingConfiguration>;
 }
 
 function createSaveAgentConfigurationRepository(database: TavernDatabase): SaveAgentConfigurationRepository {
@@ -1094,6 +1221,41 @@ function createGlobalGenerationConfigRepository(database: TavernDatabase): Globa
   };
 }
 
+function emptyGlobalEmbeddingConfiguration(): GlobalEmbeddingConfiguration {
+  return GlobalEmbeddingConfigurationSchema.parse({
+    id: GLOBAL_EMBEDDING_CONFIGURATION_ID,
+    revision: 0,
+    createdAt: '1970-01-01T00:00:00.000Z',
+    updatedAt: '1970-01-01T00:00:00.000Z',
+    enabled: false,
+    baseUrl: null,
+    model: null,
+    secretRef: null,
+    dimensions: null,
+  });
+}
+
+function createGlobalEmbeddingConfigurationRepository(database: TavernDatabase): GlobalEmbeddingConfigurationRepository {
+  const table = database.sqlite.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'global_embedding_configuration'",
+  ).get();
+  if (table === undefined) {
+    const fallback = emptyGlobalEmbeddingConfiguration();
+    return { get: () => structuredClone(fallback), update: () => ({ ok: false, reason: 'not_found' }) };
+  }
+  const base = createRepository(database, {
+    table: entityTable(globalEmbeddingConfigurations),
+    schema: GlobalEmbeddingConfigurationSchema,
+    toRow: (value: GlobalEmbeddingConfiguration) => baseRow(value),
+  });
+  return {
+    get: () => base.get(GLOBAL_EMBEDDING_CONFIGURATION_ID) ?? emptyGlobalEmbeddingConfiguration(),
+    update(expectedRevision, patch) {
+      return base.update(GLOBAL_EMBEDDING_CONFIGURATION_ID, expectedRevision, patch);
+    },
+  };
+}
+
 export function createRepositories(database: TavernDatabase, options: CreateRepositoriesOptions): Repositories {
   const charactersRepository = createRepository(database, {
     table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }),
@@ -1134,6 +1296,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     },
   };
   const globalGenerationConfig = createGlobalGenerationConfigRepository(database);
+  const globalEmbeddingConfiguration = createGlobalEmbeddingConfigurationRepository(database);
   return {
     installedScenes: createRepository(database, {
       table: entityTable(installedScenes),
@@ -1149,11 +1312,15 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
     conversations: conversationsRepository,
     saveAgentConfigurations: createSaveAgentConfigurationRepository(database),
+    saveMemoryConfigurations: createSaveMemoryConfigurationRepository(database),
+    saveMemories: createSaveMemoryRepository(database),
+    memoryJobs: createMemoryJobRepository(database),
     agentRuns: createAgentRunRepository(database),
     messages: messagesRepository,
     messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     globalGenerationConfig,
+    globalEmbeddingConfiguration,
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),

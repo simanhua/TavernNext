@@ -49,6 +49,9 @@ export const providerProfiles = sqliteTable('provider_profiles', {
 export const globalGenerationConfigurations = sqliteTable('global_generation_config', {
   ...entityColumns,
 });
+export const globalEmbeddingConfigurations = sqliteTable('global_embedding_configuration', {
+  ...entityColumns,
+});
 export const installedScenes = sqliteTable('installed_scenes', {
   ...entityColumns,
   slug: text('slug').notNull().unique(),
@@ -109,6 +112,10 @@ export const saveAgentConfigurations = sqliteTable('save_agent_configurations', 
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
 }, (table) => [index('save_agent_configurations_conversation_id_idx').on(table.conversationId)]);
+export const saveMemoryConfigurations = sqliteTable('save_memory_configurations', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
+}, (table) => [index('save_memory_configurations_conversation_id_idx').on(table.conversationId)]);
 export const conversationSceneStates = sqliteTable('conversation_scene_states', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
@@ -168,6 +175,26 @@ export const agentRuns = sqliteTable('agent_runs', {
 }, (table) => [
   index('agent_runs_conversation_id_idx').on(table.conversationId),
   index('agent_runs_generation_id_idx').on(table.generationId),
+]);
+export const saveMemories = sqliteTable('save_memories', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(),
+  tier: text('tier').notNull(),
+  status: text('status').notNull(),
+}, (table) => [
+  index('save_memories_conversation_created_idx').on(table.conversationId, table.createdAt, table.id),
+  index('save_memories_conversation_status_idx').on(table.conversationId, table.status),
+]);
+export const memoryJobs = sqliteTable('memory_jobs', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(),
+  status: text('status').notNull(),
+  nextAttemptAt: text('next_attempt_at'),
+}, (table) => [
+  index('memory_jobs_conversation_created_idx').on(table.conversationId, table.createdAt, table.id),
+  index('memory_jobs_status_next_idx').on(table.status, table.nextAttemptAt, table.createdAt),
 ]);
 export const worldbookRuntimeStates = sqliteTable('worldbook_runtime_states', {
   ...entityColumns,

@@ -38,7 +38,7 @@ describe('Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(22);
+    expect(CURRENT_SCHEMA_VERSION).toBe(23);
     expect(repositories.conversations.get(conversation.id)).toBeUndefined();
     expect(database.sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'").get())
       .toEqual({ name: 'agent_runs' });
@@ -61,7 +61,7 @@ describe('Scene migrations', () => {
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(22);
+    expect(CURRENT_SCHEMA_VERSION).toBe(23);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
     expect(repositories.characters.get(character.id)?.name).toBe('Legacy card');

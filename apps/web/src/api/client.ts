@@ -12,10 +12,19 @@ import type {
   MessageVariant,
   AgentRun,
   PresetKind,
+  SaveMemory,
+  SaveMemoryConfiguration,
+  MemoryJob,
 } from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind, SaveAgentConfiguration };
 export type { AgentRun };
+export type MemoryCenterView = {
+  configuration: SaveMemoryConfiguration | null;
+  memories: SaveMemory[];
+  jobs: Array<Omit<MemoryJob, 'payload'>>;
+  embedding: { enabled: boolean; configured: boolean; model: string | null; dimensions: number | null };
+};
 
 export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean; coverUrl?: string }
 export interface InstalledSceneView extends InstalledScene {
@@ -433,6 +442,30 @@ export const api = {
   getScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}`),
   listAgentRuns: (conversationId: string) => request<AgentRun[]>(
     `/api/development/agent-runs?conversationId=${encodeURIComponent(conversationId)}`,
+  ),
+  getMemoryCenter: (conversationId: string) => request<MemoryCenterView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memories`,
+  ),
+  updateMemorySettings: (conversationId: string, revision: number | null, enabled: boolean) => request<SaveMemoryConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memory-settings`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  updateMemory: (memory: SaveMemory, patch: Pick<SaveMemory, 'pinned' | 'excluded'>) => request<SaveMemory>(
+    `/api/memories/${encodeURIComponent(memory.id)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision: memory.revision, ...patch }) },
+  ),
+  deleteMemory: (memory: SaveMemory) => request<void>(
+    `/api/memories/${encodeURIComponent(memory.id)}?revision=${memory.revision}`,
+    { method: 'DELETE' },
+  ),
+  rebuildMemoryIndex: (conversationId: string) => request<MemoryJob>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memory-index/rebuild`, { method: 'POST' },
+  ),
+  retryMemoryJob: (jobId: string) => request<MemoryJob>(
+    `/api/memory-jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' },
+  ),
+  backfillMemory: (conversationId: string) => request<{ created: number; skipped: number }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memory-backfill`, { method: 'POST' },
   ),
   installScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}/install`, { method: 'POST' }),
   uninstallScene: (scene: InstalledSceneView) => request<{ backupPath: string }>(`/api/scenes/${encodeURIComponent(scene.id)}`, {

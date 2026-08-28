@@ -116,6 +116,9 @@ export function registerMessageRoutes(
       const variants = current === undefined ? [] : repositories.messageVariants.listByMessageId(current.id);
       const result = database.transaction(() => {
         if (current !== undefined) scenes.deleteMessageState(current);
+        if (current !== undefined) {
+          repositories.saveMemories.deleteBySourceVariantIds(current.conversationId, variants.map((variant) => variant.id));
+        }
         const deletion = repositories.messages.delete(request.params.id, revision);
         if (deletion.ok) {
           for (const variant of variants) repositories.extensionStates.deleteByScope('message-variant', variant.id);

@@ -46,6 +46,11 @@ import {
 } from './scene-director-agent.js';
 import { createSceneAgentToolFactory, type SceneAgentToolFactory } from './scene-agent-tools.js';
 import { createSceneViewRuntimeFactory, type SceneViewRuntimeFactory } from './scene-view-runtime.js';
+import {
+  createSaveMemoryService,
+  queryFrozenMemory,
+  type SaveMemoryService,
+} from './save-memory-service.js';
 
 interface ActiveGeneration {
   generationId: string;
@@ -64,6 +69,7 @@ interface PreparedGenerationBase {
   generationId: string;
   conversationId: string;
   provider: ProviderProfile;
+  playerInput: string;
   payload: PromptSnapshotPayload;
   sceneDirector?: SceneDirectorExecution;
   deferredSnapshotCommit?: true;
@@ -109,12 +115,14 @@ function preparedRequest(
   generationId: string,
   provider: ProviderProfile,
   payload: PromptSnapshotPayload,
+  playerInput: string,
   sceneTransition?: PreparedGenerationBase['sceneTransition'],
 ): PreparedGeneration {
   return {
     generationId,
     conversationId: payload.input.conversationId,
     provider,
+    playerInput,
     payload,
     ...(sceneTransition === undefined ? {} : { sceneTransition }),
   };
@@ -128,6 +136,7 @@ export function createGenerationService(options: {
   sceneService?: SceneService;
   piAgentRuntimeFactory?: PiAgentRuntimeFactory;
   sceneDirectorLimits?: Partial<SceneDirectorLimits>;
+  saveMemoryService?: SaveMemoryService;
 }): SaveAgentRuntime {
   const { database, repositories } = options;
   const runtimeTokenizer = options.tokenizerRuntime ?? defaultTokenizerRuntime();
@@ -137,6 +146,7 @@ export function createGenerationService(options: {
     tokenizerRuntime: runtimeTokenizer,
   });
   const sceneService = options.sceneService;
+  const saveMemory = options.saveMemoryService ?? createSaveMemoryService(repositories, undefined, database);
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
@@ -443,6 +453,30 @@ export function createGenerationService(options: {
           }
           if (persistResponse && (hasDelta || hasReasoningDelta)) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
+          if (outcome === 'completed' && variant !== undefined && agentTerminal !== undefined) {
+            const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id);
+            agentTerminal = {
+              ...agentTerminal,
+              patch: {
+                ...agentTerminal.patch,
+                output: { messageId: variant.messageId, variantId: variant.id, transitionId: transition?.id ?? null },
+              },
+            };
+            const configuration = prepared.payload.entityRevisions.saveAgentConfiguration;
+            saveMemory.captureCommittedTurn({
+              conversationId: prepared.conversationId,
+              generationId: prepared.generationId,
+              sourceMessageId: variant.messageId,
+              sourceVariantId: variant.id,
+              sourceTransitionId: transition?.id ?? null,
+              sourceAgentRunId: agentTerminal.runId,
+              playerInput: prepared.playerInput,
+              narrative: content,
+              stateOperations: sceneOperations,
+              provider: structuredClone(prepared.provider),
+              saveAgentConfiguration: configuration,
+            });
+          }
           if (agentTerminal !== undefined) prepared.sceneDirector!.commitTerminal(agentTerminal);
         });
       } catch (error) {
@@ -556,6 +590,26 @@ export function createGenerationService(options: {
       activeById.set(generationId, active);
       try {
         const playerInput = frozenAgentPlayerInput(repositories, input);
+        const memoryConfiguration = repositories.saveMemoryConfigurations.getByConversationId(input.conversationId);
+        const activeTailVariantId = input.mode === 'normal'
+          ? null
+          : repositories.messages.listByConversationId(input.conversationId).at(-1)?.activeVariantId ?? null;
+        const excludedVariantIds = activeTailVariantId === null ? [] : [activeTailVariantId];
+        const recalledMemories = memoryConfiguration?.enabled === true
+          ? (await saveMemory.recallHybrid({
+              conversationId: input.conversationId, query: playerInput, limit: 6, excludedVariantIds,
+            })).memories
+          : [];
+        const memoryRecall = recalledMemories.map((memory) => ({
+          id: memory.id, revision: memory.revision, kind: memory.kind, tier: memory.tier,
+          summary: memory.summary, detail: memory.detail, tokenCount: memory.tokenCount,
+        }));
+        const memoryQueryCorpus = memoryConfiguration?.enabled === true
+          ? saveMemory.freezeCorpus({ conversationId: input.conversationId, excludedVariantIds }).map((memory) => ({
+              id: memory.id, revision: memory.revision, kind: memory.kind, tier: memory.tier,
+              summary: memory.summary, detail: memory.detail, tokenCount: memory.tokenCount,
+            }))
+          : [];
         let sceneTransition: PreparedGenerationBase['sceneTransition'];
         let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
         let sceneAgentToolFactory: SceneAgentToolFactory | undefined;
@@ -602,7 +656,9 @@ export function createGenerationService(options: {
               stagedValue: stagedState,
               manifest: structuredClone(scene.manifest),
             };
-            scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
+            scenePromptContext = {
+              state: stagedState, additions: before.promptAdditions ?? [], memoryRecall, memoryQueryCorpus,
+            };
             sceneAgentToolFactory = createSceneAgentToolFactory({ scene, host, conversation });
             sceneViewRuntimeFactory = createSceneViewRuntimeFactory({ scene, host, conversation });
           }
@@ -629,6 +685,14 @@ export function createGenerationService(options: {
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
             ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
+            ...(candidate.payload.memoryRecall.length === 0 ? {} : { recalledMemories: candidate.payload.memoryRecall }),
+            ...(memoryConfiguration?.enabled !== true ? {} : {
+              memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
+                candidate.payload.memoryQueryCorpus,
+                query,
+                limit,
+              ),
+            }),
             ...(scenePromptContext?.additions === undefined ? {} : {
               scenePromptAdditions: scenePromptContext.additions,
             }),
@@ -664,6 +728,7 @@ export function createGenerationService(options: {
           generationId,
           accepted.provider,
           accepted.payload,
+          playerInput,
           sceneTransition,
         );
         if (accepted.payload.kind === 'chat'
@@ -684,6 +749,14 @@ export function createGenerationService(options: {
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
             ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
+            ...(accepted.payload.memoryRecall.length === 0 ? {} : { recalledMemories: accepted.payload.memoryRecall }),
+            ...(memoryConfiguration?.enabled !== true ? {} : {
+              memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
+                accepted.payload.memoryQueryCorpus,
+                query,
+                limit,
+              ),
+            }),
             ...(scenePromptContext?.additions === undefined ? {} : {
               scenePromptAdditions: scenePromptContext.additions,
             }),

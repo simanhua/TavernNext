@@ -62,7 +62,7 @@ import {
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 5 as const;
 const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
 
 export interface ServerTokenizerRuntime {
@@ -87,6 +87,18 @@ export interface PromptSnapshotInput {
 export interface ScenePromptContext {
   state: Record<string, unknown>;
   additions: ScenePromptAddition[];
+  memoryRecall?: MemoryRecallSnapshotEntry[];
+  memoryQueryCorpus?: MemoryRecallSnapshotEntry[];
+}
+
+export interface MemoryRecallSnapshotEntry {
+  id: string;
+  revision: number;
+  kind: string;
+  tier: string;
+  summary: string;
+  detail: string;
+  tokenCount: number;
 }
 
 export interface RevisionRef {
@@ -151,6 +163,8 @@ export interface PromptSnapshotPayload {
   totalTokens: number;
   warnings: PromptWarning[];
   worldInfoOutlets: Record<string, string>;
+  memoryRecall: MemoryRecallSnapshotEntry[];
+  memoryQueryCorpus: MemoryRecallSnapshotEntry[];
   compiledRequest: ChatRequest;
   compiledRequestHash: string;
   payloadHash: string;
@@ -224,6 +238,8 @@ interface LoadedAggregate {
   compatibilityWarnings: PromptWarning[];
   regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
   scenePromptAdditions: ScenePromptAddition[];
+  memoryRecall: MemoryRecallSnapshotEntry[];
+  memoryQueryCorpus: MemoryRecallSnapshotEntry[];
 }
 
 interface BuiltSnapshot {
@@ -726,6 +742,8 @@ function loadAggregate(
       },
       ...(sceneContext?.additions ?? []),
     ],
+    memoryRecall: deepJson(sceneContext?.memoryRecall ?? []),
+    memoryQueryCorpus: deepJson(sceneContext?.memoryQueryCorpus ?? []),
   };
 }
 
@@ -1232,6 +1250,8 @@ async function compileAggregate(
       totalTokens: runtimeTotalTokens,
       warnings: deepJson(warnings),
       worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
+      memoryRecall: deepJson(aggregate.memoryRecall),
+      memoryQueryCorpus: deepJson(aggregate.memoryQueryCorpus),
       compiledRequest: deepJson(compiledRequest),
       compiledRequestHash: canonicalHash(compiledRequest),
     };
@@ -1483,6 +1503,18 @@ function isWorldInfoOutlets(value: unknown): value is Record<string, string> {
   return record(value) && Object.values(value).every((item) => typeof item === 'string');
 }
 
+function isMemoryRecall(value: unknown): value is MemoryRecallSnapshotEntry[] {
+  return Array.isArray(value) && value.every((entry) => record(entry)
+    && typeof entry.id === 'string'
+    && nonNegativeInteger(entry.revision)
+    && typeof entry.kind === 'string'
+    && typeof entry.tier === 'string'
+    && typeof entry.summary === 'string'
+    && typeof entry.detail === 'string'
+    && nonNegativeInteger(entry.tokenCount)
+    && hasOnlyKeys(entry, ['id', 'revision', 'kind', 'tier', 'summary', 'detail', 'tokenCount']));
+}
+
 function isSourceUid(value: unknown): boolean {
   return typeof value === 'string' || finiteNumber(value);
 }
@@ -1608,6 +1640,8 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
     || !nonNegativeInteger(value.totalTokens)
     || !isWarnings(value.warnings)
     || !isWorldInfoOutlets(value.worldInfoOutlets)
+    || !isMemoryRecall(value.memoryRecall)
+    || !isMemoryRecall(value.memoryQueryCorpus)
     || typeof value.compiledRequestHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.compiledRequestHash)
     || typeof value.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.payloadHash)
     || !sameCanonical(value.seed, value.input.seed)
@@ -1615,7 +1649,7 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
   const commonKeys = [
     'schemaVersion', 'input', 'kind', 'seed', 'messageIndex', 'entityRevisions', 'executable',
     'worldbook', 'tokenizerDecision', 'stop', 'tokenBreakdown', 'totalTokens', 'warnings',
-    'worldInfoOutlets', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
+    'worldInfoOutlets', 'memoryRecall', 'memoryQueryCorpus', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
   ];
   return isChatRequest(value.compiledRequest)
     && isChatMessages(value.messages)

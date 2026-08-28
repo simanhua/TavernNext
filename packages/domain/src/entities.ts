@@ -188,6 +188,15 @@ export const GlobalGenerationConfigSchema = MutableEntitySchema
   .extend(GlobalGenerationSelectionSchema.shape)
   .extend({ selectionNotice: GlobalGenerationSelectionNoticeSchema.nullable() });
 
+export const GLOBAL_EMBEDDING_CONFIGURATION_ID = '018f0000-0000-7000-8000-000000000002' as const;
+export const GlobalEmbeddingConfigurationSchema = MutableEntitySchema.extend({
+  enabled: z.boolean().default(false),
+  baseUrl: z.string().url().nullable().default(null),
+  model: z.string().min(1).nullable().default(null),
+  secretRef: z.string().min(1).nullable().default(null),
+  dimensions: z.number().int().positive().max(65_536).nullable().default(null),
+});
+
 const SceneRelativePathSchema = z.string().min(1).max(512).refine((value) => (
   !value.includes('\\')
   && !value.startsWith('/')
@@ -339,6 +348,56 @@ export const SaveAgentConfigurationSchema = MutableEntitySchema.extend({
   settings: z.record(z.string(), z.unknown()).default({}),
 });
 
+export const SaveMemoryConfigurationSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  enabled: z.boolean().default(true),
+  disabledAt: TimestampSchema.nullable().default(null),
+});
+
+export const SaveMemoryKindSchema = z.enum([
+  'episode', 'character_fact', 'relationship_event', 'commitment', 'discovery',
+]);
+export const SaveMemoryTierSchema = z.enum(['near', 'far']);
+export const SaveMemoryStatusSchema = z.enum(['active', 'archived', 'superseded', 'contradicted']);
+export const SaveMemoryEntityRefSchema = z.object({
+  kind: z.string().min(1).max(64),
+  id: z.string().min(1).max(160).optional(),
+  label: z.string().min(1).max(160),
+}).strict();
+export const SaveMemorySchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  kind: SaveMemoryKindSchema,
+  tier: SaveMemoryTierSchema.default('near'),
+  summary: z.string().min(1).max(4_000),
+  detail: z.string().max(20_000).default(''),
+  entities: z.array(SaveMemoryEntityRefSchema).max(64).default([]),
+  salience: z.number().min(0).max(1).default(0.5),
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceMessageId: DomainIdSchema.nullable().default(null),
+  sourceVariantId: DomainIdSchema.nullable().default(null),
+  sourceTransitionId: DomainIdSchema.nullable().default(null),
+  sourceAgentRunId: DomainIdSchema.nullable().default(null),
+  sourceMemoryIds: z.array(DomainIdSchema).max(512).default([]),
+  supersedesId: DomainIdSchema.nullable().default(null),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  tokenCount: z.number().int().nonnegative().max(1_000_000),
+  pinned: z.boolean().default(false),
+  excluded: z.boolean().default(false),
+  status: SaveMemoryStatusSchema.default('active'),
+});
+
+export const MemoryJobKindSchema = z.enum(['extract-turn', 'consolidate', 'rebuild-index']);
+export const MemoryJobStatusSchema = z.enum(['pending', 'running', 'completed', 'failed']);
+export const MemoryJobSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  kind: MemoryJobKindSchema,
+  status: MemoryJobStatusSchema.default('pending'),
+  attempts: z.number().int().nonnegative().max(16).default(0),
+  nextAttemptAt: TimestampSchema.nullable().default(null),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  lastError: z.string().max(2_000).nullable().default(null),
+});
+
 export const ConversationSceneStateSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   schemaVersion: z.number().int().positive().default(1),
@@ -456,7 +515,7 @@ export const AgentRunLifecycleEventSchema = z.object({
   at: z.string().datetime(),
 }).strict();
 export const AgentActivityKindSchema = z.enum([
-  'inspect-save', 'query-lore', 'perform-check', 'update-state', 'stage-view', 'scene-action',
+  'inspect-save', 'query-lore', 'query-memory', 'perform-check', 'update-state', 'stage-view', 'scene-action',
 ]);
 export const AgentRunActivitySchema = z.object({
   sequence: z.number().int().nonnegative(),
@@ -520,6 +579,11 @@ export const AgentRunSchema = MutableEntitySchema.extend({
   trace: z.array(AgentRunTraceEntrySchema).max(128).default([]),
   diagnostics: z.array(z.string().max(128)).max(32),
   failureCode: z.string().max(128).optional(),
+  output: z.object({
+    messageId: DomainIdSchema,
+    variantId: DomainIdSchema,
+    transitionId: DomainIdSchema.nullable(),
+  }).strict().nullable().default(null),
 });
 
 export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
@@ -543,6 +607,7 @@ export type PresetKind = z.infer<typeof PresetKindSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
 export type GlobalGenerationConfig = z.infer<typeof GlobalGenerationConfigSchema>;
 export type GlobalGenerationSelection = z.infer<typeof GlobalGenerationSelectionSchema>;
+export type GlobalEmbeddingConfiguration = z.infer<typeof GlobalEmbeddingConfigurationSchema>;
 export type SceneManifest = z.infer<typeof SceneManifestSchema>;
 export type SceneCatalogEntry = z.infer<typeof SceneCatalogEntrySchema>;
 export type SceneCatalog = z.infer<typeof SceneCatalogSchema>;
@@ -552,6 +617,10 @@ export type SceneViewDeclaration = z.infer<typeof SceneViewDeclarationSchema>;
 export type ConversationPlayerProfile = z.infer<typeof ConversationPlayerProfileSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type SaveAgentConfiguration = z.infer<typeof SaveAgentConfigurationSchema>;
+export type SaveMemoryConfiguration = z.infer<typeof SaveMemoryConfigurationSchema>;
+export type SaveMemory = z.infer<typeof SaveMemorySchema>;
+export type SaveMemoryKind = z.infer<typeof SaveMemoryKindSchema>;
+export type MemoryJob = z.infer<typeof MemoryJobSchema>;
 export type ConversationSceneState = z.infer<typeof ConversationSceneStateSchema>;
 export type SceneStateTransitionSourceKind = z.infer<typeof SceneStateTransitionSourceKindSchema>;
 export type SceneStateTransition = z.infer<typeof SceneStateTransitionSchema>;

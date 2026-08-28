@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { GLOBAL_GENERATION_CONFIG_ID, roleplayDocumentFromMarkdown } from '@tavernnext/domain';
+import {
+  GLOBAL_EMBEDDING_CONFIGURATION_ID,
+  GLOBAL_GENERATION_CONFIG_ID,
+  roleplayDocumentFromMarkdown,
+} from '@tavernnext/domain';
 import { attachedVariableValue, normalizeAttachedExtensions } from '@tavernnext/st-compat';
 import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
@@ -9,7 +13,8 @@ const SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION = 19;
 const AGENT_RUN_SCHEMA_VERSION = 20;
 const ROLEPLAY_DOCUMENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION + 1;
 export const AGENT_FIRST_RESET_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION + 1;
-export const CURRENT_SCHEMA_VERSION = AGENT_FIRST_RESET_SCHEMA_VERSION;
+const SAVE_MEMORY_SCHEMA_VERSION = AGENT_FIRST_RESET_SCHEMA_VERSION + 1;
+export const CURRENT_SCHEMA_VERSION = SAVE_MEMORY_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -54,6 +59,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS global_generation_config (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS global_embedding_configuration (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS installed_scenes (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, version TEXT NOT NULL, archive_digest TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_assets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, kind TEXT NOT NULL, source_key TEXT NOT NULL, ordinal INTEGER NOT NULL, enabled INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS extension_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL, UNIQUE (scope, scope_id));
@@ -63,6 +69,9 @@ const tables = `
   CREATE TABLE IF NOT EXISTS import_artifacts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT);
   CREATE TABLE IF NOT EXISTS generation_snapshots (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, integrity_tag TEXT);
   CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, generation_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS save_memory_configurations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS save_memories (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, kind TEXT NOT NULL, tier TEXT NOT NULL, status TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS memory_jobs (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, kind TEXT NOT NULL, status TEXT NOT NULL, next_attempt_at TEXT);
   CREATE TABLE IF NOT EXISTS consumed_generation_snapshots (snapshot_id TEXT PRIMARY KEY REFERENCES generation_snapshots(id) ON DELETE CASCADE, consumed_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS worldbook_runtime_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
   CREATE TABLE IF NOT EXISTS conversation_scene_states (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
@@ -93,6 +102,11 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS generation_snapshots_conversation_id_idx ON generation_snapshots(conversation_id);
   CREATE INDEX IF NOT EXISTS agent_runs_conversation_id_idx ON agent_runs(conversation_id);
   CREATE INDEX IF NOT EXISTS agent_runs_generation_id_idx ON agent_runs(generation_id);
+  CREATE INDEX IF NOT EXISTS save_memory_configurations_conversation_id_idx ON save_memory_configurations(conversation_id);
+  CREATE INDEX IF NOT EXISTS save_memories_conversation_created_idx ON save_memories(conversation_id, created_at, id);
+  CREATE INDEX IF NOT EXISTS save_memories_conversation_status_idx ON save_memories(conversation_id, status);
+  CREATE INDEX IF NOT EXISTS memory_jobs_conversation_created_idx ON memory_jobs(conversation_id, created_at, id);
+  CREATE INDEX IF NOT EXISTS memory_jobs_status_next_idx ON memory_jobs(status, next_attempt_at, created_at);
   CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);
   CREATE INDEX IF NOT EXISTS avatar_assets_owner_idx ON avatar_assets(kind, owner_id);
   CREATE INDEX IF NOT EXISTS extension_assets_owner_kind_id_idx ON extension_assets(owner_kind, owner_id);
@@ -349,6 +363,9 @@ function resetConversationExtensionStates(database: TavernDatabase): void {
 function resetConversationGraph(database: TavernDatabase): void {
   resetConversationExtensionStates(database);
   database.sqlite.exec(`
+    DELETE FROM memory_jobs;
+    DELETE FROM save_memories;
+    DELETE FROM save_memory_configurations;
     DELETE FROM scene_state_transitions;
     DELETE FROM conversation_scene_states;
     DELETE FROM save_agent_configurations;
@@ -525,6 +542,25 @@ function backfillSceneStateKernel(database: TavernDatabase): void {
   }
 }
 
+function seedGlobalEmbeddingConfiguration(database: TavernDatabase): void {
+  const now = new Date().toISOString();
+  const payload = JSON.stringify({
+    id: GLOBAL_EMBEDDING_CONFIGURATION_ID,
+    revision: 0,
+    createdAt: now,
+    updatedAt: now,
+    enabled: false,
+    baseUrl: null,
+    model: null,
+    secretRef: null,
+    dimensions: null,
+  });
+  database.sqlite.prepare(`
+    INSERT OR IGNORE INTO global_embedding_configuration (id, revision, created_at, updated_at, payload)
+    VALUES (?, 0, ?, ?, ?)
+  `).run(GLOBAL_EMBEDDING_CONFIGURATION_ID, now, now, payload);
+}
+
 function contractGlobalGenerationConfig(database: TavernDatabase): void {
   database.sqlite.exec(`
     UPDATE global_generation_config
@@ -592,6 +628,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if ((startingVersion ?? 0) < ROLEPLAY_DOCUMENT_SCHEMA_VERSION) backfillRoleplayDocuments(database);
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
+      seedGlobalEmbeddingConfiguration(database);
       contractGlobalGenerationConfig(database);
       contractProviderProfiles(database);
       database.sqlite.exec(indexes);

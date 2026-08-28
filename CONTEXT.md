@@ -64,6 +64,22 @@ _Avoid_: Agent-generated HTML, live state panel, interactive state editor
 Revisioned structured game data belonging to one Save and validated before transactional writes.
 _Avoid_: Shared Character variables, chat metadata
 
+**Save Memory**:
+Branch-visible historical evidence derived from completed Agent Runs and owned by one Save. It may support recall but never overrides Scene State, World Rules, or newer messages.
+_Avoid_: Agent memory, conversation lore, permanent fact
+
+**Near Memory**:
+Recent Save Memory retained at turn-level detail before consolidation.
+_Avoid_: Chat history, working context
+
+**Far Memory**:
+Consolidated Save Memory that preserves provenance to its contributing Near Memories.
+_Avoid_: Worldbook entry, character biography
+
+**Memory Index**:
+A rebuildable retrieval projection over Save Memory whose loss never damages the Save's authoritative records.
+_Avoid_: Memory database, source of truth
+
 **Generation Recipe**:
 Legacy Scene metadata retained for package compatibility. Agent Runtime prompt precedence and Save-owned Preset selection are defined by the Save Agent contract, not by a runtime recipe fallback.
 _Avoid_: Active Scene prompt override, output parser

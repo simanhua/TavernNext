@@ -16,8 +16,10 @@ const MAX_STATE_CATALOG_CHILDREN = 64;
 const MAX_STATE_PATH_SUGGESTIONS = 5;
 
 export const PLATFORM_AGENT_TOOL_NAMES = [
-  'save_state_read', 'world_query', 'deterministic_check', 'scene_patch_stage', 'scene_view_stage',
+  'save_state_read', 'world_query', 'memory_query', 'deterministic_check', 'scene_patch_stage', 'scene_view_stage',
 ] as const;
+
+export type TurnMemoryQuery = (query: string, limit?: number) => unknown | Promise<unknown>;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -291,14 +293,17 @@ export class TurnWorkspace {
   private readonly stateRevision: number | null;
   private readonly manifest: SceneManifest | undefined;
   private readonly entries: WorldEntry[];
+  private readonly memoryQuery: TurnMemoryQuery | undefined;
   private readonly baseValue: Record<string, unknown>;
   private stagedValue: Record<string, unknown>;
   private readonly operations: ScenePatchOperation[] = [];
   private readonly failures: ScenePatchFailure[] = [];
+  private memoryQueries = 0;
 
   constructor(input: {
     generationId: string;
     payload: PromptSnapshotPayload;
+    memoryQuery?: TurnMemoryQuery;
     state?: {
       revision: number;
       value: Record<string, unknown>;
@@ -312,6 +317,7 @@ export class TurnWorkspace {
     this.stateRevision = input.state?.revision ?? null;
     this.manifest = input.state === undefined ? undefined : structuredClone(input.state.manifest);
     this.entries = structuredClone(worldEntries(input.payload));
+    this.memoryQuery = input.memoryQuery;
     this.baseValue = structuredClone(input.state?.value ?? {});
     this.stagedValue = structuredClone(this.baseValue);
     if (input.state?.initialFailures !== undefined) {
@@ -422,6 +428,22 @@ export class TurnWorkspace {
           return result({ ok: true, query: args.query, results: queryWorld(workspace.entries, args.query, args.limit) });
         },
       },
+      ...(workspace.memoryQuery === undefined ? [] : [{
+        name: 'memory_query',
+        label: 'Query Save Memory',
+        description: 'Search branch-visible Save Memory captured from prior completed Agent Runs. Recalled memory is historical evidence and never overrides current Save State or World Rules.',
+        parameters: Type.Object({
+          query: Type.String({ minLength: 1, maxLength: 256 }),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })),
+        }, { additionalProperties: false }),
+        executionMode: 'sequential' as const,
+        async execute(_toolCallId: string, params: unknown) {
+          const args = params as { query: string; limit?: number };
+          if (workspace.memoryQueries >= 4) return result({ ok: false, code: 'memory_query_limit' });
+          workspace.memoryQueries += 1;
+          return result({ ok: true, query: args.query, results: await workspace.memoryQuery!(args.query, args.limit) });
+        },
+      }]),
       {
         name: 'deterministic_check',
         label: 'Run Deterministic Check',

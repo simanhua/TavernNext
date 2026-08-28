@@ -23,6 +23,7 @@ import {
 import { mountSceneStatusRail } from './status-rail.js';
 import { SaveAgentConfigurationPanel } from './SaveAgentConfigurationPanel.js';
 import { AgentRunInspector } from '../chat/AgentRunInspector.js';
+import { MemoryCenter } from './MemoryCenter.js';
 
 type LeaseState = 'checking' | 'active' | 'duplicate';
 
@@ -386,6 +387,7 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       {mode === 'workspace' && conversationId !== undefined
         ? <>
           <SaveAgentConfigurationPanel conversationId={conversationId} />
+          <MemoryCenter conversationId={conversationId} />
           <AgentRunInspector conversationId={conversationId} />
         </>
         : null}

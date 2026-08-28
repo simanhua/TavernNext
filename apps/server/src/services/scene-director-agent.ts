@@ -25,9 +25,15 @@ import type { Repositories } from '../db/repositories.js';
 import {
   PromptSnapshotError,
   type PromptSnapshotPayload,
+  type MemoryRecallSnapshotEntry,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
-import { saveStateDirectory, TurnWorkspace, type TurnWorkspaceSnapshot } from './turn-workspace.js';
+import {
+  saveStateDirectory,
+  TurnWorkspace,
+  type TurnMemoryQuery,
+  type TurnWorkspaceSnapshot,
+} from './turn-workspace.js';
 import type { SceneAgentToolFactory } from './scene-agent-tools.js';
 import {
   type SceneViewRuntime,
@@ -68,6 +74,7 @@ export interface SceneDirectorTerminal {
     trace: AgentRun['trace'];
     diagnostics: AgentRun['diagnostics'];
     failureCode?: string;
+    output?: AgentRun['output'];
   };
 }
 
@@ -95,6 +102,7 @@ const COMPLETE_VIEW_REFERENCE = /^<!--tavernnext:view:([0-9A-Za-z_-]{1,160})-->/
 function safeActivity(toolName: string): { kind: AgentActivityKind; label: string } {
   if (toolName === 'save_state_read') return { kind: 'inspect-save', label: 'Inspecting Save state' };
   if (toolName === 'world_query') return { kind: 'query-lore', label: 'Querying world lore' };
+  if (toolName === 'memory_query') return { kind: 'query-memory', label: 'Querying Save memory' };
   if (toolName === 'deterministic_check') return { kind: 'perform-check', label: 'Performing a rule check' };
   if (toolName === 'scene_patch_stage') return { kind: 'update-state', label: 'Updating staged Save state' };
   if (toolName === 'scene_view_stage') return { kind: 'stage-view', label: 'Preparing a Scene view' };
@@ -379,6 +387,7 @@ function systemPrompt(
   persona: { name: string; description: string },
   sceneStateValue: Record<string, unknown>,
   scenePromptAdditions: readonly ScenePromptAddition[],
+  recalledMemories: readonly MemoryRecallSnapshotEntry[],
 ): string {
   const activatedRules = payload.worldbook.activated;
   const targetRuleCount = Math.ceil(activatedRules.length / 2);
@@ -412,6 +421,9 @@ function systemPrompt(
   const turnDirectives = scenePromptAdditions.map((addition) => (
     `[${addition.role}] ${addition.content}`
   )).join('\n\n');
+  const recalled = recalledMemories.map((memory) => (
+    `- [${memory.kind}] ${memory.summary}${memory.detail === '' ? '' : ` — ${memory.detail}`}`
+  )).join('\n');
   return [
     '[1 PLATFORM CONTRACT — highest precedence]',
     'You are TavernNext Scene Director. Continue the roleplay as the configured Character. '
@@ -434,6 +446,11 @@ function systemPrompt(
     statePaths || '(No Scene State paths are available.)',
     ...(stateDirectory.truncated ? ['Directory is bounded; call save_state_read for deeper paths.'] : []),
     ...(turnDirectives === '' ? [] : ['[5B SCENE TURN DIRECTIVES]', turnDirectives]),
+    ...(recalled === '' ? [] : [
+      '[5C RECALLED SAVE MEMORY]',
+      'These are derived historical memories. Current Save State, World Rules, and newer messages take precedence.\n'
+        + recalled,
+    ]),
     '[6 HISTORY AND PLAYER INPUT]',
     'Conversation history is supplied as messages. The newest player message is the current request.',
   ].join('\n\n');
@@ -668,6 +685,8 @@ export class SceneDirectorExecution {
     limits?: Partial<SceneDirectorLimits>;
     effectiveSceneState?: Record<string, unknown>;
     scenePromptAdditions?: ScenePromptAddition[];
+    recalledMemories?: MemoryRecallSnapshotEntry[];
+    memoryQuery?: TurnMemoryQuery;
     workspaceState?: {
       revision: number;
       value: Record<string, unknown>;
@@ -712,6 +731,7 @@ export class SceneDirectorExecution {
     this.workspace = new TurnWorkspace({
       generationId: input.generationId,
       payload: structuredClone(input.payload),
+      ...(input.memoryQuery === undefined ? {} : { memoryQuery: input.memoryQuery }),
       ...(input.workspaceState === undefined ? {} : { state: structuredClone(input.workspaceState) }),
     });
     this.sceneViewRuntime = input.sceneViewRuntimeFactory?.(this.workspace);
@@ -737,6 +757,7 @@ export class SceneDirectorExecution {
         frozenPersona,
         frozenSceneStateValue,
         frozenScenePromptAdditions,
+        structuredClone(input.recalledMemories ?? []),
       ),
       playerInput: prompt.playerInput,
       runtime,
