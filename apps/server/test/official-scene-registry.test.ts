@@ -27,12 +27,13 @@ describe('official Scene registry', () => {
   it('publishes and resolves every registered official Scene Package', () => {
     const catalog = officialCatalog();
 
-    expect(catalog.scenes).toHaveLength(2);
+    expect(catalog.scenes).toHaveLength(3);
     expect(catalog.scenes.map((scene) => scene.packageUrl)).toEqual([
       'builtin:destined-poem',
       'builtin:scene-lab',
+      'builtin:taixu-chronicles',
     ]);
-    expect(new Set(catalog.scenes.map((scene) => scene.sceneId)).size).toBe(2);
+    expect(new Set(catalog.scenes.map((scene) => scene.sceneId)).size).toBe(3);
 
     for (const entry of catalog.scenes) {
       const first = builtInPackage(entry.packageUrl);

@@ -12,6 +12,7 @@ import { strToU8, zipSync } from 'fflate';
 
 export const DESTINED_POEM_SCENE_ID = '018f2000-0000-7000-8000-000000000001';
 export const SCENE_LAB_SCENE_ID = '018f2000-0000-7000-8000-000000000002';
+export const TAIXU_CHRONICLES_SCENE_ID = '018f2000-0000-7000-8000-000000000003';
 const GENERATED_AT = '2026-08-24T00:00:00.000Z';
 
 export interface OfficialSceneDefinition {
@@ -23,6 +24,7 @@ export interface OfficialSceneDefinition {
 const definitions: readonly OfficialSceneDefinition[] = [
   { id: DESTINED_POEM_SCENE_ID, slug: 'destined-poem', packageUrl: 'builtin:destined-poem' },
   { id: SCENE_LAB_SCENE_ID, slug: 'scene-lab', packageUrl: 'builtin:scene-lab' },
+  { id: TAIXU_CHRONICLES_SCENE_ID, slug: 'taixu-chronicles', packageUrl: 'builtin:taixu-chronicles' },
 ];
 
 function assertRegistry(): void {
