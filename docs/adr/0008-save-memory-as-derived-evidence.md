@@ -4,4 +4,4 @@ TavernNext stores long-term roleplay recall as Save-owned evidence derived async
 
 ## Consequences
 
-Memory extraction may complete after the response that produced it, and embedding failure falls back to lexical recall. Historical message edits deliberately do not rewrite existing Save Memory in the first version.
+Memory extraction may complete after the response that produced it, and embedding failure falls back to lexical recall. Historical message edits deliberately do not rewrite existing Save Memory in the first version. Recall reads a bounded active candidate set plus direct hits from the external Memory Index, while older Near and Far evidence is rolled forward through a hierarchical provenance chain without discarding its original Near evidence.

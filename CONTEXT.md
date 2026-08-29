@@ -73,7 +73,7 @@ Recent Save Memory retained at turn-level detail before consolidation.
 _Avoid_: Chat history, working context
 
 **Far Memory**:
-Consolidated Save Memory that preserves provenance to its contributing Near Memories.
+Consolidated Save Memory that may roll older Far Memory forward while preserving direct or hierarchical provenance to its contributing Near Memories.
 _Avoid_: Worldbook entry, character biography
 
 **Memory Index**:

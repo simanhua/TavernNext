@@ -108,6 +108,7 @@ export const MAX_MESSAGES_PER_CONVERSATION = 2048;
 export const MAX_VARIANTS_PER_RELATION = 4096;
 export const MAX_ENTRIES_PER_WORLDBOOK = 4096;
 export const MAX_GLOBAL_WORLDBOOKS = 64;
+export const MAX_PINNED_SAVE_MEMORIES = 128;
 
 export type RelationshipLimitCode =
   | 'message_relation_limit'
@@ -207,12 +208,28 @@ export interface SaveMemoryConfigurationRepository extends Repository<SaveMemory
 
 export interface SaveMemoryRepository extends Repository<SaveMemory> {
   listByConversationId(conversationId: string): SaveMemory[];
+  pageByConversationId(input: { conversationId: string; page: number; pageSize: number }): {
+    items: SaveMemory[];
+    total: number;
+  };
+  listRecallCandidates(input: {
+    conversationId: string;
+    activeVariantIds: readonly string[];
+    excludedVariantIds: readonly string[];
+    searchTerms?: readonly string[];
+    limit?: number;
+  }): SaveMemory[];
+  listByIds(ids: readonly string[]): SaveMemory[];
+  listIndexable(conversationId: string): SaveMemory[];
+  countPinned(conversationId: string): number;
+  listActiveByTier(conversationId: string, tier: 'near' | 'far', limit?: number): SaveMemory[];
   deleteBySourceVariantIds(conversationId: string, variantIds: readonly string[]): number;
 }
 
 export interface MemoryJobRepository extends Repository<MemoryJob> {
   listByConversationId(conversationId: string): MemoryJob[];
   listReady(now: string, limit?: number): MemoryJob[];
+  pruneCompleted(conversationId: string, keep?: number): number;
 }
 
 export interface AgentRunRepository extends Repository<AgentRun> {
@@ -975,6 +992,102 @@ function createSaveMemoryRepository(database: TavernDatabase): SaveMemoryReposit
         .orderBy(asc(saveMemories.createdAt), asc(saveMemories.id)).all()
         .map((row) => SaveMemorySchema.parse(row.payload));
     },
+    pageByConversationId(input) {
+      const page = Math.max(1, Math.floor(input.page));
+      const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)));
+      const totalRow = database.sqlite.prepare(
+        'SELECT COUNT(*) AS total FROM save_memories WHERE conversation_id = ?',
+      ).get(input.conversationId);
+      const total = typeof totalRow?.total === 'number' ? totalRow.total : 0;
+      const items = database.sqlite.prepare(`
+        SELECT payload FROM save_memories WHERE conversation_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?
+      `).all(input.conversationId, pageSize, (page - 1) * pageSize)
+        .map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))));
+      return { items, total };
+    },
+    listRecallCandidates(input) {
+      const limit = Math.min(2_048, Math.max(1, Math.floor(input.limit ?? 1_024)));
+      const sourceVariant = "json_extract(payload, '$.sourceVariantId')";
+      const active = [...new Set(input.activeVariantIds)];
+      const excluded = [...new Set(input.excludedVariantIds)];
+      const activeClause = active.length === 0
+        ? `${sourceVariant} IS NULL`
+        : `(${sourceVariant} IS NULL OR ${sourceVariant} IN (SELECT value FROM json_each(?)))`;
+      const excludedClause = excluded.length === 0
+        ? '1 = 1'
+        : `(${sourceVariant} IS NULL OR ${sourceVariant} NOT IN (SELECT value FROM json_each(?)))`;
+      const branchArguments = [
+        ...(active.length === 0 ? [] : [JSON.stringify(active)]),
+        ...(excluded.length === 0 ? [] : [JSON.stringify(excluded)]),
+      ];
+      const baseWhere = `
+        WHERE conversation_id = ? AND status = 'active'
+          AND COALESCE(json_extract(payload, '$.excluded'), 0) = 0
+          AND ${activeClause} AND ${excludedClause}`;
+      const select = (extraWhere: string, orderBy: string, extraArguments: string[], boundedLimit: number) => (
+        database.sqlite.prepare(`
+          SELECT payload FROM save_memories ${baseWhere} ${extraWhere}
+          ORDER BY ${orderBy} LIMIT ?
+        `).all(input.conversationId, ...branchArguments, ...extraArguments, boundedLimit)
+          .map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))))
+      );
+      const selected = new Map<string, SaveMemory>();
+      const add = (memories: SaveMemory[]) => {
+        for (const memory of memories) {
+          if (selected.size >= limit) break;
+          selected.set(memory.id, memory);
+        }
+      };
+      add(select('', 'created_at DESC, id DESC', [], Math.min(2, limit)));
+      add(select("AND COALESCE(json_extract(payload, '$.pinned'), 0) = 1", 'created_at DESC, id DESC', [], limit));
+      const terms = [...new Set((input.searchTerms ?? []).map((term) => term.trim()).filter(Boolean))].slice(0, 16);
+      if (terms.length > 0 && selected.size < limit) {
+        const searchable = "LOWER(COALESCE(json_extract(payload, '$.summary'), '') || CHAR(10) || COALESCE(json_extract(payload, '$.detail'), ''))";
+        const matches = terms.map(() => `instr(${searchable}, LOWER(?)) > 0`);
+        const score = terms.map(() => `CASE WHEN instr(${searchable}, LOWER(?)) > 0 THEN 1 ELSE 0 END`).join(' + ');
+        add(select(`AND (${matches.join(' OR ')})`, `${score} DESC, created_at DESC, id DESC`, [...terms, ...terms], limit));
+      }
+      if (selected.size < limit) add(select('', 'created_at DESC, id DESC', [], limit));
+      return [...selected.values()];
+    },
+    listByIds(ids) {
+      const unique = [...new Set(ids)];
+      const memories: SaveMemory[] = [];
+      for (let offset = 0; offset < unique.length; offset += 500) {
+        const chunk = unique.slice(offset, offset + 500);
+        if (chunk.length === 0) continue;
+        memories.push(...database.sqlite.prepare(`
+          SELECT payload FROM save_memories WHERE id IN (${chunk.map(() => '?').join(', ')})
+        `).all(...chunk).map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload)))));
+      }
+      return memories;
+    },
+    listIndexable(conversationId) {
+      return database.sqlite.prepare(`
+        SELECT payload FROM save_memories
+        WHERE conversation_id = ? AND status = 'active'
+          AND COALESCE(json_extract(payload, '$.excluded'), 0) = 0
+        ORDER BY created_at, id
+      `).all(conversationId).map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))));
+    },
+    countPinned(conversationId) {
+      const row = database.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM save_memories
+        WHERE conversation_id = ? AND COALESCE(json_extract(payload, '$.pinned'), 0) = 1
+      `).get(conversationId);
+      return typeof row?.count === 'number' ? row.count : 0;
+    },
+    listActiveByTier(conversationId, tier, limit = 2_048) {
+      return database.sqlite.prepare(`
+        SELECT payload FROM save_memories
+        WHERE conversation_id = ? AND status = 'active' AND tier = ?
+          AND COALESCE(json_extract(payload, '$.excluded'), 0) = 0
+          AND COALESCE(json_extract(payload, '$.pinned'), 0) = 0
+        ORDER BY created_at, id LIMIT ?
+      `).all(conversationId, tier, Math.min(4_096, Math.max(2, Math.floor(limit))))
+        .map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))));
+    },
     deleteBySourceVariantIds(conversationId, variantIds) {
       const variants = new Set(variantIds);
       const memories = this.listByConversationId(conversationId);
@@ -1022,6 +1135,18 @@ function createMemoryJobRepository(database: TavernDatabase): MemoryJobRepositor
         ORDER BY created_at, id LIMIT ?
       `).all(now, Math.min(64, Math.max(1, Math.floor(limit))))
         .map((row) => MemoryJobSchema.parse(JSON.parse(String(row.payload))));
+    },
+    pruneCompleted(conversationId, keep = 100) {
+      const retained = Math.min(1_000, Math.max(0, Math.floor(keep)));
+      return database.sqlite.prepare(`
+        DELETE FROM memory_jobs
+        WHERE conversation_id = ? AND status = 'completed'
+          AND id NOT IN (
+            SELECT id FROM memory_jobs
+            WHERE conversation_id = ? AND status = 'completed'
+            ORDER BY created_at DESC, id DESC LIMIT ?
+          )
+      `).run(conversationId, conversationId, retained).changes;
     },
   };
 }

@@ -1224,6 +1224,7 @@ button[type="submit"]:hover:not(:disabled),
 .memory-center-card > small { color: var(--vp-c-text-3); }
 .memory-center-card > p { margin: 6px 0; }
 .memory-center-card menu { display: flex; gap: 6px; margin: 8px 0 0; padding: 0; }
+.memory-center-pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 12px; }
 
 @media (max-width: 760px) {
   .save-list > button { flex-direction: column; }

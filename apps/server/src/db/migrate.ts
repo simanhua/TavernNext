@@ -14,7 +14,8 @@ const AGENT_RUN_SCHEMA_VERSION = 20;
 const ROLEPLAY_DOCUMENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION + 1;
 export const AGENT_FIRST_RESET_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION + 1;
 const SAVE_MEMORY_SCHEMA_VERSION = AGENT_FIRST_RESET_SCHEMA_VERSION + 1;
-export const CURRENT_SCHEMA_VERSION = SAVE_MEMORY_SCHEMA_VERSION;
+const BOUNDED_MEMORY_SCHEMA_VERSION = SAVE_MEMORY_SCHEMA_VERSION + 1;
+export const CURRENT_SCHEMA_VERSION = BOUNDED_MEMORY_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -105,6 +106,8 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS save_memory_configurations_conversation_id_idx ON save_memory_configurations(conversation_id);
   CREATE INDEX IF NOT EXISTS save_memories_conversation_created_idx ON save_memories(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS save_memories_conversation_status_idx ON save_memories(conversation_id, status);
+  CREATE INDEX IF NOT EXISTS save_memories_recall_idx ON save_memories(conversation_id, status, tier, created_at, id);
+  CREATE INDEX IF NOT EXISTS save_memories_kind_status_idx ON save_memories(conversation_id, kind, status);
   CREATE INDEX IF NOT EXISTS memory_jobs_conversation_created_idx ON memory_jobs(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS memory_jobs_status_next_idx ON memory_jobs(status, next_attempt_at, created_at);
   CREATE INDEX IF NOT EXISTS worldbook_runtime_states_conversation_id_idx ON worldbook_runtime_states(conversation_id);
@@ -561,6 +564,19 @@ function seedGlobalEmbeddingConfiguration(database: TavernDatabase): void {
   `).run(GLOBAL_EMBEDDING_CONFIGURATION_ID, now, now, payload);
 }
 
+function pruneCompletedMemoryJobs(database: TavernDatabase): void {
+  database.sqlite.exec(`
+    DELETE FROM memory_jobs WHERE id IN (
+      SELECT id FROM (
+        SELECT id, ROW_NUMBER() OVER (
+          PARTITION BY conversation_id ORDER BY created_at DESC, id DESC
+        ) AS retained_rank
+        FROM memory_jobs WHERE status = 'completed'
+      ) WHERE retained_rank > 100
+    );
+  `);
+}
+
 function contractGlobalGenerationConfig(database: TavernDatabase): void {
   database.sqlite.exec(`
     UPDATE global_generation_config
@@ -629,6 +645,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       backfillConversationWorldbooks(database);
       seedGlobalGenerationConfig(database);
       seedGlobalEmbeddingConfiguration(database);
+      pruneCompletedMemoryJobs(database);
       contractGlobalGenerationConfig(database);
       contractProviderProfiles(database);
       database.sqlite.exec(indexes);

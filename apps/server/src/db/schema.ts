@@ -185,6 +185,8 @@ export const saveMemories = sqliteTable('save_memories', {
 }, (table) => [
   index('save_memories_conversation_created_idx').on(table.conversationId, table.createdAt, table.id),
   index('save_memories_conversation_status_idx').on(table.conversationId, table.status),
+  index('save_memories_recall_idx').on(table.conversationId, table.status, table.tier, table.createdAt, table.id),
+  index('save_memories_kind_status_idx').on(table.conversationId, table.kind, table.status),
 ]);
 export const memoryJobs = sqliteTable('memory_jobs', {
   ...entityColumns,

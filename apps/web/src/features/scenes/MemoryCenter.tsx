@@ -1,11 +1,14 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client.js';
 
 export function MemoryCenter({ conversationId }: { conversationId: string }) {
   const queryClient = useQueryClient();
-  const key = ['memory-center', conversationId] as const;
-  const memory = useQuery({ queryKey: key, queryFn: () => api.getMemoryCenter(conversationId) });
-  const refresh = () => queryClient.invalidateQueries({ queryKey: key });
+  const [page, setPage] = useState(1);
+  const baseKey = ['memory-center', conversationId] as const;
+  const key = [...baseKey, page] as const;
+  const memory = useQuery({ queryKey: key, queryFn: () => api.getMemoryCenter(conversationId, page) });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: baseKey });
   const update = useMutation({
     mutationFn: ({ id, pinned, excluded }: { id: string; pinned: boolean; excluded: boolean }) => {
       const item = memory.data?.memories.find((candidate) => candidate.id === id);
@@ -79,6 +82,11 @@ export function MemoryCenter({ conversationId }: { conversationId: string }) {
           ))}
           {(memory.data?.memories.length ?? 0) === 0 ? <p>No memory captured yet.</p> : null}
         </div>
+        {(memory.data?.pagination.totalPages ?? 0) > 1 ? <nav className="memory-center-pagination">
+          <button type="button" aria-label="Previous page" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>←</button>
+          <span>{page} / {memory.data?.pagination.totalPages ?? 1}</span>
+          <button type="button" aria-label="Next page" disabled={page >= (memory.data?.pagination.totalPages ?? 1)} onClick={() => setPage((value) => value + 1)}>→</button>
+        </nav> : null}
       </div>}
     </details>
   );

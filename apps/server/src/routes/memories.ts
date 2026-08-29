@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { Repositories } from '../db/repositories.js';
+import { MAX_PINNED_SAVE_MEMORIES, type Repositories } from '../db/repositories.js';
 
 const revision = (value: unknown): number | undefined => (
   typeof value === 'number' && Number.isInteger(value) && value >= 0
@@ -8,19 +8,33 @@ const revision = (value: unknown): number | undefined => (
     : typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : undefined
 );
 
+const positiveInteger = (value: unknown, fallback: number, maximum: number): number => {
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : undefined;
+  return parsed === undefined || parsed < 1 ? fallback : Math.min(maximum, parsed);
+};
+
 function publicEmbedding(value: ReturnType<Repositories['globalEmbeddingConfiguration']['get']>) {
   const { secretRef, ...safe } = value;
   return { ...safe, configured: secretRef !== null && value.baseUrl !== null && value.model !== null };
 }
 
 export function registerMemoryRoutes(app: FastifyInstance, repositories: Repositories): void {
-  app.get<{ Params: { id: string } }>('/api/conversations/:id/memories', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string } }>(
+    '/api/conversations/:id/memories', async (request, reply) => {
     if (repositories.conversations.get(request.params.id) === undefined) {
       return reply.status(404).send({ error: 'not_found' });
     }
+    const page = positiveInteger(request.query.page, 1, 1_000_000);
+    const pageSize = positiveInteger(request.query.pageSize, 20, 100);
+    const memories = repositories.saveMemories.pageByConversationId({
+      conversationId: request.params.id, page, pageSize,
+    });
     return {
       configuration: repositories.saveMemoryConfigurations.getByConversationId(request.params.id) ?? null,
-      memories: repositories.saveMemories.listByConversationId(request.params.id),
+      memories: memories.items,
+      pagination: {
+        page, pageSize, total: memories.total, totalPages: Math.ceil(memories.total / pageSize),
+      },
       jobs: repositories.memoryJobs.listByConversationId(request.params.id).map(({ payload: ignoredPayload, ...job }) => {
         void ignoredPayload;
         return job;
@@ -58,6 +72,12 @@ export function registerMemoryRoutes(app: FastifyInstance, repositories: Reposit
       ['pinned', 'excluded'].flatMap((key) => typeof request.body?.[key] === 'boolean' ? [[key, request.body[key]]] : []),
     );
     if (Object.keys(patch).length === 0) return reply.status(400).send({ error: 'invalid_request' });
+    const current = repositories.saveMemories.get(request.params.id);
+    if (current === undefined) return reply.status(404).send({ error: 'not_found' });
+    if (request.body.pinned === true && !current.pinned
+      && repositories.saveMemories.countPinned(current.conversationId) >= MAX_PINNED_SAVE_MEMORIES) {
+      return reply.status(409).send({ error: 'memory_pin_limit' });
+    }
     const result = repositories.saveMemories.update(request.params.id, expectedRevision, patch);
     if (!result.ok) return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
     return result.value;

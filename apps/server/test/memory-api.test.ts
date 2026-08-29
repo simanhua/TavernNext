@@ -42,10 +42,54 @@ async function context() {
   const app = createApp({ database, snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
   apps.push(app);
   await app.ready();
-  return { app, repositories, conversation, memory };
+  return { app, database, repositories, conversation, memory };
 }
 
 describe('Memory Center API', () => {
+  it('rejects pinning beyond the bounded Save Memory pin limit', async () => {
+    const { app, database, repositories, conversation, memory } = await context();
+    database.transaction(() => {
+      for (let index = 0; index < 128; index += 1) {
+        repositories.saveMemories.create({
+          id: randomUUID(), conversationId: conversation.id, kind: 'episode', tier: 'far',
+          summary: `Pinned memory ${index}`, detail: '', entities: [], salience: 0.5, confidence: 0.8,
+          sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+          sourceMemoryIds: [], supersedesId: null,
+          contentHash: index.toString(16).padStart(64, '0'), tokenCount: 4, pinned: true,
+        });
+      }
+    });
+
+    const response = await app.inject({
+      method: 'PATCH', url: `/api/memories/${memory.id}`,
+      payload: { revision: memory.revision, pinned: true, excluded: false },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'memory_pin_limit' });
+  });
+
+  it('pages Save Memory with a stable total count', async () => {
+    const { app, repositories, conversation } = await context();
+    for (let index = 0; index < 3; index += 1) {
+      repositories.saveMemories.create({
+        id: randomUUID(), conversationId: conversation.id, kind: 'episode', tier: 'near',
+        summary: `Paged memory ${index}`, detail: '', entities: [], salience: 0.5, confidence: 0.8,
+        sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+        sourceMemoryIds: [], supersedesId: null,
+        contentHash: randomUUID().replaceAll('-', '').padEnd(64, '0').slice(0, 64), tokenCount: 4,
+      });
+    }
+
+    const response = await app.inject({
+      method: 'GET', url: `/api/conversations/${conversation.id}/memories?page=2&pageSize=2`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      memories: [expect.any(Object), expect.any(Object)],
+      pagination: { page: 2, pageSize: 2, total: 4, totalPages: 2 },
+    });
+  });
+
   it('lists, marks, deletes, and rebuilds Save Memory', async () => {
     const { app, repositories, conversation, memory } = await context();
     const listed = await app.inject({ method: 'GET', url: `/api/conversations/${conversation.id}/memories` });

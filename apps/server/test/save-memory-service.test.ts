@@ -10,7 +10,9 @@ import { createSaveMemoryService } from '../src/services/save-memory-service.js'
 import { TEST_REPOSITORY_OPTIONS } from './test-integrity-key.js';
 
 const directories: string[] = [];
+const databases: Array<ReturnType<typeof createDatabase>> = [];
 afterEach(async () => {
+  for (const database of databases.splice(0)) database.close();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -18,6 +20,7 @@ async function seeded() {
   const directory = await mkdtemp(join(tmpdir(), 'tavernnext-memory-'));
   directories.push(directory);
   const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+  databases.push(database);
   migrateDatabase(database);
   const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
   const character = repositories.characters.create({
@@ -107,12 +110,29 @@ describe('Save Memory service', () => {
     });
     memory(abandoned.id, '阿斯特放弃了黎明前返回的誓言。', 1);
     const chosen = memory(active.id, '阿斯特承诺在黎明前返回。', 0.9);
+    const abandonedSource = repositories.saveMemories.listByConversationId(conversation.id)[0]!;
+    expect(repositories.saveMemories.update(abandonedSource.id, abandonedSource.revision, { status: 'archived' }).ok).toBe(true);
+    const firstFar = repositories.saveMemories.create({
+      id: randomUUID(), conversationId: conversation.id, kind: 'episode', tier: 'far', status: 'archived',
+      summary: 'Abandoned first Far.', detail: '', entities: [], salience: 1, confidence: 1,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [abandonedSource.id], supersedesId: null, contentHash: '6'.repeat(64), tokenCount: 4,
+    });
+    const secondFar = repositories.saveMemories.create({
+      id: randomUUID(), conversationId: conversation.id, kind: 'episode', tier: 'far',
+      summary: 'Forbidden deep provenance.', detail: '', entities: [], salience: 1, confidence: 1,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [firstFar.id], supersedesId: null, contentHash: '7'.repeat(64), tokenCount: 4,
+    });
 
-    expect(service.recall({ conversationId: conversation.id, query: '黎明誓言', limit: 6 }).memories)
-      .toEqual([expect.objectContaining({ id: chosen.id, summary: '阿斯特承诺在黎明前返回。' })]);
+    const branchRecall = service.recall({ conversationId: conversation.id, query: '黎明誓言', limit: 6 }).memories;
+    expect(branchRecall).toContainEqual(expect.objectContaining({ id: chosen.id, summary: '阿斯特承诺在黎明前返回。' }));
+    expect(branchRecall).not.toContainEqual(expect.objectContaining({ id: abandonedSource.id }));
+    expect(service.recall({ conversationId: conversation.id, query: 'forbidden deep', limit: 6 }).memories)
+      .not.toContainEqual(expect.objectContaining({ id: secondFar.id }));
   });
 
-  it('fuses BM25 and dense rankings without comparing their raw score scales', async () => {
+  it('fuses BM25 and Save-wide dense rankings without comparing their raw score scales', async () => {
     const { repositories, conversation } = await seeded();
     const first = repositories.saveMemories.create({
       id: randomUUID(), conversationId: conversation.id, kind: 'discovery', tier: 'near',
@@ -126,15 +146,33 @@ describe('Save Memory service', () => {
       sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
       sourceMemoryIds: [], supersedesId: null, contentHash: 'f'.repeat(64), tokenCount: 8,
     });
-    const service = createSaveMemoryService(repositories, async () => new Map([
-      [semantic.id, 0.99], [first.id, 0.01],
-    ]));
+    const otherConversation = repositories.conversations.create({
+      id: randomUUID(), characterId: conversation.characterId, personaId: conversation.personaId,
+      title: 'Other Save',
+    });
+    const crossSave = repositories.saveMemories.create({
+      id: randomUUID(), conversationId: otherConversation.id, kind: 'discovery', tier: 'far',
+      summary: 'Must never cross Saves.', detail: '', entities: [], salience: 1, confidence: 1,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [], supersedesId: null, contentHash: '8'.repeat(64), tokenCount: 8,
+    });
+    repositories.saveMemories.listRecallCandidates = () => [first];
+    const dense = Object.assign(
+      async () => new Map([[semantic.id, 0.99], [first.id, 0.01]]),
+      { searchSave: async () => new Map([[crossSave.id, 1], [semantic.id, 0.99], [first.id, 0.01]]) },
+    );
+    const service = createSaveMemoryService(repositories, dense);
 
     const recalled = await service.recallHybrid({
       conversationId: conversation.id, query: 'archive clock reconciliation', limit: 4,
     });
     expect(recalled.memories.map((memory) => memory.id)).toEqual(expect.arrayContaining([first.id, semantic.id]));
+    expect(recalled.memories.map((memory) => memory.id)).not.toContain(crossSave.id);
     expect(recalled.mode).toBe('hybrid');
+    repositories.saveMemories.listRecallCandidates = () => [];
+    expect((await service.recallHybrid({
+      conversationId: conversation.id, query: 'forgiveness after conflict', limit: 4,
+    })).memories).toContainEqual(expect.objectContaining({ id: semantic.id }));
   });
 
   it('keeps the two most recent memories in automatic recall before filling relevant slots', async () => {
@@ -154,6 +192,21 @@ describe('Save Memory service', () => {
     }).memories;
     expect(recalled.slice(0, 2).map((memory) => memory.id)).toEqual(recent.map((memory) => memory.id));
     expect(recalled).toHaveLength(6);
+  });
+
+  it('recalls through the bounded candidate repository instead of loading the full Save history', async () => {
+    const { repositories, conversation } = await seeded();
+    repositories.saveMemories.create({
+      id: randomUUID(), conversationId: conversation.id, kind: 'discovery', tier: 'near',
+      summary: 'The bounded archive clue.', detail: '', entities: [], salience: 0.8, confidence: 0.9,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [], supersedesId: null, contentHash: '3'.repeat(64), tokenCount: 8,
+    });
+    repositories.saveMemories.listByConversationId = () => { throw new Error('full_history_read'); };
+
+    expect(createSaveMemoryService(repositories).recall({
+      conversationId: conversation.id, query: 'archive clue', limit: 4,
+    }).memories).toContainEqual(expect.objectContaining({ summary: 'The bounded archive clue.' }));
   });
 
   it('consolidates old near memories into source-linked far memory', async () => {
@@ -218,4 +271,51 @@ describe('Save Memory service', () => {
       }),
     }));
   });
+
+  it('rolls old Far Memory into a new Far Memory while preserving original Near provenance', async () => {
+    const { repositories, conversation } = await seeded();
+    const nearIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const [index, id] of nearIds.entries()) {
+      repositories.saveMemories.create({
+        id, conversationId: conversation.id, kind: 'episode', tier: 'near', status: 'archived',
+        summary: `Original chapter ${index}`, detail: '', entities: [], salience: 0.5, confidence: 0.8,
+        sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+        sourceMemoryIds: [], supersedesId: null,
+        contentHash: id.replaceAll('-', '').padEnd(64, '0').slice(0, 64), tokenCount: 3_500,
+      });
+    }
+    const farIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const [index, id] of farIds.entries()) {
+      repositories.saveMemories.create({
+        id, conversationId: conversation.id, kind: 'episode', tier: 'far',
+        summary: `Far chapter ${index}`, detail: '', entities: [], salience: 0.5, confidence: 0.8,
+        sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+        sourceMemoryIds: [nearIds[index]!], supersedesId: null,
+        contentHash: id.replaceAll('-', '').padEnd(64, '0').slice(0, 64), tokenCount: 5_000,
+      });
+    }
+    repositories.memoryJobs.create({
+      id: randomUUID(), conversationId: conversation.id, kind: 'extract-turn', status: 'pending',
+      attempts: 0, nextAttemptAt: null, lastError: null,
+      payload: { provider: { id: 'frozen-provider' }, saveAgentConfiguration: { id: 'frozen-agent' } },
+    });
+    const service = createSaveMemoryService(repositories);
+
+    expect(await service.processReadyJobs(async () => ({ memories: [{
+      kind: 'episode', summary: 'A small current event.', detail: '', entities: [], salience: 0.5, confidence: 0.9,
+    }] }))).toEqual({ completed: 1, failed: 0 });
+    expect(repositories.memoryJobs.listByConversationId(conversation.id)).toContainEqual(expect.objectContaining({
+      kind: 'consolidate', status: 'pending',
+      payload: expect.objectContaining({ sourceMemoryIds: farIds.slice(0, 2) }),
+    }));
+
+    expect(await service.processReadyJobs(async () => ({ memories: [{
+      kind: 'episode', summary: 'Rolled Far history.', detail: '', entities: [], salience: 0.7, confidence: 0.9,
+    }] }))).toEqual({ completed: 1, failed: 0 });
+    expect(farIds.map((id) => repositories.saveMemories.get(id)?.status)).toEqual(['archived', 'archived', 'active']);
+    expect(repositories.saveMemories.listByConversationId(conversation.id)).toContainEqual(expect.objectContaining({
+      tier: 'far', status: 'active', summary: 'Rolled Far history.', sourceMemoryIds: farIds.slice(0, 2),
+    }));
+  });
+
 });

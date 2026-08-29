@@ -57,11 +57,25 @@ describe('OpenAI-compatible Memory embeddings', () => {
     const input = { conversationId: promise.conversationId, query: 'return promise', memories: [promise, vault] };
     expect([...await dense(input)]).toEqual([[promise.id, 1], [vault.id, 0]]);
     expect([...await dense(input)]).toEqual([[promise.id, 1], [vault.id, 0]]);
+    await dense({ ...input, memories: [promise] });
+    expect([...await dense(input)]).toEqual([[promise.id, 1], [vault.id, 0]]);
     await dense.invalidate?.(conversationId);
     expect([...await dense(input)]).toEqual([[promise.id, 1], [vault.id, 0]]);
     expect(dense.rebuild).toBeTypeOf('function');
-    await dense.rebuild!(conversationId, [promise, vault]);
+    await dense.rebuild!(conversationId, [promise]);
     expect([...await dense(input)]).toEqual([[promise.id, 1], [vault.id, 0]]);
-    expect(requests.map((items) => items.length)).toEqual([3, 1, 3, 3, 1]);
+    expect(dense.searchSave).toBeTypeOf('function');
+    expect([...(await dense.searchSave!({ ...input, memories: [promise] })).keys()]).toContain(vault.id);
+    expect(requests.map((items) => items.length)).toEqual([2, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1]);
+
+    requests.length = 0;
+    const many = Array.from({ length: 130 }, (_, index) => SaveMemorySchema.parse({
+      ...promise,
+      id: randomUUID(),
+      summary: `Memory ${index}`,
+      contentHash: index.toString(16).padStart(64, '0'),
+    }));
+    await dense.rebuild!(conversationId, many);
+    expect(Math.max(...requests.map((items) => items.length))).toBeLessThanOrEqual(64);
   });
 });

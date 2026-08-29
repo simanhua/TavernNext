@@ -22,6 +22,7 @@ export type { AgentRun };
 export type MemoryCenterView = {
   configuration: SaveMemoryConfiguration | null;
   memories: SaveMemory[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
   jobs: Array<Omit<MemoryJob, 'payload'>>;
   embedding: { enabled: boolean; configured: boolean; model: string | null; dimensions: number | null };
 };
@@ -443,8 +444,8 @@ export const api = {
   listAgentRuns: (conversationId: string) => request<AgentRun[]>(
     `/api/development/agent-runs?conversationId=${encodeURIComponent(conversationId)}`,
   ),
-  getMemoryCenter: (conversationId: string) => request<MemoryCenterView>(
-    `/api/conversations/${encodeURIComponent(conversationId)}/memories`,
+  getMemoryCenter: (conversationId: string, page = 1, pageSize = 20) => request<MemoryCenterView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memories?page=${page}&pageSize=${pageSize}`,
   ),
   updateMemorySettings: (conversationId: string, revision: number | null, enabled: boolean) => request<SaveMemoryConfiguration>(
     `/api/conversations/${encodeURIComponent(conversationId)}/memory-settings`,

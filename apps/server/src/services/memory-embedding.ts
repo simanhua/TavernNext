@@ -14,9 +14,10 @@ const EmbeddingResponseSchema = z.object({
 }).passthrough();
 
 interface VectorCache {
-  version: 1;
+  version: 2;
   fingerprint: string;
   entries: Record<string, number[]>;
+  memoryHashes: Record<string, string>;
 }
 
 function fingerprint(configuration: GlobalEmbeddingConfiguration): string {
@@ -70,29 +71,52 @@ export function createOpenAICompatibleDenseSearch(options: {
     return ordered;
   };
 
-  const search: MemoryDenseSearch = async (input) => {
+  const searchAll = async (
+    input: Parameters<MemoryDenseSearch>[0],
+  ): Promise<Map<string, number>> => {
     const configuration = options.repositories.globalEmbeddingConfiguration.get();
     if (!configuration.enabled) throw new Error('embedding_disabled');
     const cachePath = join(root, `${input.conversationId}.json`);
     const expectedFingerprint = fingerprint(configuration);
-    let cache: VectorCache = { version: 1, fingerprint: expectedFingerprint, entries: {} };
+    let cache: VectorCache = { version: 2, fingerprint: expectedFingerprint, entries: {}, memoryHashes: {} };
     try {
-      const parsed = JSON.parse(await readFile(cachePath, 'utf8')) as VectorCache;
-      if (parsed.version === 1 && parsed.fingerprint === expectedFingerprint && typeof parsed.entries === 'object') {
-        cache = parsed;
+      const parsed = JSON.parse(await readFile(cachePath, 'utf8')) as {
+        version?: number;
+        fingerprint?: unknown;
+        entries?: unknown;
+        memoryHashes?: unknown;
+      };
+      if ((parsed.version === 1 || parsed.version === 2)
+        && parsed.fingerprint === expectedFingerprint
+        && typeof parsed.entries === 'object' && parsed.entries !== null) {
+        cache = {
+          version: 2,
+          fingerprint: expectedFingerprint,
+          entries: parsed.entries as Record<string, number[]>,
+          memoryHashes: parsed.version === 2 && typeof parsed.memoryHashes === 'object' && parsed.memoryHashes !== null
+            ? parsed.memoryHashes as Record<string, string>
+            : {},
+        };
       }
     } catch {
       // A missing or corrupt derived cache is rebuilt from authoritative Save Memory.
     }
+    let mappingChanged = false;
+    for (const memory of input.memories) {
+      if (cache.memoryHashes[memory.id] === memory.contentHash) continue;
+      cache.memoryHashes[memory.id] = memory.contentHash;
+      mappingChanged = true;
+    }
     const missing = input.memories.filter((memory) => !Array.isArray(cache.entries[memory.contentHash]));
-    const texts = [
-      ...missing.map((memory) => `${memory.kind}\n${memory.summary}\n${memory.detail}`),
-      input.query,
-    ];
-    const vectors = await embed(configuration, texts);
-    missing.forEach((memory, index) => { cache.entries[memory.contentHash] = vectors[index]!; });
-    const queryVector = vectors.at(-1)!;
-    if (missing.length > 0) {
+    for (let offset = 0; offset < missing.length; offset += 64) {
+      const batch = missing.slice(offset, offset + 64);
+      const vectors = await embed(configuration, batch.map((memory) => (
+        `${memory.kind}\n${memory.summary}\n${memory.detail}`
+      )));
+      batch.forEach((memory, index) => { cache.entries[memory.contentHash] = vectors[index]!; });
+    }
+    const queryVector = (await embed(configuration, [input.query]))[0]!;
+    if (missing.length > 0 || mappingChanged) {
       await mkdir(root, { recursive: true });
       const temporary = `${cachePath}.${process.pid}.${randomUUID()}.tmp`;
       try {
@@ -103,11 +127,20 @@ export function createOpenAICompatibleDenseSearch(options: {
         throw error;
       }
     }
-    return new Map(input.memories.map((memory) => [
-      memory.id,
-      cosine(cache.entries[memory.contentHash] ?? [], queryVector),
-    ]));
+    const limit = Math.min(256, Math.max(1, Math.floor(input.limit ?? 64)));
+    return new Map(Object.entries(cache.memoryHashes)
+      .map(([id, contentHash]) => [id, cosine(cache.entries[contentHash] ?? [], queryVector)] as const)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, limit));
   };
+  const search: MemoryDenseSearch = async (input) => {
+    const allScores = await searchAll(input);
+    return new Map(input.memories.flatMap((memory) => {
+      const score = allScores.get(memory.id);
+      return score === undefined ? [] : [[memory.id, score] as const];
+    }));
+  };
+  search.searchSave = searchAll;
   search.invalidate = async (conversationId) => {
     await rm(join(root, `${conversationId}.json`), { force: true });
   };

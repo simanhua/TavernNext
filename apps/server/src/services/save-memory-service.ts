@@ -42,6 +42,7 @@ export type MemoryDenseSearch = ((
 ) => Promise<Map<string, number>>) & {
   invalidate?: (conversationId: string) => Promise<void>;
   rebuild?: (conversationId: string, memories: SaveMemory[]) => Promise<void>;
+  searchSave?: (input: MemoryRecallInput & { memories: SaveMemory[] }) => Promise<Map<string, number>>;
 };
 
 export interface MemoryRecallInput {
@@ -283,25 +284,58 @@ export function createSaveMemoryService(
       id: randomUUID(), conversationId, enabled: true,
     });
   };
-  const visibleMemories = (input: MemoryRecallInput) => {
+  const visibleMemories = (input: MemoryRecallInput, additionalIds: readonly string[] = []) => {
     const activeVariants = new Set(
       repositories.messages.listByConversationId(input.conversationId)
         .flatMap((message) => message.activeVariantId === null ? [] : [message.activeVariantId]),
     );
-    const all = repositories.saveMemories.listByConversationId(input.conversationId);
     const excludedVariants = new Set(input.excludedVariantIds ?? []);
-    const provenanceVisible = new Set(all.filter((memory) => (
-      !memory.excluded
-      && (memory.status === 'active' || memory.status === 'archived')
-      && (memory.sourceVariantId === null || activeVariants.has(memory.sourceVariantId))
-      && (memory.sourceVariantId === null || !excludedVariants.has(memory.sourceVariantId))
-    )).map((memory) => memory.id));
-    return all.filter((memory) => (
-      provenanceVisible.has(memory.id)
-      && memory.status === 'active'
+    const boundedCandidates = repositories.saveMemories.listRecallCandidates({
+      conversationId: input.conversationId,
+      activeVariantIds: [...activeVariants],
+      excludedVariantIds: [...excludedVariants],
+      searchTerms: memoryTokens(input.query),
+      limit: 1_024,
+    });
+    const candidates = [...new Map([
+      ...boundedCandidates,
+      ...repositories.saveMemories.listByIds(additionalIds)
+        .filter((memory) => memory.conversationId === input.conversationId),
+    ].map((memory) => [memory.id, memory])).values()];
+    const provenanceById = new Map(candidates.map((memory) => [memory.id, memory]));
+    let frontier = [...new Set(candidates.flatMap((memory) => memory.sourceMemoryIds))];
+    const maxProvenanceNodes = 8_192;
+    while (frontier.length > 0 && provenanceById.size < maxProvenanceNodes) {
+      const ids = frontier.filter((id) => !provenanceById.has(id))
+        .slice(0, maxProvenanceNodes - provenanceById.size);
+      if (ids.length === 0) break;
+      const loaded = repositories.saveMemories.listByIds(ids)
+        .filter((memory) => memory.conversationId === input.conversationId);
+      for (const memory of loaded) provenanceById.set(memory.id, memory);
+      frontier = [...new Set(loaded.flatMap((memory) => memory.sourceMemoryIds))];
+    }
+    const visibility = new Map<string, boolean>();
+    const visiting = new Set<string>();
+    const provenanceIsVisible = (id: string): boolean => {
+      const known = visibility.get(id);
+      if (known !== undefined) return known;
+      const memory = provenanceById.get(id);
+      if (memory === undefined || visiting.has(id)) return false;
+      visiting.add(id);
+      const visible = !memory.excluded
+        && (memory.status === 'active' || memory.status === 'archived')
+        && (memory.sourceVariantId === null || activeVariants.has(memory.sourceVariantId))
+        && (memory.sourceVariantId === null || !excludedVariants.has(memory.sourceVariantId))
+        && memory.sourceMemoryIds.every(provenanceIsVisible);
+      visiting.delete(id);
+      visibility.set(id, visible);
+      return visible;
+    };
+    return candidates.filter((memory) => (
+      memory.status === 'active'
       && (input.kinds === undefined || input.kinds.includes(memory.kind))
-      && memory.sourceMemoryIds.every((id) => provenanceVisible.has(id))
-    ));
+      && provenanceIsVisible(memory.id)
+    )).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   };
   const queueConsolidationIfNeeded = (
     conversationId: string,
@@ -310,17 +344,27 @@ export function createSaveMemoryService(
     if (repositories.memoryJobs.listByConversationId(conversationId).some((job) => (
       job.kind === 'consolidate' && (job.status === 'pending' || job.status === 'running')
     ))) return;
-    const near = repositories.saveMemories.listByConversationId(conversationId)
-      .filter((memory) => memory.tier === 'near' && memory.status === 'active' && !memory.excluded);
-    let remaining = near.reduce((total, memory) => total + memory.tokenCount, 0);
-    if (remaining <= 6_000 || near.length < 2) return;
+    const plans = [
+      { tier: 'near' as const, threshold: 6_000, target: 2_000 },
+      { tier: 'far' as const, threshold: 12_000, target: 4_000 },
+    ];
+    const plan = plans.map((candidate) => ({
+      ...candidate,
+      memories: repositories.saveMemories.listActiveByTier(conversationId, candidate.tier),
+    })).find((candidate) => (
+      candidate.memories.length >= 2
+      && candidate.memories.reduce((total, memory) => total + memory.tokenCount, 0) > candidate.threshold
+    ));
+    if (plan === undefined) return;
+    let remaining = plan.memories.reduce((total, memory) => total + memory.tokenCount, 0);
     const selected: SaveMemory[] = [];
-    for (const memory of near.slice(0, -1)) {
-      if (remaining <= 2_000) break;
+    for (const memory of plan.memories.slice(0, -1)) {
+      if (remaining <= plan.target) break;
+      if (selected.length >= 512) break;
       selected.push(memory);
       remaining -= memory.tokenCount;
     }
-    if (selected.length === 0) return;
+    if (selected.length < 2) return;
     repositories.memoryJobs.create({
       id: randomUUID(), conversationId, kind: 'consolidate', status: 'pending', attempts: 0,
       nextAttemptAt: null, lastError: null,
@@ -328,12 +372,21 @@ export function createSaveMemoryService(
         provider: structuredClone(frozenExtractor.provider),
         saveAgentConfiguration: structuredClone(frozenExtractor.saveAgentConfiguration),
         sourceMemoryIds: selected.map((memory) => memory.id),
+        archiveMemoryIds: selected.map((memory) => memory.id),
+        sourceVariantId: [...selected].reverse().find((memory) => memory.sourceVariantId !== null)?.sourceVariantId ?? null,
         sourceMemories: selected.map((memory) => ({
           id: memory.id, kind: memory.kind, summary: memory.summary, detail: memory.detail,
           entities: memory.entities,
         })),
       },
     });
+  };
+  const completeJob = (job: { id: string; revision: number; conversationId: string }) => {
+    const finished = repositories.memoryJobs.update(job.id, job.revision, {
+      status: 'completed', nextAttemptAt: null, lastError: null,
+    });
+    if (!finished.ok) throw new Error(`memory_job_${finished.reason}`);
+    repositories.memoryJobs.pruneCompleted(job.conversationId, 100);
   };
 
   return {
@@ -373,20 +426,17 @@ export function createSaveMemoryService(
         if (!claimed.ok) continue;
         try {
           if (claimed.value.kind === 'rebuild-index') {
-            const memories = visibleMemories({
-              conversationId: claimed.value.conversationId, query: '', limit: 8,
-            });
             if (denseSearch?.rebuild !== undefined) {
-              await denseSearch.rebuild(claimed.value.conversationId, memories);
+              await denseSearch.rebuild(
+                claimed.value.conversationId,
+                repositories.saveMemories.listIndexable(claimed.value.conversationId),
+              );
             } else if (denseSearch?.invalidate !== undefined) {
               await denseSearch.invalidate(claimed.value.conversationId);
             } else {
               throw new Error('embedding_index_unavailable');
             }
-            const finished = repositories.memoryJobs.update(claimed.value.id, claimed.value.revision, {
-              status: 'completed', nextAttemptAt: null, lastError: null,
-            });
-            if (!finished.ok) throw new Error(`memory_job_${finished.reason}`);
+            completeJob(claimed.value);
             completed += 1;
             continue;
           }
@@ -395,6 +445,9 @@ export function createSaveMemoryService(
           const sourceMemoryIds = claimed.value.kind === 'consolidate' && Array.isArray(source.sourceMemoryIds)
             ? source.sourceMemoryIds.filter((id): id is string => typeof id === 'string' && z.string().uuid().safeParse(id).success)
             : [];
+          const archiveMemoryIds = claimed.value.kind === 'consolidate' && Array.isArray(source.archiveMemoryIds)
+            ? source.archiveMemoryIds.filter((id): id is string => typeof id === 'string' && z.string().uuid().safeParse(id).success)
+            : sourceMemoryIds;
           const publish = () => {
             const currentJob = repositories.memoryJobs.get(claimed.value.id)!;
             for (const item of extraction.memories) {
@@ -415,18 +468,15 @@ export function createSaveMemoryService(
               });
             }
             if (claimed.value.kind === 'consolidate') {
-              for (const sourceMemoryId of sourceMemoryIds) {
+              for (const sourceMemoryId of archiveMemoryIds) {
                 const memory = repositories.saveMemories.get(sourceMemoryId);
                 if (memory === undefined) continue;
                 const archived = repositories.saveMemories.update(memory.id, memory.revision, { status: 'archived' });
                 if (!archived.ok) throw new Error(`memory_archive_${archived.reason}`);
               }
             }
-            const finished = repositories.memoryJobs.update(currentJob.id, currentJob.revision, {
-              status: 'completed', nextAttemptAt: null, lastError: null,
-            });
-            if (!finished.ok) throw new Error(`memory_job_${finished.reason}`);
-            if (claimed.value.kind === 'extract-turn') {
+            completeJob(currentJob);
+            if (claimed.value.kind === 'extract-turn' || claimed.value.kind === 'consolidate') {
               queueConsolidationIfNeeded(claimed.value.conversationId, {
                 provider: source.provider,
                 saveAgentConfiguration: source.saveAgentConfiguration,
@@ -457,20 +507,25 @@ export function createSaveMemoryService(
       return { memories: finalizeRanking(visible, scores, input.limit) };
     },
     async recallHybrid(input) {
-      const visible = visibleMemories(input);
-      if (denseSearch === undefined || visible.length === 0) {
+      let visible = visibleMemories(input);
+      if (denseSearch === undefined || (visible.length === 0 && denseSearch.searchSave === undefined)) {
+        return { ...this.recall(input), mode: 'lexical' };
+      }
+      let denseScores: Map<string, number>;
+      try {
+        denseScores = denseSearch.searchSave === undefined
+          ? await denseSearch({ ...input, memories: visible })
+          : await denseSearch.searchSave({ ...input, limit: 128, memories: visible });
+        if (denseSearch.searchSave !== undefined) {
+          visible = visibleMemories(input, [...denseScores.keys()]);
+        }
+      } catch {
         return { ...this.recall(input), mode: 'lexical' };
       }
       const lexicalScores = bm25(input.query, visible);
       const lexical = visible.filter((memory) => (lexicalScores.get(memory.id) ?? 0) > 0)
         .sort((left, right) => (lexicalScores.get(right.id) ?? 0) - (lexicalScores.get(left.id) ?? 0))
         .map((memory) => memory.id);
-      let denseScores: Map<string, number>;
-      try {
-        denseScores = await denseSearch({ ...input, memories: visible });
-      } catch {
-        return { ...this.recall(input), mode: 'lexical' };
-      }
       const dense = visible.filter((memory) => denseScores.has(memory.id))
         .sort((left, right) => (denseScores.get(right.id) ?? 0) - (denseScores.get(left.id) ?? 0))
         .map((memory) => memory.id);
