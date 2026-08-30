@@ -6,8 +6,8 @@ import {
 } from '@tavernnext/provider-openai-compatible';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
-import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loadConfig, loadProviderSecrets, type ProviderSecretMap, type ServerConfig } from './config.js';
 import { createDatabase, type TavernDatabase } from './db/client.js';
@@ -43,7 +43,11 @@ import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
-import { synchronizeOfficialPresets } from './services/official-preset-registry.js';
+import {
+  deduplicateOfficialPresets,
+  duplicateOfficialPresets,
+  synchronizeOfficialPresets,
+} from './services/official-preset-registry.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
@@ -224,7 +228,22 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   if (startup.result === 'writable') {
     const syncOfficialPresets = options.synchronizeOfficialPresetCatalog
       ?? (process.env.NODE_ENV !== 'test' && options.database === undefined);
-    if (syncOfficialPresets) database.transaction(() => synchronizeOfficialPresets(repositories));
+    if (syncOfficialPresets) {
+      database.transaction(() => synchronizeOfficialPresets(repositories));
+      const duplicates = duplicateOfficialPresets(repositories);
+      if (duplicates.length > 0) {
+        const backupRoot = resolve(
+          config.dataDir,
+          'backups',
+          `preset-dedup-${new Date().toISOString().replaceAll(':', '-')}`,
+        );
+        mkdirSync(backupRoot, { recursive: true });
+        const backupPath = resolve(backupRoot, 'tavernnext.sqlite');
+        copyFileSync(database.path, backupPath);
+        const removed = database.transaction(() => deduplicateOfficialPresets(repositories, duplicates));
+        app.log.info({ removed, backupPath }, 'Duplicate Presets consolidated into the official catalog.');
+      }
+    }
     for (const failure of upgradeInstalledOfficialScenes(database, config.dataDir, repositories)) {
       app.log.error(failure, 'Official Scene upgrade failed; the prior installed package remains active.');
     }

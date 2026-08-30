@@ -54,6 +54,11 @@ export interface OfficialPresetDefinition {
   asset: Asset;
 }
 
+export interface DuplicateOfficialPreset {
+  duplicateId: string;
+  officialId: string;
+}
+
 function assetRoot(): string {
   const candidates = [
     resolve(process.cwd(), 'apps/server/assets/official-presets'),
@@ -132,6 +137,91 @@ export function officialPresetIdForBytes(bytes: Uint8Array, fileName: string): s
   if (decoded.kind === null) return undefined;
   const digest = settingsDigest(decoded.kind, decoded.settings);
   return officialPresetCatalog().entries.find((entry) => entry.sha256 === digest)?.id;
+}
+
+export function duplicateOfficialPresets(repositories: Repositories): DuplicateOfficialPreset[] {
+  return repositories.presets.list().flatMap((preset) => {
+    if (isOfficialPresetId(preset.id)) return [];
+    const officialId = officialPresetIdForPreset(preset);
+    if (officialId === undefined) return [];
+    const official = repositories.presets.get(officialId);
+    return official !== undefined && official.name === preset.name
+      ? [{ duplicateId: preset.id, officialId }]
+      : [];
+  });
+}
+
+export function deduplicateOfficialPresets(
+  repositories: Repositories,
+  duplicates = duplicateOfficialPresets(repositories),
+): number {
+  const targetByDuplicate = new Map(duplicates.map((item) => [item.duplicateId, item.officialId]));
+  if (targetByDuplicate.size === 0) return 0;
+
+  const global = repositories.globalGenerationConfig.get();
+  const globalPatch = Object.fromEntries(
+    (['chatPresetId', 'textPresetId', 'contextPresetId', 'instructPresetId', 'systemPresetId'] as const)
+      .flatMap((key) => {
+        const value = global[key];
+        const officialId = value === null ? undefined : targetByDuplicate.get(value);
+        return officialId === undefined ? [] : [[key, officialId]];
+      }),
+  );
+  if (Object.keys(globalPatch).length > 0) {
+    const result = repositories.globalGenerationConfig.update(global.revision, globalPatch);
+    if (!result.ok) throw new Error(`official_preset_global_${result.reason}`);
+  }
+
+  for (const scene of repositories.installedScenes.list()) {
+    const officialId = scene.backingPresetId === undefined
+      ? undefined
+      : targetByDuplicate.get(scene.backingPresetId);
+    if (officialId === undefined) continue;
+    const result = repositories.installedScenes.update(scene.id, scene.revision, { backingPresetId: officialId });
+    if (!result.ok) throw new Error(`official_preset_scene_${result.reason}`);
+  }
+
+  for (const configuration of repositories.saveAgentConfigurations.list()) {
+    const officialId = configuration.sourcePresetId === null
+      ? undefined
+      : targetByDuplicate.get(configuration.sourcePresetId);
+    if (officialId === undefined) continue;
+    const official = repositories.presets.get(officialId);
+    if (official === undefined) throw new Error('official_preset_missing');
+    const result = repositories.saveAgentConfigurations.update(configuration.id, configuration.revision, {
+      sourcePresetId: official.id,
+      sourcePresetRevision: official.revision,
+    });
+    if (!result.ok) throw new Error(`official_preset_save_${result.reason}`);
+  }
+
+  for (const artifact of repositories.importArtifacts.list()) {
+    const officialId = artifact.entityId === undefined ? undefined : targetByDuplicate.get(artifact.entityId);
+    if (officialId === undefined) continue;
+    const result = repositories.importArtifacts.update(artifact.id, artifact.revision, { entityId: officialId });
+    if (!result.ok) throw new Error(`official_preset_artifact_${result.reason}`);
+  }
+
+  for (const audit of repositories.extensionAuditEvents.list()) {
+    if (audit.ownerKind !== 'preset') continue;
+    const officialId = targetByDuplicate.get(audit.ownerId);
+    if (officialId === undefined) continue;
+    const result = repositories.extensionAuditEvents.update(audit.id, audit.revision, { ownerId: officialId });
+    if (!result.ok) throw new Error(`official_preset_audit_${result.reason}`);
+  }
+
+  for (const { duplicateId } of duplicates) {
+    repositories.extensionTrustGrants.deleteByOwner('preset', duplicateId);
+    repositories.extensionRemoteResources.deleteByOwner('preset', duplicateId);
+    repositories.extensionAssets.deleteByOwner('preset', duplicateId);
+    repositories.extensionStates.deleteByScope('preset', duplicateId);
+    repositories.extensionStates.deleteScriptStatesByOwner('preset', duplicateId);
+    const preset = repositories.presets.get(duplicateId);
+    if (preset === undefined) continue;
+    const result = repositories.presets.delete(preset.id, preset.revision);
+    if (!result.ok) throw new Error(`official_preset_delete_${result.reason}`);
+  }
+  return duplicates.length;
 }
 
 function presetInput(value: Preset) {

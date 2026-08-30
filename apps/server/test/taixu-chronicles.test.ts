@@ -38,8 +38,8 @@ describe('Taixu Chronicles Scene Package', () => {
     expect(templateEntries.map((entry) => entry.comment)).not.toEqual(expect.arrayContaining([
       '修仙状态栏', '古风多人状态栏', '现代状态栏',
     ]));
-    expect(repositories.presets.get(installed.backingPresetId!)?.name).toBe('太虚问道 Scene 生成配置');
-    expect(repositories.presets.get(installed.backingPresetId!)?.settings.reasoning_effort).toBe('max');
+    expect(repositories.presets.get(installed.backingPresetId!)?.name).toBe('夏瑾 天琴座 Beta 3.6');
+    expect(repositories.presets.get(installed.backingPresetId!)?.settings.reasoning_effort).toBe('high');
 
     const created = await app.inject({
       method: 'POST', url: `/api/scenes/${TAIXU_CHRONICLES_SCENE_ID}/conversations`,

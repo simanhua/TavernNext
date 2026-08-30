@@ -4,7 +4,35 @@ TavernNext is a local-first, Agent-driven roleplay runtime for official Scene Pa
 
 ## Run locally
 
-Prerequisite: Node.js 22 or newer.
+Prerequisite: Node.js 22.19.0 or newer.
+
+On Windows, use the checked startup entrypoint from the repository root:
+
+```powershell
+.\Start-TavernNext.cmd
+```
+
+It validates Node.js, npm, dependencies, and both ports; installs missing workspace dependencies; starts the API and web development servers together; and opens the browser after the API is ready. Press `Ctrl+C` to stop both servers.
+
+Common options:
+
+```powershell
+# Keep an isolated data profile and do not open a browser.
+.\Start-TavernNext.cmd -DataDir 'D:\TavernNext-data' -NoBrowser
+
+# Use alternate ports (the web proxy follows the API port automatically).
+.\Start-TavernNext.cmd -ApiPort 4412 -WebPort 5273
+
+# Repair or refresh workspace dependencies.
+.\Start-TavernNext.cmd -InstallDependencies
+
+# Validate the environment without starting anything.
+.\Start-TavernNext.cmd -CheckOnly
+```
+
+Run `.\Start-TavernNext.cmd -Help` for the complete parameter list. The startup script keeps both services on `127.0.0.1` by default; passing another bind address can expose them to your network.
+
+The underlying manual workflow remains available on every platform:
 
 ```powershell
 npm install
@@ -13,7 +41,7 @@ npm run dev
 
 Open `http://localhost:5173`. The browser UI proxies `/api` to the local server at `http://127.0.0.1:4312`; the server binds to `127.0.0.1` by default.
 
-The default data directory is `.tavernnext` under the directory where the server starts. Override it before startup when you want a separate profile:
+The default data directory is `.tavernnext` under the repository root. Override it before manual startup when you want a separate profile:
 
 ```powershell
 $env:TAVERNNEXT_DATA_DIR='D:\TavernNext-data'
