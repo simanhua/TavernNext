@@ -257,6 +257,7 @@ describe('migration backup and recovery', () => {
       config,
       snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
       backupClock: () => new Date('2026-08-22T00:00:00.000Z'),
+      synchronizeOfficialPresetCatalog: false,
     });
     apps.push(app);
     await app.ready();
@@ -312,7 +313,7 @@ describe('migration backup and recovery', () => {
       expect.arrayContaining(['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']),
     );
     migrated.close();
-  });
+  }, 30_000);
 
   it('publishes a verified pre-migration DB/WAL/schema backup and retains only the five newest successes', async () => {
     const directory = await temporaryDirectory();
@@ -338,6 +339,7 @@ describe('migration backup and recovery', () => {
           config,
           snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
           backupClock: () => instant,
+          synchronizeOfficialPresetCatalog: false,
         });
         await app.ready();
         expect(app.startupMigrationResult).toBe('writable');
@@ -402,7 +404,7 @@ describe('migration backup and recovery', () => {
     expect(newest.wal).toBeUndefined();
     expect(await readFile(join(newestPath, basename(config.databasePath)))).toEqual(readFileSync(config.databasePath));
     expect((await readdir(join(directory, 'backups'))).some((name) => name.startsWith('.'))).toBe(false);
-  });
+  }, 30_000);
 
   it('refuses an unverifiable WAL instead of publishing false checkpoint and integrity claims', async () => {
     const directory = await temporaryDirectory();

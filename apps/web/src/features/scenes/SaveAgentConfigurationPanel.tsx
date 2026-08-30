@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api, errorCode, type SaveAgentConfiguration } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
+import { RuntimePanelCloseButton } from '../shared/RuntimePanelCloseButton.js';
+import { RuntimePanelIcon } from '../shared/RuntimePanelIcon.js';
 
 function settingsText(configuration: SaveAgentConfiguration): string {
   return JSON.stringify(configuration.settings, null, 2);
@@ -60,7 +62,8 @@ export function SaveAgentConfigurationPanel({ conversationId }: { conversationId
 
   return (
     <details className="scene-agent-configuration">
-      <summary>{t('Save Agent configuration')}</summary>
+      <summary><RuntimePanelIcon kind="configuration" /><span className="runtime-panel-title">{t('Save Agent configuration')}</span></summary>
+      <RuntimePanelCloseButton label={t('Close Save Agent configuration')} text={t('Close')} />
       {configuration.isLoading || presets.isLoading ? <p>{t('Loading Agent configuration…')}</p> : null}
       {configuration.error || presets.error ? (
         <p role="alert">{t('Unable to load Agent configuration: {{error}}', {
@@ -90,7 +93,9 @@ export function SaveAgentConfigurationPanel({ conversationId }: { conversationId
             <select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
               <option value="">{t('Not selected')}</option>
               {(presets.data ?? []).filter((preset) => preset.kind === 'chat').map((preset) => (
-                <option value={preset.id} key={preset.id}>{preset.name}</option>
+                <option value={preset.id} key={preset.id}>
+                  {preset.name}{preset.official ? ` · ${t('Official')}` : ''}
+                </option>
               ))}
             </select>
           </label>

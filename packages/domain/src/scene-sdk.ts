@@ -115,6 +115,8 @@ export interface SceneStatusRailMountOptions {
   onAction?(actionId: string): void | Promise<void>;
 }
 
+export type SceneReferenceKind = 'preset' | 'worldbook';
+
 export interface SceneSdkErrorShape {
   code: string;
   status?: number;
@@ -182,6 +184,9 @@ export interface SceneSdkV2 {
   ui: {
     statusRail: {
       mount(options: SceneStatusRailMountOptions): SceneStatusRailController;
+    };
+    referenceViewer: {
+      open(kind: SceneReferenceKind): void;
     };
   };
 }

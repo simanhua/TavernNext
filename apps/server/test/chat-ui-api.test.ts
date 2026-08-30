@@ -105,7 +105,7 @@ describe('chat UI API bindings', () => {
     const listedPresets = await app.inject({ method: 'GET', url: '/api/presets' });
     expect(listedPresets.statusCode).toBe(200);
     expect(listedPresets.json()).toEqual([{
-      id: ids.preset, revision: 0, kind: 'chat', name: 'Role chat',
+      id: ids.preset, revision: 0, kind: 'chat', name: 'Role chat', official: false,
     }]);
     expect(listedPresets.payload).not.toContain('MUST-NOT-LEAVE-SERVER');
     expect(listedPresets.payload).not.toContain('secret_warning_sentinel');

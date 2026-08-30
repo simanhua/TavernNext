@@ -267,6 +267,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState<PresetView>();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const readOnly = preset?.official === true;
   const form = useForm<FormValues>({ resolver: zodResolver(FormSchema), defaultValues: valuesFrom(initialKind, preset?.name ?? '', baseSettings) });
   const prompts = useFieldArray({ control: form.control, name: 'prompts' });
   const promptOrders = useFieldArray({ control: form.control, name: 'promptOrders' });
@@ -403,6 +404,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
   return (
     <form className="preset-editor" onSubmit={form.handleSubmit((values) => void submit(values))}>
       <h2>{creating ? t('New Preset') : preset?.name}</h2>
+      {readOnly ? <p>{t('Official Presets are read-only templates. Edit the copy owned by a Save instead.')}</p> : null}
       <CompatibilitySummary value={preset?.compatibilitySummary} />
       {preset === undefined ? null : (
         <>
@@ -517,11 +519,11 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
       )}
       {error === undefined ? null : <p role="alert">{t('Unable to save Preset: {{error}}', { error })}</p>}
       <div className="editor-actions">
-        <button type="submit" disabled={pending}>{t(creating ? 'Create Preset' : 'Save Preset')}</button>
+        <button type="submit" disabled={pending || readOnly}>{t(creating ? 'Create Preset' : 'Save Preset')}</button>
         {preset === undefined ? null : (
           <>
             <button type="button" onClick={async () => { try { await api.exportPreset(preset.id); } catch (cause) { setError(errorCode(cause)); } }}>{t('Export Preset')}</button>
-            <button type="button" onClick={() => setDeleteOpen(true)}>{t('Delete Preset')}</button>
+            <button type="button" disabled={readOnly} onClick={() => setDeleteOpen(true)}>{t('Delete Preset')}</button>
           </>
         )}
       </div>

@@ -43,6 +43,7 @@ import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
+import { synchronizeOfficialPresets } from './services/official-preset-registry.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
@@ -91,6 +92,7 @@ export interface CreateAppOptions {
   extensionRemoteFetcher?: ExtensionRemoteFetcher;
   databaseOwnershipTimeoutMs?: number;
   memoryWorkerIntervalMs?: number | false;
+  synchronizeOfficialPresetCatalog?: boolean;
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -214,16 +216,18 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const startup = startupDatabase(config, options);
   try {
   const { database } = startup;
-  if (startup.result === 'writable') {
-    for (const failure of upgradeInstalledOfficialScenes(database, config.dataDir)) {
-      app.log.error(failure, 'Official Scene upgrade failed; the prior installed package remains active.');
-    }
-  }
   app.decorate('startupMigrationResult', startup.result);
   if (startup.result === 'read_only_migration_failed') {
     app.log.warn({ code: 'migration_failed' }, 'Startup migration failed; read-only recovery mode is active.');
   }
   const repositories = createRepositories(database, { snapshotIntegrityKey });
+  if (startup.result === 'writable') {
+    const syncOfficialPresets = options.synchronizeOfficialPresetCatalog ?? options.database === undefined;
+    if (syncOfficialPresets) database.transaction(() => synchronizeOfficialPresets(repositories));
+    for (const failure of upgradeInstalledOfficialScenes(database, config.dataDir, repositories)) {
+      app.log.error(failure, 'Official Scene upgrade failed; the prior installed package remains active.');
+    }
+  }
   const scenes = createSceneService({ dataDir: config.dataDir, database, repositories });
   const imports = createImportService({
     dataDir: config.dataDir,

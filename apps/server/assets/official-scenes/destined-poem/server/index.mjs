@@ -1,4 +1,10 @@
 import { readFile } from 'node:fs/promises';
+import {
+  applyCoreInitialization,
+  initializeCustomOpening,
+  readerCoreBeforeGeneration,
+  worldbookOverridesForSetup,
+} from './setup.mjs';
 
 const baseState = JSON.parse(await readFile(new URL('../content/initial-state.json', import.meta.url), 'utf8'));
 const clone = (value) => structuredClone(value);
@@ -20,26 +26,145 @@ const stableRoll = (key, state, sides) => {
   return (hash >>> 0) % sides + 1;
 };
 
+export const DESTINED_POEM_OPENING_IDS = [
+  'custom',
+  'summoned-hero',
+  'lost-shore',
+  'divine-party',
+];
+
+const openingDefinition = (id) => ({
+  custom: {
+    title: '',
+    stage: '等待落笔',
+    time: '',
+    message: ({ name, location }) => `【首页】\n命运的书页已经翻开。${name}已抵达${location}。\n\n这是一个自定义开局：请在第一条消息中写下你想要的时代、身份、同行者、眼前事件，或任何必须遵守的开场条件。`,
+  },
+  'summoned-hero': {
+    title: '无光的第四位勇者',
+    stage: '召唤仪式',
+    time: '复兴纪元488年 · 风信之月15日 · 14:00',
+    location: '阿斯塔利亚大陆 · 奥古斯提姆帝国 · 布劳尔子爵领 · 子爵城堡 · 仪式大厅',
+    message: ({ name }) => `### 无光的第四位勇者
+
+强烈的失重感骤然停止，${name}的鞋底落在冰冷石板上。彩窗、残烛与尚未熄灭的召唤阵勾勒出一座破败而宏伟的仪式大厅。布劳尔子爵和他的宫廷法师站在台阶上，宣称四名异界人是拯救领地的勇者。
+
+与你一同到来的三人先后显露神迹：金色护盾、元素火花与流动的符文。轮到你时，什么也没有发生。法师低声猜测你或许只是随从，卫兵的目光从戒备变成轻慢。
+
+然而，在众人的失望声里，你分明感觉到某种不属于光、火焰或魔力的东西正在意识深处苏醒。子爵正等待你对这场荒唐召唤作出回应。`,
+  },
+  'lost-shore': {
+    title: '失亡彼岸的重逢',
+    stage: '泣空遗迹',
+    time: '复兴纪元488年 · 风信之月15日 · 12:00',
+    location: '阿斯塔利亚大陆上空 · 泣歌云海 · 泣空遗迹 · 中央大圣堂',
+    message: ({ name }) => `### 失亡彼岸
+
+游戏终章的门扉在屏幕上开启。${name}以“漂泊者”的身份踏入失亡彼岸，本应播放的过场却化作撕裂感官的坠落。再次睁眼时，脚下只剩漂浮于万丈云海之上的白色神殿废墟。
+
+风穿过断裂穹顶。女神像的阴影下，一袭深红礼裙的弗洛洛缓缓转身。那个本应在旧世界结局里消逝的少女如今真实地站在这里，异色眼瞳里没有重逢的喜悦，只有漫长等待沉淀出的爱、恨与戒备。
+
+“既然你追到了这里……”她望向云海，彼岸花法杖在风里洒落虚幻花瓣，“那就陪我看完这场不知何时才会落幕的歌剧吧。”`,
+  },
+  'divine-party': {
+    title: '神恩日的不速之客',
+    stage: '诸神宴席',
+    time: '复兴纪元488年 · 神恩日',
+    location: '万象神殿',
+    message: ({ name }) => `### 误入诸神宴席
+
+神恩日的雪落在诺瓦瓦伦蒂亚。刚完成公会委托的${name}还坐在酒馆里，端着一杯麦酒思考来年的去向；下一瞬，炉火与喧闹同时碎裂，脚下已变成由星辰和凝固光辉铺成的神殿地面。
+
+辉煌女神、先祖之魂、潮汐女神、翡翠之母与月之低语者齐齐望来。观测咒文与幸运神力的意外共鸣，竟把水镜里的凡人直接带进了诸神的年度宴席。
+
+幸运女神泰珂看了看你手中一滴未洒的麦酒，露出略显心虚的笑容：“嗨？欢迎来到诸神派对，幸运的凡人。神恩日快乐？”`,
+  },
+}[id]);
+
+const initializeProtagonist = (state, values) => {
+  Object.assign(state.主角, {
+    种族: '人类',
+    身份: values.identity,
+    职业: ['暂无'],
+    生命层级: '第一层级/普通',
+    等级: 1,
+    累计经验值: 0,
+    属性点: 0,
+    属性: {
+      力量: values.attribute,
+      敏捷: values.attribute,
+      体质: values.attribute,
+      智力: values.attribute,
+      精神: values.attribute,
+    },
+    生命值上限: values.maxHp,
+    生命值: values.hp,
+    法力值上限: values.resource,
+    法力值: values.resource,
+    体力值上限: values.resource,
+    体力值: values.resource,
+  });
+  state.命运点数 = values.fate;
+};
+
 export default {
   async initializeConversation({ setup, playerProfile }) {
     const state = clone(baseState);
-    state.世界.地点 = String(setup.origin || '梵尼亚');
+    state.世界.天气 = '';
+    const requestedOpening = String(setup.opening || 'custom');
+    const openingId = DESTINED_POEM_OPENING_IDS.includes(requestedOpening) ? requestedOpening : 'custom';
+    const opening = openingDefinition(openingId);
+    state.世界.地点 = opening.location || String(setup.origin || '梵尼亚');
+    state.世界.时间 = opening.time;
+    state.事件.开启 = openingId !== 'custom';
+    state.事件.标题 = opening.title;
+    state.事件.阶段 = opening.stage;
     state.主角.姓名 = playerProfile.name;
     state.主角.描述 = playerProfile.description;
+    const custom = openingId === 'custom' && setup.build && typeof setup.build === 'object'
+      ? initializeCustomOpening(state, setup, playerProfile)
+      : undefined;
+    if (openingId === 'summoned-hero') {
+      initializeProtagonist(state, {
+        identity: ['被召唤的勇者'], attribute: 5, maxHp: 525, hp: 500, resource: 500, fate: 500,
+      });
+    } else if (openingId === 'lost-shore') {
+      initializeProtagonist(state, {
+        identity: ['漂泊者'], attribute: 5, maxHp: 525, hp: 525, resource: 500, fate: 200,
+      });
+      state.关系列表.弗洛洛 = {
+        姓名: '弗洛洛',
+        在场: true,
+        种族: '人类',
+        身份: ['吟游诗人', '异世界的猩红女巫'],
+        生命层级: '第四层级/史诗',
+        好感度: 49,
+        命定契约: true,
+        描述: '来自旧世界的猩红女巫。她与漂泊者一同越过失亡彼岸，在新世界重逢。',
+      };
+    } else if (openingId === 'divine-party') {
+      initializeProtagonist(state, {
+        identity: ['冒险者'], attribute: 4, maxHp: 400, hp: 400, resource: 400, fate: 0,
+      });
+    }
+    applyCoreInitialization(state, String(setup.core || ''));
     return {
       initialState: state,
       openingMessages: [{
         role: 'assistant',
-        content: `【首页】\n命运的书页已经翻开。${playerProfile.name}在${state.世界.地点}醒来，远方的钟声正为一段尚未书写的旅途而鸣。`,
+        content: custom?.openingMessage ?? opening.message({ name: playerProfile.name, location: state.世界.地点 }),
       }],
+      worldbookEntryOverrides: worldbookOverridesForSetup(setup, openingId),
     };
   },
-  async beforeGeneration() {
+  async beforeGeneration({ state, setup }) {
+    const readerCore = readerCoreBeforeGeneration(state, String(setup?.core || ''));
     return {
+      ...readerCore,
       promptAdditions: [{
         role: 'system',
         content: `保持阿斯塔利亚世界观一致，正文使用中文叙事。所有状态和规则变化必须通过提供的工具完成，禁止在正文中输出 <UpdateVariable>、JSON Patch 或隐藏状态命令。
-在资源、旅行、关系、任务或命运变化时调用对应的 destined_poem 工具；一般字段变化使用 scene_patch_stage；需要规则判定时调用 destined_poem_rule_check 或 deterministic_check。
+在资源、旅行、天气、关系、任务或命运变化时调用对应的 destined_poem 工具；一般字段变化使用 scene_patch_stage；需要规则判定时调用 destined_poem_rule_check 或 deterministic_check。<tp> 仅为兼容展示标记，其中时间、地点和天气不修改也不覆盖 Scene State。
 当战斗、状态、地图、关系或任务进展值得读者查看时，自主调用 scene_view_stage，并把返回的引用放在正文最合适的位置。`,
       }],
     };
@@ -109,13 +234,18 @@ export default {
     if (toolName === 'destined_poem_travel') {
       const location = String(args?.location ?? '').trim();
       const time = args?.time === undefined ? '' : String(args.time).trim();
+      const weather = args?.weather === undefined ? '' : String(args.weather).trim();
       if (location === '') throw new Error('scene_agent_tool_arguments_invalid');
+      const world = record(state.世界);
       return {
-        content: `旅程已推进至${location}${time === '' ? '' : `（${time}）`}。`,
-        detail: { location, ...(time === '' ? {} : { time }) },
+        content: `旅程已推进至${location}${time === '' ? '' : `（${time}）`}${weather === '' ? '' : `，天气为${weather}`}。`,
+        detail: { location, ...(time === '' ? {} : { time }), ...(weather === '' ? {} : { weather }) },
         statePatch: [
           { op: 'replace', path: '/世界/地点', value: location },
           ...(time === '' ? [] : [{ op: 'replace', path: '/世界/时间', value: time }]),
+          ...(weather === '' ? [] : [{
+            op: Object.hasOwn(world, '天气') ? 'replace' : 'insert', path: '/世界/天气', value: weather,
+          }]),
         ],
       };
     }

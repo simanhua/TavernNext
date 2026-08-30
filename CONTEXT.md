@@ -24,6 +24,10 @@ _Avoid_: Install, permission toggle, permanent approval
 The single revisioned selection of the global Provider/model and the default Chat Preset template copied into new Saves.
 _Avoid_: Conversation preset, chat provider binding
 
+**Official Preset**:
+A read-only Preset template published with TavernNext and restored from the product catalog. Saves copy its executable settings and never share its mutable identity.
+_Avoid_: Built-in Save configuration, system prompt, shared Save Preset
+
 **Scene Package**:
 One official catalog artifact containing a roleplay Scene's manifest, frontend workspace, optional trusted server module, prompt resources, and state contract.
 _Avoid_: Character library item, plugin bundle

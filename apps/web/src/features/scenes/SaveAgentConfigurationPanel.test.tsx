@@ -68,6 +68,20 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('SaveAgentConfigurationPanel', () => {
+  it('localizes the panel and provides an explicit close action', async () => {
+    localStorage.setItem('tavernnext.language', 'zh-CN');
+    const user = userEvent.setup();
+    const { container } = renderWithApp(<SaveAgentConfigurationPanel conversationId={conversationId} />);
+
+    expect(await screen.findByText('存档智能体配置')).not.toBeNull();
+    const details = container.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details!.querySelector('summary svg.runtime-panel-icon')).not.toBeNull();
+    details!.open = true;
+    await user.click(screen.getByRole('button', { name: '关闭存档智能体配置' }));
+    expect(details!.open).toBe(false);
+  });
+
   it('saves a private draft, replaces its Chat template, and confirms destructive synchronization', async () => {
     const user = userEvent.setup();
     vi.spyOn(window, 'confirm').mockReturnValue(true);

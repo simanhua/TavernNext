@@ -97,6 +97,7 @@ function completedRuntime(
             maxTokens: options?.maxTokens,
             reasoning: options?.reasoning,
             samplingParams: options?.samplingParams,
+            toolChoice: (options as unknown as Record<string, unknown> | undefined)?.toolChoice,
           },
           payload: await options?.onPayload?.({ model: runtimeModel.id, messages: [] }, runtimeModel),
         });
@@ -516,6 +517,40 @@ describe('per-Save Pi Scene Director', () => {
 
   });
 
+  it('suppresses legacy UpdateVariable output instructions in favor of Scene State tools', async () => {
+    const contexts: Context[] = [];
+    const requests: Array<{ options: Record<string, unknown>; payload: unknown }> = [];
+    const seeded = await context(() => completedRuntime(['Tool-directed reply'], contexts, requests));
+    expect(seeded.repositories.saveAgentConfigurations.update(seeded.configuration.id, 0, {
+      settings: {
+        prompts: [
+          {
+            identifier: 'legacy-variables', role: 'system',
+            content: 'Read variables_update_rules and emit <UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>.',
+          },
+          { identifier: 'style', role: 'system', content: 'VISIBLE_STYLE_INSTRUCTION' },
+        ],
+        prompt_order: [{ character_id: seeded.character.id, order: [
+          { identifier: 'legacy-variables', enabled: true },
+          { identifier: 'style', enabled: true },
+        ] }],
+      },
+    }).ok).toBe(true);
+
+    expect(parse((await generate(seeded.app, 0)).payload).at(-1)).toEqual({
+      event: 'completed', data: { finishReason: 'stop' },
+    });
+    const system = contexts[0]?.systemPrompt ?? '';
+    expect(system).toContain('VISIBLE_STYLE_INSTRUCTION');
+    expect(system).toContain('scene_patch_stage');
+    expect(system).toContain('Legacy variable-output formats are obsolete');
+    expect(system).not.toContain('<UpdateVariable>');
+    expect(system).not.toContain('variables_update_rules');
+    expect(requests[0]!.options).toMatchObject({
+      toolChoice: { type: 'function', function: { name: 'scene_patch_stage' } },
+    });
+  });
+
   it('tiers activated Worldbook rules to about half of the Agent prompt while keeping deferred lore queryable', async () => {
     const contexts: Context[] = [];
     const runtime = oneToolRuntime(contexts, 'world_query', { query: 'TIERED_RULE_6', limit: 4 }, '分级规则查询完成。');
@@ -587,6 +622,18 @@ describe('per-Save Pi Scene Director', () => {
     expect(requests[0]!.payload).not.toHaveProperty('top_k');
     expect(requests[0]!.payload).not.toHaveProperty('min_p');
 
+    const randomSeedRequests: Array<{ options: Record<string, unknown>; payload: unknown }> = [];
+    runtime = completedRuntime(['Random seed reply'], [], randomSeedRequests);
+    const currentConfiguration = seeded.repositories.saveAgentConfigurations.getByConversationId(ids.conversation)!;
+    expect(seeded.repositories.saveAgentConfigurations.update(currentConfiguration.id, currentConfiguration.revision, {
+      settings: { ...currentConfiguration.settings, seed: -1 },
+    }).ok).toBe(true);
+    expect(parse((await generate(seeded.app, 1)).payload).at(-1)).toEqual({
+      event: 'completed', data: { finishReason: 'stop' },
+    });
+    expect(randomSeedRequests[0]!.options.samplingParams).not.toHaveProperty('seed');
+    expect(randomSeedRequests[0]!.payload).not.toHaveProperty('seed');
+
     const responseRequests: Array<{ options: Record<string, unknown>; payload: unknown }> = [];
     const responseModel: Model<'openai-responses'> = {
       ...model,
@@ -594,7 +641,7 @@ describe('per-Save Pi Scene Director', () => {
       provider: 'openai',
     };
     runtime = completedRuntime(['Responses reply'], [], responseRequests, responseModel);
-    expect(parse((await generate(seeded.app, 1)).payload).at(-1)).toEqual({
+    expect(parse((await generate(seeded.app, 2)).payload).at(-1)).toEqual({
       event: 'completed', data: { finishReason: 'stop' },
     });
     expect(responseRequests[0]).toMatchObject({

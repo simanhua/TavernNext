@@ -42,6 +42,11 @@ import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { persistPresetBytes } from '../services/preset-import-handler.js';
 import {
+  isOfficialPresetId,
+  officialPresetIdForBytes,
+  synchronizeOfficialPresets,
+} from '../services/official-preset-registry.js';
+import {
   createSaveAgentConfiguration,
   SaveAgentConfigurationError,
 } from '../services/save-agent-configuration-service.js';
@@ -308,10 +313,16 @@ function packageCharacter(
   if (presetBytes === undefined) throw new SceneServiceError('scene_preset_missing', 422);
   let preset;
   try {
-    preset = persistPresetBytes(repositories, presetBytes, manifest.backingPresetPath);
+    const officialPresetId = officialPresetIdForBytes(presetBytes, manifest.backingPresetPath);
+    if (officialPresetId === undefined) preset = persistPresetBytes(repositories, presetBytes, manifest.backingPresetPath);
+    else {
+      if (repositories.presets.get(officialPresetId) === undefined) synchronizeOfficialPresets(repositories);
+      preset = repositories.presets.get(officialPresetId);
+    }
   } catch {
     throw new SceneServiceError('scene_preset_invalid', 422);
   }
+  if (preset === undefined) throw new SceneServiceError('scene_preset_invalid', 422);
   if (preset.kind !== 'chat') throw new SceneServiceError('scene_preset_invalid', 422);
   return { characterId: id, presetId: preset.id };
 }
@@ -756,7 +767,9 @@ export function createSceneService(options: {
         }
         if (scene.backingPresetId !== undefined) {
           const preset = repositories.presets.get(scene.backingPresetId);
-          if (preset !== undefined) repositories.presets.delete(preset.id, preset.revision);
+          if (preset !== undefined && !isOfficialPresetId(preset.id)) {
+            repositories.presets.delete(preset.id, preset.revision);
+          }
         }
       });
       await moduleRegistry.remove(scene.id);

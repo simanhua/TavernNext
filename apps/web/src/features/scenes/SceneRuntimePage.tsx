@@ -5,6 +5,7 @@ import type {
   SceneGenerationSnapshot,
   SceneRuntimeMode,
   SceneSdkV2,
+  SceneReferenceKind,
   SceneThemeSnapshot,
 } from '@tavernnext/domain';
 import { roleplayDocumentPlainText } from '@tavernnext/domain';
@@ -24,6 +25,8 @@ import { mountSceneStatusRail } from './status-rail.js';
 import { SaveAgentConfigurationPanel } from './SaveAgentConfigurationPanel.js';
 import { AgentRunInspector } from '../chat/AgentRunInspector.js';
 import { MemoryCenter } from './MemoryCenter.js';
+import { SceneReferenceTools } from './SceneReferenceTools.js';
+import { SceneReferenceViewer } from './SceneReferenceViewer.js';
 
 type LeaseState = 'checking' | 'active' | 'duplicate';
 
@@ -116,6 +119,7 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
   const generationListeners = useRef(new Set<(event: SceneGenerationEvent) => void>());
   const themeListeners = useRef(new Set<(snapshot: SceneThemeSnapshot) => void>());
   const [moduleError, setModuleError] = useState<string>();
+  const [referenceKind, setReferenceKind] = useState<SceneReferenceKind>();
   const lease = useRuntimeLease(
     mode === 'setup' ? `setup:${sceneId}` : `save:${conversationId ?? ''}`,
     conversationId,
@@ -310,6 +314,12 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       },
       ui: {
         statusRail: { mount: mountSceneStatusRail },
+        referenceViewer: {
+          open: (kind) => {
+            requireWorkspace();
+            setReferenceKind(kind);
+          },
+        },
       },
     };
   }, [conversationId, mode, navigate, queryClient, sceneId]);
@@ -384,6 +394,15 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       {moduleError === undefined ? null : <div className="scene-runtime-error" role="alert">场景前端加载失败：{moduleError}</div>}
       {mode === 'workspace' && conversationId !== undefined
         ? <>
+          <SceneReferenceTools onOpen={setReferenceKind} />
+          {referenceKind === undefined ? null : (
+            <SceneReferenceViewer
+              conversationId={conversationId}
+              kind={referenceKind}
+              onKindChange={setReferenceKind}
+              onClose={() => setReferenceKind(undefined)}
+            />
+          )}
           <SaveAgentConfigurationPanel conversationId={conversationId} />
           <MemoryCenter conversationId={conversationId} />
           <AgentRunInspector conversationId={conversationId} />

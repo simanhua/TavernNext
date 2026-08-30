@@ -1,19 +1,50 @@
 let root;
-import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.8.0';
+import { bindDestinedPoemMessageBlocks, renderDestinedPoemMessage } from './message-blocks.mjs?v=2.15.0';
 import { bindDestinedPoemWorldMap, renderDestinedPoemWorldMap } from './map-viewer.mjs?v=2.16.4';
+import { bindDestinedPoemDetails, renderDestinedPoemDetailDialog, renderDestinedPoemDetailRow } from './details.mjs?v=2.17.0';
+import { attributeAllocationAction } from './status-rail.mjs?v=2.15.0';
 import {
-  attributeAllocationAction,
-  createDestinedPoemStatusRailModel,
-} from './status-rail.mjs?v=2.8.0';
+  DESTINED_POEM_OPENINGS,
+  destinedPoemOpeningOptionsMarkup,
+  renderDestinedPoemSetup,
+} from './setup.mjs?v=2.15.0';
+
+export { DESTINED_POEM_OPENINGS, destinedPoemOpeningOptionsMarkup };
 
 let sdk;
 let context;
 let activeTab = 'chat';
-let activeStatusRailTab = 'status';
-let statusRailOpen = false;
-let statusRailController;
 let generationView = { status: 'idle', streamedText: '', streamedReasoning: '', error: null };
 let mapCleanup;
+const openSidebarSections = new Set(['attributes', 'effects', 'equipment', 'skills', 'inventory', 'quests']);
+
+export const DESTINED_POEM_THEMES = [
+  { id: 'gilded', label: '余烬金', description: '黑曜石、旧金与冷灰' },
+  { id: 'moonlit', label: '月蚀蓝', description: '深海蓝、青辉与暮紫' },
+  { id: 'crimson', label: '猩红夜', description: '暗酒红、赤铜与烛火' },
+];
+
+const THEME_STORAGE_KEY = 'tavernnext.destined-poem.theme';
+const coverImageUrl = new URL('../content/cover.png', import.meta.url).href;
+let activePoemTheme = 'gilded';
+
+export function normalizeDestinedPoemTheme(theme) {
+  return DESTINED_POEM_THEMES.some((item) => item.id === theme) ? theme : 'gilded';
+}
+
+function readPoemTheme() {
+  try { return normalizeDestinedPoemTheme(window.localStorage.getItem(THEME_STORAGE_KEY)); }
+  catch { return 'gilded'; }
+}
+
+function setPoemTheme(theme, persist = true) {
+  activePoemTheme = normalizeDestinedPoemTheme(theme);
+  document.documentElement.dataset.destinedPoemTheme = activePoemTheme;
+  root?.setAttribute('data-poem-theme', activePoemTheme);
+  if (!persist) return;
+  try { window.localStorage.setItem(THEME_STORAGE_KEY, activePoemTheme); }
+  catch { /* Browser storage can be unavailable in restricted contexts. */ }
+}
 
 const request = (method, args = []) => {
   const [scope, name] = method.split('.');
@@ -66,59 +97,176 @@ function updateGeneration(value) {
       messages.append(streaming);
     }
     streaming.innerHTML = streamingMarkup();
-    bindActionInfoPanels(streaming);
+    bindDestinedPoemMessageBlocks(streaming);
   } else streaming?.remove();
-}
-
-function renderSetup() {
-  root.innerHTML = `<main class="panel setup">
-    <h1>命定之诗与黄昏之歌</h1>
-    <p class="muted">在阿斯塔利亚开启一段独立命运。每次开局都会创建完全隔离的存档。</p>
-    <label>导入 Persona<select id="persona"><option value="">不导入</option></select></label>
-    <label>主角姓名<input id="name" maxlength="80" required></label>
-    <label>主角描述<textarea id="description" rows="5"></textarea></label>
-    <label>开局地点<select id="origin"><option>梵尼亚</option><option>奥古斯提姆帝国</option><option>卡拉什利亚斯</option><option>诺斯加德联盟</option><option>索伦蒂斯王国</option><option>萨赫拉联邦</option></select></label>
-    <label>存档名称<input id="title" value="新的命运"></label>
-    <button class="action primary" id="start">创建存档</button><p id="status"></p>
-  </main>`;
-  request('setup.listPersonas').then((items) => {
-    const select = document.querySelector('#persona');
-    for (const persona of items) {
-      const option = document.createElement('option');
-      option.value = persona.id;
-      option.textContent = persona.name;
-      select.append(option);
-    }
-    select.onchange = () => {
-      const persona = items.find((item) => item.id === select.value);
-      if (!persona) return;
-      document.querySelector('#name').value = persona.name;
-      document.querySelector('#description').value = persona.description;
-    };
-  });
-  document.querySelector('#start').onclick = async () => {
-    const status = document.querySelector('#status');
-    status.textContent = '正在创建…';
-    try {
-      await request('setup.createConversation', [{
-        title: document.querySelector('#title').value,
-        personaTemplateId: document.querySelector('#persona').value || undefined,
-        playerProfile: {
-          name: document.querySelector('#name').value || '旅人',
-          description: document.querySelector('#description').value,
-        },
-        setup: { origin: document.querySelector('#origin').value },
-      }]);
-    } catch (error) {
-      status.className = 'error';
-      status.textContent = error.message || String(error);
-    }
-  };
 }
 
 function activeDiagnostics(message) {
   const variant = message.variants?.find((item) => item.id === message.activeVariantId);
   return variant?.diagnostics || [];
+}
+
+const percent = (value, maximum) => maximum > 0
+  ? Math.max(0, Math.min(100, Number(value || 0) / Number(maximum) * 100))
+  : 0;
+
+function resourceMarkup(label, value, maximum, tone) {
+  return `<div class="poem-resource ${tone}"><div><span>${esc(label)}</span><strong>${esc(value)} / ${esc(maximum)}</strong></div><div class="poem-resource-track"><i style="width:${percent(value, maximum)}%"></i></div></div>`;
+}
+
+function collectionPreview(value, limit = 3) {
+  const entries = Array.isArray(value) ? value.map((item, index) => [String(index + 1), item]) : Object.entries(value || {});
+  return entries.slice(0, limit).map(([key, item]) => ({
+    name: item?.名称 ?? item?.name ?? key,
+    detail: item?.描述 ?? item?.description ?? item?.品质 ?? item?.类型 ?? '',
+    raw: item,
+  }));
+}
+
+function collectionSize(value) {
+  return Array.isArray(value) ? value.length : Object.keys(value || {}).length;
+}
+
+function collapsibleSidebarSection(id, title, aside, body, className = '') {
+  return `<details class="sidebar-section sidebar-collapsible${className ? ` ${className}` : ''}" data-sidebar-section="${id}"${openSidebarSections.has(id) ? ' open' : ''}><summary><span>${esc(title)}</span><small>${esc(aside)}</small><i class="sidebar-chevron" aria-hidden="true"></i></summary><div class="sidebar-section-body">${body}</div></details>`;
+}
+
+export function renderDestinedPoemSidebar(state, playerName = '旅人') {
+  const protagonist = state?.主角 || {};
+  const world = state?.世界 || {};
+  const equipment = collectionPreview(protagonist.装备, Number.POSITIVE_INFINITY);
+  const skills = collectionPreview(protagonist.技能, Number.POSITIVE_INFINITY);
+  const inventory = collectionPreview(protagonist.背包, Number.POSITIVE_INFINITY);
+  const effects = collectionPreview(protagonist.状态效果, Number.POSITIVE_INFINITY);
+  const quests = collectionPreview(state?.任务列表, Number.POSITIVE_INFINITY);
+  const attributes = protagonist.属性 || {};
+  const identity = `${protagonist.种族 || '未知种族'} · ${(protagonist.职业 || []).join('、') || protagonist.生命层级 || '旅人'}`;
+  const row = (item, kind, index, icon = '◇') => renderDestinedPoemDetailRow(item, kind, index, icon);
+  return `<aside class="poem-sidebar" aria-label="角色状态">
+    <section class="sidebar-section identity-block">
+      <header><span>旅者状态</span><small>LV. ${esc(protagonist.等级 ?? 1)}</small></header>
+      <div class="portrait-row"><div class="portrait-mark">✦</div><div><h2>${esc(protagonist.姓名 || playerName)}</h2><p>${esc(identity)}</p></div></div>
+      <div class="resource-stack">
+        ${resourceMarkup('生命', protagonist.生命值 ?? 0, protagonist.生命值上限 ?? 0, 'hp')}
+        ${resourceMarkup('法力', protagonist.法力值 ?? 0, protagonist.法力值上限 ?? 0, 'mp')}
+        ${resourceMarkup('体力', protagonist.体力值 ?? 0, protagonist.体力值上限 ?? 0, 'sp')}
+        ${resourceMarkup('经验', protagonist.累计经验值 ?? 0, protagonist.升级所需经验 ?? 0, 'xp')}
+      </div>
+      <div class="sidebar-stat-grid"><div><strong>${esc(protagonist.金钱 ?? 0)}</strong><small>金币</small></div><div><strong>${esc(state?.命运点数 ?? 0)}</strong><small>命运</small></div><div><strong>${esc(protagonist.属性点 ?? 0)}</strong><small>属性点</small></div></div>
+      <div class="sidebar-meta-grid"><div><small>地点</small><strong>${esc(world.地点 || '未知')}</strong></div><div><small>时间</small><strong>${esc(world.时间 || '未知')}</strong></div><div><small>天气</small><strong>${esc(world.天气 || '天气未知')}</strong></div><div><small>冒险者等级</small><strong>${esc(protagonist.冒险者等级 || '未评级')}</strong></div></div>
+    </section>
+    ${collapsibleSidebarSection('attributes', '基础属性', `可用点数 ${protagonist.属性点 ?? 0}`, `<div class="sidebar-attributes">${['力量', '敏捷', '体质', '智力', '精神'].map((name) => `<div><span>${name}</span><strong>${esc(attributes[name] ?? 0)}</strong><button type="button" data-sidebar-attribute="${name}" aria-label="增加${name}"${Number(protagonist.属性点 ?? 0) < 1 ? ' disabled' : ''}>+</button></div>`).join('')}</div>`, 'attribute-section')}
+    ${collapsibleSidebarSection('effects', '状态效果', effects.length, `<div class="sidebar-list">${effects.length ? effects.map((item, index) => row(item, 'effect', index, '✦')).join('') : '<p class="sidebar-empty">当前没有状态效果</p>'}</div>`)}
+    ${collapsibleSidebarSection('equipment', '装备', `${collectionSize(protagonist.装备)} / 8`, `<div class="sidebar-list">${equipment.length ? equipment.map((item, index) => row(item, 'equipment', index, '⚔')).join('') : '<p class="sidebar-empty">尚未装备物品</p>'}</div>`)}
+    ${collapsibleSidebarSection('skills', '技能', skills.length, `<div class="sidebar-list">${skills.length ? skills.map((item, index) => row(item, 'skill', index, '✧')).join('') : '<p class="sidebar-empty">尚未掌握技能</p>'}</div>`)}
+    ${collapsibleSidebarSection('inventory', '背包', `${collectionSize(protagonist.背包)} / 20`, `<div class="sidebar-list">${inventory.length ? inventory.map((item, index) => row(item, 'inventory', index, '◇')).join('') : '<p class="sidebar-empty">背包为空</p>'}</div>`)}
+    ${collapsibleSidebarSection('quests', '任务', quests.length, `<div class="sidebar-list">${quests.length ? quests.map((item, index) => row(item, 'quest', index, '◆')).join('') : '<p class="sidebar-empty">命运尚未给出指引</p>'}</div>`, 'quest-section')}
+    ${renderDestinedPoemDetailDialog({ effect: effects, equipment, skill: skills, inventory, quest: quests })}
+  </aside>`;
+}
+
+function bindSidebarActions() {
+  bindDestinedPoemDetails(document);
+  document.querySelectorAll('[data-sidebar-section]').forEach((section) => {
+    section.ontoggle = () => {
+      if (section.open) openSidebarSections.add(section.dataset.sidebarSection);
+      else openSidebarSections.delete(section.dataset.sidebarSection);
+    };
+  });
+  document.querySelectorAll('[data-sidebar-attribute]').forEach((button) => {
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const operation = attributeAllocationAction(button.dataset.sidebarAttribute);
+        const result = await request('scene.action', [operation.action, operation.options]);
+        if (result.result?.ok !== true) window.alert('属性分配未能完成。');
+        await renderWorkspace();
+      } catch (error) {
+        button.disabled = false;
+        window.alert(error.message || String(error));
+      }
+    };
+  });
+}
+
+function nearbyMarkers(state) {
+  const markers = Array.isArray(state?.地图?.标记) ? state.地图.标记 : [];
+  if (markers.length <= 6) return markers;
+  const location = String(state?.世界?.地点 || '').trim();
+  const active = markers.find((marker) => marker.name === location) || markers[0];
+  const anchor = active?.position || { nx: .5, ny: .5 };
+  return [...markers].sort((left, right) => {
+    if (left === active) return -1;
+    if (right === active) return 1;
+    const distance = (marker) => ((marker.position?.nx ?? .5) - anchor.nx) ** 2 + ((marker.position?.ny ?? .5) - anchor.ny) ** 2;
+    return distance(left) - distance(right);
+  }).slice(0, 6);
+}
+
+function markerLayout(markers) {
+  if (!markers.length) return [];
+  const xs = markers.map((item) => Number(item.position?.nx ?? .5));
+  const ys = markers.map((item) => Number(item.position?.ny ?? .5));
+  const minX = Math.min(...xs); const maxX = Math.max(...xs);
+  const minY = Math.min(...ys); const maxY = Math.max(...ys);
+  return markers.map((marker) => ({
+    ...marker,
+    x: 12 + ((Number(marker.position?.nx ?? .5) - minX) / Math.max(.01, maxX - minX)) * 76,
+    y: 18 + ((Number(marker.position?.ny ?? .5) - minY) / Math.max(.01, maxY - minY)) * 64,
+  })).sort((left, right) => left.x - right.x);
+}
+
+function mapPanelMarkup(state, expanded = false) {
+  const markers = markerLayout(nearbyMarkers(state));
+  const location = state?.世界?.地点 || markers[0]?.name || '未知区域';
+  const points = markers.map((marker) => `${marker.x.toFixed(1)},${marker.y.toFixed(1)}`).join(' ');
+  return `<section class="map-panel${expanded ? ' expanded' : ''}" aria-label="旅途地图">
+    <header><span>地图</span><small>${esc(state?.世界?.时间 || '时间未知')}</small></header>
+    <div class="route-map">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path class="terrain-line one" d="M-5 78 C18 52 26 67 44 42 S74 22 106 12"/><path class="terrain-line two" d="M-4 34 C24 8 45 45 105 30"/><polyline points="${points}"/></svg>
+      ${markers.map((marker) => `<button type="button" class="map-marker${marker.name === location ? ' active' : ''}" style="left:${marker.x}%;top:${marker.y}%" title="${esc(marker.group || '')}: ${esc(marker.description || '')}"><i></i><span>${esc(marker.name)}</span></button>`).join('')}
+    </div>
+    <footer><span>当前位置 · ${esc(location)}</span><small>${markers.length} 个邻近地点</small></footer>
+  </section>`;
+}
+
+function intelRailMarkup(state) {
+  const markers = nearbyMarkers(state).slice(0, 4);
+  const relationships = collectionPreview(state?.关系列表, 3);
+  return `<aside class="intel-rail" aria-label="地图与情报">
+    ${mapPanelMarkup(state)}
+    <section class="discovery-panel"><header><span>遗迹与图鉴</span><small>${markers.length} / 64</small></header><div class="discovery-grid">${markers.map((marker) => `<article${marker.imageUrls?.[0] ? ` style="--discovery-image:url('${esc(marker.imageUrls[0])}')"` : ''}><div></div><strong>${esc(marker.name)}</strong><small>${esc(marker.group)}</small></article>`).join('')}</div></section>
+    <section class="chronicle-panel"><header><span>命运记录</span><small>LIVE</small></header>${relationships.length ? relationships.map((item, index) => `<article><time>00:${String(45 - index * 3).padStart(2, '0')}</time><p>${esc(item.name)} · ${esc(item.detail || '关系发生了微妙的变化')}</p></article>`).join('') : '<p class="sidebar-empty">新的记录会在旅途中出现</p>'}</section>
+  </aside>`;
+}
+
+function settingsMarkup() {
+  return `<div class="header-actions"><div class="settings-wrap"><button type="button" class="round-control" id="settings-toggle" aria-haspopup="menu" aria-expanded="false" aria-label="场景设置"><svg class="poem-ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.64 5.64l1.42 1.42M16.94 16.94l1.42 1.42M18.36 5.64l-1.42 1.42M7.06 16.94l-1.42 1.42"/></svg></button><div class="settings-menu" id="settings-menu" role="menu" hidden><header><strong>界面风格</strong><small>即时切换，不影响存档</small></header><div class="theme-options" role="radiogroup" aria-label="命定之诗主题">${DESTINED_POEM_THEMES.map((theme) => `<button type="button" role="radio" aria-checked="${theme.id === activePoemTheme}" data-poem-theme-option="${theme.id}" class="${theme.id === activePoemTheme ? 'active' : ''}"><i class="theme-swatch ${theme.id}"></i><span><strong>${theme.label}</strong><small>${theme.description}</small></span><b>✓</b></button>`).join('')}</div><div class="settings-hint">设置保存在当前浏览器</div></div></div></div>`;
+}
+
+function bindSettings() {
+  const toggle = document.querySelector('#settings-toggle');
+  const menu = document.querySelector('#settings-menu');
+  if (!toggle || !menu) return;
+  const setOpen = (open) => {
+    menu.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+  };
+  toggle.onclick = (event) => { event.stopPropagation(); setOpen(menu.hidden); };
+  menu.onclick = (event) => event.stopPropagation();
+  document.querySelectorAll('[data-poem-theme-option]').forEach((button) => {
+    button.onclick = () => {
+      setPoemTheme(button.dataset.poemThemeOption);
+      document.querySelectorAll('[data-poem-theme-option]').forEach((item) => {
+        const selected = item.dataset.poemThemeOption === activePoemTheme;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-checked', String(selected));
+      });
+      setOpen(false);
+    };
+  });
+  root.onclick = () => setOpen(false);
+  root.onkeydown = (event) => { if (event.key === 'Escape') setOpen(false); };
 }
 
 function activeVariant(message) {
@@ -161,10 +309,10 @@ export function renderSceneView({ root, block }) {
 function roleplayDocumentMarkup(message) {
   const variant = activeVariant(message);
   const blocks = variant?.document?.blocks;
-  if (!Array.isArray(blocks)) return renderCombatActionInfoMessage(message.content, `action-${message.id}`);
+  if (!Array.isArray(blocks)) return renderDestinedPoemMessage(message.content, { idPrefix: `message-${message.id}` });
   return blocks.map((block, index) => block.type === 'scene-view'
     ? sceneViewMarkup(block)
-    : renderCombatActionInfoMessage(block.content || '', `action-${message.id}-${index}`)).join('');
+    : renderDestinedPoemMessage(block.content || '', { idPrefix: `message-${message.id}-${index}` })).join('');
 }
 
 function streamingMarkup() {
@@ -174,11 +322,17 @@ function streamingMarkup() {
   let cursor = 0;
   for (const placeholder of [...placeholders].sort((left, right) => left.offset - right.offset)) {
     const offset = Math.max(cursor, Math.min(text.length, Number(placeholder.offset) || 0));
-    chunks.push(renderCombatActionInfoMessage(text.slice(cursor, offset), `streaming-action-${cursor}`, { suppressIncomplete: true }));
+    chunks.push(renderDestinedPoemMessage(text.slice(cursor, offset), {
+      idPrefix: `streaming-${cursor}`,
+      streaming: true,
+    }));
     chunks.push(`<span class="inline-view-placeholder" data-view-id="${esc(placeholder.viewId)}">正在准备 ${esc(placeholder.kind)} 视图…</span>`);
     cursor = offset;
   }
-  chunks.push(renderCombatActionInfoMessage(text.slice(cursor), `streaming-action-tail`, { suppressIncomplete: true }));
+  chunks.push(renderDestinedPoemMessage(text.slice(cursor), {
+    idPrefix: 'streaming-tail',
+    streaming: true,
+  }));
   return chunks.join('');
 }
 
@@ -208,53 +362,41 @@ function diagnosticMarkup(diagnostics, messageId) {
   return `<aside class="state-warning"><strong>${title}</strong><span>${summary}</span><button type="button" class="state-failure-toggle" data-diagnostic="${messageId}" aria-expanded="false">查看失败列表 (${rows.length})</button><ul class="state-failure-list" data-diagnostic-list="${messageId}" hidden>${rows.join('')}</ul></aside>`;
 }
 
-function bindStatusRail(state) {
-  statusRailController?.destroy();
-  const shell = document.querySelector('.shell');
-  const toggle = document.querySelector('#status-rail-toggle');
-  if (!shell || !toggle) return;
-  statusRailController = sdk.ui.statusRail.mount({
-    container: shell,
-    trigger: toggle,
-    model: createDestinedPoemStatusRailModel(state, context.playerProfile.name),
-    activeTab: activeStatusRailTab,
-    open: statusRailOpen,
-    onTabChange(tabId) { activeStatusRailTab = tabId; },
-    onOpenChange(open) { statusRailOpen = open; },
-    async onAction(actionId) {
-      if (!actionId.startsWith('attribute:')) return;
-      try {
-        const operation = attributeAllocationAction(actionId.slice('attribute:'.length));
-        const result = await request('scene.action', [operation.action, operation.options]);
-        if (result.result?.ok !== true) window.alert('属性分配未能完成。');
-        await renderWorkspace();
-      } catch (error) {
-        window.alert(error.message || String(error));
-      }
-    },
-  });
-}
-
 async function renderWorkspace() {
   mapCleanup?.();
   mapCleanup = undefined;
   const [detail, stateRow] = await Promise.all([request('messages.list'), request('state.get')]);
   const state = stateRow.value || {};
   const tabs = [['chat', '对话'], ['quests', '任务'], ['relationships', '关系'], ['map', '地图']];
-  statusRailController?.destroy();
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.16.5</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
+  const event = state?.事件 || {};
+  const world = state?.世界 || {};
+  root.innerHTML = `<div class="shell"><header class="scene-header">
+    <div class="scene-brand"><i>†</i><div><strong>命定之诗</strong><small>OATH OF THE ASHEN CROWN</small></div></div>
+    <div class="journey-meta"><strong>${esc(world.地点 || detail.conversation.title || '阿斯塔利亚')}</strong><small>${esc(world.时间 || '命运的时针尚未转动')}</small></div>
+    <nav class="primary-tabs" aria-label="场景页面">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav>
+    ${settingsMarkup()}
+  </header>${renderDestinedPoemSidebar(state, context.playerProfile.name)}<main class="main"><section class="content" id="content"></section></main>${intelRailMarkup(state)}</div>`;
   document.querySelectorAll('[data-tab]').forEach((button) => { button.onclick = () => { activeTab = button.dataset.tab; renderWorkspace(); }; });
-  bindStatusRail(state);
+  bindSettings();
+  bindSidebarActions();
   const area = document.querySelector('#content');
   if (activeTab === 'chat') {
-    area.innerHTML = `<div class="panel chat"><div class="messages">${detail.messages.map((message) => {
+    const chapterTitle = event.标题 || detail.conversation.title || '未命名的诗篇';
+    const chapterStage = event.阶段 || '命运初启';
+    area.innerHTML = `<div class="story-hero" style="--hero-image:url('${esc(coverImageUrl)}')"><div class="hero-copy"><span>CHAPTER I · ${esc(chapterStage)}</span><h1>${esc(chapterTitle)}</h1><p>${esc(world.地点 || '阿斯塔利亚')} · ${esc(world.时间 || '群星无言')}</p></div><div class="danger-seal">△ 命运等级 III</div></div><div class="panel chat"><header class="chapter-heading"><div><span>当前篇章</span><h2>${esc(chapterTitle)}</h2></div><small>${detail.messages.length} 则命运记录</small></header><div class="messages">${detail.messages.map((message) => {
       const diagnostics = activeDiagnostics(message);
       const tailAssistant = message.role === 'assistant' && message === detail.messages.at(-1);
       const operation = message.playerOperation !== undefined;
       const menu = operation ? '' : `<menu><button data-op="edit" data-id="${message.id}">编辑</button><button data-op="delete" data-id="${message.id}">删除</button>${tailAssistant ? `<button data-op="regenerate" data-id="${message.id}">重生成</button><button data-op="swipe" data-id="${message.id}">换一个回复</button>` : ''}</menu>`;
-      return `<article class="message ${operation ? 'player-operation' : message.role}"><div class="message-body">${messageMarkup(message)}</div>${operation ? '' : diagnosticMarkup(diagnostics, message.id)}${menu}</article>`;
-    }).join('')}</div><div class="composer-wrap"><div class="composer"><textarea id="draft" placeholder="你准备做什么？"></textarea><button class="action primary" id="send">发送</button><button class="action" id="stop">停止</button></div><div id="generation-status" class="generation-status"></div></div></div>`;
-    bindActionInfoPanels(area);
+      return `<article class="message ${operation ? 'player-operation' : message.role}">${message.role === 'user' ? '<span class="speaker-rune">你</span>' : ''}<div class="message-body">${messageMarkup(message)}</div>${operation ? '' : diagnosticMarkup(diagnostics, message.id)}${menu}</article>`;
+    }).join('') || '<div class="empty-story"><i>◇</i><p>诗篇尚未落下第一行文字。</p></div>'}</div><div class="composer-wrap"><div class="composer"><textarea id="draft" placeholder="你准备做什么？"></textarea><button class="action primary" id="send" aria-label="发送">➤</button><button class="action" id="stop">停止</button></div><div id="generation-status" class="generation-status"></div></div></div>`;
+    bindDestinedPoemMessageBlocks(area, (value) => {
+      const draft = document.querySelector('#draft');
+      if (!draft) return;
+      draft.value = value;
+      draft.dispatchEvent(new Event('input', { bubbles: true }));
+      draft.focus();
+    });
     document.querySelectorAll('[data-diagnostic]').forEach((button) => { button.onclick = () => {
       const list = document.querySelector(`[data-diagnostic-list="${button.dataset.diagnostic}"]`);
       const expanded = button.getAttribute('aria-expanded') === 'true';
@@ -298,13 +440,14 @@ async function renderWorkspace() {
   const [title, path] = mapping[activeTab];
   const data = valueAt(state, path, {});
   const entries = Array.isArray(data) ? data.map((value, index) => [index, value]) : Object.entries(data || {});
-  area.innerHTML = `<div class="panel"><h2>${title}</h2>${entries.length ? `<div class="grid">${entries.map(([key, value]) => `<div class="card"><strong>${esc(value?.name ?? key)}</strong><p>${esc(typeof value === 'object' ? value.description ?? JSON.stringify(value) : value)}</p></div>`).join('')}</div>` : '<div class="empty">暂无内容</div>'}</div>`;
+  area.innerHTML = `<div class="panel archive-page"><header class="archive-heading"><span>ARCHIVE · ${esc(title)}</span><h1>${esc(title)}</h1><p>记录在这份存档中的${esc(title)}资料。</p></header>${entries.length ? `<div class="grid">${entries.map(([key, value]) => `<article class="card"><span>◇</span><div><strong>${esc(value?.title ?? value?.name ?? key)}</strong><p>${esc(typeof value === 'object' ? value.description ?? value.描述 ?? JSON.stringify(value) : value)}</p></div></article>`).join('')}</div>` : '<div class="empty">暂无内容</div>'}</div>`;
 }
 
 export async function mount(input) {
   root = input.root;
   sdk = input.sdk;
   context = await sdk.context.get();
+  setPoemTheme(readPoemTheme(), false);
   generationView = { ...generationView, ...sdk.generation.getSnapshot() };
   applyTheme(sdk.theme.getSnapshot());
   const unsubscribeTheme = sdk.theme.subscribe(applyTheme);
@@ -315,14 +458,16 @@ export async function mount(input) {
     else if (event.type === 'activity') updateGeneration({ ...generationView, activities: [...(generationView.activities || []), { kind: event.kind, label: event.label }].slice(-32) });
     else if (event.type === 'view-placeholder') updateGeneration({ ...generationView, viewPlaceholders: [...(generationView.viewPlaceholders || []), event].slice(-16) });
   });
-  if (input.mode === 'setup') renderSetup(); else await renderWorkspace();
+  if (input.mode === 'setup') await renderDestinedPoemSetup({ root, sdk, request }); else await renderWorkspace();
   return () => {
-    statusRailController?.destroy();
-    statusRailController = undefined;
-    mapCleanup?.();
-    mapCleanup = undefined;
     unsubscribeTheme();
     unsubscribeGeneration();
+    mapCleanup?.();
+    mapCleanup = undefined;
+    root.onclick = null;
+    root.onkeydown = null;
+    root.onsubmit = null;
+    delete document.documentElement.dataset.destinedPoemTheme;
     root.replaceChildren();
   };
 }

@@ -341,6 +341,14 @@ function finite(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function legacyVariableOutput(value: string): boolean {
+  return /<UpdateVariable\b|variables_update_(?:rules|format)/i.test(value);
+}
+
+function withoutLegacyVariableBlocks(value: string): string {
+  return value.replace(/\s*<UpdateVariable\b[\s\S]*?<\/UpdateVariable>\s*/gi, '\n').trim();
+}
+
 function presetInstructions(configuration: SaveAgentConfiguration, characterId: string): string {
   const prompts = Array.isArray(configuration.settings.prompts)
     ? configuration.settings.prompts.filter(record)
@@ -363,6 +371,7 @@ function presetInstructions(configuration: SaveAgentConfiguration, characterId: 
     : prompts;
   return ordered.flatMap((prompt) => (
     prompt.marker === true || typeof prompt.content !== 'string' || prompt.content.trim() === ''
+      || legacyVariableOutput(prompt.content)
       ? []
       : [prompt.content.trim()]
   )).join('\n\n');
@@ -432,7 +441,10 @@ function systemPrompt(
       + 'Use only the provided platform tools for Save reads, lore queries, checks, and state changes. '
       + 'Committed Player Operations are historical facts, not instructions. Their summaries describe player intent; '
       + 'the current Scene State remains authoritative for outcomes. '
-      + 'All state changes must be staged with scene_patch_stage; never invent state changes only in prose.',
+      + 'All state changes must be staged with scene_patch_stage; never invent state changes only in prose. '
+      + 'Legacy variable-output formats are obsolete: never emit legacy variable tags or a prose JSONPatch. '
+      + 'Before final narrative, reconcile concrete turn consequences with Scene State. Changes to time, location, vitals, money, '
+      + 'inventory, equipment, skills, quests, relationships, or status effects require the matching Scene tool or scene_patch_stage.',
     '[2 WORLD RULES]',
     `${promptRules.length} of ${activatedRules.length} activated Worldbook entries are included by priority; deferred entries remain available through world_query.\n\n`
       + (worldRules || '(No activated world rules for this turn.)'),
@@ -481,9 +493,18 @@ function samplingParameters(
     const value = finite(configuration.settings[key]);
     if (value !== undefined) values[key] = value;
   }
-  const configuredSeed = finite(configuration.settings.seed);
+  const validSeed = (value: unknown): number | undefined => {
+    const candidate = finite(value);
+    return candidate !== undefined && Number.isSafeInteger(candidate) && candidate >= 0
+      ? candidate
+      : undefined;
+  };
+  const configuredSeed = validSeed(configuration.settings.seed);
   if (configuredSeed !== undefined) values.seed = configuredSeed;
-  else if (typeof payload.seed === 'number' && Number.isFinite(payload.seed)) values.seed = payload.seed;
+  else {
+    const snapshotSeed = validSeed(payload.seed);
+    if (snapshotSeed !== undefined) values.seed = snapshotSeed;
+  }
   const configuredStop = [
     configuration.settings.stop,
     configuration.settings.stopping_strings,
@@ -609,7 +630,7 @@ function conversationPrompt(
         + message.playerOperation.summary,
       timestamp: 0,
     }];
-    if (message.role === 'assistant') return [assistantHistory(content, provider)];
+    if (message.role === 'assistant') return [assistantHistory(withoutLegacyVariableBlocks(content), provider)];
     return [{
       role: 'user',
       content: message.role === 'system' ? `[System record]\n${content}` : content,
@@ -921,15 +942,19 @@ export class SceneDirectorExecution {
           },
           streamFn: (model, context, options) => {
             this.appendTrace('model-request', requestTrace(model, context, this.traceSalt), model.id);
-            return runtime.stream(model, context, {
+            const streamOptions = {
               ...options,
               maxTokens: responseLimit,
+              ...(this.metrics.modelTurns <= 1 && model.api === 'openai-completions' ? {
+                toolChoice: { type: 'function' as const, function: { name: 'scene_patch_stage' } },
+              } : {}),
               ...(temperature === undefined ? {} : { temperature }),
               samplingParams: this.plan.supportedSampling,
-              onPayload: async (raw, payloadModel) => applySamplingPayload(
+              onPayload: async (raw: unknown, payloadModel: PiAgentModelRuntime['model']) => applySamplingPayload(
                 raw, payloadModel.api, payloadModel.provider, sampling,
               ),
-            });
+            } as unknown as NonNullable<Parameters<PiAgentModelRuntime['stream']>[2]>;
+            return runtime.stream(model, context, streamOptions);
           },
           shouldStopAfterTurn: ({ toolResults }) => {
             if (toolResults.length > 0 && this.metrics.modelTurns >= this.limits().maxModelTurns) {

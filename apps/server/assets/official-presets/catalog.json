@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "ccc03b25-61ea-4dc6-8496-220451998ce2",
+      "name": "命定之诗内置生成配方",
+      "kind": "chat",
+      "file": "01-2bd3ee1b1ccb.json",
+      "sha256": "2bd3ee1b1ccb807f5d42a44988838c5300937f36b84b2d5c16b2ffdbeb024a8c"
+    },
+    {
+      "id": "a3a1552e-ea1f-410b-bb67-45898ecf78c5",
+      "name": "场景实验室最小生成配置",
+      "kind": "chat",
+      "file": "02-1748fa15d512.json",
+      "sha256": "1748fa15d5122f977e86dcb6cb24eae054148543ea22ece7ba3c362305691b3c"
+    },
+    {
+      "id": "71ad75b3-aa78-4c6b-a8f6-179c08114000",
+      "name": "命定之诗 Kemini5 3.8 专属预设",
+      "kind": "chat",
+      "file": "03-4412215cefa3.json",
+      "sha256": "4412215cefa303fd3cf7b7cded608d7963e852d52f322455381deb3517f0910c"
+    },
+    {
+      "id": "b95357b1-9f2b-4ee9-b500-0eed8728700c",
+      "name": "太虚问道 Scene 生成配置",
+      "kind": "chat",
+      "file": "04-816a6e985ffa.json",
+      "sha256": "816a6e985ffa1108c9642a90726ea0200bda7c45773552116783b845e3580113"
+    },
+    {
+      "id": "e888d5e9-ecb2-4bc2-a103-0d791db0480f",
+      "name": "太虚问道 Scene 生成配置",
+      "kind": "chat",
+      "file": "05-e9152cfebc55.json",
+      "sha256": "e9152cfebc5537d87b82052f1273e2490ef68618732a97366ca50858dfc33af4"
+    },
+    {
+      "id": "44800b9a-ac22-447d-a6a5-89d31fe1c5e5",
+      "name": "仓鼠之神V4.8.2",
+      "kind": "chat",
+      "file": "06-4bb670b42599.json",
+      "sha256": "4bb670b4259978a023551c95451e879315c37dc827b74c54fe5f990534f15e2e"
+    },
+    {
+      "id": "b0f4cb96-614f-40e9-a639-8be9a19f7ff0",
+      "name": "命定之诗 Kemini5 3.8 专属预设",
+      "kind": "chat",
+      "file": "07-0f649d948a9f.json",
+      "sha256": "0f649d948a9fd0fdf2f2ca0d9235d2c6cf865be500397d7e95d23523d86340fe"
+    },
+    {
+      "id": "f10937e1-fcf7-402b-be92-205be84e5dce",
+      "name": "夏瑾 天琴座 Beta 3.6",
+      "kind": "chat",
+      "file": "08-708a6bb37739.json",
+      "sha256": "708a6bb37739587fdf2c52aa65143f18d3239152d431aa17827ae800470ba73c"
+    }
+  ]
+}

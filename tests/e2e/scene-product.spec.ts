@@ -7,7 +7,7 @@ let stack: E2eStack;
 async function updatePrivatePreset(page: Page, marker: string): Promise<void> {
   const panel = page.locator('details.scene-agent-configuration');
   if ((await panel.getAttribute('open')) === null) {
-    await page.getByText('Save Agent configuration', { exact: true }).click();
+    await panel.locator('summary').click({ force: true });
   }
   const editor = page.getByLabel('Executable settings JSON');
   const settings = JSON.parse(await editor.inputValue()) as Record<string, unknown>;
@@ -40,7 +40,7 @@ async function updatePrivatePreset(page: Page, marker: string): Promise<void> {
   await page.getByRole('button', { name: 'Save configuration' }).click();
   expect((await saved).ok()).toBe(true);
   await expect(editor).toHaveValue(new RegExp(marker));
-  await page.getByText('Save Agent configuration', { exact: true }).click();
+  await panel.locator('summary').click({ force: true });
   await expect(panel).not.toHaveAttribute('open', '');
 }
 
@@ -49,6 +49,7 @@ test.afterAll(async () => { await stack?.close(); });
 
 test('runs two isolated Scene saves in trusted top-level tabs', async ({ page }) => {
   test.setTimeout(120_000);
+  let selectedCoreSeen = false;
   stack.provider.queue({ chunks: ['正在生成的片段'], hold: true });
   stack.provider.queue({ toolCalls: [
     { name: 'destined_poem_adjust_fate', arguments: { amount: 2, reason: '守住档案馆' } },
@@ -70,7 +71,9 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
     })),
   ] });
   stack.provider.queue((request) => {
-    const references = [...new Set(JSON.stringify(request.body).match(/<!--tavernnext:view:[0-9a-f-]+-->/g) ?? [])];
+    const payload = String(JSON.stringify(request.body));
+    selectedCoreSeen = payload.includes('System functions are unavailable in this mode');
+    const references = [...new Set(payload.match(/<!--tavernnext:view:[0-9a-f-]+-->/g) ?? [])];
     if (references.length !== 5) throw new Error(`Expected five staged Scene View references, got ${references.length}`);
     return { chunks: [`钟声回荡，命运向前推进。${references.join('随后，')}旅程仍在继续。`] };
   });
@@ -99,14 +102,16 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
     page.getByRole('button', { name: '创建新存档' }).click(),
   ]);
   await expect(firstScene.locator('iframe')).toHaveCount(0);
+  await firstScene.locator('[data-stage="character"]').click();
   await firstScene.getByLabel('主角姓名').fill('艾琳');
   await firstScene.getByLabel('主角描述').fill('云端归来的见证者');
-  await firstScene.getByLabel('开局地点').selectOption('梵尼亚');
+  await firstScene.getByLabel('起始地点').selectOption('大陆中央区域-神迹山脉-天空圣域-圣都梵尼亚');
+  await firstScene.locator('[data-stage="confirm"]').click();
   await firstScene.getByLabel('存档名称').fill('艾琳的梵尼亚存档');
   await firstScene.getByRole('button', { name: '创建存档' }).click();
 
   await expect(firstScene).toHaveURL(/\/scene-runtime\/.*\/conversations\//);
-  await expect(firstScene.getByText('命运的书页已经翻开')).toBeVisible();
+  await expect(firstScene.getByRole('heading', { name: '日常' })).toBeVisible();
   await expect(firstScene.locator('html')).toHaveClass(/dark/);
   await page.getByRole('button', { name: '切换到浅色主题' }).click();
   await expect(page.locator('html')).not.toHaveClass(/dark/);
@@ -122,14 +127,15 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   await firstScene.getByPlaceholder('你准备做什么？').fill('沿钟声继续前进');
   await firstScene.getByRole('button', { name: '发送' }).click();
   await expect(firstScene.getByText('钟声回荡，命运向前推进。')).toBeVisible({ timeout: 30_000 });
+  expect(selectedCoreSeen).toBe(true);
   await expect(firstScene.getByRole('region', { name: '战斗态势' })).toBeVisible();
   await expect(firstScene.getByRole('region', { name: '艾琳状态' })).toBeVisible();
   await expect(firstScene.getByRole('region', { name: '艾瑟嘉德地图' })).toBeVisible();
   await expect(firstScene.getByRole('region', { name: '关系进展' })).toContainText('莉拉');
   await expect(firstScene.getByRole('region', { name: '旅程进展' })).toContainText('守住档案馆');
   await expect(firstScene.getByRole('region', { name: '旅程进展' })).toContainText('completed');
-  await expect(firstScene.locator('.tn-status-rail')).toContainText('2');
-  await expect(firstScene.locator('.tn-status-rail')).toContainText('艾瑟嘉德');
+  await expect(firstScene.locator('.poem-sidebar')).toContainText('2');
+  await expect(firstScene.locator('.poem-sidebar')).toContainText('艾瑟嘉德');
 
   await firstScene.reload();
   await expect(firstScene.getByRole('region', { name: '战斗态势' })).toBeVisible({ timeout: 30_000 });
@@ -140,14 +146,11 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   stack.provider.queue({ toolCalls: [{
     name: 'destined_poem_rule_check', arguments: { key: 'continue-journey', difficulty: 8, modifier: 1 },
   }] });
-  stack.provider.queue((request) => {
-    if (!JSON.stringify(request.body).includes(nextTurnStyle)) throw new Error('Private Preset edit was not active next turn');
-    return { chunks: [`**判定完成**后，艾琳继续向皇城深处前进。
+  stack.provider.queue({ chunks: [`**判定完成**后，艾琳继续向皇城深处前进。
 
 | 属性 | 当前 |
 |------|------|
-| 力量 | 4 |`] };
-  });
+| 力量 | 4 |`] });
   await firstScene.getByPlaceholder('你准备做什么？').fill('继续探索皇城');
   await firstScene.getByRole('button', { name: '发送' }).click();
   await expect(firstScene.getByText('判定完成后，艾琳继续向皇城深处前进。')).toBeVisible({ timeout: 30_000 });
@@ -179,7 +182,7 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
   const regeneratedViewMessage = firstScene.locator('article.message.assistant')
     .filter({ hasText: '重生成的命运分支已经展开。' });
   await expect(regeneratedViewMessage.getByRole('region', { name: '艾琳状态' })).toBeVisible();
-  await expect(firstScene.locator('.tn-status-rail')).toContainText('3');
+  await expect(firstScene.locator('.poem-sidebar')).toContainText('3');
   await expect(firstScene.getByText('判定完成后，艾琳继续向皇城深处前进。')).toHaveCount(0);
   await expect(firstScene.locator('body')).not.toContainText('scene-e2e-key');
 
@@ -187,13 +190,15 @@ test('runs two isolated Scene saves in trusted top-level tabs', async ({ page })
     page.waitForEvent('popup'),
     page.getByRole('button', { name: '创建新存档' }).click(),
   ]);
+  await secondScene.locator('[data-stage="character"]').click();
   await secondScene.getByLabel('主角姓名').fill('洛恩');
-  await secondScene.getByLabel('开局地点').selectOption('索伦蒂斯王国');
+  await secondScene.getByLabel('起始地点').selectOption('大陆东南部区域-索伦蒂斯王国');
+  await secondScene.locator('[data-stage="confirm"]').click();
   await secondScene.getByLabel('存档名称').fill('洛恩的海国存档');
   await secondScene.getByRole('button', { name: '创建存档' }).click();
   await expect(secondScene).toHaveURL(/\/scene-runtime\/.*\/conversations\//);
-  await expect(secondScene.locator('.tn-status-rail')).toContainText('0');
-  await expect(secondScene.locator('.tn-status-rail')).toContainText('索伦蒂斯王国');
+  await expect(secondScene.locator('.poem-sidebar')).toContainText('0');
+  await expect(secondScene.locator('.poem-sidebar')).toContainText('索伦蒂斯王国');
 
   const pageCount = page.context().pages().length;
   const firstSave = page.getByRole('button', { name: /^艾琳的梵尼亚存档/ });

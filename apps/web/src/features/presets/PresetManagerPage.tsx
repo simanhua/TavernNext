@@ -37,6 +37,7 @@ export function PresetManagerPage() {
             <div key={preset.id} className="preset-row">
               <button type="button" aria-label={t('Edit preset {{name}}', { name: preset.name })} onClick={() => void openPreset(preset.id)}>{preset.name}</button>
               <span className="kind-badge">{language === 'en' ? titleCase(preset.kind) : t(preset.kind)}</span>
+              {preset.official ? <span className="kind-badge">{t('Official')}</span> : null}
             </div>
           ))}
         </div>

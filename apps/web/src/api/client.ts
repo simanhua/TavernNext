@@ -154,6 +154,7 @@ export interface PresetSelectorView {
   revision: number;
   name: string;
   kind: PresetKind;
+  official: boolean;
 }
 
 export interface PresetView extends PresetSelectorView, MutableView {
@@ -230,6 +231,11 @@ export interface WorldbookEntryView extends MutableView {
   automationId: string;
   triggers: string[];
   compatibilitySummary?: CompatibilitySummary;
+  effectiveEnabled?: boolean;
+  activationSource?: 'template' | 'save';
+  saveOverrideEnabled?: boolean;
+  contentOverridden?: boolean;
+  effectiveContent?: string;
 }
 
 export interface WorldbookView extends MutableView {
@@ -242,6 +248,20 @@ export interface WorldbookView extends MutableView {
   isGlobal: boolean;
   compatibilitySummary?: CompatibilitySummary;
   entries: WorldbookEntryView[];
+  effectiveEnabled?: boolean;
+}
+
+export type WorldbookEntryInput = Omit<WorldbookEntryView, keyof MutableView | 'worldbookId' | 'sourceUid' | 'sourceOrdinal' | 'compatibilitySummary' | 'effectiveEnabled' | 'activationSource' | 'saveOverrideEnabled' | 'contentOverridden' | 'effectiveContent'>;
+export type WorldbookEntryPatch = Partial<WorldbookEntryInput>;
+
+export interface SaveRuntimeReferencesView {
+  configuration: SaveAgentConfiguration;
+  worldbooks: Array<{
+    source: 'global' | 'character' | 'conversation';
+    saveOwned: boolean;
+    templateLineage?: { worldbookId: string | null; revision: number | null };
+    value: WorldbookView;
+  }>;
 }
 
 export interface ImportPreview {
@@ -551,6 +571,27 @@ export const api = {
   getSaveAgentConfiguration: (conversationId: string) => request<SaveAgentConfiguration>(
     `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration`,
   ),
+  getSaveRuntimeReferences: (conversationId: string) => request<SaveRuntimeReferencesView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references`,
+  ),
+  toggleSavePrompt: (conversationId: string, revision: number, identifier: string, enabled: boolean) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references/preset-prompts/${encodeURIComponent(identifier)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  toggleRuntimeWorldbook: (conversationId: string, worldbookId: string, revision: number, enabled: boolean) => request<WorldbookView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references/worldbooks/${encodeURIComponent(worldbookId)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  toggleRuntimeWorldbookEntry: (
+    conversationId: string,
+    worldbookId: string,
+    entryId: string,
+    revision: number,
+    enabled: boolean,
+  ) => request<WorldbookEntryView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references/worldbooks/${encodeURIComponent(worldbookId)}/entries/${encodeURIComponent(entryId)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
   updateSaveAgentConfiguration: (
     conversationId: string,
     revision: number,
@@ -629,16 +670,36 @@ export const api = {
   }),
   deleteWorldbook: (id: string, revision: number) => request<void>(`/api/worldbooks/${id}?revision=${revision}`, { method: 'DELETE' }),
   exportWorldbook: (id: string) => download(`/api/worldbooks/${id}/export?format=st-native`),
-  createWorldbookEntry: (worldbookId: string, input: Omit<WorldbookEntryView, keyof MutableView | 'worldbookId' | 'sourceUid' | 'sourceOrdinal' | 'compatibilitySummary'>) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries`, {
+  createWorldbookEntry: (worldbookId: string, input: WorldbookEntryInput) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries`, {
     method: 'POST', body: JSON.stringify(input),
   }),
-  updateWorldbookEntry: (worldbookId: string, entryId: string, revision: number, patch: Partial<Omit<WorldbookEntryView, keyof MutableView | 'worldbookId' | 'sourceUid' | 'sourceOrdinal' | 'compatibilitySummary'>>) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries/${entryId}`, {
+  updateWorldbookEntry: (worldbookId: string, entryId: string, revision: number, patch: WorldbookEntryPatch) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries/${entryId}`, {
     method: 'PATCH', body: JSON.stringify({ revision, patch }),
   }),
   deleteWorldbookEntry: (worldbookId: string, entryId: string, revision: number) => request<void>(`/api/worldbooks/${worldbookId}/entries/${entryId}?revision=${revision}`, { method: 'DELETE' }),
   reorderWorldbookEntries: (worldbookId: string, entries: Array<{ id: string; revision: number; order: number }>) => request<WorldbookEntryView[]>(`/api/worldbooks/${worldbookId}/entries/order`, {
     method: 'PUT', body: JSON.stringify({ entries }),
   }),
+  updateSaveWorldbook: (conversationId: string, worldbookId: string, revision: number, patch: Partial<Pick<WorldbookView, 'name' | 'description' | 'enabled' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning'>>) => request<WorldbookView>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  createSaveWorldbookEntry: (conversationId: string, worldbookId: string, input: WorldbookEntryInput) => request<WorldbookEntryView>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries`,
+    { method: 'POST', body: JSON.stringify(input) },
+  ),
+  updateSaveWorldbookEntry: (conversationId: string, worldbookId: string, entryId: string, revision: number, patch: WorldbookEntryPatch) => request<WorldbookEntryView>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries/${entryId}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  deleteSaveWorldbookEntry: (conversationId: string, worldbookId: string, entryId: string, revision: number) => request<void>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries/${entryId}?revision=${revision}`,
+    { method: 'DELETE' },
+  ),
+  reorderSaveWorldbookEntries: (conversationId: string, worldbookId: string, entries: Array<{ id: string; revision: number; order: number }>) => request<WorldbookEntryView[]>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries/order`,
+    { method: 'PUT', body: JSON.stringify({ entries }) },
+  ),
   inspectImport,
   commitImport: (inspectionToken: string) => request<ImportReceipt>('/api/imports/commit', {
     method: 'POST', body: JSON.stringify({ inspectionToken }),

@@ -1,7 +1,7 @@
 {
   "id": "018f2000-0000-7000-8000-000000000001",
   "slug": "destined-poem",
-  "version": "2.16.5",
+  "version": "2.17.0",
   "name": "命定之诗与黄昏之歌",
   "summary": "在阿斯塔利亚开启一段拥有独立状态、任务、关系与地图的命运旅程。",
   "description": "完整迁移自命定之诗与黄昏之歌 v4.2 的官方 TavernNext 场景。每个存档拥有隔离的消息和世界状态。",
@@ -9,15 +9,29 @@
   "minimumTavernNextVersion": "1.0.0",
   "sceneSdkVersion": 2,
   "frontendEntry": "frontend/app.js",
-  "frontendStyles": ["frontend/styles.css", "frontend/map-viewer.css"],
+  "frontendStyles": ["frontend/styles.css", "frontend/themes.css", "frontend/map-viewer.css"],
   "serverEntry": "server/index.mjs",
   "coverPath": "content/cover.png",
   "backingCharacterPath": "content/character.png",
   "backingPresetPath": "content/preset.json",
   "setupSchema": {
     "type": "object",
-    "required": ["origin"],
-    "properties": { "origin": { "type": "string", "minLength": 1 } }
+    "required": ["opening", "core", "dlcKeys", "origin"],
+    "properties": {
+      "opening": {
+        "type": "string",
+        "enum": ["custom", "summoned-hero", "lost-shore", "divine-party"]
+      },
+      "core": { "type": "string", "minLength": 1, "maxLength": 500 },
+      "dlcKeys": {
+        "type": "array",
+        "maxItems": 256,
+        "uniqueItems": true,
+        "items": { "type": "string", "maxLength": 300 }
+      },
+      "origin": { "type": "string", "minLength": 1 },
+      "build": { "type": "object" }
+    }
   },
   "stateSchema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -51,7 +65,8 @@
         "required": ["时间", "地点"],
         "properties": {
           "时间": { "type": "string" },
-          "地点": { "type": "string" }
+          "地点": { "type": "string" },
+          "天气": { "type": "string" }
         }
       },
       "任务列表": { "type": "object", "additionalProperties": true },
@@ -86,6 +101,8 @@
         "properties": {
           "姓名": { "type": "string" },
           "描述": { "type": "string" },
+          "性别": { "type": "string" },
+          "年龄": { "type": "integer", "minimum": 1 },
           "种族": { "type": "string" },
           "身份": { "type": "array", "items": { "type": "string" } },
           "职业": { "type": "array", "items": { "type": "string" } },
@@ -198,14 +215,15 @@
     },
     {
       "name": "destined_poem_travel",
-      "description": "Move the Save to a known place and optionally advance its in-world time.",
+      "description": "Move the Save to a known place and optionally advance its in-world time and weather.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "required": ["location"],
         "properties": {
           "location": { "type": "string", "minLength": 1, "maxLength": 160 },
-          "time": { "type": "string", "minLength": 1, "maxLength": 160 }
+          "time": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "weather": { "type": "string", "minLength": 1, "maxLength": 160 }
         }
       }
     },
@@ -487,14 +505,20 @@
   "files": [
     "manifest.json",
     "frontend/app.js",
+    "frontend/details.mjs",
     "frontend/map-viewer.mjs",
     "frontend/map-viewer.css",
+    "frontend/message-blocks.mjs",
+    "frontend/setup.mjs",
     "frontend/action-info.mjs",
     "frontend/status-rail.mjs",
     "frontend/styles.css",
+    "frontend/themes.css",
     "server/index.mjs",
+    "server/setup.mjs",
     "content/initial-state.json",
     "content/state-schema.json",
+    "content/setup-catalog.json",
     "content/character.png",
     "content/cover.png",
     "content/preset.json"

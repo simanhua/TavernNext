@@ -11,6 +11,12 @@ import {
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { unzipSync } from 'fflate';
 import type { TavernDatabase } from '../db/client.js';
+import type { Repositories } from '../db/repositories.js';
+import { persistPresetBytes } from '../services/preset-import-handler.js';
+import {
+  officialPresetIdForBytes,
+  officialPresetIdForPreset,
+} from '../services/official-preset-registry.js';
 import { buildOfficialScenePackage, officialSceneIds } from './official-package.js';
 
 function within(root: string, target: string): boolean {
@@ -31,7 +37,12 @@ function failureCode(error: unknown): string {
   return error instanceof Error && error.message !== '' ? error.message : 'official_scene_upgrade_failed';
 }
 
-function upgradeOne(database: TavernDatabase, dataDir: string, sceneId: string): void {
+function upgradeOne(
+  database: TavernDatabase,
+  dataDir: string,
+  sceneId: string,
+  repositories: Repositories,
+): void {
   const row = database.sqlite.prepare('SELECT payload FROM installed_scenes WHERE id = ?').get(sceneId);
   if (row === undefined || typeof row.payload !== 'string') return;
   let installed: Record<string, unknown>;
@@ -70,16 +81,35 @@ function upgradeOne(database: TavernDatabase, dataDir: string, sceneId: string):
 
     const revision = typeof installed.revision === 'number' ? installed.revision + 1 : 1;
     const updatedAt = new Date().toISOString();
-    const next = {
-      ...installed,
-      revision,
-      updatedAt,
-      version: runtimePackage.manifest.version,
-      archiveDigest: runtimePackage.digest,
-      installPath: target,
-      manifest: runtimePackage.manifest,
-    };
     database.transaction(() => {
+      const presetPath = runtimePackage.manifest.backingPresetPath;
+      const presetBytes = presetPath === undefined ? undefined : files[presetPath];
+      if (presetPath !== undefined && presetBytes === undefined) throw new Error('scene_preset_missing');
+      const officialPresetId = presetPath === undefined || presetBytes === undefined
+        ? undefined
+        : officialPresetIdForBytes(presetBytes, presetPath);
+      const installedPreset = typeof installed.backingPresetId === 'string'
+        ? repositories.presets.get(installed.backingPresetId)
+        : undefined;
+      const reusableInstalledPreset = installedPreset !== undefined
+        && officialPresetIdForPreset(installedPreset) === officialPresetId
+        ? installedPreset
+        : undefined;
+      const replacementPreset = presetPath === undefined || presetBytes === undefined
+        ? undefined
+        : (officialPresetId === undefined ? undefined : repositories.presets.get(officialPresetId))
+          ?? reusableInstalledPreset
+          ?? persistPresetBytes(repositories, presetBytes, presetPath);
+      const next = {
+        ...installed,
+        revision,
+        updatedAt,
+        version: runtimePackage.manifest.version,
+        archiveDigest: runtimePackage.digest,
+        installPath: target,
+        manifest: runtimePackage.manifest,
+        ...(replacementPreset === undefined ? {} : { backingPresetId: replacementPreset.id }),
+      };
       const result = database.sqlite.prepare(`
         UPDATE installed_scenes
         SET revision = ?, updated_at = ?, payload = ?, version = ?, archive_digest = ?
@@ -114,10 +144,11 @@ function upgradeOne(database: TavernDatabase, dataDir: string, sceneId: string):
 export function upgradeInstalledOfficialScenes(
   database: TavernDatabase,
   dataDir: string,
+  repositories: Repositories,
 ): OfficialSceneUpgradeFailure[] {
   const failures: OfficialSceneUpgradeFailure[] = [];
   for (const sceneId of officialSceneIds()) {
-    try { upgradeOne(database, dataDir, sceneId); }
+    try { upgradeOne(database, dataDir, sceneId, repositories); }
     catch (error) { failures.push({ sceneId, code: failureCode(error) }); }
   }
   return failures;

@@ -21,7 +21,7 @@ describe('host and Scene theme token contract', () => {
       expect(hostCss, `host ${token}`).toContain(`${token}:`);
       expect(sceneCss, `scene ${token}`).toContain(`${token}:`);
     }
-    expect(scenePackage.manifest.version).toBe('2.16.4');
+    expect(scenePackage.manifest.version).toBe('2.17.0');
     expect(officialCatalog().scenes[0]).toMatchObject({
       sceneId: scenePackage.manifest.id,
       version: scenePackage.manifest.version,

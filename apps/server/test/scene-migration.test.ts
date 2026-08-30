@@ -7,7 +7,7 @@ import { createDatabase } from '../src/db/client.js';
 import { CURRENT_SCHEMA_VERSION, migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import { TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
-import { DESTINED_POEM_SCENE_ID } from '../src/scenes/official-package.js';
+import { DESTINED_POEM_SCENE_ID, destinedPoemManifest } from '../src/scenes/official-package.js';
 import { upgradeInstalledOfficialScenes } from '../src/scenes/official-scene-upgrade.js';
 
 const directories: string[] = [];
@@ -172,11 +172,11 @@ describe('Scene migrations', () => {
       value: { points: 7, 主角: { 背包: null } },
     });
 
-    expect(upgradeInstalledOfficialScenes(database, directory)).toEqual([]);
+    expect(upgradeInstalledOfficialScenes(database, directory, repositories)).toEqual([]);
 
     const upgraded = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     expect(upgraded.manifest.sceneSdkVersion).toBe(2);
-    expect(upgraded.version).toBe('2.8.0');
+    expect(upgraded.version).toBe(destinedPoemManifest().version);
     expect(upgraded.manifest.sceneViews).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'combat', schemaVersion: 1, renderer: { id: 'destined-poem-combat-v1' } }),
       ...['status', 'map', 'relationship', 'progress'].map((kind) => expect.objectContaining({ kind })),

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { presetDetail, presetSummary, safePresetSettings } from './manager-dtos.js';
+import { isOfficialPresetId } from '../services/official-preset-registry.js';
 
 const MAX_MANAGER_ROWS = 512;
 const markerKey = '__tavernnextPresetSource';
@@ -117,14 +118,14 @@ function revisionFrom(value: unknown): number | undefined {
 }
 
 export function registerPresetRoutes(app: FastifyInstance, database: TavernDatabase, repositories: Repositories): void {
-  const detail = (preset: Parameters<typeof presetDetail>[0]) => presetDetail(
-    preset,
-    repositories.extensionAssets.listByOwner('preset', preset.id),
-  );
+  const detail = (preset: Parameters<typeof presetDetail>[0]) => ({
+    ...presetDetail(preset, repositories.extensionAssets.listByOwner('preset', preset.id)),
+    official: isOfficialPresetId(preset.id),
+  });
   app.get('/api/presets', async (_request, reply) => {
     const rows = repositories.presets.list(MAX_MANAGER_ROWS + 1);
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
-    return rows.map(presetSummary);
+    return rows.map((preset) => ({ ...presetSummary(preset), official: isOfficialPresetId(preset.id) }));
   });
   app.get<{ Params: { id: string } }>('/api/presets/:id', async (request, reply) => {
     const value = repositories.presets.get(request.params.id);
@@ -151,6 +152,7 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     const current = repositories.presets.get(request.params.id);
     if (current === undefined) return reply.status(404).send({ error: 'not_found' });
+    if (isOfficialPresetId(current.id)) return reply.status(409).send({ error: 'official_preset_read_only' });
     if (current.revision !== parsed.data.revision) return reply.status(409).send({ error: 'conflict' });
     try {
       const patch: { name?: string; settings?: Record<string, unknown> } = {};
@@ -195,6 +197,9 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
         : undefined;
       const revision = revisionFrom(request.query.revision ?? bodyRevision);
       if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
+      if (isOfficialPresetId(request.params.id)) {
+        return reply.status(409).send({ error: 'official_preset_read_only' });
+      }
       try {
         const result = database.transaction(() => {
           const deleted = repositories.presets.delete(request.params.id, revision);
