@@ -657,7 +657,11 @@ export function createGenerationService(options: {
               manifest: structuredClone(scene.manifest),
             };
             scenePromptContext = {
-              state: stagedState, additions: before.promptAdditions ?? [], memoryRecall, memoryQueryCorpus,
+              state: stagedState,
+              additions: before.promptAdditions ?? [],
+              worldbookEntryOverrides: before.worldbookEntryOverrides ?? [],
+              memoryRecall,
+              memoryQueryCorpus,
             };
             sceneAgentToolFactory = createSceneAgentToolFactory({ scene, host, conversation });
             sceneViewRuntimeFactory = createSceneViewRuntimeFactory({ scene, host, conversation });

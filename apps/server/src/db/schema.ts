@@ -112,6 +112,15 @@ export const saveAgentConfigurations = sqliteTable('save_agent_configurations', 
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
 }, (table) => [index('save_agent_configurations_conversation_id_idx').on(table.conversationId)]);
+export const saveWorldbooks = sqliteTable('save_worldbooks', {
+  ...entityColumns,
+  conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),
+  worldbookId: text('worldbook_id').notNull().unique().references(() => worldbooks.id),
+  sourceWorldbookId: text('source_worldbook_id'),
+}, (table) => [
+  index('save_worldbooks_conversation_id_idx').on(table.conversationId),
+  index('save_worldbooks_worldbook_id_idx').on(table.worldbookId),
+]);
 export const saveMemoryConfigurations = sqliteTable('save_memory_configurations', {
   ...entityColumns,
   conversationId: text('conversation_id').notNull().unique().references(() => conversations.id, { onDelete: 'cascade' }),

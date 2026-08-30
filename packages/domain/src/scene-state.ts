@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorldbookEntryOverrideSchema } from './generation.js';
 
 const ScenePointerSchema = z.string().startsWith('/');
 
@@ -61,11 +62,13 @@ export const SceneInitializeResultSchema = z.object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string(),
   }).strict()).max(16).default([]),
+  worldbookEntryOverrides: z.array(WorldbookEntryOverrideSchema).max(2_048).default([]),
 }).strict();
 
 export const SceneBeforeGenerationResultSchema = z.object({
   statePatch: z.array(ScenePatchOperationSchema).optional(),
   promptAdditions: z.array(ScenePromptAdditionSchema).max(16).optional(),
+  worldbookEntryOverrides: z.array(WorldbookEntryOverrideSchema).max(2_048).optional(),
 }).strict();
 
 export const SceneAfterGenerationResultSchema = z.object({

@@ -14,6 +14,7 @@ import {
   type ProviderProfile,
   type Worldbook,
   type WorldbookEntry,
+  type WorldbookEntryOverride,
   type WorldbookRuntimeState,
   type WorldbookTimedState,
   type ScenePromptAddition,
@@ -87,6 +88,7 @@ export interface PromptSnapshotInput {
 export interface ScenePromptContext {
   state: Record<string, unknown>;
   additions: ScenePromptAddition[];
+  worldbookEntryOverrides?: WorldbookEntryOverride[];
   memoryRecall?: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus?: MemoryRecallSnapshotEntry[];
 }
@@ -558,16 +560,25 @@ function persistedBook(
   };
 }
 
-function scenePromptBook(book: LoadedBook): LoadedBook {
+export function applySceneWorldbookEntryOverrides(
+  book: LoadedBook,
+  entryOverrides: WorldbookRuntimeState['entryOverrides'],
+): LoadedBook {
+  const overrides = new Map(entryOverrides
+    .filter((override) => override.source === book.source)
+    .map((override) => [override.comment, override]));
   return {
     ...book,
     book: {
       ...book.book,
       entries: book.book.entries.map((entry) => {
         const label = `${entry.comment}\n${entry.displayName}`;
-        return label.includes('使用额外模型更新变量开')
-          ? { ...entry, enabled: false }
-          : entry;
+        const override = overrides.get(entry.comment);
+        const enabled = label.includes('使用额外模型更新变量开')
+          ? false
+          : override?.enabled ?? entry.enabled;
+        const content = override?.content ?? entry.content;
+        return enabled === entry.enabled && content === entry.content ? entry : { ...entry, enabled, content };
       }),
     },
   };
@@ -619,6 +630,10 @@ function loadAggregate(
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
   if (installedScene !== undefined && sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
   if (sceneContext !== undefined && installedScene === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+  const saveWorldbook = installedScene === undefined
+    ? undefined
+    : repositories.saveWorldbooks.getByConversationId(conversation.id);
+  if (installedScene !== undefined && saveWorldbook === undefined) throw new PromptSnapshotError('invalid_runtime_state');
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -634,18 +649,26 @@ function loadAggregate(
   };
   const globalBooks = boundedRelation(() => repositories.worldbooks.listGlobal());
   for (const row of globalBooks) addPersisted(row, 'global');
-  if (character.worldbookId !== undefined) addPersisted(repositories.worldbooks.get(character.worldbookId), 'character');
-  const embedded = stableEmbeddedBook(character);
+  const characterWorldbookId = saveWorldbook?.worldbookId ?? character.worldbookId;
+  if (characterWorldbookId !== undefined) addPersisted(repositories.worldbooks.get(characterWorldbookId), 'character');
+  const embedded = saveWorldbook === undefined ? stableEmbeddedBook(character) : undefined;
   if (embedded !== undefined) {
     compatibilityWarnings.push(...embedded.compatibilityWarnings);
     books.push(embedded);
   }
   for (const id of conversation.worldbookIds) addPersisted(repositories.worldbooks.get(id), 'conversation');
-  for (const id of [character.worldbookId, ...conversation.worldbookIds]) {
+  for (const id of [characterWorldbookId, ...conversation.worldbookIds]) {
     if (id !== undefined && repositories.worldbooks.get(id) === undefined) throw new PromptSnapshotError('not_found');
   }
+  const runtimeState = runtimeStateFor(repositories, conversation.id);
   if (installedScene !== undefined) {
-    for (let index = 0; index < books.length; index += 1) books[index] = scenePromptBook(books[index]!);
+    const effectiveOverrides = [
+      ...(runtimeState?.entryOverrides ?? []),
+      ...(sceneContext?.worldbookEntryOverrides ?? []),
+    ];
+    for (let index = 0; index < books.length; index += 1) {
+      books[index] = applySceneWorldbookEntryOverrides(books[index]!, effectiveOverrides);
+    }
   }
 
   const history = historyRows(repositories, conversation.id);
@@ -677,7 +700,6 @@ function loadAggregate(
   if (input.targetVariantId !== undefined && input.targetVariantId !== targetVariant?.id) {
     throw new PromptSnapshotError('invalid_target');
   }
-  const runtimeState = runtimeStateFor(repositories, conversation.id);
   const seed = input.seed ?? `${conversation.id}:${conversation.revision}`;
   const messageIndex = input.messageIndex ?? history.history.length;
   const snapshotInput: SnapshotInputPayload = {
@@ -799,7 +821,11 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     expectedWorldbooks.push({ id, source });
   };
   for (const global of currentGlobals) addExpectedWorldbook(global.id, 'global');
-  addExpectedWorldbook(character.worldbookId, 'character');
+  const saveWorldbook = conversation.sceneId === undefined
+    ? undefined
+    : repositories.saveWorldbooks.getByConversationId(conversation.id);
+  if (conversation.sceneId !== undefined && saveWorldbook === undefined) stale();
+  addExpectedWorldbook(saveWorldbook?.worldbookId ?? character.worldbookId, 'character');
   for (const id of conversation.worldbookIds) addExpectedWorldbook(id, 'conversation');
   if (!sameCanonical(
     manifest.worldbooks.map(({ id, source }) => ({ id, source })),
@@ -1898,6 +1924,7 @@ export function createPromptSnapshotService(options: {
             id: randomUUID(),
             conversationId: payload.input.conversationId,
             timedState: WorldbookTimedStateSchema.parse(deepJson(payload.worldbook.timedState)),
+            entryOverrides: [],
           });
           return;
         }

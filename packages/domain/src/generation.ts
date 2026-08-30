@@ -16,6 +16,13 @@ export const WorldbookTimedStateSchema = z.object({
   cooldown: z.array(WorldbookTimedEffectSchema),
 }).strict();
 
+export const WorldbookEntryOverrideSchema = z.object({
+  source: z.enum(['global', 'character', 'conversation']),
+  comment: z.string().min(1).max(4_096),
+  enabled: z.boolean(),
+  content: z.string().max(262_144).optional(),
+}).strict();
+
 export const EMPTY_WORLDBOOK_TIMED_STATE = {
   messageIndex: null,
   sticky: [],
@@ -35,3 +42,4 @@ export type GenerationMode = z.infer<typeof GenerationModeSchema>;
 export type GenerationRequest = z.infer<typeof GenerationRequestSchema>;
 export type WorldbookTimedEffect = z.infer<typeof WorldbookTimedEffectSchema>;
 export type WorldbookTimedState = z.infer<typeof WorldbookTimedStateSchema>;
+export type WorldbookEntryOverride = z.infer<typeof WorldbookEntryOverrideSchema>;

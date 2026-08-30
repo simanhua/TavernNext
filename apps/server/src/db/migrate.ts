@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import {
   GLOBAL_EMBEDDING_CONFIGURATION_ID,
   GLOBAL_GENERATION_CONFIG_ID,
+  WorldbookEntrySchema,
+  WorldbookRuntimeStateSchema,
+  WorldbookSchema,
   roleplayDocumentFromMarkdown,
 } from '@tavernnext/domain';
 import { attachedVariableValue, normalizeAttachedExtensions } from '@tavernnext/st-compat';
@@ -15,7 +18,8 @@ const ROLEPLAY_DOCUMENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION + 1;
 export const AGENT_FIRST_RESET_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION + 1;
 const SAVE_MEMORY_SCHEMA_VERSION = AGENT_FIRST_RESET_SCHEMA_VERSION + 1;
 const BOUNDED_MEMORY_SCHEMA_VERSION = SAVE_MEMORY_SCHEMA_VERSION + 1;
-export const CURRENT_SCHEMA_VERSION = BOUNDED_MEMORY_SCHEMA_VERSION;
+const SAVE_WORLDBOOK_SCHEMA_VERSION = BOUNDED_MEMORY_SCHEMA_VERSION + 1;
+export const CURRENT_SCHEMA_VERSION = SAVE_WORLDBOOK_SCHEMA_VERSION;
 
 const conversationTableColumns = `(
   id TEXT PRIMARY KEY,
@@ -55,6 +59,7 @@ const tables = `
   CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS conversations ${conversationTableColumns};
   CREATE TABLE IF NOT EXISTS save_agent_configurations (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE);
+  CREATE TABLE IF NOT EXISTS save_worldbooks (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE, worldbook_id TEXT NOT NULL UNIQUE REFERENCES worldbooks(id), source_worldbook_id TEXT);
   CREATE TABLE IF NOT EXISTS conversation_worldbooks (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, worldbook_id TEXT NOT NULL REFERENCES worldbooks(id), PRIMARY KEY (conversation_id, worldbook_id));
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, active_variant_id TEXT REFERENCES message_variants(id), role TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS message_variants (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
@@ -89,6 +94,8 @@ const indexes = `
   CREATE INDEX IF NOT EXISTS conversations_persona_id_idx ON conversations(persona_id);
   CREATE INDEX IF NOT EXISTS conversations_scene_id_idx ON conversations(scene_id);
   CREATE INDEX IF NOT EXISTS save_agent_configurations_conversation_id_idx ON save_agent_configurations(conversation_id);
+  CREATE INDEX IF NOT EXISTS save_worldbooks_conversation_id_idx ON save_worldbooks(conversation_id);
+  CREATE INDEX IF NOT EXISTS save_worldbooks_worldbook_id_idx ON save_worldbooks(worldbook_id);
   CREATE INDEX IF NOT EXISTS installed_scenes_slug_idx ON installed_scenes(slug);
   CREATE INDEX IF NOT EXISTS conversation_scene_states_conversation_id_idx ON conversation_scene_states(conversation_id);
   CREATE INDEX IF NOT EXISTS scene_state_transitions_conversation_idx ON scene_state_transitions(conversation_id);
@@ -372,6 +379,7 @@ function resetConversationGraph(database: TavernDatabase): void {
     DELETE FROM scene_state_transitions;
     DELETE FROM conversation_scene_states;
     DELETE FROM save_agent_configurations;
+    DELETE FROM save_worldbooks;
     DELETE FROM agent_runs;
     DELETE FROM message_variants;
     DELETE FROM consumed_generation_snapshots;
@@ -545,6 +553,128 @@ function backfillSceneStateKernel(database: TavernDatabase): void {
   }
 }
 
+function createSaveWorldbookCleanupTrigger(database: TavernDatabase): void {
+  database.sqlite.exec(`
+    CREATE TRIGGER IF NOT EXISTS save_worldbooks_delete_owned_worldbook
+    AFTER DELETE ON save_worldbooks
+    BEGIN
+      DELETE FROM worldbook_entries WHERE worldbook_id = OLD.worldbook_id;
+      DELETE FROM worldbooks WHERE id = OLD.worldbook_id;
+    END;
+  `);
+}
+
+function backfillSaveWorldbooks(database: TavernDatabase): void {
+  const rows = database.sqlite.prepare(`
+    SELECT conversations.id AS conversation_id, conversations.title AS conversation_title,
+           json_extract(characters.payload, '$.worldbookId') AS source_worldbook_id
+    FROM conversations
+    JOIN characters ON characters.id = conversations.character_id
+    LEFT JOIN save_worldbooks ON save_worldbooks.conversation_id = conversations.id
+    WHERE conversations.scene_id IS NOT NULL AND save_worldbooks.id IS NULL
+    ORDER BY conversations.created_at, conversations.id
+  `).all();
+  for (const row of rows) {
+    if (typeof row.conversation_id !== 'string') continue;
+    const conversationId = row.conversation_id;
+    const conversationTitle = typeof row.conversation_title === 'string' ? row.conversation_title : 'Save';
+    const sourceId = typeof row.source_worldbook_id === 'string' ? row.source_worldbook_id : null;
+    const sourceRow = sourceId === null
+      ? undefined
+      : database.sqlite.prepare(`
+          SELECT revision, name,
+                 json_extract(payload, '$.description') AS description,
+                 json_extract(payload, '$.enabled') AS enabled,
+                 json_extract(payload, '$.scanDepth') AS scan_depth,
+                 json_extract(payload, '$.tokenBudget') AS token_budget,
+                 json_extract(payload, '$.recursiveScanning') AS recursive_scanning
+          FROM worldbooks WHERE id = ? LIMIT 1
+        `).get(sourceId);
+    const now = new Date().toISOString();
+    const worldbookId = randomUUID();
+    const worldbook = WorldbookSchema.parse({
+      id: worldbookId,
+      revision: 0,
+      createdAt: now,
+      updatedAt: now,
+      name: typeof sourceRow?.name === 'string' ? sourceRow.name : `${conversationTitle} Worldbook`,
+      description: typeof sourceRow?.description === 'string' ? sourceRow.description : '',
+      enabled: sourceRow?.enabled === undefined ? true : Number(sourceRow.enabled) !== 0,
+      scanDepth: typeof sourceRow?.scan_depth === 'number' ? sourceRow.scan_depth : null,
+      tokenBudget: typeof sourceRow?.token_budget === 'number' ? sourceRow.token_budget : null,
+      recursiveScanning: Number(sourceRow?.recursive_scanning ?? 0) !== 0,
+      isGlobal: false,
+      extensions: {},
+    });
+    database.sqlite.prepare(`
+      INSERT INTO worldbooks (id, revision, created_at, updated_at, payload, name, is_global)
+      VALUES (?, 0, ?, ?, ?, ?, 0)
+    `).run(worldbook.id, now, now, JSON.stringify(worldbook), worldbook.name);
+
+    const runtimeRow = database.sqlite.prepare(
+      'SELECT payload FROM worldbook_runtime_states WHERE conversation_id = ? LIMIT 1',
+    ).get(conversationId);
+    const runtime = runtimeRow === undefined
+      ? undefined
+      : WorldbookRuntimeStateSchema.safeParse(parsedEntityPayload(runtimeRow.payload));
+    const overrides = new Map((runtime?.success === true ? runtime.data.entryOverrides : [])
+      .filter((override) => override.source === 'character')
+      .map((override) => [override.comment, override]));
+    const entryRows = sourceId === null ? [] : database.sqlite.prepare(
+      'SELECT id FROM worldbook_entries WHERE worldbook_id = ? ORDER BY created_at, id',
+    ).all(sourceId);
+    for (const entryRow of entryRows) {
+      if (typeof entryRow.id !== 'string') continue;
+      const payloadRow = database.sqlite.prepare(
+        'SELECT payload FROM worldbook_entries WHERE id = ? LIMIT 1',
+      ).get(entryRow.id);
+      const parsed = WorldbookEntrySchema.safeParse(parsedEntityPayload(payloadRow?.payload));
+      if (!parsed.success) continue;
+      const override = overrides.get(parsed.data.comment);
+      const label = `${parsed.data.comment}\n${parsed.data.displayName}`;
+      const { compatibility: ignoredEntryCompatibility, ...entryFields } = parsed.data;
+      void ignoredEntryCompatibility;
+      const entry = WorldbookEntrySchema.parse({
+        ...entryFields,
+        id: randomUUID(),
+        revision: 0,
+        createdAt: now,
+        updatedAt: now,
+        worldbookId,
+        enabled: label.includes('使用额外模型更新变量开') ? false : override?.enabled ?? parsed.data.enabled,
+        content: override?.content ?? parsed.data.content,
+      });
+      database.sqlite.prepare(`
+        INSERT INTO worldbook_entries (id, revision, created_at, updated_at, payload, worldbook_id)
+        VALUES (?, 0, ?, ?, ?, ?)
+      `).run(entry.id, now, now, JSON.stringify(entry), worldbookId);
+    }
+    const ownershipId = randomUUID();
+    const ownership = {
+      id: ownershipId,
+      revision: 0,
+      createdAt: now,
+      updatedAt: now,
+      conversationId,
+      worldbookId,
+      sourceWorldbookId: sourceRow === undefined ? null : sourceId,
+      sourceWorldbookRevision: typeof sourceRow?.revision === 'number' ? sourceRow.revision : null,
+    };
+    database.sqlite.prepare(`
+      INSERT INTO save_worldbooks (id, revision, created_at, updated_at, payload, conversation_id, worldbook_id, source_worldbook_id)
+      VALUES (?, 0, ?, ?, ?, ?, ?, ?)
+    `).run(ownershipId, now, now, JSON.stringify(ownership), conversationId, worldbookId, ownership.sourceWorldbookId);
+    if (runtime?.success === true && runtime.data.entryOverrides.length > 0) {
+      const materialized = { ...runtime.data, entryOverrides: [], revision: runtime.data.revision + 1, updatedAt: now };
+      database.sqlite.prepare(`
+        UPDATE worldbook_runtime_states
+        SET revision = ?, updated_at = ?, payload = ?
+        WHERE id = ?
+      `).run(materialized.revision, now, JSON.stringify(materialized), materialized.id);
+    }
+  }
+}
+
 function seedGlobalEmbeddingConfiguration(database: TavernDatabase): void {
   const now = new Date().toISOString();
   const payload = JSON.stringify({
@@ -626,6 +756,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       database.sqlite.exec(tables);
 
       if (hasCascadeWorldbookEntries(database)) rebuildWorldbookEntries(database);
+      createSaveWorldbookCleanupTrigger(database);
       if (!columnNames(database, 'messages').includes('active_variant_id')) rebuildMessages(database);
       if (hasConversationGenerationBindings(database)
         || (startingVersion !== null && startingVersion < AGENT_FIRST_RESET_SCHEMA_VERSION)
@@ -643,6 +774,7 @@ export function migrateDatabase(database: TavernDatabase): void {
       if ((startingVersion ?? 0) < 18) backfillSceneStateKernel(database);
       if ((startingVersion ?? 0) < ROLEPLAY_DOCUMENT_SCHEMA_VERSION) backfillRoleplayDocuments(database);
       backfillConversationWorldbooks(database);
+      if ((startingVersion ?? 0) < SAVE_WORLDBOOK_SCHEMA_VERSION) backfillSaveWorldbooks(database);
       seedGlobalGenerationConfig(database);
       seedGlobalEmbeddingConfiguration(database);
       pruneCompletedMemoryJobs(database);

@@ -224,6 +224,7 @@ describe('migration backup and recovery', () => {
     repositories.worldbookRuntimeStates.create({
       id: '018f0000-0000-7000-8000-000000001712', conversationId: conversation.id,
       timedState: { messageIndex: null, sticky: [], cooldown: [] },
+      entryOverrides: [],
     });
     database.sqlite.pragma('foreign_keys = OFF');
     database.sqlite.exec(`

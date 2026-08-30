@@ -30,6 +30,7 @@ import {
   ConversationSceneStateSchema,
   SceneStateTransitionSchema,
   SaveAgentConfigurationSchema,
+  SaveWorldbookSchema,
   SaveMemoryConfigurationSchema,
   SaveMemorySchema,
   MemoryJobSchema,
@@ -61,6 +62,7 @@ import {
   type SceneStateTransition,
   type SceneStateTransitionSourceKind,
   type SaveAgentConfiguration,
+  type SaveWorldbook,
   type SaveMemoryConfiguration,
   type SaveMemory,
   type MemoryJob,
@@ -91,6 +93,7 @@ import {
   conversationSceneStates,
   sceneStateTransitions,
   saveAgentConfigurations,
+  saveWorldbooks,
   saveMemoryConfigurations,
   saveMemories,
   memoryJobs,
@@ -187,6 +190,12 @@ export interface WorldbookEntryRepository extends Repository<WorldbookEntry> {
 export interface WorldbookRepository extends Repository<Worldbook> {
   hasExternalReferences(worldbookId: string): boolean;
   listGlobal(): Worldbook[];
+  listShared(limit?: number): Worldbook[];
+}
+
+export interface SaveWorldbookRepository extends Repository<SaveWorldbook> {
+  getByConversationId(conversationId: string): SaveWorldbook | undefined;
+  getByWorldbookId(worldbookId: string): SaveWorldbook | undefined;
 }
 
 export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRuntimeState> {
@@ -768,6 +777,9 @@ function createWorldbookRepository(database: TavernDatabase): WorldbookRepositor
         "SELECT 1 AS present FROM characters WHERE json_extract(payload, '$.worldbookId') = ? LIMIT 1",
       ).get(worldbookId);
       if (characterReference !== undefined) return true;
+      if (database.sqlite.prepare(
+        'SELECT 1 AS present FROM save_worldbooks WHERE worldbook_id = ? LIMIT 1',
+      ).get(worldbookId) !== undefined) return true;
       return database.sqlite.prepare(
         'SELECT 1 AS present FROM conversation_worldbooks WHERE worldbook_id = ? LIMIT 1',
       ).get(worldbookId) !== undefined;
@@ -784,6 +796,39 @@ function createWorldbookRepository(database: TavernDatabase): WorldbookRepositor
       }
       return rows.map((row) => WorldbookSchema.parse(row.payload));
     },
+    listShared(limit = 100) {
+      const rows = database.sqlite.prepare(`
+        SELECT worldbooks.payload
+        FROM worldbooks
+        LEFT JOIN save_worldbooks ON save_worldbooks.worldbook_id = worldbooks.id
+        WHERE save_worldbooks.worldbook_id IS NULL
+        ORDER BY worldbooks.created_at, worldbooks.id
+        LIMIT ?
+      `).all(limit);
+      return rows.map((row) => WorldbookSchema.parse(JSON.parse(String(row.payload))));
+    },
+  };
+}
+
+function createSaveWorldbookRepository(database: TavernDatabase): SaveWorldbookRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveWorldbooks),
+    schema: SaveWorldbookSchema,
+    toRow: (value: SaveWorldbook) => ({
+      ...baseRow(value),
+      conversationId: value.conversationId,
+      worldbookId: value.worldbookId,
+      sourceWorldbookId: value.sourceWorldbookId,
+    }),
+  });
+  const by = (column: 'conversation_id' | 'worldbook_id', value: string) => {
+    const row = database.sqlite.prepare(`SELECT payload FROM save_worldbooks WHERE ${column} = ? LIMIT 1`).get(value);
+    return row === undefined ? undefined : SaveWorldbookSchema.parse(JSON.parse(String(row.payload)));
+  };
+  return {
+    ...base,
+    getByConversationId: (conversationId) => by('conversation_id', conversationId),
+    getByWorldbookId: (worldbookId) => by('worldbook_id', worldbookId),
   };
 }
 
@@ -932,6 +977,7 @@ export interface Repositories {
   personas: Repository<Persona>;
   worldbooks: WorldbookRepository;
   worldbookEntries: WorldbookEntryRepository;
+  saveWorldbooks: SaveWorldbookRepository;
   presets: Repository<Preset>;
   conversations: ConversationRepository;
   saveAgentConfigurations: SaveAgentConfigurationRepository;
@@ -1434,6 +1480,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     personas: createPersonaRepository(database),
     worldbooks: createWorldbookRepository(database),
     worldbookEntries: createWorldbookEntryRepository(database),
+    saveWorldbooks: createSaveWorldbookRepository(database),
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
     conversations: conversationsRepository,
     saveAgentConfigurations: createSaveAgentConfigurationRepository(database),

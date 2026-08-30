@@ -40,6 +40,10 @@ _Avoid_: Global chat, Character state
 The revisioned, Save-owned copy of one Chat Preset's executable settings and template lineage used by that Save's Agent Runs.
 _Avoid_: Conversation preset binding, global active Preset
 
+**Save Worldbook**:
+The fully editable, Save-owned copy of a Scene's Worldbook and its template lineage. It is created with the Save and never shares mutable rules or entries with another Save or the installed Scene.
+_Avoid_: Worldbook override, shared Scene Worldbook, Conversation Worldbook
+
 **Save Agent**:
 The one persistent roleplay-director identity owned by a Save. Its durable identity consists of the Save Agent Configuration, Save messages, Scene State, and Agent Run audit history; a fresh Pi Agent instance is reconstructed for each run.
 _Avoid_: Persisted Pi session, coding agent, background agent

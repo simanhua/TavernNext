@@ -4,7 +4,7 @@ import {
   roleplayDocumentPlainText,
 } from './roleplay-document.js';
 import { CompatibilityMetadataSchema } from './compatibility.js';
-import { WorldbookTimedStateSchema } from './generation.js';
+import { WorldbookEntryOverrideSchema, WorldbookTimedStateSchema } from './generation.js';
 import { ScenePatchOperationSchema, SceneStateDiagnosticSchema } from './scene-state.js';
 
 export const DomainIdSchema = z.string().uuid();
@@ -340,6 +340,13 @@ export const ConversationSchema = MutableEntitySchema.extend({
   authorNoteRole: z.number().int().min(0).max(2).default(0),
 }).extend(WithCompatibilitySchema.shape);
 
+export const SaveWorldbookSchema = MutableEntitySchema.extend({
+  conversationId: DomainIdSchema,
+  worldbookId: DomainIdSchema,
+  sourceWorldbookId: DomainIdSchema.nullable(),
+  sourceWorldbookRevision: z.number().int().nonnegative().nullable(),
+});
+
 export const SaveAgentConfigurationSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   sourcePresetId: DomainIdSchema.nullable(),
@@ -589,6 +596,7 @@ export const AgentRunSchema = MutableEntitySchema.extend({
 export const WorldbookRuntimeStateSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   timedState: WorldbookTimedStateSchema,
+  entryOverrides: z.array(WorldbookEntryOverrideSchema).max(2_048).default([]),
 });
 
 export type Character = z.infer<typeof CharacterSchema>;
@@ -603,6 +611,7 @@ export type ExtensionAuditEvent = z.infer<typeof ExtensionAuditEventSchema>;
 export type Persona = z.infer<typeof PersonaSchema>;
 export type Worldbook = z.infer<typeof WorldbookSchema>;
 export type WorldbookEntry = z.infer<typeof WorldbookEntrySchema>;
+export type SaveWorldbook = z.infer<typeof SaveWorldbookSchema>;
 export type PresetKind = z.infer<typeof PresetKindSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
 export type GlobalGenerationConfig = z.infer<typeof GlobalGenerationConfigSchema>;

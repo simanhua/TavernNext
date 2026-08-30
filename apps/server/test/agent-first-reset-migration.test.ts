@@ -75,6 +75,7 @@ describe('Agent-first breaking reset migration', () => {
     });
     repositories.worldbookRuntimeStates.create({
       id: randomUUID(), conversationId: conversation.id, timedState: { messageIndex: 1, sticky: [], cooldown: [] },
+      entryOverrides: [],
     });
     const state = repositories.conversationSceneStates.create({
       id: randomUUID(), conversationId: conversation.id, schemaVersion: 1, baseValue: { points: 0 }, value: { points: 1 },

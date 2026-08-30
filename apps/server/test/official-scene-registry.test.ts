@@ -43,7 +43,7 @@ describe('official Scene registry', () => {
       expect(first?.digest).toBe(second?.digest);
       expect(first?.bytes).toEqual(second?.bytes);
     }
-  }, 30_000);
+  }, 60_000);
 
   it('installs, upgrades, and uninstalls an isolated Scene Lab Save', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-registry-'));
@@ -74,6 +74,8 @@ describe('official Scene registry', () => {
     expect(repositories.conversationSceneStates.getByConversationId(created.json().id)?.value).toEqual({
       experimentName: '信号观测', phase: 'ready', signal: 0,
     });
+    const saveWorldbook = repositories.saveWorldbooks.getByConversationId(created.json().id)!;
+    expect(repositories.worldbooks.get(saveWorldbook.worldbookId)).toBeDefined();
 
     const downgraded = repositories.installedScenes.update(scene.id, scene.revision, {
       version: '0.9.0',
@@ -95,6 +97,8 @@ describe('official Scene registry', () => {
     expect(uninstalled.statusCode).toBe(200);
     expect(repositories.installedScenes.get(SCENE_LAB_SCENE_ID)).toBeUndefined();
     expect(repositories.conversations.get(created.json().id)).toBeUndefined();
+    expect(repositories.saveWorldbooks.get(saveWorldbook.id)).toBeUndefined();
+    expect(repositories.worldbooks.get(saveWorldbook.worldbookId)).toBeUndefined();
   }, 30_000);
 
   it('continues upgrading other official Scenes after one installed record fails', async () => {

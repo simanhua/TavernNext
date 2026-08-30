@@ -68,7 +68,7 @@ describe('SQLite repositories', () => {
       'characters', 'personas', 'worldbooks', 'worldbook_entries', 'presets',
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
-      'conversation_worldbooks', 'worldbook_runtime_states', 'avatar_assets', 'global_generation_config',
+      'conversation_worldbooks', 'worldbook_runtime_states', 'save_worldbooks', 'avatar_assets', 'global_generation_config',
       'save_memories', 'memory_jobs', 'save_memory_configurations', 'global_embedding_configuration',
     ]));
     expect(indexes.map(({ name }) => name)).toEqual(expect.arrayContaining([
@@ -589,6 +589,7 @@ describe('SQLite repositories', () => {
     const runtime = repositories.worldbookRuntimeStates.create({
       id: '018f0000-0000-7000-8000-000000000051', conversationId: conversation.id,
       timedState: { messageIndex: null, sticky: [], cooldown: [] },
+      entryOverrides: [],
     });
 
     expect(repositories.generationSnapshots.get(snapshot.id)?.payload).toEqual({ schemaVersion: 1, payloadHash: 'immutable' });

@@ -17,6 +17,7 @@ import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories, type Repositories } from '../src/db/repositories.js';
+import { createSaveWorldbook } from '../src/services/save-worldbook-service.js';
 import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 import { unitTokenizerRuntime } from './prompt-integration-fixtures.js';
 
@@ -193,14 +194,15 @@ async function context(runtimeFactory: () => PiAgentModelRuntime) {
   const worldbook = repositories.worldbooks.create({
     id: randomUUID(), name: 'Archive Lore', description: '', enabled: true, isGlobal: false,
   });
-  const worldEntry = repositories.worldbookEntries.create({
+  repositories.worldbookEntries.create({
     id: randomUUID(), worldbookId: worldbook.id, keys: ['archive', 'dusk'],
     content: 'The archive vault opens only at dusk.', enabled: true, constant: false, position: 0, order: 0,
   });
   const conversation = repositories.conversations.create({
     id: randomUUID(), characterId: character.id, personaId: persona.id, sceneId,
-    title: 'Workspace Save', worldbookIds: [worldbook.id],
+    title: 'Workspace Save',
   });
+  const saveWorldEntry = createSaveWorldbook(repositories, conversation, worldbook.id).entries[0]!;
   repositories.saveAgentConfigurations.create({
     id: randomUUID(), conversationId: conversation.id, sourcePresetId: preset.id,
     sourcePresetRevision: preset.revision, name: preset.name, settings: preset.settings,
@@ -217,7 +219,7 @@ async function context(runtimeFactory: () => PiAgentModelRuntime) {
   expect(repositories.globalGenerationConfig.update(0, {
     providerId: provider.id, chatPresetId: preset.id,
   }).ok).toBe(true);
-  return { app, database, repositories, conversation, sceneState, worldEntry };
+  return { app, database, repositories, conversation, sceneState, worldEntry: saveWorldEntry };
 }
 
 async function generate(app: ReturnType<typeof createApp>, conversationId: string, revision = 0) {

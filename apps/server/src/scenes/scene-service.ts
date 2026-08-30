@@ -43,6 +43,7 @@ import {
   createSaveAgentConfiguration,
   SaveAgentConfigurationError,
 } from '../services/save-agent-configuration-service.js';
+import { createSaveWorldbook } from '../services/save-worldbook-service.js';
 import { persistDecodedWorldbook } from '../services/worldbook-import-handler.js';
 import { builtInPackage, officialCatalog } from './official-package.js';
 import { SceneModuleRegistry } from './scene-module-host.js';
@@ -519,9 +520,9 @@ export function createSceneService(options: {
         ...parsed.data.playerProfile,
         ...(sourcePersona === undefined ? {} : { sourcePersonaId: sourcePersona.id }),
       };
-      const initialized = scene.manifest.serverEntry === undefined
-        ? { initialState: {}, openingMessages: [] }
-        : SceneInitializeResultSchema.parse(await module(scene)!.call('initializeConversation', {
+      const initialized = SceneInitializeResultSchema.parse(scene.manifest.serverEntry === undefined
+        ? { initialState: {}, openingMessages: [], worldbookEntryOverrides: [] }
+        : await module(scene)!.call('initializeConversation', {
           setup: parsed.data.setup, playerProfile, manifest: scene.manifest,
         }));
       assertSceneState(initialized.initialState, scene.manifest);
@@ -541,6 +542,14 @@ export function createSceneService(options: {
           maxPromptTokens: parsed.data.maxPromptTokens,
           maxResponseTokens: parsed.data.maxResponseTokens,
         });
+        const backingCharacter = repositories.characters.get(scene.backingCharacterId);
+        if (backingCharacter === undefined) throw new Error('scene_backing_character_missing');
+        createSaveWorldbook(
+          repositories,
+          conversation,
+          backingCharacter.worldbookId,
+          initialized.worldbookEntryOverrides,
+        );
         try {
           createSaveAgentConfiguration(repositories, conversation.id, scene.backingPresetId);
         } catch (error) {
