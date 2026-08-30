@@ -63,7 +63,6 @@ function themePicker(theme) {
 const openingCards = [
   ['ruined-temple', '云梦雨夜', '陌生相逢', '荒庙、冷雨与一块被拨近的木柴。'],
   ['market-red-thread', '坊市红线', '命数初显', '青石坊市擦肩而过，看见只有彼此可见的红线。'],
-  ['traveling-companion', '同路问山', '已有羁绊', '同行三月，在太虚山门前迎来真正的考验。'],
 ];
 
 const chapterEvents = {
@@ -118,7 +117,10 @@ async function renderSetup(root, sdk) {
   root.onclick = (event) => {
     const button = event.target.closest('button'); if (!button) return;
     if (button.type === 'submit') return;
-    if (button.dataset.opening) state.opening = button.dataset.opening;
+    if (button.dataset.opening) {
+      state.opening = button.dataset.opening;
+      if (state.opening === 'market-red-thread') state.redThread = 'fated';
+    }
     if (button.dataset.theme) state.theme = button.dataset.theme;
     render();
   };

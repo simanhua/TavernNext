@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 
 const baseState = JSON.parse(await readFile(new URL('../content/initial-state.json', import.meta.url), 'utf8'));
+const originalRuinedTempleOpening = (await readFile(new URL('../content/openings/ruined-temple.md', import.meta.url), 'utf8')).trim();
+const originalMarketRedThreadOpening = (await readFile(new URL('../content/openings/market-red-thread.md', import.meta.url), 'utf8')).trim();
 const clone = (value) => structuredClone(value);
 const record = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -11,13 +13,11 @@ const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, v
 const OPENINGS = {
   'ruined-temple': {
     title: '云梦雨夜', location: '江南·云梦泽外围荒庙', weather: '大雨', time: '戌时五刻', affinity: 5, relation: '陌生',
-    message: (name) => `### 云梦雨夜\n\n大雨压住了云梦泽的芦苇。${name}推开荒庙残门时，火堆旁的黑衣青年已经将手按在剑柄上。楚霁寒没有喝问来历，只隔着将熄的火光审视片刻，随后用枯枝把一块燃得正旺的木柴拨到更近的位置。\n\n“过来烤。”\n\n这是他能给陌生人的最大善意，也是你们故事的第一步。`,
+    message: () => originalRuinedTempleOpening,
   },
   'market-red-thread': {
     title: '坊市红线', location: '中州边境·青石坊市', weather: '阴', time: '申时末', affinity: 20, relation: '陌生',
-    message: (name, setup) => setup.redThread === 'fated'
-      ? `### 坊市红线\n\n低阶丹药的焦味混在妖兽血气里。楚霁寒穿过拥挤的坊市，本不打算为任何事停步，左手无名指却忽然多了一线微红。\n\n线的另一端越过人群，落在${name}的袖间。\n\n他把手收回袖中，没有追上去。可这条只有你们能够看见的线，已经把一个“无关紧要的变量”写进了他的行程。`
-      : `### 坊市擦肩\n\n低阶丹药的焦味混在妖兽血气里。楚霁寒穿过拥挤的坊市时，与${name}短暂对视了一瞬。\n\n没有异象，也没有谁追上谁。只是走入下一段街角后，他惯常平稳的脚步比方才慢了半拍。\n\n戒中老人问他为何分神，他只答：“有点吵。”`,
+    message: () => originalMarketRedThreadOpening,
   },
   'traveling-companion': {
     title: '同路问山', location: '中州·前往太虚仙宗的古道', weather: '薄雾', time: '卯时二刻', affinity: 86, relation: '同行道友',
@@ -31,12 +31,15 @@ function normalizeSetup(raw) {
   const setup = record(raw);
   const contentMode = setup.contentMode === 'mature' ? 'mature' : 'general';
   const requestedRedThread = ['none', 'fated', 'intimacy'].includes(setup.redThread) ? setup.redThread : 'none';
+  const opening = Object.hasOwn(OPENINGS, setup.opening) ? setup.opening : 'ruined-temple';
   return {
-    opening: Object.hasOwn(OPENINGS, setup.opening) ? setup.opening : 'ruined-temple',
+    opening,
     loreDetail: setup.loreDetail === 'full' ? 'full' : 'concise',
     relationshipMode: setup.relationshipMode === 'original-multi-romance' ? 'original-multi-romance' : 'adventure-focus',
     contentMode,
-    redThread: requestedRedThread === 'intimacy' && contentMode !== 'mature' ? 'none' : requestedRedThread,
+    redThread: opening === 'market-red-thread'
+      ? 'fated'
+      : requestedRedThread === 'intimacy' && contentMode !== 'mature' ? 'none' : requestedRedThread,
     theme: THEMES.has(setup.theme) ? setup.theme : 'xuanqing',
   };
 }
@@ -108,9 +111,7 @@ export default {
     const normalizedSetup = normalizeSetup(setup);
     const state = clone(baseState);
     const opening = openingFor(normalizedSetup);
-    const openingTitle = normalizedSetup.opening === 'market-red-thread' && normalizedSetup.redThread !== 'fated'
-      ? '坊市擦肩'
-      : opening.title;
+    const openingTitle = opening.title;
     state.世界.地点 = opening.location;
     state.世界.天气 = opening.weather;
     state.世界.时辰 = opening.time;

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -52,6 +52,14 @@ describe('Taixu Chronicles Scene Package', () => {
     });
     expect(created.statusCode).toBe(201);
     const conversationId = created.json().id as string;
+    const marketMessage = repositories.messages.listByConversationId(conversationId)[0]!;
+    const marketVariant = repositories.messageVariants.get(marketMessage.activeVariantId!)!;
+    const originalMarketOpening = (await readFile(new URL(
+      '../assets/official-scenes/taixu-chronicles/content/openings/market-red-thread.md', import.meta.url,
+    ), 'utf8')).trim();
+    expect(marketVariant.content).toBe(originalMarketOpening);
+    expect(marketVariant.content).not.toContain('<status_bar>');
+    expect(marketVariant.content).not.toContain('【返回】');
     expect(repositories.conversationSceneStates.getByConversationId(conversationId)?.value).toMatchObject({
       世界: { 地点: '中州边境·青石坊市', 天气: '阴' },
       楚霁寒: { 年龄: 20, 公开身份: '水灵根散修' },
@@ -73,7 +81,7 @@ describe('Taixu Chronicles Scene Package', () => {
     expect(invalidAdultGuard.statusCode).toBe(201);
     const guardedConversationId = invalidAdultGuard.json().id as string;
     expect(repositories.conversationSceneStates.getByConversationId(guardedConversationId)?.value).toMatchObject({
-      关系: { player: { 红线: '无' } },
+      关系: { player: { 红线: '姻缘红线' } },
     });
 
     const second = await app.inject({
@@ -88,6 +96,14 @@ describe('Taixu Chronicles Scene Package', () => {
     });
     expect(second.statusCode).toBe(201);
     const secondConversationId = second.json().id as string;
+    const ruinedTempleMessage = repositories.messages.listByConversationId(secondConversationId)[0]!;
+    const ruinedTempleVariant = repositories.messageVariants.get(ruinedTempleMessage.activeVariantId!)!;
+    const originalRuinedTempleOpening = (await readFile(new URL(
+      '../assets/official-scenes/taixu-chronicles/content/openings/ruined-temple.md', import.meta.url,
+    ), 'utf8')).trim();
+    expect(ruinedTempleVariant.content).toBe(originalRuinedTempleOpening);
+    expect(ruinedTempleVariant.content).not.toContain('<status_bar>');
+    expect(ruinedTempleVariant.content).not.toContain('【返回】');
     expect(repositories.conversationSceneStates.getByConversationId(secondConversationId)?.value).toMatchObject({
       世界: { 地点: '江南·云梦泽外围荒庙', 天气: '大雨' },
       关系: { player: { 姓名: '陆无咎', 红线: '亲密红线规则已启用·尚未连接' } },

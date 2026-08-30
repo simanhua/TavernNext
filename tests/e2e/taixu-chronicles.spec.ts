@@ -41,9 +41,9 @@ test('creates a Taixu Save, changes its workspace, and commits one generated sta
   ]);
 
   await expect(scene.getByRole('heading', { name: '从何处落笔' })).toBeVisible();
-  await scene.getByRole('button', { name: /同路问山/ }).click();
+  await scene.getByRole('button', { name: /云梦雨夜/ }).click();
   await scene.getByLabel('称谓').fill('沈照微');
-  await scene.getByLabel('身份与来历').fill('与楚霁寒同行三月的剑修');
+  await scene.getByLabel('身份与来历').fill('在云梦泽荒庙避雨的剑修');
   await scene.getByRole('button', { name: '玄藏主题' }).click();
   await scene.getByRole('button', { name: /立下此卷/ }).click();
 

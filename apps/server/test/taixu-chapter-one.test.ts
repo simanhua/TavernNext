@@ -34,7 +34,7 @@ describe('Taixu Chronicles chapter one', () => {
       payload: {
         title: '同路问山', playerProfile: { name: '沈照微', description: '同行剑修' },
         setup: {
-          opening: 'traveling-companion', loreDetail: 'concise', relationshipMode: 'adventure-focus',
+          opening: 'ruined-temple', loreDetail: 'concise', relationshipMode: 'adventure-focus',
           redThread: 'none', contentMode: 'general', theme: 'xuanqing',
         },
       },
