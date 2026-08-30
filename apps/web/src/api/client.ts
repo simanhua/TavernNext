@@ -15,7 +15,9 @@ import type {
   SaveMemory,
   SaveMemoryConfiguration,
   MemoryJob,
+  PlayerOperation,
 } from '@tavernnext/domain';
+import { SCENE_ACTION_ENVELOPE_PROTOCOL } from '@tavernnext/domain';
 
 export type { Conversation, Message, MessageVariant, PresetKind, SaveAgentConfiguration };
 export type { AgentRun };
@@ -493,9 +495,18 @@ export const api = {
     `/api/conversations/${encodeURIComponent(conversationId)}/scene-state`,
     { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
   ),
-  runSceneAction: (conversationId: string, action: unknown) => request<{ state: ConversationSceneStateView; result: unknown }>(
+  runSceneAction: (conversationId: string, action: unknown, operation?: PlayerOperation) => request<{
+    state: ConversationSceneStateView;
+    result: unknown;
+    operation?: PlayerOperation & { messageId: string };
+  }>(
     `/api/conversations/${encodeURIComponent(conversationId)}/scene-actions`,
-    { method: 'POST', body: JSON.stringify(action) },
+    {
+      method: 'POST',
+      body: JSON.stringify(operation === undefined
+        ? action
+        : { $tavernnext: SCENE_ACTION_ENVELOPE_PROTOCOL, action, operation }),
+    },
   ),
   listCharacters: () => request<CharacterSummaryView[]>('/api/characters'),
   getCharacter: (id: string) => request<CharacterView>(`/api/characters/${id}`),

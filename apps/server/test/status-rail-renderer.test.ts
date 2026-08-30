@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // Scene browser assets intentionally ship as framework-free native ES modules.
 // @ts-expect-error The runtime asset has no declaration file.
-import { attributeAllocationPatch, createDestinedPoemStatusRailModel } from '../assets/official-scenes/destined-poem/frontend/status-rail.mjs';
+import { attributeAllocationAction, createDestinedPoemStatusRailModel } from '../assets/official-scenes/destined-poem/frontend/status-rail.mjs';
 
 const state = {
   世界: { 地点: '梵尼亚', 时间: '正午' },
@@ -41,16 +41,20 @@ describe('Destined Poem status rail renderer', () => {
     expect(JSON.stringify(tab('inventory'))).toContain('药水');
   });
 
-  it('provides explicit empty states and the direct attribute Patch', () => {
+  it('provides explicit empty states and an Agent-visible attribute operation', () => {
     const model = createDestinedPoemStatusRailModel({ 主角: {} });
     const tab = (id: string) => model.tabs.find((item: { id: string }) => item.id === id);
     expect(JSON.stringify(tab('equipment'))).toContain('暂无装备记录');
     expect(JSON.stringify(tab('skills'))).toContain('暂无技能记录');
     expect(JSON.stringify(tab('inventory'))).toContain('背包为空');
-    expect(attributeAllocationPatch('敏捷')).toEqual([
-      { op: 'delta', path: '/主角/属性点', value: -1 },
-      { op: 'delta', path: '/主角/属性/敏捷', value: 1 },
-    ]);
-    expect(() => attributeAllocationPatch('幸运')).toThrow('attribute_allocation_invalid');
+    expect(attributeAllocationAction('敏捷')).toEqual({
+      action: { type: 'allocate-attribute', attribute: '敏捷' },
+      options: { operation: {
+        kind: 'attribute-allocation',
+        title: '属性分配',
+        summary: '玩家确认将一点属性分配给敏捷。',
+      } },
+    });
+    expect(() => attributeAllocationAction('幸运')).toThrow('attribute_allocation_invalid');
   });
 });

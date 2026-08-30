@@ -19,8 +19,11 @@ export default {
   },
   afterGeneration() { return {}; },
   handleAction({ action }) {
-    if (object(action).type !== 'reset') return { result: { ok: false, code: 'scene_lab_action_unknown' } };
+    const type = object(action).type;
+    if (type === 'acknowledge') return { accepted: true, result: { ok: true } };
+    if (type !== 'reset') return { accepted: false, result: { ok: false, code: 'scene_lab_action_unknown' } };
     return {
+      accepted: true,
       statePatch: [
         { op: 'replace', path: '/phase', value: 'ready' },
         { op: 'replace', path: '/signal', value: 0 },

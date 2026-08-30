@@ -32,6 +32,10 @@ _Avoid_: Character library item, plugin bundle
 The Scene-owned, trusted top-level application opened in its own browser tab to create a Save or play one current Save through the Scene SDK.
 _Avoid_: Generic chat skin, regex-rendered message
 
+**Player Operation**:
+A user-confirmed gameplay action submitted by a Scene Workspace, accepted by the Scene server, and committed as an immutable Save timeline fact alongside its Scene State transition.
+_Avoid_: Click event, Agent action, interactive Scene View
+
 **Save**:
 One isolated Conversation, player-profile snapshot, setup snapshot, messages, variants, and Scene State belonging to exactly one installed Scene.
 _Avoid_: Global chat, Character state

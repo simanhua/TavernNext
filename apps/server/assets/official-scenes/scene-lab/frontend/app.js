@@ -21,6 +21,9 @@ function activeDocument(message) {
 }
 
 function messageMarkup(message) {
+  if (message.playerOperation) {
+    return `<aside class="scene-lab-operation"><small>${escapeHtml(message.playerOperation.kind)}</small><strong>${escapeHtml(message.playerOperation.title)}</strong><span>${escapeHtml(message.playerOperation.summary)}</span></aside>`;
+  }
   const document = activeDocument(message);
   if (!Array.isArray(document?.blocks)) return escapeHtml(message.content);
   return document.blocks.map((block, index) => block.type === 'scene-view'
@@ -34,6 +37,7 @@ async function renderWorkspace(root, sdk) {
     <header><h1>${escapeHtml(stateRow.value.experimentName)}</h1><p>Phase ${escapeHtml(stateRow.value.phase)} · Signal ${escapeHtml(stateRow.value.signal)}</p></header>
     <div id="scene-lab-messages">${detail.messages.map((message) => `<article class="scene-lab-message" data-message-id="${escapeHtml(message.id)}">${messageMarkup(message)}</article>`).join('')}</div>
     <label>输入观察<textarea id="scene-lab-draft" placeholder="记录一次观察"></textarea></label>
+    <button id="scene-lab-acknowledge" type="button">确认记录当前观察</button>
     <button id="scene-lab-send" type="button">发送</button>
     <button id="scene-lab-stop" type="button">停止</button>
     <p id="scene-lab-status" class="scene-lab-status"></p>
@@ -49,6 +53,15 @@ async function renderWorkspace(root, sdk) {
     }
   }
   const status = root.querySelector('#scene-lab-status');
+  root.querySelector('#scene-lab-acknowledge').onclick = async () => {
+    status.textContent = '正在记录观察…';
+    try {
+      await sdk.scene.action({ type: 'acknowledge' }, { operation: {
+        kind: 'observation', title: '确认观察', summary: '玩家确认记录当前观察。',
+      } });
+      await renderWorkspace(root, sdk);
+    } catch (error) { status.textContent = error.message || String(error); }
+  };
   root.querySelector('#scene-lab-send').onclick = async () => {
     const draft = root.querySelector('#scene-lab-draft');
     if (!draft.value.trim()) return;

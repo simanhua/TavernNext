@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   ConversationPlayerProfileSchema,
+  PlayerOperationSchema,
   SceneActionResultSchema,
   SceneBeforeGenerationResultSchema,
   SceneInitializeResultSchema,
@@ -23,6 +24,7 @@ import {
   type InstalledScene,
   type Message,
   type MessageVariant,
+  type PlayerOperation,
   type SceneCatalog,
   type SceneManifest,
   type ScenePatchFailure,
@@ -347,6 +349,16 @@ export interface SceneService {
     state: ConversationSceneState;
     failures: ScenePatchFailure[];
   };
+  performAction(
+    conversationId: string,
+    action: unknown,
+    operation?: unknown,
+    commitAllowed?: () => boolean,
+  ): Promise<{
+    state: ConversationSceneState;
+    result: unknown;
+    operation?: PlayerOperation & { messageId: string };
+  }>;
   commitStateTransition(
     conversationId: string,
     expectedRevision: number,
@@ -595,6 +607,39 @@ export function createSceneService(options: {
           kind: 'sdk-patch', id: randomUUID(),
         });
       return { state, failures: applied.failures };
+    },
+    async performAction(conversationId, action, rawOperation, commitAllowed) {
+      const { conversation, scene } = sceneForConversation(conversationId);
+      const current = repositories.conversationSceneStates.getByConversationId(conversationId);
+      if (current === undefined) throw new SceneServiceError('scene_state_not_found', 404);
+      const host = module(scene);
+      if (host === undefined) throw new SceneServiceError('scene_action_unsupported', 400);
+      const operation = rawOperation === undefined ? undefined : PlayerOperationSchema.parse(rawOperation);
+      const output = SceneActionResultSchema.parse(await host.call('handleAction', {
+        action, state: current.value, setup: conversation.setup,
+        playerProfile: conversation.playerProfile, manifest: scene.manifest,
+      }));
+      const committedOperation = output.accepted === true ? operation : undefined;
+      if (output.statePatch === undefined && committedOperation === undefined) {
+        return { state: current, result: output.result ?? null };
+      }
+      return database.transaction(() => {
+        if (commitAllowed?.() === false) throw new SceneServiceError('generation_active', 409);
+        const message = committedOperation === undefined ? undefined : repositories.messages.create({
+          id: randomUUID(), conversationId, role: 'system', content: committedOperation.summary,
+          activeVariantId: null, playerOperation: committedOperation,
+        });
+        const state = commitStateTransition(conversationId, current.revision, output.statePatch ?? [], {
+          kind: 'scene-action', id: message?.id ?? randomUUID(),
+        });
+        return {
+          state,
+          result: output.result ?? null,
+          ...(message === undefined ? {} : {
+            operation: { messageId: message.id, ...committedOperation! },
+          }),
+        };
+      });
     },
     commitStateTransition,
     switchVariantState(message, variant) {

@@ -31,6 +31,9 @@ export function registerMessageRoutes(
     if (current !== undefined && generations.isConversationActive(current.conversationId)) {
       return reply.status(409).send({ error: 'generation_active' });
     }
+    if (current?.playerOperation !== undefined) {
+      return reply.status(409).send({ error: 'player_operation_immutable' });
+    }
     const revision = revisionFrom(request.body?.revision ?? request.body?.expectedRevision);
     if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
     const patch = request.body.patch ?? Object.fromEntries(
@@ -111,6 +114,9 @@ export function registerMessageRoutes(
     const current = repositories.messages.get(request.params.id);
     if (current !== undefined && generations.isConversationActive(current.conversationId)) {
       return reply.status(409).send({ error: 'generation_active' });
+    }
+    if (current?.playerOperation !== undefined) {
+      return reply.status(409).send({ error: 'player_operation_immutable' });
     }
     try {
       const variants = current === undefined ? [] : repositories.messageVariants.listByMessageId(current.id);

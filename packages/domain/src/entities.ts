@@ -426,12 +426,22 @@ export const SceneStateTransitionSchema = MutableEntitySchema.extend({
 });
 
 export const MessageRoleSchema = z.enum(['system', 'user', 'assistant']);
+export const PlayerOperationSchema = z.object({
+  kind: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+  title: z.string().min(1).max(80),
+  summary: z.string().min(1).max(500),
+}).strict();
 export const MessageSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   role: MessageRoleSchema,
   content: z.string(),
   activeVariantId: DomainIdSchema.nullable(),
-}).extend(WithCompatibilitySchema.shape);
+  playerOperation: PlayerOperationSchema.optional(),
+}).extend(WithCompatibilitySchema.shape).superRefine((message, context) => {
+  if (message.playerOperation !== undefined && message.role !== 'system') {
+    context.addIssue({ code: 'custom', message: 'player_operation_role_must_be_system', path: ['role'] });
+  }
+});
 
 export const MessageVariantStatusSchema = z.enum(['streaming', 'completed', 'aborted', 'failed']);
 const MessageVariantValueSchema = MutableEntitySchema.extend({
@@ -633,6 +643,7 @@ export type MemoryJob = z.infer<typeof MemoryJobSchema>;
 export type ConversationSceneState = z.infer<typeof ConversationSceneStateSchema>;
 export type SceneStateTransitionSourceKind = z.infer<typeof SceneStateTransitionSourceKindSchema>;
 export type SceneStateTransition = z.infer<typeof SceneStateTransitionSchema>;
+export type PlayerOperation = z.infer<typeof PlayerOperationSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageVariant = z.infer<typeof MessageVariantSchema>;
 export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;

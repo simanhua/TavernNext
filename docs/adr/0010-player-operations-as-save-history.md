@@ -1,0 +1,3 @@
+# Commit Player Operations as Save history
+
+Scene Workspace gameplay controls submit Player Operations through `scene.action`; after the Scene server accepts the command, TavernNext atomically commits the frontend-authored action summary as an immutable system-history message and anchors it to the corresponding Scene State transition, including an empty transition when the action has no state patch. This lets the next user-triggered Agent Run observe the action in chronological history without starting an automatic run, while current Scene State remains authoritative for outcomes. Direct SDK patches stay semantically silent, and Compatibility Runtime controls and historical Scene Views remain outside this write path.

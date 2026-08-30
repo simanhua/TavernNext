@@ -275,13 +275,11 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
         },
       },
       scene: {
-        action: async (action) => {
+        action: async (action, options) => {
           requireWorkspace();
           try {
-            const result = await api.runSceneAction(conversationId!, action);
-            queryClient.setQueryData(['scene-state', conversationId], result.state);
-            latest.current = { ...latest.current, state: result.state };
-            announceSceneChanged(sceneId, conversationId!);
+            const result = await api.runSceneAction(conversationId!, action, options?.operation);
+            await refresh();
             return result;
           } catch (error) {
             return refreshAfterConflict(error);

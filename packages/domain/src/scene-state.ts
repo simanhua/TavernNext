@@ -76,9 +76,14 @@ export const SceneAfterGenerationResultSchema = z.object({
 }).strict();
 
 export const SceneActionResultSchema = z.object({
+  accepted: z.boolean().optional(),
   statePatch: z.array(ScenePatchOperationSchema).optional(),
   result: z.unknown().optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.accepted === false && value.statePatch !== undefined) {
+    context.addIssue({ code: 'custom', message: 'rejected_scene_action_must_not_patch_state', path: ['statePatch'] });
+  }
+});
 
 export const SceneAgentToolResultSchema = z.object({
   content: z.string().max(32_768).optional(),

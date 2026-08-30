@@ -145,16 +145,17 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
   handleAction({ action, state }) {
     const value = record(action);
     if (value.type === 'set-theme' && THEMES.has(value.theme)) {
-      return { statePatch: [{ op: 'replace', path: '/界面/主题', value: value.theme }], result: { ok: true } };
+      return { accepted: true, statePatch: [{ op: 'replace', path: '/界面/主题', value: value.theme }], result: { ok: true } };
     }
     if (value.type === 'chapter-event') {
       const chapter = record(record(state).第一章);
       const eventId = short(value.eventId, 120);
       if (eventId !== chapter.当前事件) {
-        return { result: { ok: false, code: 'chapter_event_out_of_order', expected: chapter.当前事件 } };
+        return { accepted: false, result: { ok: false, code: 'chapter_event_out_of_order', expected: chapter.当前事件 } };
       }
       if (eventId === 'journey-to-sect') {
         return {
+          accepted: true,
           statePatch: [
             { op: 'replace', path: '/世界/地点', value: '太虚仙宗·山门石阶' },
             { op: 'replace', path: '/世界/章节', value: '第一章·问山路' },
@@ -166,6 +167,7 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
       }
       if (eventId === 'water-root-test') {
         return {
+          accepted: true,
           statePatch: [
             { op: 'replace', path: '/世界/地点', value: '太虚仙宗·问心坪' },
             { op: 'replace', path: '/世界/章节', value: '第一章·叩问山门' },
@@ -178,6 +180,7 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
       }
       if (eventId === 'concealment-check') {
         return {
+          accepted: true,
           statePatch: [
             { op: 'replace', path: '/楚霁寒/暴露风险', value: 12 },
             { op: 'replace', path: '/第一章/当前事件', value: 'taixuzi-first-spend' },
@@ -190,6 +193,7 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
       if (eventId === 'taixuzi-first-spend') {
         const soulAfterSpend = Math.max(0, finite(record(record(state).太虚子).魂力) - 8);
         return {
+          accepted: true,
           statePatch: [
             { op: 'replace', path: '/太虚子/魂力', value: soulAfterSpend },
             { op: 'replace', path: '/太虚子/状态', value: '短暂虚弱' },
@@ -201,6 +205,7 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
       }
       if (eventId === 'meet-talent') {
         return {
+          accepted: true,
           statePatch: [
             {
               op: 'insert', path: '/关系/shen-hantang', value: {
@@ -220,6 +225,7 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
       }
       if (eventId === 'first-clue') {
         return {
+          accepted: true,
           statePatch: [
             { op: 'replace', path: '/世界/地点', value: '太虚仙宗·外门临时居所' },
             { op: 'replace', path: '/世界/章节', value: '第一章·山门留名' },
@@ -254,7 +260,7 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
         };
       }
     }
-    return { result: { ok: false, code: 'taixu_action_unknown' } };
+    return { accepted: false, result: { ok: false, code: 'taixu_action_unknown' } };
   },
 
   executeAgentTool({ toolName, arguments: args, workspace }) {

@@ -85,7 +85,7 @@ describe('official Scene registry', () => {
     expect(downgraded.ok).toBe(true);
     expect(upgradeInstalledOfficialScenes(database, directory)).toEqual([]);
     const upgraded = repositories.installedScenes.get(SCENE_LAB_SCENE_ID)!;
-    expect(upgraded.version).toBe('1.0.0');
+    expect(upgraded.version).toBe('1.0.1');
     expect(repositories.conversationSceneStates.getByConversationId(created.json().id)?.value).toEqual({
       experimentName: '信号观测', phase: 'ready', signal: 0,
     });
@@ -123,6 +123,6 @@ describe('official Scene registry', () => {
     expect(upgradeInstalledOfficialScenes(database, directory)).toEqual([{
       sceneId: DESTINED_POEM_SCENE_ID, code: 'official_scene_install_record_invalid',
     }]);
-    expect(repositories.installedScenes.get(SCENE_LAB_SCENE_ID)?.version).toBe('1.0.0');
+    expect(repositories.installedScenes.get(SCENE_LAB_SCENE_ID)?.version).toBe('1.0.1');
   }, 30_000);
 });

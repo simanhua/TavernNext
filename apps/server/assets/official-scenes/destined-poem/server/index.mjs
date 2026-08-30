@@ -9,6 +9,7 @@ const stableEntries = (value, maximum) => Object.entries(record(value))
   .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
   .slice(0, maximum);
 const pointer = (value) => String(value).replaceAll('~', '~0').replaceAll('/', '~1');
+const attributes = new Set(['力量', '敏捷', '体质', '智力', '精神']);
 const stableRoll = (key, state, sides) => {
   const source = `${key}:${JSON.stringify(state)}`;
   let hash = 2166136261;
@@ -41,6 +42,27 @@ export default {
 在资源、旅行、关系、任务或命运变化时调用对应的 destined_poem 工具；一般字段变化使用 scene_patch_stage；需要规则判定时调用 destined_poem_rule_check 或 deterministic_check。
 当战斗、状态、地图、关系或任务进展值得读者查看时，自主调用 scene_view_stage，并把返回的引用放在正文最合适的位置。`,
       }],
+    };
+  },
+  async handleAction({ action, state }) {
+    const command = record(action);
+    if (command.type !== 'allocate-attribute' || !attributes.has(command.attribute)) {
+      return { accepted: false, result: { ok: false, code: 'attribute_allocation_invalid' } };
+    }
+    const protagonist = record(record(state).主角);
+    const available = finite(protagonist.属性点);
+    if (available < 1) {
+      return { accepted: false, result: { ok: false, code: 'attribute_points_exhausted' } };
+    }
+    const attribute = String(command.attribute);
+    const before = finite(record(protagonist.属性)[attribute]);
+    return {
+      accepted: true,
+      statePatch: [
+        { op: 'delta', path: '/主角/属性点', value: -1 },
+        { op: 'delta', path: `/主角/属性/${attribute}`, value: 1 },
+      ],
+      result: { ok: true, attribute, before, after: before + 1, remainingPoints: available - 1 },
     };
   },
   async executeAgentTool({ toolName, arguments: args, workspace }) {

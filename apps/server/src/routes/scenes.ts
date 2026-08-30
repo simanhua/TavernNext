@@ -1,12 +1,18 @@
 import { readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
-import { SceneActionResultSchema } from '@tavernnext/domain';
+import { PlayerOperationSchema, SCENE_ACTION_ENVELOPE_PROTOCOL } from '@tavernnext/domain';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Repositories } from '../db/repositories.js';
 import { SceneServiceError, type SceneService } from '../scenes/scene-service.js';
 import { isBundledOfficialScene } from '../scenes/official-package.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
+
+const SceneActionEnvelopeSchema = z.object({
+  $tavernnext: z.literal(SCENE_ACTION_ENVELOPE_PROTOCOL),
+  action: z.unknown(),
+  operation: PlayerOperationSchema.optional(),
+}).strict();
 
 const mediaTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -31,6 +37,7 @@ export function registerSceneRoutes(
   app: FastifyInstance,
   scenes: SceneService,
   repositories: Repositories,
+  generations: SaveAgentRuntime,
 ): void {
   const detail = (sceneId: string) => {
     const scene = scenes.get(sceneId);
@@ -129,25 +136,22 @@ export function registerSceneRoutes(
   });
 
   app.post<{ Params: { id: string }; Body: unknown }>('/api/conversations/:id/scene-actions', async (request, reply) => {
-    const conversation = repositories.conversations.get(request.params.id);
-    const scene = conversation?.sceneId === undefined ? undefined : scenes.get(conversation.sceneId);
-    const state = conversation === undefined ? undefined : scenes.state(conversation.id);
-    if (conversation === undefined || scene === undefined || state === undefined) {
-      return reply.status(404).send({ error: 'scene_not_found' });
+    if (generations.isConversationActive(request.params.id)) {
+      return reply.status(409).send({ error: 'generation_active' });
     }
-    const host = scenes.module(scene);
-    if (host === undefined) return reply.status(400).send({ error: 'scene_action_unsupported' });
+    const candidate = typeof request.body === 'object' && request.body !== null && !Array.isArray(request.body)
+      ? request.body as Record<string, unknown>
+      : undefined;
+    const usesEnvelope = candidate?.$tavernnext === SCENE_ACTION_ENVELOPE_PROTOCOL;
+    const envelope = usesEnvelope ? SceneActionEnvelopeSchema.safeParse(request.body) : undefined;
+    if (envelope !== undefined && !envelope.success) return reply.status(400).send({ error: 'invalid_request' });
     try {
-      const raw = SceneActionResultSchema.parse(await host.call('handleAction', {
-        action: request.body, state: state.value, setup: conversation.setup,
-        playerProfile: conversation.playerProfile, manifest: scene.manifest,
-      }));
-      const next = raw.statePatch === undefined
-        ? state
-        : scenes.commitStateTransition(conversation.id, state.revision, raw.statePatch, {
-          kind: 'scene-action', id: randomUUID(),
-        });
-      return { state: next, result: raw.result ?? null };
+      return await scenes.performAction(
+        request.params.id,
+        envelope?.success === true ? envelope.data.action : request.body,
+        envelope?.success === true ? envelope.data.operation : undefined,
+        () => !generations.isConversationActive(request.params.id),
+      );
     } catch (error) {
       return sceneError(error, reply);
     }

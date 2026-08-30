@@ -128,10 +128,14 @@ export function createDestinedPoemStatusRailModel(state, playerName = '') {
   };
 }
 
-export function attributeAllocationPatch(attribute) {
+export function attributeAllocationAction(attribute) {
   if (!attributes.includes(attribute)) throw new Error('attribute_allocation_invalid');
-  return [
-    { op: 'delta', path: '/主角/属性点', value: -1 },
-    { op: 'delta', path: `/主角/属性/${attribute}`, value: 1 },
-  ];
+  return {
+    action: { type: 'allocate-attribute', attribute },
+    options: { operation: {
+      kind: 'attribute-allocation',
+      title: '属性分配',
+      summary: `玩家确认将一点属性分配给${attribute}。`,
+    } },
+  };
 }

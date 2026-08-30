@@ -2,7 +2,7 @@ let root;
 import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.8.0';
 import { bindDestinedPoemWorldMap, renderDestinedPoemWorldMap } from './map-viewer.mjs?v=2.16.4';
 import {
-  attributeAllocationPatch,
+  attributeAllocationAction,
   createDestinedPoemStatusRailModel,
 } from './status-rail.mjs?v=2.8.0';
 
@@ -183,6 +183,9 @@ function streamingMarkup() {
 }
 
 function messageMarkup(message) {
+  if (message.playerOperation) {
+    return `<aside class="player-operation-card"><span>${esc(message.playerOperation.kind)}</span><strong>${esc(message.playerOperation.title)}</strong><p>${esc(message.playerOperation.summary)}</p></aside>`;
+  }
   return message.role === 'assistant'
     ? roleplayDocumentMarkup(message)
     : `<div class="action-message-narrative">${esc(message.content)}</div>`;
@@ -221,8 +224,9 @@ function bindStatusRail(state) {
     async onAction(actionId) {
       if (!actionId.startsWith('attribute:')) return;
       try {
-        const result = await request('state.patch', [attributeAllocationPatch(actionId.slice('attribute:'.length))]);
-        if (result.failures?.length) window.alert(`有 ${result.failures.length} 项状态操作失败。`);
+        const operation = attributeAllocationAction(actionId.slice('attribute:'.length));
+        const result = await request('scene.action', [operation.action, operation.options]);
+        if (result.result?.ok !== true) window.alert('属性分配未能完成。');
         await renderWorkspace();
       } catch (error) {
         window.alert(error.message || String(error));
@@ -238,7 +242,7 @@ async function renderWorkspace() {
   const state = stateRow.value || {};
   const tabs = [['chat', '对话'], ['quests', '任务'], ['relationships', '关系'], ['map', '地图']];
   statusRailController?.destroy();
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.16.4</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.16.5</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
   document.querySelectorAll('[data-tab]').forEach((button) => { button.onclick = () => { activeTab = button.dataset.tab; renderWorkspace(); }; });
   bindStatusRail(state);
   const area = document.querySelector('#content');
@@ -246,7 +250,9 @@ async function renderWorkspace() {
     area.innerHTML = `<div class="panel chat"><div class="messages">${detail.messages.map((message) => {
       const diagnostics = activeDiagnostics(message);
       const tailAssistant = message.role === 'assistant' && message === detail.messages.at(-1);
-      return `<article class="message ${message.role}"><div class="message-body">${messageMarkup(message)}</div>${diagnosticMarkup(diagnostics, message.id)}<menu><button data-op="edit" data-id="${message.id}">编辑</button><button data-op="delete" data-id="${message.id}">删除</button>${tailAssistant ? `<button data-op="regenerate" data-id="${message.id}">重生成</button><button data-op="swipe" data-id="${message.id}">换一个回复</button>` : ''}</menu></article>`;
+      const operation = message.playerOperation !== undefined;
+      const menu = operation ? '' : `<menu><button data-op="edit" data-id="${message.id}">编辑</button><button data-op="delete" data-id="${message.id}">删除</button>${tailAssistant ? `<button data-op="regenerate" data-id="${message.id}">重生成</button><button data-op="swipe" data-id="${message.id}">换一个回复</button>` : ''}</menu>`;
+      return `<article class="message ${operation ? 'player-operation' : message.role}"><div class="message-body">${messageMarkup(message)}</div>${operation ? '' : diagnosticMarkup(diagnostics, message.id)}${menu}</article>`;
     }).join('')}</div><div class="composer-wrap"><div class="composer"><textarea id="draft" placeholder="你准备做什么？"></textarea><button class="action primary" id="send">发送</button><button class="action" id="stop">停止</button></div><div id="generation-status" class="generation-status"></div></div></div>`;
     bindActionInfoPanels(area);
     document.querySelectorAll('[data-diagnostic]').forEach((button) => { button.onclick = () => {

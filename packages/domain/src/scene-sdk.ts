@@ -6,11 +6,13 @@ import type {
   Message,
   MessageVariant,
   Persona,
+  PlayerOperation,
 } from './entities.js';
 import type { ScenePatchFailure, ScenePatchOperation } from './scene-state.js';
 import type { RoleplaySceneViewBlock } from './roleplay-document.js';
 
 export type SceneRuntimeMode = 'setup' | 'workspace';
+export const SCENE_ACTION_ENVELOPE_PROTOCOL = 'tavernnext-player-operation-v1' as const;
 export type SceneGenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
 
 export interface SceneMessageView extends Message {
@@ -161,7 +163,11 @@ export interface SceneSdkV2 {
     }>;
   };
   scene: {
-    action(action: unknown): Promise<{ state: ConversationSceneState; result: unknown }>;
+    action(action: unknown, options?: { operation?: PlayerOperation }): Promise<{
+      state: ConversationSceneState;
+      result: unknown;
+      operation?: PlayerOperation & { messageId: string };
+    }>;
     assetUrl(path: string): string;
   };
   generation: {

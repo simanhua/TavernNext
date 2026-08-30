@@ -427,7 +427,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerMessageRoutes(app, database, repositories, generations, scenes);
   registerGenerationRoutes(app, generations);
   registerSaveAgentConfigurationRoutes(app, database, repositories);
-  registerSceneRoutes(app, scenes, repositories);
+  registerSceneRoutes(app, scenes, repositories, generations);
   registerAgentRunRoutes(app, repositories);
   registerMemoryRoutes(app, repositories);
 

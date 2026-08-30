@@ -1,7 +1,7 @@
 {
   "id": "018f2000-0000-7000-8000-000000000002",
   "slug": "scene-lab",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "场景实验室",
   "summary": "用一个小型实验验证独立存档、状态、Agent Tool 与 Scene View。",
   "description": "TavernNext 官方多 Scene 能力演示。每个实验拥有隔离的信号状态、消息与 Agent 配置。",

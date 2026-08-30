@@ -39,6 +39,10 @@ function messageBody(message) {
     : textMarkup(block.content ?? '')).join('');
 }
 
+function playerOperationMarkup(operation) {
+  return `<article class="tx-player-operation"><small>${esc(operation.kind)}</small><strong>${esc(operation.title)}</strong><p>${esc(operation.summary)}</p></article>`;
+}
+
 function mountMessageViews(root, messages) {
   for (const message of messages) {
     const blocks = activeVariant(message)?.document?.blocks;
@@ -176,7 +180,9 @@ function chapterEventMarkup(state) {
 }
 
 function storyMarkup(detail, state) {
-  return `<section class="tx-story"><header><div><small>当前篇章</small><strong>${esc(detail.conversation.title)}</strong></div><span id="tx-generation">灵台清明</span></header><div class="tx-messages">${detail.messages.map((message) => `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}<div class="tx-choices"><button type="button" data-choice="先观察四周，不急着开口。"><span>01</span>静观其变</button><button type="button" data-choice="询问太虚仙宗的方向与开山试炼。"><span>02</span>问路太虚</button><button type="button" data-choice="留意楚霁寒手上的青铜古戒。"><span>03</span>观察古戒</button></div><form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
+  return `<section class="tx-story"><header><div><small>当前篇章</small><strong>${esc(detail.conversation.title)}</strong></div><span id="tx-generation">灵台清明</span></header><div class="tx-messages">${detail.messages.map((message) => message.playerOperation
+    ? playerOperationMarkup(message.playerOperation)
+    : `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}<div class="tx-choices"><button type="button" data-choice="先观察四周，不急着开口。"><span>01</span>静观其变</button><button type="button" data-choice="询问太虚仙宗的方向与开山试炼。"><span>02</span>问路太虚</button><button type="button" data-choice="留意楚霁寒手上的青铜古戒。"><span>03</span>观察古戒</button></div><form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
 }
 
 async function renderWorkspace(root, sdk) {
@@ -191,8 +197,15 @@ async function renderWorkspace(root, sdk) {
   root.querySelectorAll('[data-choice]').forEach((button) => { button.onclick = () => { const draft = root.querySelector('#tx-draft'); if (draft) { draft.value = button.dataset.choice; draft.focus(); } }; });
   root.querySelector('[data-run-chapter-event]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
+    const eventId = button.dataset.runChapterEvent;
+    const definition = chapterEvents[eventId];
     button.disabled = true;
-    try { await sdk.scene.action({ type: 'chapter-event', eventId: button.dataset.runChapterEvent }); }
+    try {
+      await sdk.scene.action({ type: 'chapter-event', eventId }, { operation: {
+        kind: 'chapter-event', title: definition?.title || '章节行动',
+        summary: `玩家确认${definition?.action || '推进章节事件'}。`,
+      } });
+    }
     finally { await renderWorkspace(root, sdk); }
   });
   const composer = root.querySelector('.tx-composer');
