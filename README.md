@@ -1,6 +1,6 @@
 # TavernNext
 
-TavernNext is a local-first, solo role-chat MVP with SillyTavern-compatible Characters, Presets, Worldbooks, tokenizers, and chat files. It connects to an OpenAI-compatible Chat Completions or Text Completions provider.
+TavernNext is a local-first, Agent-driven roleplay runtime for official Scene Packages. Each Save owns a private writing Preset and runs one bounded Scene Director through tool-capable Chat models; SillyTavern-compatible Characters, Presets, Worldbooks, and tokenizers remain reusable library/import data.
 
 ## Run locally
 

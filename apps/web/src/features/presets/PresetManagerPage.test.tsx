@@ -144,7 +144,7 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('PresetManagerPage', () => {
-  it('selects and saves active Presets without exposing Provider selection', async () => {
+  it('selects one default Chat template and clears legacy runtime companions', async () => {
     let submitted: unknown;
     server.use(http.patch('/api/settings/generation', async ({ request }) => {
       submitted = await request.json();
@@ -159,27 +159,27 @@ describe('PresetManagerPage', () => {
     const user = userEvent.setup();
     renderWithApp(<PresetManagerPage />);
 
-    await screen.findByRole('heading', { name: 'Active Presets' });
+    await screen.findByRole('heading', { name: 'Default Chat template' });
     await screen.findByRole('option', { name: 'Chat preset' });
     expect(screen.queryByLabelText('Active Provider')).toBeNull();
-    await user.selectOptions(screen.getByLabelText('Chat preset'), ids[0]!.id);
-    await user.selectOptions(screen.getByLabelText('Text preset'), ids[1]!.id);
-    await user.selectOptions(screen.getByLabelText('Context preset'), ids[2]!.id);
-    await user.selectOptions(screen.getByLabelText('Instruct preset'), ids[3]!.id);
-    await user.selectOptions(screen.getByLabelText('System preset'), ids[4]!.id);
-    await user.click(screen.getByRole('button', { name: 'Save active Presets' }));
+    expect(screen.queryByLabelText('Text preset')).toBeNull();
+    expect(screen.queryByLabelText('Context preset')).toBeNull();
+    expect(screen.queryByLabelText('Instruct preset')).toBeNull();
+    expect(screen.queryByLabelText('System preset')).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Chat template'), ids[0]!.id);
+    await user.click(screen.getByRole('button', { name: 'Save default Chat template' }));
 
     await waitFor(() => expect(submitted).toEqual({
       revision: 0,
       patch: {
         chatPresetId: ids[0]!.id,
-        textPresetId: ids[1]!.id,
-        contextPresetId: ids[2]!.id,
-        instructPresetId: ids[3]!.id,
-        systemPresetId: ids[4]!.id,
+        textPresetId: null,
+        contextPresetId: null,
+        instructPresetId: null,
+        systemPresetId: null,
       },
     }));
-    expect(await screen.findByText('Active Presets saved.')).not.toBeNull();
+    expect(await screen.findByText('Default Chat template saved.')).not.toBeNull();
   });
 
   it('shows the safe Preset resource inventory and SPreset feature summary', async () => {

@@ -9,7 +9,6 @@ import type { TrustedScriptManifest } from '@tavernnext/extension-runtime';
 import { renderWithApp } from '../../test/render.js';
 import type { ScriptRuntimeDiagnostic, ScriptRuntimeFrame } from './SameOriginScriptRuntime.js';
 import { TrustedScriptRuntimeHost, type ScriptRuntimeFrameFactory } from './TrustedScriptRuntimeHost.js';
-import { runTrustedPromptHooks } from './TrustedPromptHooks.js';
 
 const presetId = '018f0000-0000-7000-8000-000000004001';
 const characterId = '018f0000-0000-7000-8000-000000004002';
@@ -59,60 +58,17 @@ afterEach(() => { cleanup(); presetDigest = 'a'.repeat(64); characterTrusted = t
 afterAll(() => server.close());
 
 describe('TrustedScriptRuntimeHost', () => {
-  it('runs a prompt hook without waiting for unrelated script startup to settle', async () => {
-    let releaseFirst: (() => void) | undefined;
-    const firstReady = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const hookCalls: number[] = [];
-    const frames: ScriptRuntimeFrame[] = [];
-    const createFrame: ScriptRuntimeFrameFactory = () => {
-      const index = frames.length;
-      const frame: ScriptRuntimeFrame = {
-        start: async () => index === 0 ? firstReady : undefined,
-        invoke: async () => true,
-        runPromptHook: async (candidate) => {
-          hookCalls.push(index);
-          return { messages: candidate.messages, text: candidate.text, stop: candidate.stop };
-        },
-        destroy() {},
-      };
-      frames.push(frame);
-      return frame;
-    };
-    renderWithApp(
-      <TrustedScriptRuntimeHost conversationId="conversation-1" createFrame={createFrame} />,
-    );
-    await waitFor(() => expect(frames).toHaveLength(1));
-    const hook = runTrustedPromptHooks({
-      kind: 'chat', messages: [{ role: 'user', content: 'queued' }], stop: [],
-    }, false);
-    await Promise.resolve();
-    await Promise.resolve();
-    const callsBeforeFullStartup = [...hookCalls];
-    releaseFirst?.();
-    await expect(hook).resolves.toMatchObject({ messages: [{ role: 'user', content: 'queued' }] });
-    expect(callsBeforeFullStartup).toEqual([0]);
-    expect(hookCalls).toEqual([0]);
-  });
-
   it('restarts on digest/trust changes, routes owning buttons, and surfaces fail-open errors', async () => {
-    const frames: Array<ScriptRuntimeFrame & { manifest?: TrustedScriptManifest; destroyed: boolean; invoked: string[]; hookCalls: boolean[] }> = [];
+    const frames: Array<ScriptRuntimeFrame & { manifest?: TrustedScriptManifest; destroyed: boolean; invoked: string[] }> = [];
     let diagnostic: ((value: ScriptRuntimeDiagnostic) => void) | undefined;
     const createFrame: ScriptRuntimeFrameFactory = (_document, _mount, onDiagnostic) => {
       diagnostic = onDiagnostic;
       const frame = {
         destroyed: false,
         invoked: [] as string[],
-        hookCalls: [] as boolean[],
         manifest: undefined as TrustedScriptManifest | undefined,
         async start(manifest: TrustedScriptManifest) { frame.manifest = manifest; },
         async invoke(scriptId: string, name: string) { frame.invoked.push(`${scriptId}:${name}`); return true; },
-        async runPromptHook(candidate: Parameters<ScriptRuntimeFrame['runPromptHook']>[0], dryRun: boolean) {
-          frame.hookCalls.push(dryRun);
-          return {
-            messages: candidate.messages?.map((message) => ({ ...message, content: `${message.content}-hooked` })),
-            text: candidate.text === undefined ? undefined : `${candidate.text}-hooked`, stop: [...candidate.stop, 'HOOK'],
-          };
-        },
         destroy() { frame.destroyed = true; },
       };
       frames.push(frame);
@@ -133,12 +89,6 @@ describe('TrustedScriptRuntimeHost', () => {
     expect(screen.queryByRole('button', { name: 'hidden preset button' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'character button' }));
     expect(frames[0]!.invoked).toEqual([`character:${characterId}:character-script:character button`]);
-    await expect(runTrustedPromptHooks({
-      kind: 'chat', messages: [{ role: 'user', content: 'input' }], stop: [],
-    }, true)).resolves.toEqual({
-      messages: [{ role: 'user', content: 'input-hooked' }], text: undefined, stop: ['HOOK'],
-    });
-    expect(frames[0]!.hookCalls).toEqual([true]);
 
     presetDigest = 'c'.repeat(64);
     await queryClient.invalidateQueries({ queryKey: ['extension-trust', 'preset'] });

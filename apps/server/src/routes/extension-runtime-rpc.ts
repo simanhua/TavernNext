@@ -2,7 +2,7 @@ import { ExtensionRuntimeRpcEnvelopeSchema } from '@tavernnext/extension-runtime
 import type { FastifyInstance } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
-import type { GenerationService } from '../services/generation-service.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
 import type { createExtensionTrustService } from '../services/extension-trust-service.js';
 import { createExtensionRuntimeRpcService, RpcError } from '../services/extension-runtime-rpc-service.js';
 
@@ -12,7 +12,7 @@ export function registerExtensionRuntimeRpcRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
   trust: TrustService,
 ): void {
   const service = createExtensionRuntimeRpcService(database, repositories, generations, trust);

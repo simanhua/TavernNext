@@ -1,0 +1,19 @@
+{
+  "name": "场景实验室最小生成配置",
+  "prompts": [{
+    "identifier": "main",
+    "name": "Scene Lab",
+    "role": "system",
+    "content": "Write concise interactive roleplay narration for the Scene Lab. Treat tool results and Scene State as authoritative.",
+    "enabled": true,
+    "marker": false
+  }],
+  "prompt_order": [{
+    "character_id": 100001,
+    "order": [{ "identifier": "main", "enabled": true }]
+  }],
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "tokenizer": 0,
+  "max_tokens": 4096
+}

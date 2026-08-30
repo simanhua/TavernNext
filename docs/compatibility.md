@@ -10,17 +10,17 @@ This document describes the executable compatibility surface. Imports are inspec
 | Persona | TavernNext Persona create/edit with optional PNG/JPEG/WebP/GIF avatar | TavernNext database/API view. No SillyTavern Persona file import/export in the MVP. |
 | Preset | Structurally detected Chat, Text, Context, Instruct, System Prompt, and Reasoning JSON/settings/preset documents | JSON in the imported preset's family/shape, with recognized edits merged into retained source data. A newly created preset without source compatibility metadata is not exportable as an ST file. |
 | Worldbook | Native SillyTavern World Info JSON, embedded Character Book JSON, NovelAI lorebook JSON, Agnai memory JSON, Risu lorebook JSON, and `naidata` PNG metadata | Native SillyTavern World Info JSON in deterministic source order. |
-| Chat | SillyTavern solo-chat JSONL/NDJSON header plus ordered message records, including `swipes`, `swipe_info`, timing, token, model, reasoning, `extra`, system/narrator, and `/sendas`-shaped records | SillyTavern solo-chat JSONL with one header and ordered message lines/variants. Explicit group-chat metadata is rejected. |
+| Chat | Not accepted. Legacy SillyTavern chat files are incompatible with Save Agent state and are rejected at inspection. | Not exported. Saves are TavernNext runtime data, not compatibility artifacts. |
 
 Import/schema failures remain at the inspection or transaction boundary: a blocked inspection has no commit token, and a failed commit rolls back database rows and task-owned staged/published assets.
 
-## Executable preset modes
+## Preset compatibility and Agent execution
 
-- Chat mode executes one `chat` preset through the OpenAI-compatible `/chat/completions` stream. Prompt definitions/order, roles, marker prompts, enabled flags, injection position/depth/order, generation triggers, Character overrides, sampler settings, stop strings, and token budget participate where defined.
-- Text mode executes one `text` preset through `/completions` together with a required `context`, `instruct`, and `system` selection in the MVP UI. Story/context formatting, instruct input/output/system sequences and suffixes, name insertion, separators, stop strings, sampler settings, and truncation participate.
-- `reasoning` presets are detected, editable, preserved, and exportable, but there is no separate Conversation reasoning-preset slot in the MVP; they are not independently executed.
+- A `chat` Preset can initialize or explicitly replace one Save Agent Configuration. Its copied prompt definitions/order, roles, enabled flags, supported sampler settings, stop strings, and token budget participate beneath the platform, world, and Character precedence layers.
+- Text, Context, Instruct, System, and Reasoning Presets are detected, editable, preserved, and exportable library data. They have no Agent Runtime execution slot.
+- Provider/model selection is global and must resolve to a tool-capable Pi Chat model. Provider credentials remain server-side.
 
-Chat and Text provider modes stream and support abort, regenerate, swipe, and continue. Prompt Preview compiles the selected mode without creating messages or committing Worldbook timed state.
+Agent Runs support ordinary sends plus tail regenerate/swipe and cancellation. Text Completion, continuation, browser Prompt Preview, candidate sealing, and prompt hooks are not product surfaces.
 
 ## Tokenizer IDs
 
@@ -56,14 +56,13 @@ Remote/model tokenizer hosts are contacted only when the selected tokenizer cont
 
 The executable Worldbook engine supports global and Character-linked books; enabled state; scan depth and token budget; primary/secondary keys; regex and whole-word/case rules; selective logic; constant entries; probability; grouping, weights, scoring, and override; priority/source order; positions before/after Character, author-note top/bottom, at-depth, example-message top/bottom, and named outlets; depth and role; recursion, exclusion/prevention/delay; ignore-budget entries; sticky/cooldown/delay timed effects; Character and Persona name/tag filters; dedicated Character/Persona/scenario/creator-note scan sources; generation triggers; and deterministic seeded decisions.
 
-Prompt Preview reports activated and excluded entries, recursion steps, outlet content, exact budget use, warnings, and previous/next timed state. Successful generation commits timed state; preview, failure, and abort do not advance it.
+Successful Agent Runs commit Worldbook timed state atomically with the response. Failure and abort do not advance it.
 
 ## Preserved but not executable
 
 - Unknown Character top-level/data fields, auxiliary archive assets, unknown extensions, and raw PNG payloads are retained. Only mapped Character fields and the typed depth prompt enter prompt compilation.
 - Provider/vendor-specific preset fields without an implemented semantic mapping are retained and warned as `provider_field_preserved_not_executable`; unknown settings do not silently become execution defaults.
 - Unknown or lossy foreign-Worldbook fields/extensions and display/editor metadata are retained for export. Vector/embedding execution and arbitrary automation identifiers are not external automation hooks.
-- Unknown chat header/message/swipe/variant fields are retained for JSONL re-export but are not provider instructions.
 
 ## Explicit MVP exclusions
 
@@ -84,15 +83,15 @@ Supported trusted runtime behavior includes lifecycle events and cleanup, script
 | Runtime State | `getVariables`, `getAllVariables`, `replaceVariables`, `updateVariablesWith`, `insertVariables`, `deleteVariable` |
 | Regex | `getTavernRegexes`, `replaceTavernRegexes` |
 | Worldbooks | `getWorldbookNames`, `getWorldbook`, `getLorebookEntries`, `updateLorebookEntriesWith` |
-| Macros and prompt injection | `substitudeMacros`, `injectPrompts`, `uninjectPrompts` |
+| Macros | `substitudeMacros` |
 | Generation | `generate`, `generateRaw`, `triggerSlash` |
 <!-- tavern-helper-methods:end -->
 
-`triggerSlash` is the accepted `/trigger` surface. The browser compatibility globals additionally support `eventOn`, `eventOnce`, `eventEmit`, `eventEmitAndWait`, `eventRemoveListener`, `eventClearEvent`, `eventClearAll`, `getScriptId`, `getButtonEvent`, `getScriptButtons`, `replaceScriptButtons`, `getTavernHelperVersion`, `getTavernVersion`, the accepted `SillyTavern.getContext` reasoning/settings facade, and the reviewed Zod, Vue, and Lodash helper globals. Repeated prompt hooks reuse the initialized Compatibility Runtime. A script that registers an accepted prompt event is permanently prompt-only for that runtime epoch, so no later Promise, timer, DOM event, or button callback can regain a mutating bridge; an individual hung listener also fails open before the outer generation deadline. Any unlisted Tavern Helper method and every `TavernNext.call` method fail with the stable `not_supported` code. Arbitrary STscript, plugin installation, MacroNest, ToolBindings, a general SillyTavern DOM/settings clone, group chat, attachments/RAG, image generation, TTS, and cloud/plugin synchronization are explicitly not supported.
+`triggerSlash` is the accepted `/trigger` surface and starts the same Agent-first runtime as an ordinary player turn. The browser compatibility globals additionally support `eventOn`, `eventOnce`, `eventEmit`, `eventEmitAndWait`, `eventRemoveListener`, `eventClearEvent`, `eventClearAll`, `getScriptId`, `getButtonEvent`, `getScriptButtons`, `replaceScriptButtons`, `getTavernHelperVersion`, `getTavernVersion`, the accepted `SillyTavern.getContext` reasoning/settings facade, and the reviewed Zod, Vue, and Lodash helper globals. Prompt-ready events and prompt-injection methods are not supported and cannot alter an Agent Run prompt. Any unlisted Tavern Helper method and every `TavernNext.call` method fail with the stable `not_supported` code. Arbitrary STscript, plugin installation, MacroNest, ToolBindings, a general SillyTavern DOM/settings clone, group chat, attachments/RAG, image generation, TTS, and cloud/plugin synchronization are explicitly not supported.
 
 Interactive message frontends support the accepted `$().load(...)` shape only through a variant-bound server route. The requested URL must exist in a current active owner's approved remote cache under a current Trust Grant; unapproved URLs fail with `runtime_not_authorized`. Adjacent real-card HTML fences such as `</details>```<body>` are normalized only after a display regex has enabled interactive rendering. Large immutable generation snapshots are gzip-compressed inside the repository storage boundary while their external payload, integrity tag, and legacy uncompressed reads remain unchanged.
 
-The target SPreset subset supports RegexBinding through the shared Preset-first projection plus enabled ChatSquash affixes, literal/regex separators, stop strings, the reviewed custom post-script, and the accepted reasoning extraction/DOM facade. Provider, endpoint, model, credentials, samplers, and server token limits cannot be changed by these hooks.
+The target SPreset import subset preserves RegexBinding resources plus enabled ChatSquash affixes, literal/regex separators, stop strings, the reviewed custom post-script, and the accepted reasoning DOM facade. Imported resources cannot change Provider, endpoint, model, credentials, Agent prompt precedence, or server token limits.
 
 ## Trust and remote-code risk
 

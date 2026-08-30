@@ -1,4 +1,5 @@
 import type { InteractiveMessageContext } from './interactive-frame-document.js';
+import { roleplayDocumentPlainText, type RoleplayDocument } from '@tavernnext/domain';
 
 /** Variant-bound capability policy for accepted interactive message frontends. */
 export async function callInteractiveFrontendApi(
@@ -33,14 +34,21 @@ export async function callInteractiveFrontendApi(
     const response = await fetcher(`/api/conversations/${encodeURIComponent(context.conversationId)}/messages`);
     if (!response.ok) throw new Error((await response.json() as { error?: string }).error ?? `http_${response.status}`);
     const payload = await response.json() as { messages: Array<{
-      content: string; role: string; variants?: Array<{ id: string; content: string }>; activeVariantId?: string;
+      content: string; role: string;
+      variants?: Array<{ id: string; content: string; document?: RoleplayDocument }>;
+      activeVariantId?: string;
     }> };
     if (method === 'getLastMessageId') return payload.messages.length - 1;
-    return payload.messages.map((message, messageId) => ({
+    return payload.messages.map((message, messageId) => {
+      const active = message.variants?.find((variant) => variant.id === message.activeVariantId);
+      return {
       message_id: messageId, role: message.role,
-      message: message.variants?.find((variant) => variant.id === message.activeVariantId)?.content ?? message.content,
+      message: active?.document === undefined
+        ? active?.content ?? message.content
+        : roleplayDocumentPlainText(active.document),
       active_variant_id: message.activeVariantId ?? null,
-    }));
+      };
+    });
   }
   if (method === 'loadApprovedHtml') {
     const url = args[0];

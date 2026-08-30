@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   ConversationPlayerProfileSchema,
+  PlayerOperationSchema,
   SceneActionResultSchema,
   SceneBeforeGenerationResultSchema,
   SceneInitializeResultSchema,
@@ -23,6 +24,7 @@ import {
   type InstalledScene,
   type Message,
   type MessageVariant,
+  type PlayerOperation,
   type SceneCatalog,
   type SceneManifest,
   type ScenePatchFailure,
@@ -38,6 +40,17 @@ import { unzipSync } from 'fflate';
 import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
+import { persistPresetBytes } from '../services/preset-import-handler.js';
+import {
+  isOfficialPresetId,
+  officialPresetIdForBytes,
+  synchronizeOfficialPresets,
+} from '../services/official-preset-registry.js';
+import {
+  createSaveAgentConfiguration,
+  SaveAgentConfigurationError,
+} from '../services/save-agent-configuration-service.js';
+import { createSaveWorldbook } from '../services/save-worldbook-service.js';
 import { persistDecodedWorldbook } from '../services/worldbook-import-handler.js';
 import { builtInPackage, officialCatalog } from './official-package.js';
 import { SceneModuleRegistry } from './scene-module-host.js';
@@ -104,9 +117,15 @@ function parentAt(
     } else {
       const item = record(current);
       if (item === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
-      if (item[part] === undefined && createMissingObjects) item[part] = {};
-      if (item[part] === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
-      current = item[part];
+      let child = Object.hasOwn(item, part) ? item[part] : undefined;
+      if (child === undefined && createMissingObjects) {
+        child = {};
+        Object.defineProperty(item, part, {
+          value: child, enumerable: true, configurable: true, writable: true,
+        });
+      }
+      if (child === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
+      current = child;
     }
   }
   if (!Array.isArray(current) && record(current) === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
@@ -116,7 +135,11 @@ function parentAt(
 function valueAt(root: Record<string, unknown>, pointer: string): unknown {
   let value: unknown = root;
   for (const part of pointerParts(pointer)) {
-    value = Array.isArray(value) ? value[Number(part)] : record(value)?.[part];
+    if (Array.isArray(value)) value = value[Number(part)];
+    else {
+      const item = record(value);
+      value = item !== undefined && Object.hasOwn(item, part) ? item[part] : undefined;
+    }
     if (value === undefined) throw new SceneServiceError('scene_patch_invalid', 400);
   }
   return value;
@@ -156,7 +179,9 @@ export function applyScenePatch(
       return;
     }
     if (replaceOnly && !Object.hasOwn(parent, key)) throw new SceneServiceError('scene_patch_invalid', 400);
-    parent[key] = next;
+    Object.defineProperty(parent, key, {
+      value: next, enumerable: true, configurable: true, writable: true,
+    });
   };
   for (const operation of operations) {
     if (operation.op === 'remove') remove(operation.path);
@@ -240,13 +265,18 @@ function characterDepthPrompt(extensions: Record<string, unknown>): string {
   return typeof depth?.prompt === 'string' ? depth.prompt : '';
 }
 
-function packageCharacter(files: Record<string, Uint8Array>, repositories: Repositories): {
+function packageCharacter(
+  files: Record<string, Uint8Array>,
+  manifest: SceneManifest,
+  repositories: Repositories,
+): {
   characterId: string;
-  presetId: string;
+  presetId?: string;
 } {
-  const cardBytes = files['content/character.png'];
+  const characterPath = manifest.backingCharacterPath ?? 'content/character.png';
+  const cardBytes = files[characterPath];
   if (cardBytes === undefined) throw new SceneServiceError('scene_character_missing', 422);
-  const decoded = decodeInspectedCharacter(cardBytes, 'character.png');
+  const decoded = decodeInspectedCharacter(cardBytes, characterPath);
   const character = decoded.character;
   if (character === null) throw new SceneServiceError('scene_character_invalid', 422);
   const attached = normalizeAttachedExtensions(character.extensions);
@@ -278,29 +308,22 @@ function packageCharacter(files: Record<string, Uint8Array>, repositories: Repos
     ...(character.characterBook === undefined ? {} : { characterBook: character.characterBook }),
     ...(worldbook === undefined ? {} : { worldbookId: worldbook.id }),
   });
-  const preset = repositories.presets.create({
-    id: randomUUID(), name: '命定之诗内置生成配方', kind: 'chat',
-    settings: {
-      prompts: [
-        { identifier: 'main', role: 'system', content: character.systemPrompt || 'You are the narrator and game master for {{char}}.', system_prompt: true },
-        { identifier: 'charDescription', marker: true, system_prompt: true },
-        { identifier: 'personaDescription', marker: true, system_prompt: true },
-        { identifier: 'worldInfoBefore', marker: true, role: 'system', system_prompt: true },
-        { identifier: 'chatHistory', marker: true, system_prompt: true },
-        { identifier: 'worldInfoAfter', marker: true, role: 'system', system_prompt: true },
-      ],
-      prompt_order: [{
-        character_id: id,
-        order: ['main', 'charDescription', 'personaDescription', 'worldInfoBefore', 'chatHistory', 'worldInfoAfter']
-          .map((identifier) => ({ identifier, enabled: true })),
-      }],
-      tokenizer: 0,
-      temperature: 1,
-      max_tokens: 32768,
-      wi_format: '{0}',
-      new_chat_prompt: '',
-    },
-  });
+  if (manifest.backingPresetPath === undefined) return { characterId: id };
+  const presetBytes = files[manifest.backingPresetPath];
+  if (presetBytes === undefined) throw new SceneServiceError('scene_preset_missing', 422);
+  let preset;
+  try {
+    const officialPresetId = officialPresetIdForBytes(presetBytes, manifest.backingPresetPath);
+    if (officialPresetId === undefined) preset = persistPresetBytes(repositories, presetBytes, manifest.backingPresetPath);
+    else {
+      if (repositories.presets.get(officialPresetId) === undefined) synchronizeOfficialPresets(repositories);
+      preset = repositories.presets.get(officialPresetId);
+    }
+  } catch {
+    throw new SceneServiceError('scene_preset_invalid', 422);
+  }
+  if (preset === undefined) throw new SceneServiceError('scene_preset_invalid', 422);
+  if (preset.kind !== 'chat') throw new SceneServiceError('scene_preset_invalid', 422);
   return { characterId: id, presetId: preset.id };
 }
 
@@ -337,6 +360,16 @@ export interface SceneService {
     state: ConversationSceneState;
     failures: ScenePatchFailure[];
   };
+  performAction(
+    conversationId: string,
+    action: unknown,
+    operation?: unknown,
+    commitAllowed?: () => boolean,
+  ): Promise<{
+    state: ConversationSceneState;
+    result: unknown;
+    operation?: PlayerOperation & { messageId: string };
+  }>;
   commitStateTransition(
     conversationId: string,
     expectedRevision: number,
@@ -465,7 +498,7 @@ export function createSceneService(options: {
         mkdirSync(dirname(target), { recursive: true });
         renameSync(stage, target);
         return database.transaction(() => {
-          const backing = packageCharacter(files, repositories);
+          const backing = packageCharacter(files, manifest, repositories);
           return repositories.installedScenes.create({
             id: manifest.id,
             slug: manifest.slug,
@@ -475,7 +508,7 @@ export function createSceneService(options: {
             installedAt: new Date().toISOString(),
             manifest,
             backingCharacterId: backing.characterId,
-            backingPresetId: backing.presetId,
+            ...(backing.presetId === undefined ? {} : { backingPresetId: backing.presetId }),
           });
         });
       } catch (error) {
@@ -510,9 +543,9 @@ export function createSceneService(options: {
         ...parsed.data.playerProfile,
         ...(sourcePersona === undefined ? {} : { sourcePersonaId: sourcePersona.id }),
       };
-      const initialized = scene.manifest.serverEntry === undefined
-        ? { initialState: {}, openingMessages: [] }
-        : SceneInitializeResultSchema.parse(await module(scene)!.call('initializeConversation', {
+      const initialized = SceneInitializeResultSchema.parse(scene.manifest.serverEntry === undefined
+        ? { initialState: {}, openingMessages: [], worldbookEntryOverrides: [] }
+        : await module(scene)!.call('initializeConversation', {
           setup: parsed.data.setup, playerProfile, manifest: scene.manifest,
         }));
       assertSceneState(initialized.initialState, scene.manifest);
@@ -531,6 +564,25 @@ export function createSceneService(options: {
           title: initialized.title ?? parsed.data.title,
           maxPromptTokens: parsed.data.maxPromptTokens,
           maxResponseTokens: parsed.data.maxResponseTokens,
+        });
+        const backingCharacter = repositories.characters.get(scene.backingCharacterId);
+        if (backingCharacter === undefined) throw new Error('scene_backing_character_missing');
+        createSaveWorldbook(
+          repositories,
+          conversation,
+          backingCharacter.worldbookId,
+          initialized.worldbookEntryOverrides,
+        );
+        try {
+          createSaveAgentConfiguration(repositories, conversation.id, scene.backingPresetId);
+        } catch (error) {
+          if (error instanceof SaveAgentConfigurationError) {
+            throw new SceneServiceError(error.code, error.code === 'preset_not_configured' ? 409 : 422);
+          }
+          throw error;
+        }
+        repositories.saveMemoryConfigurations.create({
+          id: randomUUID(), conversationId: conversation.id, enabled: true,
         });
         repositories.conversationSceneStates.create({
           id: randomUUID(), conversationId: conversation.id, schemaVersion: 1,
@@ -566,6 +618,39 @@ export function createSceneService(options: {
           kind: 'sdk-patch', id: randomUUID(),
         });
       return { state, failures: applied.failures };
+    },
+    async performAction(conversationId, action, rawOperation, commitAllowed) {
+      const { conversation, scene } = sceneForConversation(conversationId);
+      const current = repositories.conversationSceneStates.getByConversationId(conversationId);
+      if (current === undefined) throw new SceneServiceError('scene_state_not_found', 404);
+      const host = module(scene);
+      if (host === undefined) throw new SceneServiceError('scene_action_unsupported', 400);
+      const operation = rawOperation === undefined ? undefined : PlayerOperationSchema.parse(rawOperation);
+      const output = SceneActionResultSchema.parse(await host.call('handleAction', {
+        action, state: current.value, setup: conversation.setup,
+        playerProfile: conversation.playerProfile, manifest: scene.manifest,
+      }));
+      const committedOperation = output.accepted === true ? operation : undefined;
+      if (output.statePatch === undefined && committedOperation === undefined) {
+        return { state: current, result: output.result ?? null };
+      }
+      return database.transaction(() => {
+        if (commitAllowed?.() === false) throw new SceneServiceError('generation_active', 409);
+        const message = committedOperation === undefined ? undefined : repositories.messages.create({
+          id: randomUUID(), conversationId, role: 'system', content: committedOperation.summary,
+          activeVariantId: null, playerOperation: committedOperation,
+        });
+        const state = commitStateTransition(conversationId, current.revision, output.statePatch ?? [], {
+          kind: 'scene-action', id: message?.id ?? randomUUID(),
+        });
+        return {
+          state,
+          result: output.result ?? null,
+          ...(message === undefined ? {} : {
+            operation: { messageId: message.id, ...committedOperation! },
+          }),
+        };
+      });
     },
     commitStateTransition,
     switchVariantState(message, variant) {
@@ -682,7 +767,9 @@ export function createSceneService(options: {
         }
         if (scene.backingPresetId !== undefined) {
           const preset = repositories.presets.get(scene.backingPresetId);
-          if (preset !== undefined) repositories.presets.delete(preset.id, preset.revision);
+          if (preset !== undefined && !isOfficialPresetId(preset.id)) {
+            repositories.presets.delete(preset.id, preset.revision);
+          }
         }
       });
       await moduleRegistry.remove(scene.id);

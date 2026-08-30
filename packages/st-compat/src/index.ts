@@ -6,4 +6,3 @@ export * from './detect-format.js';
 export * from './presets/index.js';
 export * from './warnings.js';
 export * from './worldbooks/index.js';
-export * from './mvu.js';

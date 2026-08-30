@@ -1,17 +1,16 @@
 import type { FastifyInstance } from 'fastify';
+import { roleplayDocumentPlainText } from '@tavernnext/domain';
 import type { TavernDatabase } from '../db/client.js';
 import { RelationshipLimitError, type Repositories } from '../db/repositories.js';
-import type { GenerationService } from '../services/generation-service.js';
-import { createMvuRuntimeService } from '../services/mvu-runtime-service.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
 import { registerCrudRoutes } from './crud.js';
 
 export function registerConversationRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
 ): void {
-  const mvu = createMvuRuntimeService(repositories);
   registerCrudRoutes(app, '/api/conversations', repositories.conversations, (conversation) => {
     const { compatibility: ignoredCompatibility, ...safe } = conversation;
     void ignoredCompatibility;
@@ -19,7 +18,6 @@ export function registerConversationRoutes(
   }, (conversation) => generations.isConversationActive(conversation.id) ? 'generation_active' : undefined,
   (input) => database.transaction(() => {
     const conversation = repositories.conversations.createWithGreeting(input);
-    mvu.initializeGreetingVariants(conversation.id);
     return conversation;
   }),
   (id, revision) => database.transaction(() => {
@@ -57,7 +55,7 @@ export function registerConversationRoutes(
           const variants = (variantsByMessage.get(message.id) ?? []).map((variant) => {
             const { compatibility: ignoredVariantCompatibility, ...safeVariant } = variant;
             void ignoredVariantCompatibility;
-            return safeVariant;
+            return { ...safeVariant, content: roleplayDocumentPlainText(variant.document) };
           });
           const rawPayload = message.compatibility?.rawPayload;
           const imported = typeof rawPayload === 'object' && rawPayload !== null && !Array.isArray(rawPayload)
@@ -68,7 +66,13 @@ export function registerConversationRoutes(
             : imported?.isSystem === false
               ? 'Narrator'
               : 'System';
-          return { ...safeMessage, ...(speakerLabel === undefined ? {} : { speakerLabel }), variants };
+          const activeVariant = message.activeVariantId === null
+            ? undefined
+            : variants.find((variant) => variant.id === message.activeVariantId);
+          const content = message.role === 'assistant'
+            ? activeVariant?.content ?? variants[0]?.content ?? ''
+            : message.content;
+          return { ...safeMessage, content, ...(speakerLabel === undefined ? {} : { speakerLabel }), variants };
         });
       const { compatibility: ignoredConversationCompatibility, ...safeConversation } = conversation;
       void ignoredConversationCompatibility;

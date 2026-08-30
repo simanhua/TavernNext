@@ -57,7 +57,7 @@ describe('chat UI API bindings', () => {
       method: 'POST', url: '/api/providers',
       payload: {
         id: ids.provider, name: 'Browser configured', baseUrl: 'http://127.0.0.1:8080/v1',
-        model: 'mock', apiMode: 'chat', apiKey,
+        model: 'mock', apiMode: 'chat', toolCalls: true, apiKey,
       },
     });
     expect(created.statusCode).toBe(201);
@@ -105,7 +105,7 @@ describe('chat UI API bindings', () => {
     const listedPresets = await app.inject({ method: 'GET', url: '/api/presets' });
     expect(listedPresets.statusCode).toBe(200);
     expect(listedPresets.json()).toEqual([{
-      id: ids.preset, revision: 0, kind: 'chat', name: 'Role chat',
+      id: ids.preset, revision: 0, kind: 'chat', name: 'Role chat', official: false,
     }]);
     expect(listedPresets.payload).not.toContain('MUST-NOT-LEAVE-SERVER');
     expect(listedPresets.payload).not.toContain('secret_warning_sentinel');
@@ -113,11 +113,20 @@ describe('chat UI API bindings', () => {
       providerId: ids.provider,
       chatPresetId: ids.preset,
     })).toMatchObject({ ok: true });
-    repositories.conversations.create({
+    const conversation = repositories.conversations.create({
       id: ids.conversation,
       characterId: ids.character,
       personaId: ids.persona,
       title: 'Chat',
+    });
+    const privatePreset = repositories.presets.get(ids.preset)!;
+    repositories.saveAgentConfigurations.create({
+      id: '018f0000-0000-7000-8000-000000000109',
+      conversationId: conversation.id,
+      sourcePresetId: privatePreset.id,
+      sourcePresetRevision: privatePreset.revision,
+      name: privatePreset.name,
+      settings: privatePreset.settings,
     });
     const userMessage = repositories.messages.create({
       id: ids.userMessage, conversationId: ids.conversation, role: 'user', content: 'Original', activeVariantId: null,
@@ -135,7 +144,15 @@ describe('chat UI API bindings', () => {
       conversation: { id: ids.conversation },
       messages: [
         { id: userMessage.id, variants: [] },
-        { id: assistantMessage.id, variants: [{ id: variant.id, content: 'Reply' }] },
+        {
+          id: assistantMessage.id,
+          content: 'Reply',
+          variants: [{
+            id: variant.id,
+            content: 'Reply',
+            document: { version: 1, blocks: [{ type: 'markdown', content: 'Reply' }] },
+          }],
+        },
       ],
     });
     const updated = await app.inject({
@@ -143,8 +160,26 @@ describe('chat UI API bindings', () => {
       payload: { revision: 0, patch: { content: 'Edited' } },
     });
     expect(updated.json()).toMatchObject({ content: 'Edited', revision: 1 });
+    const editedAssistant = await app.inject({
+      method: 'PATCH', url: `/api/messages/${assistantMessage.id}`,
+      payload: { revision: 1, patch: { content: 'Edited **reply**' } },
+    });
+    expect(editedAssistant.json()).toMatchObject({ content: 'Edited **reply**', revision: 2 });
+    expect(repositories.messageVariants.get(variant.id)).toMatchObject({
+      revision: 1,
+      content: 'Edited **reply**',
+      document: { version: 1, blocks: [{ type: 'markdown', content: 'Edited **reply**' }] },
+    });
+    const reloaded = await app.inject({ method: 'GET', url: `/api/conversations/${ids.conversation}/messages` });
+    expect(reloaded.json().messages[1]).toMatchObject({
+      content: 'Edited **reply**',
+      variants: [{
+        content: 'Edited **reply**',
+        document: { version: 1, blocks: [{ type: 'markdown', content: 'Edited **reply**' }] },
+      }],
+    });
     expect((await app.inject({
-      method: 'DELETE', url: `/api/messages/${assistantMessage.id}?revision=1`,
+      method: 'DELETE', url: `/api/messages/${assistantMessage.id}?revision=2`,
     })).statusCode).toBe(204);
     expect(repositories.messageVariants.get(variant.id)).toBeUndefined();
 
@@ -153,7 +188,7 @@ describe('chat UI API bindings', () => {
       method: 'PATCH', url: `/api/providers/${ids.provider}`,
       payload: { revision: 0, patch: { model: 'mock-updated', apiKey: rotatedApiKey } },
     });
-    expect(updatedProvider.json()).toMatchObject({ revision: 1, model: 'mock-updated', hasApiKey: true });
+    expect(updatedProvider.json()).toMatchObject({ revision: 1, modelId: 'mock-updated', hasApiKey: true });
     expect(updatedProvider.payload).not.toContain(rotatedApiKey);
     expect(updatedProvider.json()).not.toHaveProperty('secretRef');
     const metadataOnlyUpdate = await app.inject({

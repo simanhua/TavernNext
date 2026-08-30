@@ -22,19 +22,17 @@ async function importThroughDialog(page: Page, buttonName: string, fixture: stri
   await expect(dialog).toBeHidden();
 }
 
-test('a first-run user can configure, import, chat, stop, branch, edit, delete, and preview locally', async ({ page }) => {
+test('a first-run user can configure, import, chat, branch, edit, and delete locally', async ({ page }) => {
   stack.provider.queue({ chunks: ['First ', 'answer'] });
   stack.provider.queue({ chunks: ['Swiped answer'] });
   stack.provider.queue({ chunks: ['Regenerated answer'] });
-  stack.provider.queue({ chunks: [' + continued'] });
-  stack.provider.queue({ chunks: [' + stopped partial'], hold: true });
 
   await page.goto('/connection');
   await page.getByLabel('Display name').fill('Local Mock');
   await page.getByLabel('Base URL').fill(`${stack.provider.baseUrl}/v1`);
-  await page.getByLabel('Model').fill('mock-model');
+  await page.getByLabel('Model', { exact: true }).fill('mock-model');
+  await page.getByLabel('Model supports tool calls').check();
   await page.getByLabel('API key').fill('e2e-local-key');
-  await page.locator('select[name="apiMode"]').selectOption('chat');
   await page.getByRole('button', { name: 'Save connection' }).click();
   await expect(page.getByRole('status')).toContainText('Connection saved with an API key');
 
@@ -59,9 +57,9 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await page.getByRole('link', { name: 'Presets' }).click();
   await importThroughDialog(page, 'Import Preset', 'presets/chat/synthetic-chat.settings');
   await expect(page.getByRole('heading', { name: 'Synthetic Chat Settings' })).toBeVisible();
-  await page.getByLabel('Chat preset').selectOption({ label: 'Synthetic Chat Settings' });
-  await page.getByRole('button', { name: 'Save active Presets' }).click();
-  await expect(page.getByRole('status')).toContainText('Active Presets saved.');
+  await page.getByLabel('Chat template').selectOption({ label: 'Synthetic Chat Settings' });
+  await page.getByRole('button', { name: 'Save default Chat template' }).click();
+  await expect(page.getByRole('status')).toContainText('Default Chat template saved.');
 
   await page.getByRole('link', { name: 'Worldbooks' }).click();
   await importThroughDialog(page, 'Import Worldbook', 'worldbooks/native.json');
@@ -86,14 +84,6 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await expect(page.locator('article.message-assistant').last()).toContainText('First answer');
   await expect(page.getByLabel('Response variants')).toContainText('1 / 1');
 
-  await page.locator('#chat-draft').fill('Preview without generating');
-  await page.getByRole('button', { name: 'Preview prompt' }).click();
-  const preview = page.getByRole('dialog', { name: 'Prompt Preview' });
-  await expect(preview.getByRole('heading', { name: 'Chat prompt' })).toBeVisible();
-  await expect(preview.getByRole('heading', { name: 'Tokenizer' })).toBeVisible();
-  await preview.getByRole('button', { name: 'Close Prompt Preview' }).click();
-  await page.locator('#chat-draft').fill('');
-
   await page.getByRole('button', { name: 'Swipe response' }).click();
   await expect(page.locator('article.message-assistant').last()).toContainText('Swiped answer');
   await expect(page.getByLabel('Response variants')).toContainText('2 / 2');
@@ -102,14 +92,7 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await expect(page.locator('article.message-assistant').last()).toContainText('Regenerated answer');
   await expect(page.getByLabel('Response variants')).toContainText('3 / 3');
 
-  await page.getByRole('button', { name: 'Continue response' }).click();
-  await expect(page.locator('article.message-assistant').last()).toContainText('Regenerated answer + continued');
-
-  await page.getByRole('button', { name: 'Continue response' }).click();
-  await expect(page.locator('article.message-assistant').last()).toContainText('stopped partial');
-  await page.getByRole('button', { name: 'Stop', exact: true }).click();
-  await expect(page.locator('.generation-status')).toHaveText('idle');
-  await expect(page.locator('article.message-assistant').last()).toContainText('Regenerated answer + continued + stopped partial');
+  await expect(page.getByRole('button', { name: 'Continue response' })).toHaveCount(0);
 
   const userMessage = page.locator('article.message-user').first();
   await userMessage.getByRole('button', { name: /^Edit / }).click();
@@ -120,8 +103,6 @@ test('a first-run user can configure, import, chat, stop, branch, edit, delete, 
   await expect(page.locator('article.message-user')).toHaveCount(0);
 
   expect(stack.provider.requests.map(({ path }) => path)).toEqual([
-    '/v1/chat/completions',
-    '/v1/chat/completions',
     '/v1/chat/completions',
     '/v1/chat/completions',
     '/v1/chat/completions',

@@ -45,6 +45,7 @@ export interface BackupMetadata {
   database: BackupFileMetadata;
   wal?: BackupFileMetadata;
   integrityCheck: 'ok';
+  retention: 'rolling' | 'pinned';
 }
 
 export interface CreatePreMigrationBackupOptions {
@@ -55,6 +56,7 @@ export interface CreatePreMigrationBackupOptions {
   /** Test seam and collision-resistant publication identifier. */
   backupId?: () => string;
   databaseOwnership?: DatabaseOwnership;
+  retention?: 'rolling' | 'pinned';
 }
 
 export interface PreMigrationBackup {
@@ -507,11 +509,11 @@ function databaseIntegrity(path: string): 'ok' {
   }
 }
 
-function publishedName(date: Date, createId: () => string): string {
+function publishedName(date: Date, createId: () => string, retention: 'rolling' | 'pinned'): string {
   if (Number.isNaN(date.getTime())) throw new Error('Backup clock is invalid.');
   const identifier = createId();
   if (!/^[0-9a-f]{16}$/.test(identifier)) throw new Error('Backup identifier is invalid.');
-  return `${date.toISOString().replace(/[:.]/g, '-')}-${identifier}-pre-migration`;
+  return `${date.toISOString().replace(/[:.]/g, '-')}-${identifier}-${retention === 'pinned' ? 'pre-agent-reset' : 'pre-migration'}`;
 }
 
 function retainNewestBackups(root: string, protectedName: string): void {
@@ -535,7 +537,8 @@ function retainNewestBackups(root: string, protectedName: string): void {
 function createOwnedPreMigrationBackup(options: CreatePreMigrationBackupOptions): PreMigrationBackup {
   const root = ensureBackupRoot(options.dataDir);
   const createdAt = (options.clock ?? (() => new Date()))();
-  const name = publishedName(createdAt, options.backupId ?? (() => randomBytes(8).toString('hex')));
+  const retention = options.retention ?? 'rolling';
+  const name = publishedName(createdAt, options.backupId ?? (() => randomBytes(8).toString('hex')), retention);
   const temporaryPath = join(root, `.${name}.${process.pid}.tmp`);
   const finalPath = join(root, name);
   ensurePrivateDirectory(temporaryPath);
@@ -568,6 +571,7 @@ function createOwnedPreMigrationBackup(options: CreatePreMigrationBackupOptions)
       database,
       ...(wal === undefined ? {} : { wal }),
       integrityCheck: databaseIntegrity(join(temporaryPath, databaseName)),
+      retention,
     };
     writeMetadata(join(temporaryPath, BACKUP_METADATA_FILE), metadata);
     syncDirectory(temporaryPath);

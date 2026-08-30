@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.84.3",
     "@tavernnext/domain": "*"
   }
 }

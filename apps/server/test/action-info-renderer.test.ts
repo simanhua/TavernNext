@@ -4,6 +4,41 @@ import { describe, expect, it } from 'vitest';
 import { renderActionInfoMessage, renderCombatActionInfoMessage } from '../assets/official-scenes/destined-poem/frontend/action-info.mjs';
 
 describe('Destined Poem action_info renderer', () => {
+  it('renders narrative Markdown blocks and inline formatting without allowing raw HTML', () => {
+    const html = renderCombatActionInfoMessage(`**【初始属性分配】**
+
+---
+
+你拥有**24点属性点**。
+
+| 属性 | 当前 | 说明 |
+|------|------|------|
+| 力量 | 4 | 近战伤害 |
+| 敏捷 | 5 | 行动速度 |
+
+> ⚠️ **请注意**：每项上限6点。
+
+1. **命途之书** — 记录命运
+2. **万象百工** — 精通生产
+
+[安全链接](https://example.com/a*b*) [危险链接](javascript:alert(1))
+
+<script>alert('unsafe')</script>`);
+
+    expect(html).toContain('<strong>【初始属性分配】</strong>');
+    expect(html).toContain('<hr');
+    expect(html).toContain('<table>');
+    expect(html).toContain('<th>属性</th>');
+    expect(html).toContain('<td>力量</td>');
+    expect(html).toContain('<blockquote>');
+    expect(html).toContain('<ol>');
+    expect(html).toContain('<a href="https://example.com/a*b*"');
+    expect(html).not.toContain('javascript:');
+    expect(html).not.toContain('**');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
   it('preserves narrative and renders the original title/pipe-row structure as a panel', () => {
     const html = renderActionInfoMessage(`Before
 <action_info>

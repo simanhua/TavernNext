@@ -8,8 +8,10 @@ import { createRepositories } from '../../src/db/repositories.js';
 import { TEST_REPOSITORY_OPTIONS } from '../test-integrity-key.js';
 
 const testDirectories: string[] = [];
+const testDatabases: Array<ReturnType<typeof createDatabase>> = [];
 
 afterEach(async () => {
+  for (const database of testDatabases.splice(0)) database.close();
   await Promise.all(testDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -17,6 +19,7 @@ async function createTestRepositories() {
   const directory = await mkdtemp(join(tmpdir(), 'tavernnext-db-'));
   testDirectories.push(directory);
   const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+  testDatabases.push(database);
   migrateDatabase(database);
   return { database, repositories: createRepositories(database, TEST_REPOSITORY_OPTIONS) };
 }
@@ -59,13 +62,176 @@ describe('SQLite repositories', () => {
   it('creates every planned persistence table', async () => {
     const { database } = await createTestRepositories();
     const tables = database.sqlite.prepare("select name from sqlite_master where type = 'table'").all() as Array<{ name: string }>;
+    const indexes = database.sqlite.prepare("select name from sqlite_master where type = 'index'").all() as Array<{ name: string }>;
 
     expect(tables.map(({ name }) => name)).toEqual(expect.arrayContaining([
       'characters', 'personas', 'worldbooks', 'worldbook_entries', 'presets',
       'conversations', 'messages', 'message_variants', 'provider_profiles',
       'import_artifacts', 'generation_snapshots',
-      'conversation_worldbooks', 'worldbook_runtime_states', 'avatar_assets', 'global_generation_config',
+      'conversation_worldbooks', 'worldbook_runtime_states', 'save_worldbooks', 'avatar_assets', 'global_generation_config',
+      'save_memories', 'memory_jobs', 'save_memory_configurations', 'global_embedding_configuration',
     ]));
+    expect(indexes.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      'save_memories_recall_idx', 'save_memories_kind_status_idx',
+    ]));
+  });
+
+  it('stores Save Memory records and cascades them with their Save', async () => {
+    const { repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000801', name: 'Memory character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000802', name: 'Memory persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000803', characterId: character.id, personaId: persona.id,
+      title: 'Memory Save',
+    });
+    const configuration = repositories.saveMemoryConfigurations.create({
+      id: '018f0000-0000-7000-8000-000000000804', conversationId: conversation.id, enabled: true,
+    });
+    const memory = repositories.saveMemories.create({
+      id: '018f0000-0000-7000-8000-000000000805', conversationId: conversation.id,
+      kind: 'commitment', tier: 'near', summary: 'A promise was made.', detail: 'Aster promised to return.',
+      entities: [{ kind: 'character', id: 'aster', label: 'Aster' }], salience: 0.9, confidence: 0.8,
+      sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
+      sourceMemoryIds: [], supersedesId: null, contentHash: 'a'.repeat(64), tokenCount: 8,
+    });
+    const job = repositories.memoryJobs.create({
+      id: '018f0000-0000-7000-8000-000000000806', conversationId: conversation.id,
+      kind: 'extract-turn', status: 'pending', attempts: 0, nextAttemptAt: null,
+      payload: { generationId: '018f0000-0000-7000-8000-000000000807' }, lastError: null,
+    });
+
+    expect(repositories.saveMemoryConfigurations.getByConversationId(conversation.id)).toMatchObject({
+      id: configuration.id, enabled: true,
+    });
+    expect(repositories.saveMemories.listByConversationId(conversation.id)).toEqual([
+      expect.objectContaining({ id: memory.id, kind: 'commitment', pinned: false, excluded: false }),
+    ]);
+    expect(repositories.memoryJobs.listByConversationId(conversation.id)).toEqual([
+      expect.objectContaining({ id: job.id, status: 'pending' }),
+    ]);
+
+    expect(repositories.conversations.delete(conversation.id, conversation.revision)).toEqual({ ok: true });
+    expect(repositories.saveMemories.get(memory.id)).toBeUndefined();
+    expect(repositories.memoryJobs.get(job.id)).toBeUndefined();
+    expect(repositories.saveMemoryConfigurations.get(configuration.id)).toBeUndefined();
+  });
+
+  it('bounds recall candidates to visible active Save Memory on the selected branch', async () => {
+    const { repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000811', name: 'Recall character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000812', name: 'Recall persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000813', characterId: character.id, personaId: persona.id,
+      title: 'Bounded recall',
+    });
+    const memory = (id: string, summary: string, sourceVariantId: string | null, patch: { pinned?: boolean; excluded?: boolean; status?: 'active' | 'archived' } = {}) => (
+      repositories.saveMemories.create({
+        id, conversationId: conversation.id, kind: 'episode', tier: 'near', summary, detail: '',
+        entities: [], salience: 0.5, confidence: 0.8,
+        sourceMessageId: null, sourceVariantId, sourceTransitionId: null, sourceAgentRunId: null,
+        sourceMemoryIds: [], supersedesId: null, contentHash: id.replaceAll('-', '').padEnd(64, '0').slice(0, 64),
+        tokenCount: 4, ...patch,
+      })
+    );
+    const activeVariantId = '018f0000-0000-7000-8000-000000000820';
+    const abandonedVariantId = '018f0000-0000-7000-8000-000000000821';
+    const pinned = memory('018f0000-0000-7000-8000-000000000814', 'Pinned evidence', null, { pinned: true });
+    memory('018f0000-0000-7000-8000-000000000815', 'Abandoned branch', abandonedVariantId);
+    memory('018f0000-0000-7000-8000-000000000816', 'Excluded evidence', null, { excluded: true });
+    memory('018f0000-0000-7000-8000-000000000817', 'Archived evidence', null, { status: 'archived' });
+    const relevant = memory('018f0000-0000-7000-8000-000000000818', 'Obsidian oath evidence', activeVariantId);
+    const recent = [
+      memory('018f0000-0000-7000-8000-000000000819', 'Recent filler one', null),
+      memory('018f0000-0000-7000-8000-000000000822', 'Recent filler two', null),
+      memory('018f0000-0000-7000-8000-000000000823', 'Recent filler three', null),
+    ];
+
+    const candidates = repositories.saveMemories.listRecallCandidates({
+      conversationId: conversation.id,
+      activeVariantIds: [activeVariantId],
+      excludedVariantIds: [],
+      searchTerms: ['obsidian', 'oath'],
+      limit: 4,
+    });
+    expect(candidates).toHaveLength(4);
+    expect(candidates.map(({ id }) => id)).toEqual(expect.arrayContaining([
+      pinned.id, relevant.id, ...recent.slice(-2).map(({ id }) => id),
+    ]));
+  });
+
+  it('prunes historical completed Memory Jobs during an idempotent migration', async () => {
+    const { database, repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000861', name: 'Migration character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000862', name: 'Migration persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000863', characterId: character.id, personaId: persona.id,
+      title: 'Migration cleanup',
+    });
+    database.sqlite.prepare(`
+      WITH RECURSIVE jobs(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM jobs WHERE value < 103)
+      INSERT INTO memory_jobs (id, revision, created_at, updated_at, payload, conversation_id, kind, status, next_attempt_at)
+      SELECT printf('018f0000-0000-7000-8000-%012d', value), 0,
+        printf('2026-08-29T00:00:%02d.000Z', value % 60), printf('2026-08-29T00:00:%02d.000Z', value % 60),
+        json_object(
+          'id', printf('018f0000-0000-7000-8000-%012d', value), 'revision', 0,
+          'createdAt', printf('2026-08-29T00:00:%02d.000Z', value % 60),
+          'updatedAt', printf('2026-08-29T00:00:%02d.000Z', value % 60),
+          'conversationId', ?, 'kind', 'extract-turn', 'status', 'completed', 'attempts', 1,
+          'nextAttemptAt', NULL, 'payload', json_object('value', value), 'lastError', NULL
+        ), ?, 'extract-turn', 'completed', NULL FROM jobs
+    `).run(conversation.id, conversation.id);
+    repositories.memoryJobs.create({
+      id: '018f0000-0000-7000-8000-000000000864', conversationId: conversation.id,
+      kind: 'extract-turn', status: 'failed', attempts: 4, nextAttemptAt: null, lastError: 'retain me', payload: {},
+    });
+
+    migrateDatabase(database);
+    const jobs = repositories.memoryJobs.listByConversationId(conversation.id);
+    expect(jobs.filter((job) => job.status === 'completed')).toHaveLength(100);
+    expect(jobs).toContainEqual(expect.objectContaining({ status: 'failed', lastError: 'retain me' }));
+  });
+
+  it('prunes old completed Memory Jobs while preserving recent and failed work', async () => {
+    const { repositories } = await createTestRepositories();
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000831', name: 'Job character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000832', name: 'Job persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000833', characterId: character.id, personaId: persona.id,
+      title: 'Bounded jobs',
+    });
+    const completed = Array.from({ length: 5 }, (_, index) => repositories.memoryJobs.create({
+      id: `018f0000-0000-7000-8000-00000000084${index}`, conversationId: conversation.id,
+      kind: 'extract-turn', status: 'completed', attempts: 1, nextAttemptAt: null, lastError: null, payload: { index },
+    }));
+    const failed = repositories.memoryJobs.create({
+      id: '018f0000-0000-7000-8000-000000000850', conversationId: conversation.id,
+      kind: 'extract-turn', status: 'failed', attempts: 4, nextAttemptAt: null, lastError: 'bad output', payload: {},
+    });
+
+    expect(repositories.memoryJobs.pruneCompleted(conversation.id, 3)).toBe(2);
+    expect(repositories.memoryJobs.listByConversationId(conversation.id).map(({ id }) => id)).toEqual([
+      ...completed.slice(-3).map(({ id }) => id), failed.id,
+    ]);
   });
 
   it('keeps a clean database migration idempotent', async () => {
@@ -74,10 +240,23 @@ describe('SQLite repositories', () => {
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
 
     migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000000041', name: 'Persistent Character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000000042', name: 'Persistent Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000000043', characterId: character.id, personaId: persona.id,
+      title: 'Must survive an idempotent migration',
+    });
     migrateDatabase(database);
 
     expect(database.sqlite.prepare('SELECT version FROM tavernnext_schema_version').all()).toEqual([{ version: CURRENT_SCHEMA_VERSION }]);
     expect(database.sqlite.prepare('PRAGMA foreign_keys').all()).toEqual([{ foreign_keys: 1 }]);
+    expect(repositories.conversations.get(conversation.id)).toBeDefined();
   });
 
   it('stores and deletes avatar bytes only through an exact entity-bound key', async () => {
@@ -410,6 +589,7 @@ describe('SQLite repositories', () => {
     const runtime = repositories.worldbookRuntimeStates.create({
       id: '018f0000-0000-7000-8000-000000000051', conversationId: conversation.id,
       timedState: { messageIndex: null, sticky: [], cooldown: [] },
+      entryOverrides: [],
     });
 
     expect(repositories.generationSnapshots.get(snapshot.id)?.payload).toEqual({ schemaVersion: 1, payloadHash: 'immutable' });

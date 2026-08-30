@@ -1,7 +1,11 @@
+import { AgentActivityKindSchema, type AgentActivityKind } from '@tavernnext/domain';
+
 export type GenerationEvent =
   | { type: 'started'; generationId: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'delta'; text: string }
+  | { type: 'activity'; kind: AgentActivityKind; label: string }
+  | { type: 'view_placeholder'; viewId: string; kind: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'completed'; finishReason: string }
   | { type: 'aborted' }
@@ -22,6 +26,14 @@ function parseFrame(frame: string): GenerationEvent | undefined {
     case 'delta':
       if (typeof data.text !== 'string') break;
       return { type, text: data.text };
+    case 'activity':
+      if (typeof data.label !== 'string') break;
+      const kind = AgentActivityKindSchema.safeParse(data.kind);
+      if (!kind.success) break;
+      return { type, kind: kind.data, label: data.label };
+    case 'view_placeholder':
+      if (typeof data.viewId !== 'string' || typeof data.kind !== 'string') break;
+      return { type, viewId: data.viewId, kind: data.kind };
     case 'usage':
       if (typeof data.inputTokens !== 'number' || typeof data.outputTokens !== 'number') break;
       return { type, inputTokens: data.inputTokens, outputTokens: data.outputTokens };

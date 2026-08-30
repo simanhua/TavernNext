@@ -5,7 +5,7 @@ import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { resolveActiveResourceContext } from '../services/active-extension-resources.js';
 import type { createExtensionTrustService } from '../services/extension-trust-service.js';
-import type { GenerationService } from '../services/generation-service.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
 
 type TrustService = ReturnType<typeof createExtensionTrustService>;
 
@@ -45,7 +45,7 @@ export function registerInteractiveActionRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
   trust: TrustService,
 ): void {
   const authorizedSource = (conversationId: string, sourceVariantId: string) => {

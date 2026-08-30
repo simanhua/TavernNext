@@ -1,5 +1,9 @@
 import multipart from '@fastify/multipart';
-import { createOpenAICompatibleClient, type OpenAICompatibleProfile } from '@tavernnext/provider-openai-compatible';
+import {
+  createOpenAICompatibleClient,
+  createPiAgentModelRuntime,
+  type OpenAICompatibleProfile,
+} from '@tavernnext/provider-openai-compatible';
 import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import { existsSync } from 'node:fs';
@@ -7,14 +11,13 @@ import { dirname } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loadConfig, loadProviderSecrets, type ProviderSecretMap, type ServerConfig } from './config.js';
 import { createDatabase, type TavernDatabase } from './db/client.js';
-import { migrateDatabase, readSchemaVersion } from './db/migrate.js';
+import { AGENT_FIRST_RESET_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, migrateDatabase, readSchemaVersion } from './db/migrate.js';
 import { createRepositories } from './db/repositories.js';
 import { registerCharacterRoutes } from './routes/characters.js';
 import { registerAvatarRoutes } from './routes/avatars.js';
 import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerGenerationRoutes } from './routes/generations.js';
-import { registerGenerationCandidateRoutes } from './routes/generation-candidates.js';
 import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
 import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
 import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
@@ -24,7 +27,6 @@ import { registerMessageRoutes } from './routes/messages.js';
 import { registerInteractiveActionRoutes } from './routes/interactive-actions.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
-import { registerPromptPreviewRoutes } from './routes/prompt-preview.js';
 import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
@@ -32,12 +34,16 @@ import type { ProviderProbeFactory } from './routes/providers.js';
 import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
 import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
-import { createGenerationService, type ProviderClientFactory } from './services/generation-service.js';
-import { createPromptPreviewService } from './services/prompt-preview-service.js';
+import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
+import { registerAgentRunRoutes } from './routes/agent-runs.js';
+import { registerMemoryRoutes } from './routes/memories.js';
+import { createGenerationService } from './services/generation-service.js';
+import type { PiAgentRuntimeFactory } from './services/scene-director-agent.js';
+import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
-import { createGenerationCandidateService } from './services/generation-candidate-service.js';
 import { createCharacterImportHandler } from './services/character-import-handler.js';
 import { createPresetImportHandler } from './services/preset-import-handler.js';
+import { synchronizeOfficialPresets } from './services/official-preset-registry.js';
 import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
 import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
 import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
@@ -50,7 +56,9 @@ import { REDACTED_LOG_VALUE, redactLogValue } from './services/log-redaction.js'
 import { createSecretStore } from './services/secret-store.js';
 import { injectedSnapshotIntegrityKey, loadSnapshotIntegrityKey } from './snapshot-integrity-key.js';
 import { createSceneService } from './scenes/scene-service.js';
-import { upgradeInstalledOfficialSceneRuntime } from './scenes/official-scene-upgrade.js';
+import { upgradeInstalledOfficialScenes } from './scenes/official-scene-upgrade.js';
+import { createOpenAICompatibleDenseSearch } from './services/memory-embedding.js';
+import { createPiMemoryExtractor, createSaveMemoryService } from './services/save-memory-service.js';
 
 export type StartupMigrationResult = 'writable' | 'read_only_migration_failed';
 
@@ -63,7 +71,8 @@ declare module 'fastify' {
 export interface CreateAppOptions {
   config?: ServerConfig;
   database?: TavernDatabase;
-  providerClientFactory?: ProviderClientFactory;
+  piAgentRuntimeFactory?: PiAgentRuntimeFactory;
+  saveAgentRuntime?: SaveAgentRuntime;
   providerProbeFactory?: ProviderProbeFactory;
   providerSecrets?: ProviderSecretMap;
   tokenizerRuntime?: ServerTokenizerRuntime;
@@ -82,6 +91,8 @@ export interface CreateAppOptions {
   migrationRunner?: (database: TavernDatabase) => void;
   extensionRemoteFetcher?: ExtensionRemoteFetcher;
   databaseOwnershipTimeoutMs?: number;
+  memoryWorkerIntervalMs?: number | false;
+  synchronizeOfficialPresetCatalog?: boolean;
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -110,13 +121,18 @@ function startupDatabase(config: ServerConfig, options: CreateAppOptions): {
         // connection is its boundary before WAL validation/checkpoint backup.
         closedConnection.close();
       }
-      backupPath = createPreMigrationBackup({
-        dataDir: config.dataDir,
-        databasePath: config.databasePath,
-        schemaVersion,
-        ...(ownership === undefined ? {} : { databaseOwnership: ownership }),
-        ...(options.backupClock === undefined ? {} : { clock: options.backupClock }),
-      }).path;
+      const needsMigration = schemaVersion !== CURRENT_SCHEMA_VERSION || options.migrationRunner !== undefined;
+      const hasRecoveryWal = existsSync(`${config.databasePath}-wal`);
+      if (needsMigration || hasRecoveryWal) {
+        backupPath = createPreMigrationBackup({
+          dataDir: config.dataDir,
+          databasePath: config.databasePath,
+          schemaVersion,
+          retention: schemaVersion === null || schemaVersion < AGENT_FIRST_RESET_SCHEMA_VERSION ? 'pinned' : 'rolling',
+          ...(ownership === undefined ? {} : { databaseOwnership: ownership }),
+          ...(options.backupClock === undefined ? {} : { clock: options.backupClock }),
+        }).path;
+      }
     }
 
     const database = options.database ?? createDatabase(config.databasePath);
@@ -200,12 +216,19 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const startup = startupDatabase(config, options);
   try {
   const { database } = startup;
-  if (startup.result === 'writable') upgradeInstalledOfficialSceneRuntime(database, config.dataDir);
   app.decorate('startupMigrationResult', startup.result);
   if (startup.result === 'read_only_migration_failed') {
     app.log.warn({ code: 'migration_failed' }, 'Startup migration failed; read-only recovery mode is active.');
   }
   const repositories = createRepositories(database, { snapshotIntegrityKey });
+  if (startup.result === 'writable') {
+    const syncOfficialPresets = options.synchronizeOfficialPresetCatalog
+      ?? (process.env.NODE_ENV !== 'test' && options.database === undefined);
+    if (syncOfficialPresets) database.transaction(() => synchronizeOfficialPresets(repositories));
+    for (const failure of upgradeInstalledOfficialScenes(database, config.dataDir, repositories)) {
+      app.log.error(failure, 'Official Scene upgrade failed; the prior installed package remains active.');
+    }
+  }
   const scenes = createSceneService({ dataDir: config.dataDir, database, repositories });
   const imports = createImportService({
     dataDir: config.dataDir,
@@ -226,42 +249,79 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   const providerSecrets = options.providerSecrets ?? loadProviderSecrets();
   for (const [secretRef, secret] of Object.entries(providerSecrets)) {
     const existing = secretStore.get(secretRef);
-    if (existing?.providerId === secret.providerId && existing.baseUrl === secret.baseUrl && existing.value === secret.value) continue;
-    secretStore.set(secretRef, secret);
+    if (existing?.profileId === secret.providerId && existing.baseUrl === secret.baseUrl
+      && existing.credential.type === 'api_key' && existing.credential.key === secret.value) continue;
+    secretStore.set(secretRef, {
+      profileId: secret.providerId,
+      baseUrl: secret.baseUrl,
+      credential: { type: 'api_key', key: secret.value },
+    });
   }
   const resolveSecret = (profileId: string, baseUrl: string, secretRef: string): string | undefined => {
     const secret = secretStore.get(secretRef);
     if (secret === undefined) return undefined;
-    if (secret.providerId !== profileId || normalizedBaseUrl(secret.baseUrl) !== normalizedBaseUrl(baseUrl)) return undefined;
-    return secret.value;
+    if (secret.profileId !== profileId || normalizedBaseUrl(secret.baseUrl) !== normalizedBaseUrl(baseUrl)) return undefined;
+    return secret.credential.type === 'api_key' ? secret.credential.key : undefined;
   };
-  const providerClientFactory: ProviderClientFactory = options.providerClientFactory ?? ((profile) => {
+  const resolvedProviderAuth = (profile: Parameters<PiAgentRuntimeFactory>[0]) => {
     const headers = Object.fromEntries(
       Object.entries(profile.headerSecretRefs).flatMap(([name, secretRef]) => {
         const value = resolveSecret(profile.id, profile.baseUrl, secretRef);
         return value === undefined ? [] : [[name, value]];
       }),
     );
-    return createOpenAICompatibleClient({
-      baseUrl: profile.baseUrl,
-      ...(profile.secretRef === undefined ? {} : { apiKey: resolveSecret(profile.id, profile.baseUrl, profile.secretRef) }),
-      headers,
-    });
-  });
+    const apiKey = profile.secretRef === undefined
+      ? undefined
+      : resolveSecret(profile.id, profile.baseUrl, profile.secretRef);
+    return { headers, apiKey };
+  };
+  const piAgentRuntimeFactory = options.piAgentRuntimeFactory ?? ((profile) => {
+        const { headers, apiKey } = resolvedProviderAuth(profile);
+        if (apiKey === undefined && profile.providerId !== 'custom-openai-compatible') {
+          throw new Error('Provider credential is unavailable.');
+        }
+        return createPiAgentModelRuntime({
+          providerId: profile.providerId,
+          modelId: profile.modelId,
+          baseUrl: profile.baseUrl,
+          apiKey: apiKey ?? 'tavernnext-keyless-endpoint',
+          headers,
+        });
+      }) satisfies PiAgentRuntimeFactory;
   const tokenizerRuntime: ServerTokenizerRuntime = options.tokenizerRuntime ?? {
     selectTokenizer,
     countText: (text, decision) => countText(text, decision, { dataDir: config.dataDir }),
     countMessages: (messages, decision) => countMessages(messages, decision, { dataDir: config.dataDir }),
   };
   const promptSnapshots = createPromptSnapshotService({ database, repositories, tokenizerRuntime });
-  const promptPreviews = createPromptPreviewService(promptSnapshots);
-  const generationCandidates = createGenerationCandidateService(promptSnapshots, repositories);
-  const generations = createGenerationService({
+  const memoryDenseSearch = createOpenAICompatibleDenseSearch({
+    dataDir: config.dataDir,
+    repositories,
+    resolveSecret(secretRef) {
+      const secret = secretStore.get(secretRef);
+      return secret?.credential.type === 'api_key' ? secret.credential.key : undefined;
+    },
+  });
+  const saveMemory = createSaveMemoryService(repositories, memoryDenseSearch, database);
+  const memoryExtractor = createPiMemoryExtractor(repositories, piAgentRuntimeFactory);
+  const memoryWorkerIntervalMs = options.memoryWorkerIntervalMs
+    ?? (options.database === undefined ? 1_000 : false);
+  let memoryWorkerRunning = false;
+  const memoryWorkerTimer = memoryWorkerIntervalMs === false ? undefined : setInterval(() => {
+    if (memoryWorkerRunning) return;
+    memoryWorkerRunning = true;
+    void saveMemory.processReadyJobs(memoryExtractor).catch((error) => {
+      app.log.warn({ error }, 'Save Memory worker failed; pending jobs remain retryable.');
+    }).finally(() => { memoryWorkerRunning = false; });
+  }, Math.max(100, memoryWorkerIntervalMs));
+  memoryWorkerTimer?.unref?.();
+  const generations = options.saveAgentRuntime ?? createGenerationService({
     database,
     repositories,
-    providerClientFactory,
+    piAgentRuntimeFactory,
     promptSnapshotService: promptSnapshots,
     sceneService: scenes,
+    saveMemoryService: saveMemory,
   });
   const extensionTrust = createExtensionTrustService(repositories, options.extensionRemoteFetcher ?? (async (url) => {
     const response = await fetch(url);
@@ -344,7 +404,11 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     put(profileId, baseUrl, apiKey) {
       const secretRef = `browser:${profileId}`;
       const previous = secretStore.get(secretRef);
-      secretStore.set(secretRef, { providerId: profileId, baseUrl, value: apiKey });
+      secretStore.set(secretRef, {
+        profileId,
+        baseUrl,
+        credential: { type: 'api_key', key: apiKey },
+      });
       return {
         secretRef,
         rollback() {
@@ -366,12 +430,14 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   registerGlobalGenerationConfigRoutes(app, repositories);
   registerConversationRoutes(app, database, repositories, generations);
   registerMessageRoutes(app, database, repositories, generations, scenes);
-  registerPromptPreviewRoutes(app, promptPreviews);
-  registerGenerationCandidateRoutes(app, generationCandidates);
   registerGenerationRoutes(app, generations);
-  registerSceneRoutes(app, scenes, repositories);
+  registerSaveAgentConfigurationRoutes(app, database, repositories);
+  registerSceneRoutes(app, scenes, repositories, generations);
+  registerAgentRunRoutes(app, repositories);
+  registerMemoryRoutes(app, repositories);
 
   app.addHook('onClose', async () => {
+    if (memoryWorkerTimer !== undefined) clearInterval(memoryWorkerTimer);
     try {
       await scenes.close();
     } finally {

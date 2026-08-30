@@ -7,7 +7,7 @@ import { MAX_ENTRIES_PER_WORLDBOOK, RelationshipLimitError, type Repositories } 
 import { worldbookDetail, worldbookEntryDetail, worldbookSummary } from './manager-dtos.js';
 
 const MAX_MANAGER_ROWS = 512;
-const BookEditableSchema = WorldbookSchema.pick({
+export const BookEditableSchema = WorldbookSchema.pick({
   name: true,
   description: true,
   enabled: true,
@@ -17,11 +17,11 @@ const BookEditableSchema = WorldbookSchema.pick({
   isGlobal: true,
 }).strict();
 const BookCreateSchema = BookEditableSchema.extend({ id: WorldbookSchema.shape.id.optional() }).strict();
-const BookPatchSchema = z.object({
+export const BookPatchSchema = z.object({
   revision: z.number().int().nonnegative(),
   patch: BookEditableSchema.partial().strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
-const EntryEditableSchema = WorldbookEntrySchema.pick({
+export const EntryEditableSchema = WorldbookEntrySchema.pick({
   keys: true,
   secondaryKeys: true,
   useRegex: true,
@@ -68,17 +68,30 @@ const EntryEditableSchema = WorldbookEntrySchema.pick({
   automationId: true,
   triggers: true,
 }).strict();
-const EntryPatchSchema = z.object({
+export const EntryPatchSchema = z.object({
   revision: z.number().int().nonnegative(),
   patch: EntryEditableSchema.partial().strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
-const ReorderSchema = z.object({
+export const ReorderSchema = z.object({
   entries: z.array(z.object({
     id: z.string().uuid(),
     revision: z.number().int().nonnegative(),
     order: z.number().int(),
   }).strict()).max(MAX_ENTRIES_PER_WORLDBOOK),
 }).strict();
+
+export function explicitPatchFields<T extends Record<string, unknown>>(raw: unknown, parsed: T): Partial<T> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.keys(raw).flatMap((key) => (
+    Object.prototype.hasOwnProperty.call(parsed, key) ? [[key, parsed[key]]] : []
+  ))) as Partial<T>;
+}
+
+export function rawPatch(body: unknown): unknown {
+  return typeof body === 'object' && body !== null && !Array.isArray(body) && 'patch' in body
+    ? (body as { patch: unknown }).patch
+    : undefined;
+}
 
 function revisionFrom(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
@@ -99,7 +112,7 @@ export function registerWorldbookRoutes(
   repositories: Repositories,
 ): void {
   app.get('/api/worldbooks', async (_request, reply) => {
-    const rows = repositories.worldbooks.list(MAX_MANAGER_ROWS + 1);
+    const rows = repositories.worldbooks.listShared(MAX_MANAGER_ROWS + 1);
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
     try {
       return rows.map((worldbook) => worldbookSummary(
@@ -112,6 +125,9 @@ export function registerWorldbookRoutes(
     }
   });
   app.get<{ Params: { id: string } }>('/api/worldbooks/:id', async (request, reply) => {
+    if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+      return reply.status(404).send({ error: 'not_found' });
+    }
     const value = repositories.worldbooks.get(request.params.id);
     if (value === undefined) return reply.status(404).send({ error: 'not_found' });
     try {
@@ -132,10 +148,17 @@ export function registerWorldbookRoutes(
     }
   });
   app.patch<{ Params: { id: string }; Body: unknown }>('/api/worldbooks/:id', async (request, reply) => {
+    if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+      return reply.status(404).send({ error: 'not_found' });
+    }
     const parsed = BookPatchSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     try {
-      const result = repositories.worldbooks.update(request.params.id, parsed.data.revision, parsed.data.patch);
+      const result = repositories.worldbooks.update(
+        request.params.id,
+        parsed.data.revision,
+        explicitPatchFields(rawPatch(request.body), parsed.data.patch),
+      );
       if (!result.ok) return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
       return reply.send(worldbookDetail(result.value, repositories.worldbookEntries.listByWorldbookId(result.value.id)));
     } catch (error) {
@@ -153,6 +176,9 @@ export function registerWorldbookRoutes(
       if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
       try {
         database.transaction(() => {
+          if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+            throw new Error('constraint_conflict');
+          }
           if (repositories.worldbooks.hasExternalReferences(request.params.id)) {
             throw new Error('constraint_conflict');
           }
@@ -171,6 +197,9 @@ export function registerWorldbookRoutes(
   );
 
   app.post<{ Params: { id: string }; Body: unknown }>('/api/worldbooks/:id/entries', async (request, reply) => {
+    if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+      return reply.status(404).send({ error: 'not_found' });
+    }
     const parsed = EntryEditableSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     if (repositories.worldbooks.get(request.params.id) === undefined) return reply.status(404).send({ error: 'not_found' });
@@ -193,12 +222,19 @@ export function registerWorldbookRoutes(
   app.patch<{ Params: { id: string; entryId: string }; Body: unknown }>(
     '/api/worldbooks/:id/entries/:entryId',
     async (request, reply) => {
+      if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+        return reply.status(404).send({ error: 'not_found' });
+      }
       const parsed = EntryPatchSchema.safeParse(request.body);
       if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
       const current = repositories.worldbookEntries.get(request.params.entryId);
       if (current === undefined || current.worldbookId !== request.params.id) return reply.status(404).send({ error: 'not_found' });
       try {
-        const result = repositories.worldbookEntries.update(current.id, parsed.data.revision, parsed.data.patch);
+        const result = repositories.worldbookEntries.update(
+          current.id,
+          parsed.data.revision,
+          explicitPatchFields(rawPatch(request.body), parsed.data.patch),
+        );
         if (result.ok) return reply.send(worldbookEntryDetail(result.value));
         return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
       } catch {
@@ -209,6 +245,9 @@ export function registerWorldbookRoutes(
   app.delete<{ Params: { id: string; entryId: string }; Querystring: { revision?: string }; Body: unknown }>(
     '/api/worldbooks/:id/entries/:entryId',
     async (request, reply) => {
+      if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+        return reply.status(404).send({ error: 'not_found' });
+      }
       const current = repositories.worldbookEntries.get(request.params.entryId);
       if (current === undefined || current.worldbookId !== request.params.id) return reply.status(404).send({ error: 'not_found' });
       const bodyRevision = typeof request.body === 'object' && request.body !== null && 'revision' in request.body
@@ -222,6 +261,9 @@ export function registerWorldbookRoutes(
     },
   );
   app.put<{ Params: { id: string }; Body: unknown }>('/api/worldbooks/:id/entries/order', async (request, reply) => {
+    if (repositories.saveWorldbooks.getByWorldbookId(request.params.id) !== undefined) {
+      return reply.status(404).send({ error: 'not_found' });
+    }
     const parsed = ReorderSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     if (repositories.worldbooks.get(request.params.id) === undefined) return reply.status(404).send({ error: 'not_found' });

@@ -2,20 +2,17 @@ import { randomUUID } from 'node:crypto';
 import {
   SceneAfterGenerationResultSchema,
   SceneBeforeGenerationResultSchema,
-  type GenerationMode,
   type Message,
   type MessageVariant,
   type ProviderProfile,
   type ScenePatchOperation,
   type ScenePatchFailure,
   type SceneStateDiagnostic,
+  type SceneManifest,
+  roleplayDocumentFromMarkdown,
+  roleplayDocumentPlainText,
+  type RoleplayDocument,
 } from '@tavernnext/domain';
-import type {
-  ChatRequest,
-  OpenAICompatibleClient,
-  ProviderEvent,
-  TextRequest,
-} from '@tavernnext/provider-openai-compatible';
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
 import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import type { TavernDatabase } from '../db/client.js';
@@ -23,45 +20,37 @@ import type { Repositories } from '../db/repositories.js';
 import {
   createPromptSnapshotService,
   PromptSnapshotError,
-  type PromptSnapshotErrorCode,
   type PromptSnapshotPayload,
+  type AcceptedPromptSnapshot,
   type PromptSnapshotService,
   type ServerTokenizerRuntime,
 } from './prompt-snapshot-service.js';
-import { createMvuRuntimeService } from './mvu-runtime-service.js';
-import { createReasoningCompatibilityService } from './reasoning-compat-service.js';
+import type {
+  SaveAgentRunInput,
+  SaveAgentRuntime,
+  SaveAgentRuntimeEvent,
+  StartSaveAgentRunResult,
+} from './save-agent-runtime.js';
 import {
   applyScenePatchPartial,
   SceneServiceError,
   type SceneService,
 } from '../scenes/scene-service.js';
-
-export type GenerationEvent =
-  | { type: 'started'; generationId: string }
-  | { type: 'reasoning_delta'; text: string }
-  | { type: 'delta'; text: string }
-  | { type: 'usage'; inputTokens: number; outputTokens: number }
-  | { type: 'completed'; finishReason: string }
-  | { type: 'aborted' }
-  | { type: 'failed'; code: string };
-
-export interface GenerationInput {
-  conversationId: string;
-  conversationRevision: number;
-  mode: GenerationMode;
-  userText?: string;
-  snapshotId?: string;
-  seed?: string | number;
-  messageIndex?: number;
-  reuseLastUser?: boolean;
-}
-
-export type ProviderClientFactory = (profile: ProviderProfile) => OpenAICompatibleClient;
-
-export type StartGenerationFailure = 'generation_active' | PromptSnapshotErrorCode;
-export type StartGenerationResult =
-  | { ok: true; generationId: string; events: AsyncIterable<GenerationEvent> }
-  | { ok: false; reason: StartGenerationFailure };
+import {
+  SceneDirectorExecution,
+  SceneDirectorRunError,
+  type SceneDirectorLimits,
+  type SceneDirectorTerminal,
+  type SceneDirectorEvent,
+  type PiAgentRuntimeFactory,
+} from './scene-director-agent.js';
+import { createSceneAgentToolFactory, type SceneAgentToolFactory } from './scene-agent-tools.js';
+import { createSceneViewRuntimeFactory, type SceneViewRuntimeFactory } from './scene-view-runtime.js';
+import {
+  createSaveMemoryService,
+  queryFrozenMemory,
+  type SaveMemoryService,
+} from './save-memory-service.js';
 
 interface ActiveGeneration {
   generationId: string;
@@ -69,6 +58,8 @@ interface ActiveGeneration {
   controller: AbortController;
   state: 'reserved' | 'iterating' | 'closed';
   reservationTimer?: ReturnType<typeof setTimeout>;
+  detachExternalAbort?: () => void;
+  releaseDeferredSnapshot?: () => void;
   cleanup(): void;
 }
 
@@ -78,29 +69,26 @@ interface PreparedGenerationBase {
   generationId: string;
   conversationId: string;
   provider: ProviderProfile;
+  playerInput: string;
   payload: PromptSnapshotPayload;
-  reasoningCompatibility: boolean;
+  sceneDirector?: SceneDirectorExecution;
+  deferredSnapshotCommit?: true;
   sceneTransition?: {
     stateRevision: number;
     baseValue: Record<string, unknown>;
     parentTransitionId: string | null;
     beforeOperations: ScenePatchOperation[];
     beforeFailures: ScenePatchFailure[];
+    stagedValue: Record<string, unknown>;
+    manifest: SceneManifest;
   };
 }
 
-type PreparedGeneration =
-  | (PreparedGenerationBase & { kind: 'chat'; request: ChatRequest })
-  | (PreparedGenerationBase & { kind: 'text'; request: TextRequest });
-
-export interface GenerationService {
-  start(input: GenerationInput): Promise<StartGenerationResult>;
-  triggerLastUser(conversationId: string): Promise<StartGenerationResult>;
-  cancel(generationId: string): boolean;
-  isConversationActive(conversationId: string): boolean;
-}
+type PreparedGeneration = PreparedGenerationBase;
 
 function safeFailureCode(error: unknown): string {
+  if (error instanceof SceneDirectorRunError) return error.code;
+  if (error instanceof SceneServiceError) return error.code;
   return error instanceof ProviderError ? error.code : 'upstream_error';
 }
 
@@ -112,104 +100,69 @@ function defaultTokenizerRuntime(): ServerTokenizerRuntime {
   };
 }
 
+function frozenAgentPlayerInput(repositories: Repositories, input: SaveAgentRunInput): string {
+  if (input.mode === 'normal') return input.userText!;
+  const messages = repositories.messages.listByConversationId(input.conversationId);
+  const target = messages.at(-1);
+  if (target?.role === 'assistant') {
+    const player = messages.at(-2);
+    if (player?.role === 'user') return player.content;
+  }
+  return 'Generate an alternative assistant reply for the current conversation point.';
+}
+
 function preparedRequest(
   generationId: string,
   provider: ProviderProfile,
   payload: PromptSnapshotPayload,
-  reasoningCompatibility: boolean,
+  playerInput: string,
   sceneTransition?: PreparedGenerationBase['sceneTransition'],
 ): PreparedGeneration {
-  const base: PreparedGenerationBase = {
+  return {
     generationId,
     conversationId: payload.input.conversationId,
     provider,
+    playerInput,
     payload,
-    reasoningCompatibility,
     ...(sceneTransition === undefined ? {} : { sceneTransition }),
   };
-  if (payload.kind === 'chat' && 'messages' in payload.compiledRequest) {
-    return { ...base, kind: 'chat', request: payload.compiledRequest };
-  }
-  if (payload.kind === 'text' && 'prompt' in payload.compiledRequest) {
-    return { ...base, kind: 'text', request: payload.compiledRequest };
-  }
-  throw new PromptSnapshotError('snapshot_invalid');
-}
-
-function sceneOutputProtocol(content: string): {
-  displayContent: string;
-  operations: unknown[];
-  diagnostics: SceneStateDiagnostic[];
-} {
-  const opening = content.search(/<UpdateVariable>/i);
-  if (opening < 0) {
-    return {
-      displayContent: content,
-      operations: [],
-      diagnostics: [{ source: 'scene-output-protocol', code: 'scene_patch_block_missing', failures: [] }],
-    };
-  }
-  const displayContent = content.slice(0, opening).trim();
-  const block = /<UpdateVariable>\s*(?:<Analysis>[\s\S]*?<\/Analysis>\s*)?<JSONPatch>\s*([\s\S]*?)\s*<\/JSONPatch>\s*<\/UpdateVariable>\s*$/i.exec(content);
-  const duplicate = content.slice(opening + '<UpdateVariable>'.length).search(/<UpdateVariable>/i) >= 0;
-  if (block === null || block.index !== opening || duplicate) {
-    return {
-      displayContent,
-      operations: [],
-      diagnostics: [{ source: 'scene-output-protocol', code: 'scene_patch_block_invalid', failures: [] }],
-    };
-  }
-  try {
-    const parsed = JSON.parse(block[1]!);
-    if (!Array.isArray(parsed) || parsed.length > 512) throw new Error('invalid');
-    return { displayContent, operations: parsed, diagnostics: [] };
-  } catch {
-    return {
-      displayContent,
-      operations: [],
-      diagnostics: [{ source: 'scene-output-protocol', code: 'scene_patch_json_invalid', failures: [] }],
-    };
-  }
 }
 
 export function createGenerationService(options: {
   database: TavernDatabase;
   repositories: Repositories;
-  providerClientFactory: ProviderClientFactory;
   promptSnapshotService?: PromptSnapshotService;
   tokenizerRuntime?: ServerTokenizerRuntime;
   sceneService?: SceneService;
-}): GenerationService {
-  const { database, repositories, providerClientFactory } = options;
+  piAgentRuntimeFactory?: PiAgentRuntimeFactory;
+  sceneDirectorLimits?: Partial<SceneDirectorLimits>;
+  saveMemoryService?: SaveMemoryService;
+}): SaveAgentRuntime {
+  const { database, repositories } = options;
+  const runtimeTokenizer = options.tokenizerRuntime ?? defaultTokenizerRuntime();
   const promptSnapshots = options.promptSnapshotService ?? createPromptSnapshotService({
     database,
     repositories,
-    tokenizerRuntime: options.tokenizerRuntime ?? defaultTokenizerRuntime(),
+    tokenizerRuntime: runtimeTokenizer,
   });
-  const mvu = createMvuRuntimeService(repositories);
-  const reasoningCompatibility = createReasoningCompatibilityService(repositories);
   const sceneService = options.sceneService;
+  const saveMemory = options.saveMemoryService ?? createSaveMemoryService(repositories, undefined, database);
   const activeByConversation = new Map<string, string>();
   const activeById = new Map<string, ActiveGeneration>();
 
-  function providerEvents(
-    prepared: PreparedGeneration,
-    signal: AbortSignal,
-  ): AsyncIterable<ProviderEvent> {
-    const client = providerClientFactory(prepared.provider);
-    return prepared.kind === 'chat'
-      ? client.streamChat(prepared.request, signal)
-      : client.streamText(prepared.request, signal);
+  function providerEvents(prepared: PreparedGeneration, signal: AbortSignal): AsyncIterable<SceneDirectorEvent> {
+    if (prepared.sceneDirector === undefined) throw new PromptSnapshotError('snapshot_unsupported');
+    return prepared.sceneDirector.events(signal);
   }
 
-  async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<GenerationEvent> {
+  async function* stream(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterable<SaveAgentRuntimeEvent> {
     const { controller } = active;
     const mode = prepared.payload.input.mode;
     const siblingMode = mode === 'swipe' || mode === 'regenerate';
     let targetMessage: Message | undefined;
     let variant: MessageVariant | undefined;
     let initializationError: unknown;
-    if (mode !== 'normal') {
+    if (siblingMode) {
       targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
       variant = repositories.messageVariants.get(prepared.payload.input.targetVariantId!);
       if (targetMessage === undefined || variant === undefined
@@ -218,78 +171,69 @@ export function createGenerationService(options: {
       }
       if (siblingMode) variant = undefined;
     }
-    let content = mode === 'continue' ? variant?.content ?? '' : '';
-    const initialContent = content;
-    let reasoning = mode === 'continue' ? variant?.reasoning ?? '' : '';
+    let content = '';
+    let document: RoleplayDocument = roleplayDocumentFromMarkdown('');
+    let reasoning = '';
     let hasDelta = false;
     let hasReasoningDelta = false;
     let finishReason = 'stop';
     let outcome: 'completed' | 'aborted' | 'failed' = 'aborted';
     let failureCode = 'upstream_error';
-    let providerIterator: AsyncIterator<ProviderEvent> | undefined;
-    let sceneOperations = [...(prepared.sceneTransition?.beforeOperations ?? [])];
-    let sceneFailures = [...(prepared.sceneTransition?.beforeFailures ?? [])];
+    let providerIterator: AsyncIterator<SceneDirectorEvent> | undefined;
+    const initialWorkspace = prepared.sceneDirector?.workspaceSnapshot();
+    let sceneOperations = initialWorkspace?.operations ?? [...(prepared.sceneTransition?.beforeOperations ?? [])];
+    let sceneFailures = initialWorkspace?.failures ?? [...(prepared.sceneTransition?.beforeFailures ?? [])];
     let sceneDiagnostics: SceneStateDiagnostic[] = [];
-    let activeSceneId: string | undefined;
 
     const flush = (status: MessageVariant['status'] = 'streaming') => {
       if (variant === undefined) return;
       const updated = repositories.messageVariants.update(variant.id, variant.revision, {
         content,
+        document,
         ...(reasoning === '' ? {} : { reasoning }),
         status,
         diagnostics: sceneDiagnostics,
         finishReason: status === 'completed' ? finishReason : undefined,
-        ...(mode === 'continue' && hasDelta ? {
-          continuationBoundaries: [
-            ...variant.continuationBoundaries,
-            ...(variant.continuationBoundaries.at(-1) === prepared.payload.input.continuationByteBoundary
-              ? []
-              : [prepared.payload.input.continuationByteBoundary!]),
-          ],
-        } : {}),
       });
       if (!updated.ok) throw new Error(`Unable to flush generation variant: ${updated.reason}`);
       variant = updated.value;
     };
 
     const beginPersistence = () => {
-      database.transaction(() => {
-        if (mode === 'normal') {
-          const message = repositories.messages.create({
-            id: randomUUID(),
-            conversationId: prepared.conversationId,
-            role: 'assistant',
-            content: '',
-            activeVariantId: null,
-          });
+      if (mode === 'normal') {
+        const message = repositories.messages.create({
+          id: randomUUID(),
+          conversationId: prepared.conversationId,
+          role: 'assistant',
+          content: '',
+          activeVariantId: null,
+        });
           variant = repositories.messageVariants.create({
-            id: randomUUID(),
-            messageId: message.id,
-            ordinal: 0,
+          id: randomUUID(),
+          messageId: message.id,
+          ordinal: 0,
             content,
-            ...(reasoning === '' ? {} : { reasoning }),
-            status: 'streaming',
-            continuationBoundaries: [],
-          });
-          const linked = repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id });
-          if (!linked.ok) throw new Error(`Unable to link generation variant: ${linked.reason}`);
-        } else if (siblingMode) {
-          const siblings = repositories.messageVariants.listByMessageId(targetMessage!.id);
-          const ordinal = siblings.reduce((maximum, sibling) => Math.max(maximum, sibling.ordinal), -1) + 1;
+            document,
+          ...(reasoning === '' ? {} : { reasoning }),
+          status: 'streaming',
+          continuationBoundaries: [],
+        });
+        const linked = repositories.messages.update(message.id, message.revision, { activeVariantId: variant.id });
+        if (!linked.ok) throw new Error(`Unable to link generation variant: ${linked.reason}`);
+      } else if (siblingMode) {
+        const siblings = repositories.messageVariants.listByMessageId(targetMessage!.id);
+        const ordinal = siblings.reduce((maximum, sibling) => Math.max(maximum, sibling.ordinal), -1) + 1;
           variant = repositories.messageVariants.create({
-            id: randomUUID(),
-            messageId: targetMessage!.id,
-            ordinal,
+          id: randomUUID(),
+          messageId: targetMessage!.id,
+          ordinal,
             content,
-            ...(reasoning === '' ? {} : { reasoning }),
-            status: 'streaming',
-            continuationBoundaries: [],
-          });
-        } else {
-          flush();
-        }
-      });
+            document,
+          ...(reasoning === '' ? {} : { reasoning }),
+          status: 'streaming',
+          continuationBoundaries: [],
+        });
+      }
     };
 
     const selectSibling = () => {
@@ -310,6 +254,21 @@ export function createGenerationService(options: {
         const next = await providerIterator.next();
         if (next.done) break;
         const event = next.value;
+        if (event.type === 'agent_raw_delta') {
+          if (event.text !== '') {
+            content += event.text;
+            hasDelta = true;
+          }
+          continue;
+        }
+        if (event.type === 'activity') {
+          yield { type: 'activity', kind: event.kind, label: event.label };
+          continue;
+        }
+        if (event.type === 'view_placeholder') {
+          yield { type: 'view_placeholder', viewId: event.viewId, kind: event.kind };
+          continue;
+        }
         if (event.type === 'reasoning_delta') {
           if (event.text === '') continue;
           reasoning += event.text;
@@ -323,8 +282,10 @@ export function createGenerationService(options: {
         }
         if (event.type === 'delta') {
           if (event.text === '') continue;
-          content += event.text;
-          hasDelta = true;
+          if (prepared.sceneDirector === undefined) {
+            content += event.text;
+            hasDelta = true;
+          }
           // The SSE response is the live source of truth. Persist once at the
           // terminal boundary so large outputs do not repeatedly export the
           // complete sql.js database while they are still streaming.
@@ -372,32 +333,21 @@ export function createGenerationService(options: {
       }
       if (outcome === 'aborted') controller.abort();
       if (outcome === 'completed') {
-        const extracted = reasoningCompatibility.extract(prepared.reasoningCompatibility, content, reasoning);
-        content = extracted.content; reasoning = extracted.reasoning;
         const conversation = repositories.conversations.get(prepared.conversationId);
         const scene = conversation?.sceneId === undefined ? undefined : sceneService?.get(conversation.sceneId);
         const state = scene === undefined ? undefined : sceneService?.state(prepared.conversationId);
         const host = scene === undefined ? undefined : sceneService?.module(scene);
-        activeSceneId = scene?.id;
         if (conversation !== undefined && scene !== undefined && state !== undefined) {
-          let nextState = prepared.sceneTransition === undefined
+          const workspace = prepared.sceneDirector?.workspaceSnapshot();
+          let nextState = workspace?.stateRevision === null || workspace === undefined
+            ? prepared.sceneTransition === undefined
             ? state.value
             : applyScenePatchPartial(
               prepared.sceneTransition.baseValue,
               prepared.sceneTransition.beforeOperations,
               scene.manifest,
-            ).value;
-          if (scene.manifest.generationRecipe?.outputProtocol === 'mvu-json-patch-v1') {
-            const protocol = sceneOutputProtocol(content);
-            content = protocol.displayContent;
-            sceneDiagnostics.push(...protocol.diagnostics);
-            if (protocol.diagnostics.length === 0) {
-              const applied = applyScenePatchPartial(nextState, protocol.operations, scene.manifest);
-              nextState = applied.value;
-              sceneOperations.push(...applied.operations);
-              sceneFailures.push(...applied.failures);
-            }
-          }
+            ).value
+            : workspace.stagedValue;
           try {
             if (host !== undefined) {
               const processed = SceneAfterGenerationResultSchema.parse(await host.call('afterGeneration', {
@@ -406,7 +356,7 @@ export function createGenerationService(options: {
               }));
               if (processed.displayContent !== undefined) content = processed.displayContent;
               if (processed.statePatch !== undefined) {
-                const applied = applyScenePatchPartial(nextState, processed.statePatch, scene.manifest);
+                const applied = prepared.sceneDirector!.stageWorkspacePatch(processed.statePatch);
                 nextState = applied.value;
                 sceneOperations.push(...applied.operations);
                 sceneFailures.push(...applied.failures);
@@ -419,6 +369,12 @@ export function createGenerationService(options: {
               failures: [],
             });
           }
+          if (prepared.sceneDirector !== undefined) {
+            const finalizedWorkspace = prepared.sceneDirector.workspaceSnapshot();
+            nextState = finalizedWorkspace.stagedValue;
+            sceneOperations = finalizedWorkspace.operations;
+            sceneFailures = finalizedWorkspace.failures;
+          }
           if (sceneFailures.length > 0) {
             sceneDiagnostics.push({
               source: 'scene-output-protocol',
@@ -428,20 +384,61 @@ export function createGenerationService(options: {
             });
           }
         }
+        if (prepared.sceneDirector !== undefined && content.trim() === '') {
+          outcome = 'failed';
+          failureCode = 'empty_narrative';
+          hasDelta = false;
+          hasReasoningDelta = false;
+        }
       }
+      if (outcome === 'completed' && prepared.sceneDirector !== undefined) {
+        const resolved = await prepared.sceneDirector.resolveRoleplayDocument(content, controller.signal);
+        if (controller.signal.aborted) {
+          outcome = 'aborted';
+        } else {
+          document = resolved.document;
+          content = roleplayDocumentPlainText(document);
+          sceneDiagnostics.push(...resolved.diagnostics);
+          if (content.trim() === '') {
+            outcome = 'failed';
+            failureCode = 'empty_narrative';
+            hasDelta = false;
+            hasReasoningDelta = false;
+          }
+        }
+      }
+      let agentTerminal: SceneDirectorTerminal | undefined;
+      try {
+        agentTerminal = await prepared.sceneDirector?.settle(
+          outcome,
+          outcome === 'completed' ? undefined : failureCode,
+        );
+      } catch {
+        outcome = 'failed';
+        failureCode = 'agent_audit_failed';
+      }
+      let completedDeferredSnapshot = false;
       try {
         database.transaction(() => {
-          if (variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
-          if (variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
-          if (outcome === 'completed' && variant !== undefined && hasDelta && activeSceneId === undefined) {
-            mvu.commitCompletedVariant(
-              prepared.conversationId,
-              variant.id,
-              mode === 'continue' ? content.slice(initialContent.length) : content,
-            );
+          const persistResponse = outcome === 'completed';
+          if (outcome === 'completed' && prepared.sceneDirector !== undefined) {
+            const workspace = prepared.sceneDirector.workspaceSnapshot();
+            if (workspace.stateRevision !== null) {
+              const current = repositories.conversationSceneStates.getByConversationId(prepared.conversationId);
+              if (current === undefined || current.revision !== workspace.stateRevision) {
+                throw new SceneServiceError('conflict', 409);
+              }
+            }
           }
+          if (outcome === 'completed' && prepared.deferredSnapshotCommit === true) {
+            promptSnapshots.commitDeferredSnapshot(prepared.generationId, prepared.payload);
+            completedDeferredSnapshot = true;
+          }
+          if (persistResponse && variant === undefined && (hasDelta || hasReasoningDelta)) beginPersistence();
+          if (persistResponse && variant !== undefined && (hasDelta || hasReasoningDelta)) flush(outcome);
           if (outcome === 'completed' && variant !== undefined
-            && prepared.sceneTransition !== undefined && sceneOperations.length > 0) {
+            && prepared.sceneTransition !== undefined
+            && (sceneOperations.length > 0 || prepared.sceneDirector !== undefined)) {
             sceneService!.commitStateTransition(
               prepared.conversationId,
               prepared.sceneTransition.stateRevision,
@@ -454,37 +451,62 @@ export function createGenerationService(options: {
               },
             );
           }
-          if (hasDelta || hasReasoningDelta) selectSibling();
+          if (persistResponse && (hasDelta || hasReasoningDelta)) selectSibling();
           if (outcome === 'completed' && mode === 'normal') promptSnapshots.commitTimedState(prepared.payload);
+          if (outcome === 'completed' && variant !== undefined && agentTerminal !== undefined) {
+            const transition = repositories.sceneStateTransitions.getBySource('message-variant', variant.id);
+            agentTerminal = {
+              ...agentTerminal,
+              patch: {
+                ...agentTerminal.patch,
+                output: { messageId: variant.messageId, variantId: variant.id, transitionId: transition?.id ?? null },
+              },
+            };
+            const configuration = prepared.payload.entityRevisions.saveAgentConfiguration;
+            saveMemory.captureCommittedTurn({
+              conversationId: prepared.conversationId,
+              generationId: prepared.generationId,
+              sourceMessageId: variant.messageId,
+              sourceVariantId: variant.id,
+              sourceTransitionId: transition?.id ?? null,
+              sourceAgentRunId: agentTerminal.runId,
+              playerInput: prepared.playerInput,
+              narrative: content,
+              stateOperations: sceneOperations,
+              provider: structuredClone(prepared.provider),
+              saveAgentConfiguration: configuration,
+            });
+          }
+          if (agentTerminal !== undefined) prepared.sceneDirector!.commitTerminal(agentTerminal);
         });
       } catch (error) {
         outcome = 'failed';
         failureCode = safeFailureCode(error);
         try {
-          if (hasDelta || hasReasoningDelta) {
-            const persisted = variant === undefined ? undefined : repositories.messageVariants.get(variant.id);
-            if (persisted !== undefined) {
-              variant = persisted;
-              if (siblingMode) targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
-              if (variant.status !== 'failed') database.transaction(() => {
-                flush('failed');
-                selectSibling();
-              });
-            } else if (mode === 'normal' || siblingMode) {
-              variant = undefined;
-              if (siblingMode) {
-                targetMessage = repositories.messages.get(prepared.payload.input.targetMessageId!);
-                if (targetMessage === undefined) throw new Error('recovery_target_missing');
-              }
-              database.transaction(() => {
-                beginPersistence();
-                flush('failed');
-                selectSibling();
-              });
-            }
-          }
+          // Agent turns keep Save-owned state untouched when the atomic commit fails.
         } catch {
           // The original persistence failure is the only externally observable code.
+        }
+        try {
+          prepared.sceneDirector?.commitFailureAfterRollback(failureCode);
+        } catch {
+          failureCode = 'agent_audit_failed';
+        }
+      }
+      if (prepared.deferredSnapshotCommit === true) {
+        if (outcome === 'completed' && completedDeferredSnapshot) {
+          promptSnapshots.completeDeferredSnapshot(prepared.generationId);
+        } else {
+          promptSnapshots.releaseDeferredSnapshot(prepared.generationId);
+        }
+        active.releaseDeferredSnapshot = undefined;
+      }
+      if (prepared.sceneDirector !== undefined && agentTerminal === undefined) {
+        try {
+          prepared.sceneDirector.commitFailureAfterRollback(failureCode);
+        } catch {
+          outcome = 'failed';
+          failureCode = 'agent_audit_failed';
         }
       }
       active.cleanup();
@@ -495,7 +517,10 @@ export function createGenerationService(options: {
     else yield { type: 'failed', code: failureCode };
   }
 
-  function lifecycleEvents(prepared: PreparedGeneration, active: ActiveGeneration): AsyncIterableIterator<GenerationEvent> {
+  function lifecycleEvents(
+    prepared: PreparedGeneration,
+    active: ActiveGeneration,
+  ): AsyncIterableIterator<SaveAgentRuntimeEvent> {
     const source = stream(prepared, active)[Symbol.asyncIterator]();
     return {
       [Symbol.asyncIterator]() {
@@ -525,25 +550,35 @@ export function createGenerationService(options: {
     };
   }
 
-  const service: GenerationService = {
-    async start(input) {
+  const service: SaveAgentRuntime = {
+    async start(input: SaveAgentRunInput, signal?: AbortSignal): Promise<StartSaveAgentRunResult> {
       if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
         return { ok: false, reason: 'invalid_user_text' };
       }
       if (input.mode !== 'normal' && input.userText !== undefined) return { ok: false, reason: 'invalid_user_text' };
       if (activeByConversation.has(input.conversationId)) return { ok: false, reason: 'generation_active' };
-      const generationId = input.snapshotId ?? randomUUID();
+      const generationId = randomUUID();
       if (activeById.has(generationId)) return { ok: false, reason: 'generation_active' };
       const controller = new AbortController();
+      const abortFromExternal = () => controller.abort(signal?.reason);
+      if (signal?.aborted) abortFromExternal();
+      else signal?.addEventListener('abort', abortFromExternal, { once: true });
       const active: ActiveGeneration = {
         generationId,
         conversationId: input.conversationId,
         controller,
+        ...(signal === undefined ? {} : {
+          detachExternalAbort: () => signal.removeEventListener('abort', abortFromExternal),
+        }),
         state: 'reserved',
         cleanup() {
           if (active.state === 'closed') return;
           if (active.reservationTimer !== undefined) clearTimeout(active.reservationTimer);
           active.reservationTimer = undefined;
+          active.detachExternalAbort?.();
+          active.detachExternalAbort = undefined;
+          active.releaseDeferredSnapshot?.();
+          active.releaseDeferredSnapshot = undefined;
           active.state = 'closed';
           if (activeByConversation.get(active.conversationId) === active.generationId) {
             activeByConversation.delete(active.conversationId);
@@ -554,15 +589,37 @@ export function createGenerationService(options: {
       activeByConversation.set(input.conversationId, generationId);
       activeById.set(generationId, active);
       try {
+        const playerInput = frozenAgentPlayerInput(repositories, input);
+        const memoryConfiguration = repositories.saveMemoryConfigurations.getByConversationId(input.conversationId);
+        const activeTailVariantId = input.mode === 'normal'
+          ? null
+          : repositories.messages.listByConversationId(input.conversationId).at(-1)?.activeVariantId ?? null;
+        const excludedVariantIds = activeTailVariantId === null ? [] : [activeTailVariantId];
+        const recalledMemories = memoryConfiguration?.enabled === true
+          ? (await saveMemory.recallHybrid({
+              conversationId: input.conversationId, query: playerInput, limit: 6, excludedVariantIds,
+            })).memories
+          : [];
+        const memoryRecall = recalledMemories.map((memory) => ({
+          id: memory.id, revision: memory.revision, kind: memory.kind, tier: memory.tier,
+          summary: memory.summary, detail: memory.detail, tokenCount: memory.tokenCount,
+        }));
+        const memoryQueryCorpus = memoryConfiguration?.enabled === true
+          ? saveMemory.freezeCorpus({ conversationId: input.conversationId, excludedVariantIds }).map((memory) => ({
+              id: memory.id, revision: memory.revision, kind: memory.kind, tier: memory.tier,
+              summary: memory.summary, detail: memory.detail, tokenCount: memory.tokenCount,
+            }))
+          : [];
         let sceneTransition: PreparedGenerationBase['sceneTransition'];
         let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
+        let sceneAgentToolFactory: SceneAgentToolFactory | undefined;
+        let sceneViewRuntimeFactory: SceneViewRuntimeFactory | undefined;
         if (sceneService !== undefined) {
           const conversation = repositories.conversations.get(input.conversationId);
           const scene = conversation?.sceneId === undefined ? undefined : sceneService.get(conversation.sceneId);
           const state = scene === undefined ? undefined : sceneService.state(input.conversationId);
           const host = scene === undefined ? undefined : sceneService.module(scene);
           if (conversation !== undefined && scene !== undefined && state !== undefined) {
-            if (input.snapshotId !== undefined) throw new PromptSnapshotError('snapshot_mismatch');
             let baseValue = state.value;
             let parentTransitionId = state.headTransitionId;
             if (input.mode === 'swipe' || input.mode === 'regenerate') {
@@ -585,7 +642,7 @@ export function createGenerationService(options: {
               ? SceneBeforeGenerationResultSchema.parse({})
               : SceneBeforeGenerationResultSchema.parse(await host.call('beforeGeneration', {
                 state: baseValue, setup: conversation.setup ?? {}, playerProfile: conversation.playerProfile,
-                manifest: scene.manifest, mode: input.mode, userText: input.userText,
+                manifest: scene.manifest, mode: input.mode, userText: playerInput,
               }));
             const beforeApplied = applyScenePatchPartial(baseValue, before.statePatch ?? [], scene.manifest);
             const beforeOperations = beforeApplied.operations;
@@ -596,20 +653,136 @@ export function createGenerationService(options: {
               parentTransitionId,
               beforeOperations,
               beforeFailures: beforeApplied.failures,
+              stagedValue: stagedState,
+              manifest: structuredClone(scene.manifest),
             };
-            scenePromptContext = { state: stagedState, additions: before.promptAdditions ?? [] };
+            scenePromptContext = {
+              state: stagedState,
+              additions: before.promptAdditions ?? [],
+              memoryRecall,
+              memoryQueryCorpus,
+            };
+            sceneAgentToolFactory = createSceneAgentToolFactory({ scene, host, conversation });
+            sceneViewRuntimeFactory = createSceneViewRuntimeFactory({ scene, host, conversation });
           }
         }
-        const accepted = input.snapshotId === undefined
-          ? await promptSnapshots.createAndAccept(input, generationId, scenePromptContext)
-          : await promptSnapshots.acceptExisting({ ...input, snapshotId: input.snapshotId });
+        let sceneDirector: SceneDirectorExecution | undefined;
+        const beforeAccept = async (candidate: AcceptedPromptSnapshot) => {
+          if (!candidate.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
+          if (candidate.payload.kind !== 'chat' || options.piAgentRuntimeFactory === undefined) {
+            throw new PromptSnapshotError('snapshot_unsupported');
+          }
+          const configurationRef = candidate.payload.entityRevisions.saveAgentConfiguration;
+          const configuration = candidate.saveAgentConfiguration;
+          if (configuration.id !== configurationRef.id || configuration.revision !== configurationRef.revision) {
+            throw new PromptSnapshotError('snapshot_unsupported');
+          }
+          const execution = new SceneDirectorExecution({
+            repositories,
+            generationId,
+            snapshotId: candidate.snapshotId,
+            payload: candidate.payload,
+            provider: candidate.provider,
+            configuration,
+            playerInput,
+            runtimeFactory: options.piAgentRuntimeFactory,
+            ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
+            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
+            ...(candidate.payload.memoryRecall.length === 0 ? {} : { recalledMemories: candidate.payload.memoryRecall }),
+            ...(memoryConfiguration?.enabled !== true ? {} : {
+              memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
+                candidate.payload.memoryQueryCorpus,
+                query,
+                limit,
+              ),
+            }),
+            ...(scenePromptContext?.additions === undefined ? {} : {
+              scenePromptAdditions: scenePromptContext.additions,
+            }),
+            ...(sceneTransition === undefined ? {} : {
+              workspaceState: {
+                revision: sceneTransition.stateRevision,
+                value: sceneTransition.baseValue,
+                manifest: sceneTransition.manifest,
+                initialOperations: sceneTransition.beforeOperations,
+                initialFailures: sceneTransition.beforeFailures,
+              },
+            }),
+            ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
+            ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
+          });
+          await execution.validatePromptBudget(runtimeTokenizer);
+          sceneDirector = execution;
+          return { deferSnapshotCommit: true as const };
+        };
+        const accepted = await promptSnapshots.createAndAccept(
+          input,
+          generationId,
+          scenePromptContext,
+          beforeAccept,
+        );
+        if (accepted.deferredSnapshotCommit === true) {
+          active.releaseDeferredSnapshot = () => promptSnapshots.releaseDeferredSnapshot(generationId);
+        }
+        // Retain defensive validation for injected PromptSnapshotService implementations that
+        // predate the pre-accept hook, while production acceptance always invokes the hook.
+        if (!accepted.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
         const prepared = preparedRequest(
           generationId,
           accepted.provider,
           accepted.payload,
-          reasoningCompatibility.resolve(accepted.payload),
+          playerInput,
           sceneTransition,
         );
+        if (accepted.payload.kind === 'chat'
+          && options.piAgentRuntimeFactory !== undefined && sceneDirector === undefined) {
+          const configurationRef = accepted.payload.entityRevisions.saveAgentConfiguration;
+          const configuration = accepted.saveAgentConfiguration;
+          if (configuration.id !== configurationRef.id || configuration.revision !== configurationRef.revision) {
+            throw new PromptSnapshotError('snapshot_unsupported');
+          }
+          const execution = new SceneDirectorExecution({
+            repositories,
+            generationId,
+            snapshotId: accepted.snapshotId,
+            payload: accepted.payload,
+            provider: accepted.provider,
+            configuration,
+            playerInput,
+            runtimeFactory: options.piAgentRuntimeFactory,
+            ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
+            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
+            ...(accepted.payload.memoryRecall.length === 0 ? {} : { recalledMemories: accepted.payload.memoryRecall }),
+            ...(memoryConfiguration?.enabled !== true ? {} : {
+              memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
+                accepted.payload.memoryQueryCorpus,
+                query,
+                limit,
+              ),
+            }),
+            ...(scenePromptContext?.additions === undefined ? {} : {
+              scenePromptAdditions: scenePromptContext.additions,
+            }),
+            ...(sceneTransition === undefined ? {} : {
+              workspaceState: {
+                revision: sceneTransition.stateRevision,
+                value: sceneTransition.baseValue,
+                manifest: sceneTransition.manifest,
+                initialOperations: sceneTransition.beforeOperations,
+                initialFailures: sceneTransition.beforeFailures,
+              },
+            }),
+            ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
+            ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
+          });
+          await execution.validatePromptBudget(runtimeTokenizer);
+          sceneDirector = execution;
+        }
+        if (sceneDirector === undefined) throw new PromptSnapshotError('snapshot_unsupported');
+        if (sceneDirector !== undefined) prepared.sceneDirector = sceneDirector;
+        if (accepted.deferredSnapshotCommit === true) {
+          prepared.deferredSnapshotCommit = true;
+        }
         active.reservationTimer = setTimeout(() => {
           if (active.state !== 'reserved') return;
           active.controller.abort();
@@ -620,11 +793,16 @@ export function createGenerationService(options: {
       } catch (error) {
         active.cleanup();
         if (error instanceof PromptSnapshotError) return { ok: false, reason: error.code };
-        if (error instanceof SceneServiceError) return { ok: false, reason: 'invalid_runtime_state' };
+        if (error instanceof SceneServiceError) return {
+          ok: false,
+          reason: error.code === 'scene_branch_has_descendants'
+            ? 'scene_branch_has_descendants'
+            : 'invalid_runtime_state',
+        };
         throw error;
       }
     },
-    async triggerLastUser(conversationId) {
+    async triggerLastUser(conversationId, signal) {
       if (activeByConversation.has(conversationId)) return { ok: false, reason: 'generation_active' };
       const conversation = repositories.conversations.get(conversationId);
       if (conversation === undefined) return { ok: false, reason: 'not_found' };
@@ -633,7 +811,7 @@ export function createGenerationService(options: {
       return service.start({
         conversationId, conversationRevision: conversation.revision,
         mode: 'normal', userText: last.content, reuseLastUser: true,
-      });
+      }, signal);
     },
     cancel(generationId) {
       const active = activeById.get(generationId);

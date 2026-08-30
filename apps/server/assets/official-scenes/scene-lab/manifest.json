@@ -1,0 +1,69 @@
+{
+  "id": "018f2000-0000-7000-8000-000000000002",
+  "slug": "scene-lab",
+  "version": "1.0.1",
+  "name": "场景实验室",
+  "summary": "用一个小型实验验证独立存档、状态、Agent Tool 与 Scene View。",
+  "description": "TavernNext 官方多 Scene 能力演示。每个实验拥有隔离的信号状态、消息与 Agent 配置。",
+  "author": "TavernNext",
+  "minimumTavernNextVersion": "1.0.0",
+  "sceneSdkVersion": 2,
+  "frontendEntry": "frontend/app.js",
+  "frontendStyles": ["frontend/styles.css"],
+  "serverEntry": "server/index.mjs",
+  "coverPath": "content/cover.png",
+  "backingCharacterPath": "content/character.png",
+  "backingPresetPath": "content/preset.json",
+  "setupSchema": {
+    "type": "object",
+    "required": ["experimentName"],
+    "properties": { "experimentName": { "type": "string", "minLength": 1, "maxLength": 120 } }
+  },
+  "stateSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["experimentName", "phase", "signal"],
+    "properties": {
+      "experimentName": { "type": "string" },
+      "phase": { "type": "string" },
+      "signal": { "type": "number" }
+    }
+  },
+  "agentTools": [{
+    "name": "scene_lab_adjust_signal",
+    "description": "Adjust the experiment signal by a bounded integer amount after an observable event.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["delta"],
+      "properties": { "delta": { "type": "integer", "minimum": -10, "maximum": 10 } }
+    }
+  }],
+  "sceneViews": [{
+    "kind": "status",
+    "schemaVersion": 1,
+    "projection": {
+      "hook": "projectSceneView",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["experimentName", "phase", "signal"],
+        "properties": {
+          "experimentName": { "type": "string", "maxLength": 120 },
+          "phase": { "type": "string", "maxLength": 40 },
+          "signal": { "type": "number" }
+        }
+      }
+    },
+    "renderer": { "id": "scene-lab-status-v1" }
+  }],
+  "files": [
+    "manifest.json",
+    "frontend/app.js",
+    "frontend/styles.css",
+    "server/index.mjs",
+    "content/character.png",
+    "content/cover.png",
+    "content/preset.json"
+  ]
+}

@@ -7,7 +7,7 @@ import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { useChatUi } from './chat-store.js';
 import { Composer } from './Composer.js';
 import { MessageList } from './MessageList.js';
-import { PromptPreviewDialog } from './PromptPreviewDialog.js';
+import { AgentRunInspector } from './AgentRunInspector.js';
 import { useGeneration } from './useGeneration.js';
 import { useI18n } from '../../app/i18n.js';
 import { ChatFormatSettings, chatFormatStyle, useChatFormat } from './ChatFormatSettings.js';
@@ -259,7 +259,6 @@ export function ChatPage() {
                 onClick={() => { void createSelectedConversation().catch(() => undefined); }}
               >{t('Start chat')}</button>
             ) : null}
-            {detail.data?.conversation === undefined ? null : <PromptPreviewDialog conversation={detail.data.conversation} userText={draft} />}
             {detail.data?.conversation === undefined ? null : (
               <button
                 type="button"
@@ -281,6 +280,8 @@ export function ChatPage() {
           optimisticUserText={optimisticUserText}
           streamedText={generation.streamedText}
           streamedReasoning={generation.streamedReasoning}
+          activities={generation.activities}
+          viewPlaceholders={generation.viewPlaceholders}
           generationTarget={generation.target}
           controlsDisabled={generation.isActive || updateConversationSettings.isPending}
           generationDisabled={generation.isActive || updateConversationSettings.isPending || !configurationReady}
@@ -302,6 +303,7 @@ export function ChatPage() {
           }}
         />
         <TrustedScriptRuntimeHost conversationId={activeConversationId} />
+        <AgentRunInspector conversationId={activeConversationId} />
         {generation.error ? <p role="alert">{t('Generation error: {{error}}', { error: t(generation.error) })}</p> : null}
         {characters.isLoading || personas.isLoading || globalGeneration.isLoading ? (
           <p>{t('Loading chat configuration…')}</p>

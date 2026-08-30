@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { roleplayDocumentFromMarkdown } from '@tavernnext/domain';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
-import type { GenerationService } from '../services/generation-service.js';
+import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
 import { SceneServiceError, type SceneService } from '../scenes/scene-service.js';
 
 interface Body {
@@ -19,7 +20,7 @@ export function registerMessageRoutes(
   app: FastifyInstance,
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
   scenes: SceneService,
 ): void {
   const update = async (
@@ -29,6 +30,9 @@ export function registerMessageRoutes(
     const current = repositories.messages.get(request.params.id);
     if (current !== undefined && generations.isConversationActive(current.conversationId)) {
       return reply.status(409).send({ error: 'generation_active' });
+    }
+    if (current?.playerOperation !== undefined) {
+      return reply.status(409).send({ error: 'player_operation_immutable' });
     }
     const revision = revisionFrom(request.body?.revision ?? request.body?.expectedRevision);
     if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
@@ -51,7 +55,10 @@ export function registerMessageRoutes(
           if (active === undefined || active.messageId !== current.id) throw new Error('assistant_active_variant_invalid');
           const updatedMessage = repositories.messages.update(request.params.id, revision, { content });
           if (!updatedMessage.ok) return updatedMessage;
-          const updatedVariant = repositories.messageVariants.update(active.id, active.revision, { content });
+          const updatedVariant = repositories.messageVariants.update(active.id, active.revision, {
+            content,
+            document: roleplayDocumentFromMarkdown(content),
+          });
           if (!updatedVariant.ok) throw new Error(`assistant_variant_${updatedVariant.reason}`);
           return updatedMessage;
         })
@@ -76,6 +83,7 @@ export function registerMessageRoutes(
     }
     const message = repositories.messages.get(request.params.id);
     if (message === undefined) return reply.status(404).send({ error: 'not_found' });
+    if (message.revision !== revision) return reply.status(409).send({ error: 'conflict' });
     if (generations.isConversationActive(message.conversationId)) {
       return reply.status(409).send({ error: 'generation_active' });
     }
@@ -107,10 +115,16 @@ export function registerMessageRoutes(
     if (current !== undefined && generations.isConversationActive(current.conversationId)) {
       return reply.status(409).send({ error: 'generation_active' });
     }
+    if (current?.playerOperation !== undefined) {
+      return reply.status(409).send({ error: 'player_operation_immutable' });
+    }
     try {
       const variants = current === undefined ? [] : repositories.messageVariants.listByMessageId(current.id);
       const result = database.transaction(() => {
         if (current !== undefined) scenes.deleteMessageState(current);
+        if (current !== undefined) {
+          repositories.saveMemories.deleteBySourceVariantIds(current.conversationId, variants.map((variant) => variant.id));
+        }
         const deletion = repositories.messages.delete(request.params.id, revision);
         if (deletion.ok) {
           for (const variant of variants) repositories.extensionStates.deleteByScope('message-variant', variant.id);

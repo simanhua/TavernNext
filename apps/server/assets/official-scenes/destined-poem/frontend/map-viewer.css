@@ -1,0 +1,349 @@
+:root:not([data-destined-poem-theme]) {
+  --poem-bg: var(--vp-c-bg, #080c0e);
+  --poem-surface: var(--vp-c-bg-alt, #0d1315);
+  --poem-surface-2: var(--vp-c-bg-soft, #11191b);
+  --poem-line: var(--vp-c-divider, #273236);
+  --poem-line-strong: var(--vp-c-border, #5d5033);
+  --poem-text: var(--vp-c-text-1, #d9d4c8);
+  --poem-muted: var(--vp-c-text-3, #778084);
+  --poem-accent: var(--vp-c-brand-1, #b89549);
+  --poem-accent-soft: var(--vp-c-brand-soft, rgb(184 149 73 / 12%));
+  --poem-cyan: var(--vp-c-brand-2, #78c4ce);
+}
+
+.poem-world-map {
+  display: grid;
+  gap: 18px;
+  min-height: 0;
+  color: var(--poem-text);
+}
+
+.poem-world-map-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--poem-line);
+  padding: 0 0 16px;
+}
+
+.poem-world-map-heading span {
+  color: var(--poem-cyan);
+  font-size: .65rem;
+  font-weight: 800;
+  letter-spacing: .24em;
+  text-transform: uppercase;
+}
+
+.poem-world-map-heading h1 {
+  margin: 5px 0 0;
+  font-size: clamp(1.45rem, 2.4vw, 2.25rem);
+  font-weight: 500;
+  letter-spacing: .08em;
+}
+
+.poem-world-map-heading p {
+  margin: 0;
+  max-width: 48%;
+  color: var(--poem-muted);
+  font-size: .78rem;
+  text-align: right;
+}
+
+.poem-world-map-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(140px, .55fr) minmax(110px, .4fr) auto auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.poem-world-map-toolbar label {
+  display: grid;
+  gap: 5px;
+}
+
+.poem-world-map-toolbar label > span {
+  color: var(--poem-muted);
+  font-size: .62rem;
+  font-weight: 750;
+  letter-spacing: .1em;
+}
+
+.poem-world-map-toolbar input,
+.poem-world-map-toolbar select,
+.poem-world-map-toolbar button {
+  min-height: 38px;
+  border: 1px solid var(--poem-line);
+  border-radius: 3px;
+  padding: 8px 10px;
+  color: var(--poem-text);
+  background: var(--poem-surface-2);
+}
+
+.poem-world-map-toolbar input:focus,
+.poem-world-map-toolbar select:focus,
+.poem-world-map-toolbar button:focus-visible {
+  border-color: var(--poem-cyan);
+  outline: 1px solid color-mix(in srgb, var(--poem-cyan) 45%, transparent);
+}
+
+.poem-world-map-toolbar output {
+  min-width: 64px;
+  padding-bottom: 10px;
+  color: var(--poem-muted);
+  font-size: .72rem;
+  text-align: right;
+}
+
+.poem-world-map-layout {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 320px);
+  gap: 14px;
+}
+
+.poem-world-map-stage {
+  position: relative;
+  overflow: hidden;
+  min-height: 440px;
+  border: 1px solid var(--poem-line-strong);
+  aspect-ratio: 14594 / 8322;
+  background: #050809;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.poem-world-map-stage[data-dragging] {
+  cursor: grabbing;
+}
+
+.poem-world-map-content {
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.poem-world-map-content > img {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.poem-world-map-marker {
+  position: absolute;
+  z-index: 3;
+  left: var(--marker-x);
+  top: var(--marker-y);
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  padding: 0;
+  color: var(--marker-color);
+  background: transparent;
+  transform: translate(-50%, -50%) scale(var(--map-inverse-scale, 1));
+  transform-origin: center;
+}
+
+.poem-world-map-marker[hidden] {
+  display: none;
+}
+
+.poem-world-map-marker i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentcolor;
+  border-radius: 50%;
+  background: var(--poem-bg);
+  box-shadow: 0 0 0 3px rgb(5 8 9 / 72%), 0 0 12px currentcolor;
+}
+
+.poem-world-map-marker span {
+  position: absolute;
+  top: 17px;
+  left: 50%;
+  width: max-content;
+  max-width: 150px;
+  border: 1px solid color-mix(in srgb, var(--marker-color) 52%, var(--poem-line));
+  padding: 3px 6px;
+  overflow: hidden;
+  color: var(--poem-text);
+  background: rgb(5 8 9 / 86%);
+  font-size: .58rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%) translateY(-3px);
+  transition: opacity .16s ease, transform .16s ease;
+  pointer-events: none;
+}
+
+.poem-world-map-marker:hover span,
+.poem-world-map-marker:focus-visible span,
+.poem-world-map-marker[data-selected] span,
+.poem-world-map-marker[data-current="true"] span {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.poem-world-map-marker[data-current="true"] i {
+  background: var(--poem-accent);
+  animation: poem-map-pulse 2s ease-in-out infinite;
+}
+
+.poem-world-map-marker[data-selected] i {
+  background: var(--poem-cyan);
+  box-shadow: 0 0 0 4px rgb(120 196 206 / 24%), 0 0 16px var(--poem-cyan);
+}
+
+.poem-world-map-workbench {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--poem-line);
+  background: var(--poem-surface);
+}
+
+.poem-world-map-list {
+  display: grid;
+  align-content: start;
+  overflow: auto;
+}
+
+.poem-world-map-list > button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 0;
+  border-bottom: 1px solid var(--poem-line);
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--poem-text);
+  background: transparent;
+}
+
+.poem-world-map-list > button:hover,
+.poem-world-map-list > button:focus-visible {
+  color: var(--poem-cyan);
+  background: var(--poem-accent-soft);
+}
+
+.poem-world-map-list > button[hidden] {
+  display: none;
+}
+
+.poem-world-map-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poem-world-map-list small {
+  color: var(--poem-muted);
+  font-size: .62rem;
+}
+
+.poem-world-map-detail {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  overflow: auto;
+  padding: 18px;
+  color: var(--poem-text);
+  background: color-mix(in srgb, var(--poem-surface) 96%, transparent);
+}
+
+.poem-world-map-detail[hidden] {
+  display: none;
+}
+
+.poem-world-map-detail > button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--poem-line);
+  border-radius: 50%;
+  color: var(--poem-muted);
+  background: transparent;
+}
+
+.poem-world-map-detail > span {
+  color: var(--poem-cyan);
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.poem-world-map-detail h2 {
+  margin: 8px 36px 12px 0;
+  font-size: 1.2rem;
+}
+
+.poem-world-map-detail p {
+  color: var(--poem-muted);
+  font-size: .78rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.poem-world-map-detail [data-map-detail-gallery] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.poem-world-map-detail img {
+  width: 100%;
+  border: 1px solid var(--poem-line);
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+@keyframes poem-map-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgb(184 149 73 / 16%), 0 0 10px currentcolor; }
+  50% { box-shadow: 0 0 0 7px rgb(184 149 73 / 4%), 0 0 18px currentcolor; }
+}
+
+@media (max-width: 1500px) {
+  .poem-world-map-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .poem-world-map-layout {
+    grid-template-columns: 1fr;
+  }
+  .poem-world-map-workbench {
+    max-height: 360px;
+  }
+}
+
+@media (max-width: 640px) {
+  .poem-world-map-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+  .poem-world-map-heading p {
+    max-width: none;
+    text-align: left;
+  }
+  .poem-world-map-toolbar {
+    grid-template-columns: 1fr;
+  }
+  .poem-world-map-stage {
+    min-height: 360px;
+    aspect-ratio: auto;
+  }
+}

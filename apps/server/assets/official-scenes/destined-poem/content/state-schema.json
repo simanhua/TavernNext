@@ -20,7 +20,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["时间", "地点"],
-      "properties": { "时间": { "type": "string" }, "地点": { "type": "string" } }
+      "properties": {
+        "时间": { "type": "string" },
+        "地点": { "type": "string" },
+        "天气": { "type": "string" }
+      }
     },
     "任务列表": { "type": "object", "additionalProperties": true },
     "主角": {
@@ -30,6 +34,8 @@
       "properties": {
         "姓名": { "type": "string" },
         "描述": { "type": "string" },
+        "性别": { "type": "string" },
+        "年龄": { "type": "integer", "minimum": 1 },
         "种族": { "type": "string" },
         "身份": { "type": "array", "items": { "type": "string" } },
         "职业": { "type": "array", "items": { "type": "string" } },

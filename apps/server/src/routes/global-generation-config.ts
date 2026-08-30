@@ -10,16 +10,19 @@ import {
 
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
-  patch: GlobalGenerationSelectionSchema.partial().strict().refine((patch) => Object.keys(patch).length > 0),
+  patch: z.object({
+    providerId: GlobalGenerationSelectionSchema.shape.providerId.optional(),
+    chatPresetId: GlobalGenerationSelectionSchema.shape.chatPresetId.optional(),
+    textPresetId: z.null().optional(),
+    contextPresetId: z.null().optional(),
+    instructPresetId: z.null().optional(),
+    systemPresetId: z.null().optional(),
+  }).strict().refine((patch) => Object.keys(patch).length > 0),
 }).strict();
 const ActiveResourceContextQuerySchema = z.object({ conversationId: z.string().uuid().optional() }).strict();
 
 const presetKinds = {
   chatPresetId: 'chat',
-  textPresetId: 'text',
-  contextPresetId: 'context',
-  instructPresetId: 'instruct',
-  systemPresetId: 'system',
 } as const satisfies Record<string, z.infer<typeof PresetKindSchema>>;
 
 export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repositories: Repositories): void {
@@ -52,6 +55,9 @@ export function registerGlobalGenerationConfigRoutes(app: FastifyInstance, repos
     const candidate = { ...current, ...patch };
     const provider = candidate.providerId === null ? undefined : repositories.providerProfiles.get(candidate.providerId);
     if (candidate.providerId !== null && provider === undefined) return reply.status(400).send({ error: 'invalid_selection' });
+    if (provider !== undefined && !provider.toolCalls) {
+      return reply.status(400).send({ error: 'model_not_agent_capable' });
+    }
     for (const [key, kind] of Object.entries(presetKinds) as Array<[
       keyof typeof presetKinds,
       z.infer<typeof PresetKindSchema>,

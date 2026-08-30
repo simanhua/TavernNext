@@ -16,6 +16,7 @@ const server = setupServer(
   http.get('/api/presets', () => HttpResponse.json([])),
   http.get('/api/worldbooks', () => HttpResponse.json([])),
   http.get('/api/providers', () => HttpResponse.json([])),
+  http.get('/api/providers/catalog', () => HttpResponse.json([])),
   http.get('/api/conversations', () => HttpResponse.json([])),
   http.get('/api/scenes', () => HttpResponse.json([])),
   http.get('/api/scenes/catalog', () => HttpResponse.json([])),

@@ -8,8 +8,34 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { renderWithApp } from '../../test/render.js';
 import { ConnectionPage } from './ConnectionPage.js';
 
+const providerCatalog = [
+  {
+    id: 'openai', name: 'OpenAI', authentication: 'api_key', available: true,
+    customBaseUrl: false, baseUrl: 'https://api.openai.com/v1', credentialLabel: 'OpenAI API key',
+    models: [
+      { id: 'gpt-agent', name: 'GPT Agent', baseUrl: 'https://api.openai.com/v1', toolCalls: true },
+      { id: 'gpt-agent-mini', name: 'GPT Agent Mini', baseUrl: 'https://api.openai.com/v1', toolCalls: true },
+    ],
+  },
+  {
+    id: 'openai-codex', name: 'OpenAI Codex', authentication: 'subscription', available: false,
+    customBaseUrl: false, unavailableReason: 'Subscription login is not supported yet.', models: [],
+  },
+  {
+    id: 'amazon-bedrock', name: 'Amazon Bedrock', authentication: 'composite', available: false,
+    customBaseUrl: false,
+    unavailableReason: 'This Provider needs composite cloud credentials that TavernNext does not support yet.',
+    models: [],
+  },
+  {
+    id: 'custom-openai-compatible', name: 'Custom OpenAI-compatible', authentication: 'api_key', available: true,
+    customBaseUrl: true, credentialLabel: 'API key', models: [],
+  },
+];
+
 const server = setupServer(
   http.get('/api/providers', () => HttpResponse.json([])),
+  http.get('/api/providers/catalog', () => HttpResponse.json(providerCatalog)),
   http.get('/api/presets', () => HttpResponse.json([])),
   http.get('/api/settings/generation', () => HttpResponse.json({
     id: '018f0000-0000-7000-8000-000000000001', revision: 0,
@@ -53,7 +79,8 @@ describe('ConnectionPage', () => {
     const provider = {
       id: '018f0000-0000-7000-8000-000000000201', revision: 0,
       createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
-      name: 'Global API', baseUrl: 'https://global.example/v1', model: 'global-model', apiMode: 'chat' as const, hasApiKey: true,
+      name: 'Global API', providerId: 'openai', modelId: 'gpt-agent',
+      baseUrl: 'https://api.openai.com/v1', toolCalls: true, hasApiKey: true,
     };
     let submitted: unknown;
     server.use(
@@ -85,40 +112,50 @@ describe('ConnectionPage', () => {
     expect(await screen.findByText('Active Provider saved.')).not.toBeNull();
   });
 
-  it('applies provider presets, tests the connection, and selects a detected model', async () => {
+  it('drives Provider/model selection from Pi metadata and explains unavailable authentication', async () => {
+    let submitted: Record<string, unknown> | undefined;
+    server.use(http.post('/api/providers', async ({ request }) => {
+      submitted = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({
+        ...submitted, revision: 0, createdAt: '2026-08-17T00:00:00.000Z',
+        updatedAt: '2026-08-17T00:00:00.000Z', baseUrl: 'https://api.openai.com/v1', hasApiKey: true,
+      }, { status: 201 });
+    }));
     const user = userEvent.setup();
     renderWithApp(<ConnectionPage />);
 
-    await user.click(await screen.findByRole('button', { name: 'Use DeepSeek preset' }));
-    expect((screen.getByRole('textbox', { name: 'Display name' }) as HTMLInputElement).value).toBe('DeepSeek');
-    expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://api.deepseek.com');
-    expect((screen.getByRole('combobox', { name: 'Model' }) as HTMLInputElement).value).toBe('deepseek-v4-flash');
+    await screen.findByRole('option', { name: 'OpenAI' });
+    expect(screen.getByText(/Subscription login is not supported yet/)).not.toBeNull();
+    expect(screen.getByText(/composite cloud credentials/)).not.toBeNull();
+    expect((screen.getByRole('option', { name: 'OpenAI Codex — Unavailable' }) as HTMLOptionElement).disabled).toBe(true);
 
-    await user.click(screen.getByRole('button', { name: 'Test connection' }));
-    expect(await screen.findByText('Connection successful. 2 models available.')).not.toBeNull();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider' }), 'openai');
+    expect((screen.getByRole('textbox', { name: 'Display name' }) as HTMLInputElement).value).toBe('OpenAI');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Model' }), 'gpt-agent-mini');
+    expect(screen.queryByRole('textbox', { name: 'Base URL' })).toBeNull();
+    expect(screen.queryByLabelText('Mode')).toBeNull();
+    await user.type(screen.getByLabelText('API key'), 'new-secret');
+    await user.click(screen.getByRole('button', { name: 'Save connection' }));
 
-    await user.click(screen.getByRole('button', { name: 'Detect models' }));
-    await user.click(await screen.findByRole('button', { name: 'deepseek-v4-pro' }));
-    await waitFor(() => expect((screen.getByRole('combobox', { name: 'Model' }) as HTMLInputElement).value).toBe('deepseek-v4-pro'));
-
-    await user.click(screen.getByRole('button', { name: 'Use OpenCode Zen preset' }));
-    expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://opencode.ai/zen/v1');
-
-    await user.click(screen.getByRole('button', { name: 'Use OpenCode Go preset' }));
-    expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://opencode.ai/zen/go/v1');
-    expect((screen.getByRole('combobox', { name: 'Model' }) as HTMLInputElement).value).toBe('deepseek-v4-flash');
+    await waitFor(() => expect(submitted).toMatchObject({
+      name: 'OpenAI', providerId: 'openai', modelId: 'gpt-agent-mini', apiKey: 'new-secret',
+    }));
+    expect(submitted).not.toHaveProperty('apiMode');
+    expect(submitted).not.toHaveProperty('baseUrl');
   });
 
   it('switches, updates, and creates independently saved connections', async () => {
     const primary = {
       id: '018f0000-0000-7000-8000-000000000101', revision: 0,
       createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
-      name: 'Primary API', baseUrl: 'https://primary.example/v1', model: 'primary-model', apiMode: 'chat' as const, hasApiKey: true,
+      name: 'Primary API', providerId: 'custom-openai-compatible', modelId: 'primary-model',
+      baseUrl: 'https://primary.example/v1', customBaseUrl: 'https://primary.example/v1', toolCalls: true, hasApiKey: true,
     };
     const backup = {
       id: '018f0000-0000-7000-8000-000000000102', revision: 0,
       createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
-      name: 'Backup API', baseUrl: 'https://backup.example/v1', model: 'backup-model', apiMode: 'chat' as const, hasApiKey: false,
+      name: 'Backup API', providerId: 'custom-openai-compatible', modelId: 'backup-model',
+      baseUrl: 'https://backup.example/v1', customBaseUrl: 'https://backup.example/v1', toolCalls: true, hasApiKey: false,
     };
     let stored = [primary, backup];
     let updatedId: string | undefined;
@@ -156,16 +193,19 @@ describe('ConnectionPage', () => {
     await user.type(model, 'backup-model-v2');
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await waitFor(() => expect(updatedId).toBe(backup.id));
-    expect(stored[0]?.model).toBe('primary-model');
-    expect(stored[1]?.model).toBe('backup-model-v2');
+    expect(stored[0]?.modelId).toBe('primary-model');
+    expect(stored[1]?.modelId).toBe('backup-model-v2');
 
-    await user.click(screen.getByRole('button', { name: 'Use DeepSeek preset' }));
-    expect((screen.getByRole('textbox', { name: 'Base URL' }) as HTMLInputElement).value).toBe('https://api.deepseek.com');
+    await user.click(screen.getByRole('button', { name: 'New connection' }));
+    await user.type(screen.getByRole('textbox', { name: 'Display name' }), 'Local custom');
+    await user.type(screen.getByRole('combobox', { name: 'Model' }), 'local-model');
+    await user.click(screen.getByLabelText('Model supports tool calls'));
     await user.type(screen.getByLabelText('API key'), 'new-secret');
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
 
-    expect(await screen.findByRole('button', { name: 'Edit DeepSeek connection' })).not.toBeNull();
+    expect(await screen.findByRole('button', { name: 'Edit Local custom connection' })).not.toBeNull();
     expect(createdApiKey).toBe('new-secret');
     expect(stored).toHaveLength(3);
+    expect(stored[2]?.toolCalls).toBe(true);
   });
 });

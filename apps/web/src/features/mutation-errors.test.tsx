@@ -14,6 +14,10 @@ import { ConnectionPage } from './settings/ConnectionPage.js';
 
 const server = setupServer(
   http.get('/api/providers', () => HttpResponse.json([])),
+  http.get('/api/providers/catalog', () => HttpResponse.json([{
+    id: 'custom-openai-compatible', name: 'Custom OpenAI-compatible', authentication: 'api_key',
+    available: true, customBaseUrl: true, credentialLabel: 'API key', models: [],
+  }])),
   http.get('/api/presets', () => HttpResponse.json([])),
   http.get('/api/settings/generation', () => HttpResponse.json({
     revision: 0, providerId: null, chatPresetId: null, textPresetId: null,

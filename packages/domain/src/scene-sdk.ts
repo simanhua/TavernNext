@@ -1,14 +1,18 @@
 import type {
+  AgentActivityKind,
   Conversation,
   ConversationSceneState,
   InstalledScene,
   Message,
   MessageVariant,
   Persona,
+  PlayerOperation,
 } from './entities.js';
 import type { ScenePatchFailure, ScenePatchOperation } from './scene-state.js';
+import type { RoleplaySceneViewBlock } from './roleplay-document.js';
 
 export type SceneRuntimeMode = 'setup' | 'workspace';
+export const SCENE_ACTION_ENVELOPE_PROTOCOL = 'tavernnext-player-operation-v1' as const;
 export type SceneGenerationStatus = 'idle' | 'starting' | 'streaming' | 'stopping';
 
 export interface SceneMessageView extends Message {
@@ -26,12 +30,16 @@ export interface SceneGenerationSnapshot {
   streamedText: string;
   streamedReasoning: string;
   error: string | null;
+  activities: Array<{ kind: AgentActivityKind; label: string }>;
+  viewPlaceholders: Array<{ viewId: string; kind: string; offset: number }>;
 }
 
 export type SceneGenerationEvent =
   | { type: 'snapshot'; value: SceneGenerationSnapshot }
   | { type: 'text-delta'; text: string }
-  | { type: 'reasoning-delta'; text: string };
+  | { type: 'reasoning-delta'; text: string }
+  | { type: 'activity'; kind: AgentActivityKind; label: string }
+  | { type: 'view-placeholder'; viewId: string; kind: string; offset: number };
 
 export interface SceneThemeSnapshot {
   scheme: 'dark' | 'light';
@@ -107,6 +115,8 @@ export interface SceneStatusRailMountOptions {
   onAction?(actionId: string): void | Promise<void>;
 }
 
+export type SceneReferenceKind = 'preset' | 'worldbook';
+
 export interface SceneSdkErrorShape {
   code: string;
   status?: number;
@@ -143,10 +153,9 @@ export interface SceneSdkV2 {
     stop(): Promise<void>;
     edit(messageId: string, content: string): Promise<Message>;
     delete(messageId: string): Promise<void>;
-    switchVariant(messageId: string, variantId: string): Promise<Message>;
-    continue(messageId: string): Promise<unknown>;
-    regenerate(messageId: string): Promise<unknown>;
-    swipe(messageId: string): Promise<unknown>;
+    switchVariant(variantId: string): Promise<Message>;
+    regenerate(): Promise<unknown>;
+    swipe(): Promise<unknown>;
   };
   state: {
     get(): Promise<ConversationSceneState>;
@@ -156,7 +165,11 @@ export interface SceneSdkV2 {
     }>;
   };
   scene: {
-    action(action: unknown): Promise<{ state: ConversationSceneState; result: unknown }>;
+    action(action: unknown, options?: { operation?: PlayerOperation }): Promise<{
+      state: ConversationSceneState;
+      result: unknown;
+      operation?: PlayerOperation & { messageId: string };
+    }>;
     assetUrl(path: string): string;
   };
   generation: {
@@ -172,6 +185,9 @@ export interface SceneSdkV2 {
     statusRail: {
       mount(options: SceneStatusRailMountOptions): SceneStatusRailController;
     };
+    referenceViewer: {
+      open(kind: SceneReferenceKind): void;
+    };
   };
 }
 
@@ -185,6 +201,10 @@ export type SceneFrontendCleanup = () => void | Promise<void>;
 
 export interface SceneFrontendModule {
   mount(input: SceneFrontendMountInput):
+    | void
+    | SceneFrontendCleanup
+    | Promise<void | SceneFrontendCleanup>;
+  renderSceneView?(input: { root: HTMLElement; block: RoleplaySceneViewBlock }):
     | void
     | SceneFrontendCleanup
     | Promise<void | SceneFrontendCleanup>;

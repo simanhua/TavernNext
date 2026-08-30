@@ -7,14 +7,45 @@ import { createDatabase } from '../src/db/client.js';
 import { CURRENT_SCHEMA_VERSION, migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import { TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
-import { DESTINED_POEM_SCENE_ID } from '../src/scenes/official-package.js';
-import { upgradeInstalledOfficialSceneRuntime } from '../src/scenes/official-scene-upgrade.js';
+import { DESTINED_POEM_SCENE_ID, destinedPoemManifest } from '../src/scenes/official-package.js';
+import { upgradeInstalledOfficialScenes } from '../src/scenes/official-scene-upgrade.js';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
-describe('schema 18 Scene migration', () => {
-  it('preserves Persona and Provider while clearing the legacy asset workspace', async () => {
+describe('Scene migrations', () => {
+  it('resets schema 19 Saves while retaining the new Agent-owned tables', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-agent-run-migration-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    migrateDatabase(database);
+    const repositories = createRepositories(database, { snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    const character = repositories.characters.create({
+      id: randomUUID(), name: 'Character', description: '', personality: '', scenario: '',
+      firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: randomUUID(), name: 'Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Preserved Save',
+    });
+    database.sqlite.exec(`
+      DROP TABLE agent_runs;
+      DELETE FROM tavernnext_schema_version;
+      INSERT INTO tavernnext_schema_version(version) VALUES (19);
+    `);
+
+    migrateDatabase(database);
+
+    expect(CURRENT_SCHEMA_VERSION).toBe(25);
+    expect(repositories.conversations.get(conversation.id)).toBeUndefined();
+    expect(database.sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'").get())
+      .toEqual({ name: 'agent_runs' });
+    database.close();
+  });
+
+  it('preserves reusable libraries and Provider while clearing schema 16 Saves', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -24,23 +55,75 @@ describe('schema 18 Scene migration', () => {
     const provider = repositories.providerProfiles.create({ id: randomUUID(), name: 'Local', baseUrl: 'http://127.0.0.1:1234', model: 'model' });
     const worldbook = repositories.worldbooks.create({ id: randomUUID(), name: 'Legacy lore', description: '', enabled: true });
     const character = repositories.characters.create({ id: randomUUID(), name: 'Legacy card', description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [], worldbookId: worldbook.id });
-    repositories.presets.create({ id: randomUUID(), name: 'Legacy preset', kind: 'chat', settings: {} });
+    const preset = repositories.presets.create({ id: randomUUID(), name: 'Legacy preset', kind: 'chat', settings: {} });
     repositories.conversations.create({ id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Legacy chat' });
     database.sqlite.exec('DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version(version) VALUES (16)');
 
     migrateDatabase(database);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(18);
+    expect(CURRENT_SCHEMA_VERSION).toBe(25);
     expect(repositories.personas.get(persona.id)?.name).toBe('Traveler');
     expect(repositories.providerProfiles.get(provider.id)?.name).toBe('Local');
-    expect(repositories.characters.list()).toEqual([]);
-    expect(repositories.worldbooks.list()).toEqual([]);
-    expect(repositories.presets.list()).toEqual([]);
+    expect(repositories.characters.get(character.id)?.name).toBe('Legacy card');
+    expect(repositories.worldbooks.get(worldbook.id)?.name).toBe('Legacy lore');
+    expect(repositories.presets.get(preset.id)?.name).toBe('Legacy preset');
     expect(repositories.conversations.list()).toEqual([]);
     database.close();
   });
 
-  it('upgrades the installed official v1 frontend without changing its saves or backing resources', async () => {
+  it('resets schema 20 assistant Variants instead of carrying legacy generation artifacts forward', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-roleplay-document-migration-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    migrateDatabase(database);
+    const repositories = createRepositories(database, { snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    const character = repositories.characters.create({
+      id: randomUUID(), name: 'Character', description: '', personality: '', scenario: '',
+      firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: randomUUID(), name: 'Persona', description: '', isDefault: true,
+    });
+    const conversation = repositories.conversations.create({
+      id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Document migration',
+    });
+    const message = repositories.messages.create({
+      id: randomUUID(), conversationId: conversation.id, role: 'assistant', content: '', activeVariantId: null,
+    });
+    const variant = repositories.messageVariants.create({
+      id: randomUUID(), messageId: message.id, ordinal: 0,
+      content: 'First paragraph.\n\nSecond paragraph.', status: 'completed',
+    });
+    const oversizedContent = 'x'.repeat(256 * 1024);
+    const oversizedVariant = repositories.messageVariants.create({
+      id: randomUUID(), messageId: message.id, ordinal: 1,
+      content: oversizedContent, status: 'completed',
+    });
+    const raw = database.sqlite.prepare('SELECT payload FROM message_variants WHERE id = ?').get(variant.id) as {
+      payload: string;
+    };
+    const legacy = JSON.parse(raw.payload) as Record<string, unknown>;
+    delete legacy.document;
+    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), variant.id);
+    const oversizedRaw = database.sqlite.prepare('SELECT payload FROM message_variants WHERE id = ?')
+      .get(oversizedVariant.id) as { payload: string };
+    const oversizedLegacy = JSON.parse(oversizedRaw.payload) as Record<string, unknown>;
+    delete oversizedLegacy.document;
+    database.sqlite.prepare('UPDATE message_variants SET payload = ? WHERE id = ?')
+      .run(JSON.stringify(oversizedLegacy), oversizedVariant.id);
+    database.sqlite.exec('DELETE FROM tavernnext_schema_version; INSERT INTO tavernnext_schema_version(version) VALUES (20)');
+
+    migrateDatabase(database);
+
+    expect(repositories.messageVariants.get(variant.id)).toBeUndefined();
+    expect(repositories.messageVariants.get(oversizedVariant.id)).toBeUndefined();
+    migrateDatabase(database);
+    expect(repositories.messageVariants.listByConversationId(conversation.id)).toEqual([]);
+    database.close();
+  });
+
+  it('upgrades each installed official Scene Package without migrating its Saves', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-runtime-upgrade-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -60,14 +143,14 @@ describe('schema 18 Scene migration', () => {
     const oldDigest = 'a'.repeat(64);
     const installed = {
       id: DESTINED_POEM_SCENE_ID, revision: 0, createdAt: now, updatedAt: now,
-      slug: 'destined-poem', version: '1.0.1', archiveDigest: oldDigest,
+      slug: 'destined-poem', version: '2.5.0', archiveDigest: oldDigest,
       installPath: oldPath, installedAt: now,
       manifest: {
-        id: DESTINED_POEM_SCENE_ID, slug: 'destined-poem', version: '1.0.1',
+        id: DESTINED_POEM_SCENE_ID, slug: 'destined-poem', version: '2.5.0',
         name: '命定之诗与黄昏之歌', summary: '', description: '', author: 'The Poem of Destiny',
-        minimumTavernNextVersion: '1.0.0', sceneSdkVersion: 1,
-        frontendEntry: 'frontend/index.html', setupSchema: {}, stateSchema: {},
-        files: ['frontend/index.html'],
+        minimumTavernNextVersion: '1.0.0', sceneSdkVersion: 2,
+        frontendEntry: 'frontend/index.html', frontendStyles: [], setupSchema: {}, stateSchema: {},
+        agentTools: [], sceneViews: [], files: ['frontend/index.html'],
       },
       backingCharacterId: character.id,
     };
@@ -89,24 +172,29 @@ describe('schema 18 Scene migration', () => {
       value: { points: 7, 主角: { 背包: null } },
     });
 
-    upgradeInstalledOfficialSceneRuntime(database, directory);
+    expect(upgradeInstalledOfficialScenes(database, directory, repositories)).toEqual([]);
 
     const upgraded = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
     expect(upgraded.manifest.sceneSdkVersion).toBe(2);
+    expect(upgraded.version).toBe(destinedPoemManifest().version);
+    expect(upgraded.manifest.sceneViews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'combat', schemaVersion: 1, renderer: { id: 'destined-poem-combat-v1' } }),
+      ...['status', 'map', 'relationship', 'progress'].map((kind) => expect.objectContaining({ kind })),
+    ]));
     expect(upgraded.manifest.frontendEntry).toBe('frontend/app.js');
     expect(upgraded.archiveDigest).not.toBe(oldDigest);
     expect(upgraded.backingCharacterId).toBe(character.id);
     expect(repositories.conversations.get(conversation.id)?.title).toBe('Kept Save');
     expect(repositories.conversationSceneStates.getByConversationId(conversation.id)?.value).toEqual({
-      points: 7, 主角: { 装备: {}, 背包: {} },
+      points: 7, 主角: { 背包: null },
     });
     expect(repositories.sceneStateTransitions.get(transition.id)?.value).toEqual({
-      points: 7, 主角: { 装备: {}, 背包: {} },
+      points: 7, 主角: { 背包: null },
     });
     database.close();
   }, 30_000);
 
-  it('backfills the current Scene value as the base state for schema 18', async () => {
+  it('does not retain the schema 18 Scene state after the schema 19 Save reset', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-scene-state-kernel-migration-'));
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
@@ -134,9 +222,8 @@ describe('schema 18 Scene migration', () => {
 
     migrateDatabase(database);
 
-    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)).toMatchObject({
-      baseValue: { points: 7 }, headTransitionId: null, value: { points: 7 },
-    });
+    expect(repositories.conversationSceneStates.getByConversationId(conversation.id)).toBeUndefined();
+    expect(repositories.conversations.get(conversation.id)).toBeUndefined();
     expect(repositories.sceneStateTransitions.listByConversationId(conversation.id)).toEqual([]);
     database.close();
   });

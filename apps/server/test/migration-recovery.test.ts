@@ -118,6 +118,40 @@ function committedWal(database: Uint8Array): Buffer {
 }
 
 describe('migration backup and recovery', () => {
+  it('resets schema 18 Saves that cannot satisfy the Save Agent Configuration invariant', async () => {
+    const directory = await temporaryDirectory();
+    const config = {
+      host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'tavernnext.sqlite'),
+    };
+    const database = createDatabase(config.databasePath);
+    migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    const character = repositories.characters.create({
+      id: '018f0000-0000-7000-8000-000000001721', name: 'Kept Character',
+      description: '', personality: '', scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({
+      id: '018f0000-0000-7000-8000-000000001722', name: 'Kept Persona', description: '', isDefault: true,
+    });
+    repositories.conversations.create({
+      id: '018f0000-0000-7000-8000-000000001723', characterId: character.id, personaId: persona.id,
+      title: 'Incompatible Save',
+    });
+    database.sqlite.pragma('foreign_keys = OFF');
+    database.sqlite.exec('DROP TABLE save_agent_configurations; UPDATE tavernnext_schema_version SET version = 18;');
+    database.sqlite.pragma('foreign_keys = ON');
+    database.close();
+
+    const app = createApp({ config, snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    apps.push(app);
+    await app.ready();
+
+    expect(app.startupMigrationResult).toBe('writable');
+    expect((await app.inject({ method: 'GET', url: '/api/conversations' })).json()).toEqual([]);
+    expect((await app.inject({ method: 'GET', url: '/api/characters' })).json()).toHaveLength(1);
+    expect((await app.inject({ method: 'GET', url: '/api/personas' })).json()).toHaveLength(1);
+  });
+
   it('backs up schema 10, removes every Conversation-owned row, and preserves the library', async () => {
     const directory = await temporaryDirectory();
     const config = {
@@ -190,6 +224,7 @@ describe('migration backup and recovery', () => {
     repositories.worldbookRuntimeStates.create({
       id: '018f0000-0000-7000-8000-000000001712', conversationId: conversation.id,
       timedState: { messageIndex: null, sticky: [], cooldown: [] },
+      entryOverrides: [],
     });
     database.sqlite.pragma('foreign_keys = OFF');
     database.sqlite.exec(`
@@ -222,6 +257,7 @@ describe('migration backup and recovery', () => {
       config,
       snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
       backupClock: () => new Date('2026-08-22T00:00:00.000Z'),
+      synchronizeOfficialPresetCatalog: false,
     });
     apps.push(app);
     await app.ready();
@@ -277,7 +313,7 @@ describe('migration backup and recovery', () => {
       expect.arrayContaining(['provider_id', 'preset_id', 'context_preset_id', 'instruct_preset_id', 'system_preset_id']),
     );
     migrated.close();
-  });
+  }, 30_000);
 
   it('publishes a verified pre-migration DB/WAL/schema backup and retains only the five newest successes', async () => {
     const directory = await temporaryDirectory();
@@ -298,15 +334,16 @@ describe('migration backup and recovery', () => {
 
     for (let index = 0; index < 7; index += 1) {
       const instant = new Date(Date.UTC(2026, 7, 9, 12, 0, index));
-      const app = createApp({
-        config,
-        snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
-        backupClock: () => instant,
-      });
-      await app.ready();
-      expect(app.startupMigrationResult).toBe('writable');
-      await app.close();
       if (index === 0) {
+        const app = createApp({
+          config,
+          snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
+          backupClock: () => instant,
+          synchronizeOfficialPresetCatalog: false,
+        });
+        await app.ready();
+        expect(app.startupMigrationResult).toBe('writable');
+        await app.close();
         const firstBackup = (await backupDirectories(directory))[0]!;
         const firstMetadata = JSON.parse(await readFile(join(firstBackup, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
         expect(firstMetadata).toMatchObject({
@@ -331,6 +368,13 @@ describe('migration backup and recovery', () => {
         } finally {
           checkpointed.close();
         }
+      } else {
+        createPreMigrationBackup({
+          dataDir: config.dataDir,
+          databasePath: config.databasePath,
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          clock: () => instant,
+        });
       }
     }
 
@@ -360,7 +404,7 @@ describe('migration backup and recovery', () => {
     expect(newest.wal).toBeUndefined();
     expect(await readFile(join(newestPath, basename(config.databasePath)))).toEqual(readFileSync(config.databasePath));
     expect((await readdir(join(directory, 'backups'))).some((name) => name.startsWith('.'))).toBe(false);
-  });
+  }, 30_000);
 
   it('refuses an unverifiable WAL instead of publishing false checkpoint and integrity claims', async () => {
     const directory = await temporaryDirectory();

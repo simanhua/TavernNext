@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { ExtensionOwnerKindSchema, ExtensionStateScopeSchema, type ExtensionStateScope } from '@tavernnext/domain';
+import {
+  ExtensionOwnerKindSchema,
+  ExtensionStateScopeSchema,
+  roleplayDocumentFromMarkdown,
+  roleplayDocumentPlainText,
+  type ExtensionStateScope,
+} from '@tavernnext/domain';
 import {
   GENERATION_BLOCKED_TAVERN_HELPER_METHODS,
   TavernRegexSchema,
@@ -10,7 +16,7 @@ import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { assertRuntimeStateValue } from '../runtime-state-validation.js';
 import { resolveActiveResourceContext } from './active-extension-resources.js';
-import type { GenerationService } from './generation-service.js';
+import type { SaveAgentRuntime } from './save-agent-runtime.js';
 import type { createExtensionTrustService } from './extension-trust-service.js';
 
 type TrustService = ReturnType<typeof createExtensionTrustService>;
@@ -33,7 +39,9 @@ function messageView(repositories: Repositories, conversationId: string) {
       id: message.id,
       revision: message.revision,
       role: message.role,
-      message: message.role === 'assistant' && active !== undefined ? active.content : message.content,
+      message: message.role === 'assistant' && active !== undefined
+        ? roleplayDocumentPlainText(active.document)
+        : message.content,
       active_variant_id: active?.id ?? null,
       active_variant_revision: active?.revision ?? null,
     };
@@ -43,7 +51,7 @@ function messageView(repositories: Repositories, conversationId: string) {
 export function createExtensionRuntimeRpcService(
   database: TavernDatabase,
   repositories: Repositories,
-  generations: GenerationService,
+  generations: SaveAgentRuntime,
   trust: TrustService,
 ) {
   return {
@@ -194,7 +202,10 @@ export function createExtensionRuntimeRpcService(
               if (row.active_variant_id !== null) {
                 const expectedVariant = update?.expected_variant_revision;
                 if (expectedVariant !== undefined && expectedVariant !== row.active_variant_revision) throw new RpcError('conflict', 409);
-                const variant = repositories.messageVariants.update(row.active_variant_id, row.active_variant_revision!, { content });
+                const variant = repositories.messageVariants.update(row.active_variant_id, row.active_variant_revision!, {
+                  content,
+                  document: roleplayDocumentFromMarkdown(content),
+                });
                 if (!variant.ok) throw new RpcError('conflict', 409);
               }
             }
@@ -332,36 +343,6 @@ export function createExtensionRuntimeRpcService(
         if (input.method === 'substitudeMacros') {
           if (typeof input.args[0] !== 'string') throw new RpcError('invalid_request', 400);
           return substituteMacros(input.args[0]);
-        }
-        if (input.method === 'injectPrompts' || input.method === 'uninjectPrompts') {
-          const state = stateView(resolveScope('script', null));
-          const current = record(state.value.promptInjections) ?? {};
-          const key = input.args[0];
-          if (typeof key !== 'string' || key === '') throw new RpcError('invalid_request', 400);
-          const injection = record(input.args[1]);
-          if (input.method === 'injectPrompts' && (injection === undefined || typeof injection.content !== 'string'
-            || (injection.position !== undefined && injection.position !== 'before' && injection.position !== 'after')
-            || (injection.role !== undefined && !['system', 'user', 'assistant'].includes(String(injection.role))))) {
-            throw new RpcError('invalid_request', 400);
-          }
-          if (input.method === 'injectPrompts') current[key] = structuredClone(injection);
-          else delete current[key];
-          return database.transaction(() => {
-            const scriptState = replaceState([{ ...state.value, promptInjections: current }, 'script', null, state.revision]);
-            const conversationState = stateView(resolveScope('conversation', null));
-            const injections = record(conversationState.value.runtimePromptInjections) ?? {};
-            const injectionKey = `${input.ownerKind}:${input.ownerId}:${input.scriptId}:${key}`;
-            if (input.method === 'injectPrompts') injections[injectionKey] = {
-              ownerKind: input.ownerKind, ownerId: input.ownerId, scriptId: input.scriptId,
-              bundleDigest: input.bundleDigest,
-              value: structuredClone(injection),
-            };
-            else delete injections[injectionKey];
-            replaceState([{
-              ...conversationState.value, runtimePromptInjections: injections,
-            }, 'conversation', null, conversationState.revision]);
-            return scriptState;
-          });
         }
         throw new RpcError('not_supported', 422);
       })();

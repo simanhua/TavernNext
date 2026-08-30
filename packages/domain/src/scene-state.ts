@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorldbookEntryOverrideSchema } from './generation.js';
 
 const ScenePointerSchema = z.string().startsWith('/');
 
@@ -41,10 +42,12 @@ export const ScenePatchFailureSchema = z.object({
 }).strict();
 
 export const SceneStateDiagnosticSchema = z.object({
-  source: z.enum(['scene-output-protocol', 'scene-hook']),
+  source: z.enum(['scene-output-protocol', 'scene-hook', 'scene-view']),
   code: z.string().min(1).max(160),
   appliedCount: z.number().int().nonnegative().optional(),
   failures: z.array(ScenePatchFailureSchema).max(512).default([]),
+  viewRef: z.string().max(160).optional(),
+  viewKind: z.string().max(64).optional(),
 }).strict();
 
 export const ScenePromptAdditionSchema = z.object({
@@ -59,6 +62,7 @@ export const SceneInitializeResultSchema = z.object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string(),
   }).strict()).max(16).default([]),
+  worldbookEntryOverrides: z.array(WorldbookEntryOverrideSchema).max(2_048).default([]),
 }).strict();
 
 export const SceneBeforeGenerationResultSchema = z.object({
@@ -72,8 +76,19 @@ export const SceneAfterGenerationResultSchema = z.object({
 }).strict();
 
 export const SceneActionResultSchema = z.object({
+  accepted: z.boolean().optional(),
   statePatch: z.array(ScenePatchOperationSchema).optional(),
   result: z.unknown().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.accepted === false && value.statePatch !== undefined) {
+    context.addIssue({ code: 'custom', message: 'rejected_scene_action_must_not_patch_state', path: ['statePatch'] });
+  }
+});
+
+export const SceneAgentToolResultSchema = z.object({
+  content: z.string().max(32_768).optional(),
+  detail: z.unknown().optional(),
+  statePatch: z.array(z.unknown()).max(32).optional(),
 }).strict();
 
 export type ScenePatchOperation = z.infer<typeof ScenePatchOperationSchema>;
@@ -84,3 +99,4 @@ export type SceneInitializeResult = z.infer<typeof SceneInitializeResultSchema>;
 export type SceneBeforeGenerationResult = z.infer<typeof SceneBeforeGenerationResultSchema>;
 export type SceneAfterGenerationResult = z.infer<typeof SceneAfterGenerationResultSchema>;
 export type SceneActionResult = z.infer<typeof SceneActionResultSchema>;
+export type SceneAgentToolResult = z.infer<typeof SceneAgentToolResultSchema>;

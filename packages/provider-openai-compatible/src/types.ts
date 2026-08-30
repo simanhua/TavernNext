@@ -21,14 +21,6 @@ export interface ChatRequest {
   stop?: string | readonly string[];
 }
 
-export interface TextRequest {
-  model: string;
-  prompt: string;
-  temperature?: number;
-  maxTokens?: number;
-  stop?: string | readonly string[];
-}
-
 export type ProviderEvent =
   | { type: 'reasoning_delta'; text: string }
   | { type: 'delta'; text: string }
@@ -44,8 +36,14 @@ export type OpenAICompatibleProfile = Pick<ProviderProfile, 'baseUrl'> & {
   headers?: Readonly<Record<string, string>>;
 };
 
+export interface PiProviderProfile {
+  providerId: string;
+  modelId: string;
+  baseUrl: string;
+  apiKey: string;
+  headers?: Readonly<Record<string, string>>;
+}
+
 export interface OpenAICompatibleClient {
   listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
-  streamChat(request: ChatRequest, signal?: AbortSignal): AsyncIterable<ProviderEvent>;
-  streamText(request: TextRequest, signal?: AbortSignal): AsyncIterable<ProviderEvent>;
 }

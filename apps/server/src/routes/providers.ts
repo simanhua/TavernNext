@@ -1,5 +1,10 @@
 import type { ProviderProfile } from '@tavernnext/domain';
-import { ProviderError, type ModelInfo, type OpenAICompatibleProfile } from '@tavernnext/provider-openai-compatible';
+import {
+  piProviderCatalog,
+  ProviderError,
+  type ModelInfo,
+  type OpenAICompatibleProfile,
+} from '@tavernnext/provider-openai-compatible';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
@@ -34,10 +39,66 @@ const revisionFrom = (value: unknown) => typeof value === 'number' && Number.isI
   : typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : undefined;
 
 function safeView(profile: ProviderProfile, credentials: ProviderCredentials) {
-  const { secretRef: ignoredSecretRef, headerSecretRefs: ignoredHeaderSecretRefs, ...view } = profile;
+  const {
+    secretRef: ignoredSecretRef,
+    headerSecretRefs: ignoredHeaderSecretRefs,
+    model: ignoredLegacyModel,
+    apiMode: ignoredLegacyMode,
+    ...view
+  } = profile;
   void ignoredSecretRef;
   void ignoredHeaderSecretRefs;
+  void ignoredLegacyModel;
+  void ignoredLegacyMode;
   return { ...view, hasApiKey: credentials.has(profile) };
+}
+
+class ProviderSelectionError extends Error {
+  constructor(readonly code: 'provider_unavailable' | 'model_not_agent_capable' | 'invalid_request') {
+    super(code);
+  }
+}
+
+function normalizedProfileFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const providerId = typeof fields.providerId === 'string' ? fields.providerId : 'custom-openai-compatible';
+  const modelId = typeof fields.modelId === 'string' ? fields.modelId : fields.model;
+  if (typeof modelId !== 'string' || modelId.trim() === '') throw new ProviderSelectionError('invalid_request');
+  const { baseUrl: ignoredBaseUrl, customBaseUrl: ignoredCustomBaseUrl, model: ignoredModel, apiMode: ignoredMode, ...rest } = fields;
+  void ignoredBaseUrl;
+  void ignoredCustomBaseUrl;
+  void ignoredModel;
+  void ignoredMode;
+  if (providerId === 'custom-openai-compatible') {
+    const customBaseUrl = validBaseUrl(fields.customBaseUrl ?? fields.baseUrl);
+    if (customBaseUrl === undefined) throw new ProviderSelectionError('invalid_request');
+    return {
+      ...rest,
+      providerId,
+      modelId: modelId.trim(),
+      baseUrl: customBaseUrl,
+      customBaseUrl,
+      toolCalls: fields.toolCalls === true,
+      model: modelId.trim(),
+      apiMode: 'chat',
+    };
+  }
+  const provider = piProviderCatalog().find((candidate) => candidate.id === providerId);
+  if (provider === undefined || !provider.available) throw new ProviderSelectionError('provider_unavailable');
+  const model = provider.models.find((candidate) => candidate.id === modelId);
+  if (model === undefined || !model.toolCalls) throw new ProviderSelectionError('model_not_agent_capable');
+  return {
+    ...rest,
+    providerId,
+    modelId: model.id,
+    baseUrl: model.baseUrl,
+    model: model.id,
+    toolCalls: true,
+    apiMode: 'chat',
+  };
+}
+
+function selectionFailure(error: unknown): string {
+  return error instanceof ProviderSelectionError ? error.code : 'invalid_request';
 }
 
 function apiKeyFrom(body: Record<string, unknown>): string | undefined | null {
@@ -96,6 +157,7 @@ export function registerProviderRoutes(
   };
 
   app.get('/api/providers', async () => repository.list().map((profile) => safeView(profile, credentials)));
+  app.get('/api/providers/catalog', async () => piProviderCatalog());
   app.get<{ Params: { id: string } }>('/api/providers/:id', async (request, reply) => {
     const profile = repository.get(request.params.id);
     return profile === undefined ? reply.status(404).send({ error: 'not_found' }) : safeView(profile, credentials);
@@ -132,16 +194,19 @@ export function registerProviderRoutes(
       : `browser:${fields.id}`;
     let credentialChange: { rollback(): void } | undefined;
     try {
-      if (apiKey !== undefined && (typeof fields.id !== 'string' || typeof fields.baseUrl !== 'string')) throw new Error('invalid input');
+      if (apiKey !== undefined && typeof fields.id !== 'string') throw new Error('invalid input');
       const profile = database.transaction(() => {
-        const created = repository.create({ ...fields, ...(secretRef === undefined ? {} : { secretRef }) } as never);
+        const created = repository.create({
+          ...normalizedProfileFields(fields),
+          ...(secretRef === undefined ? {} : { secretRef }),
+        } as never);
         if (apiKey !== undefined) credentialChange = credentials.put(created.id, created.baseUrl, apiKey);
         return created;
       });
       return reply.status(201).send(safeView(profile, credentials));
-    } catch {
+    } catch (error) {
       rollbackCredential(credentialChange);
-      return reply.status(400).send({ error: 'invalid_request' });
+      return reply.status(400).send({ error: selectionFailure(error) });
     }
   });
   const update = async (request: FastifyRequest<{ Params: { id: string }; Body: Body }>, reply: FastifyReply) => {
@@ -162,14 +227,26 @@ export function registerProviderRoutes(
     void ignoredApiKey;
     void ignoredSecretRef;
     void ignoredHeaders;
-    let nextSecretRef = current.secretRef;
-    if (apiKey !== undefined) nextSecretRef = `browser:${current.id}`;
-    else if (typeof fields.baseUrl === 'string' && fields.baseUrl !== current.baseUrl) nextSecretRef = undefined;
     let credentialChange: { rollback(): void } | undefined;
     try {
+      const normalizedFields = normalizedProfileFields({
+        ...current,
+        ...fields,
+        ...(Object.hasOwn(fields, 'model') && !Object.hasOwn(fields, 'modelId')
+          ? { modelId: fields.model }
+          : {}),
+        ...(Object.hasOwn(fields, 'baseUrl') && !Object.hasOwn(fields, 'customBaseUrl')
+          ? { customBaseUrl: fields.baseUrl }
+          : {}),
+      });
+      let nextSecretRef = current.secretRef;
+      if (apiKey !== undefined) nextSecretRef = `browser:${current.id}`;
+      else if (normalizedFields.providerId !== current.providerId || normalizedFields.baseUrl !== current.baseUrl) {
+        nextSecretRef = undefined;
+      }
       const result = database.transaction(() => {
         const updated = repository.update(current.id, revision, {
-          ...fields,
+          ...normalizedFields,
           secretRef: nextSecretRef,
         } as never);
         if (!updated.ok) return updated;
@@ -181,9 +258,9 @@ export function registerProviderRoutes(
       });
       if (!result.ok) return reply.status(result.reason === 'not_found' ? 404 : 409).send({ error: result.reason });
       return reply.send(safeView(result.value, credentials));
-    } catch {
+    } catch (error) {
       rollbackCredential(credentialChange);
-      return reply.status(400).send({ error: 'invalid_request' });
+      return reply.status(400).send({ error: selectionFailure(error) });
     }
   };
   app.patch<{ Params: { id: string }; Body: Body }>('/api/providers/:id', update);

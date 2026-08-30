@@ -2,9 +2,8 @@ import type { SceneGenerationEvent, SceneGenerationSnapshot } from '@tavernnext/
 import type { Conversation, MessageView } from '../../api/client.js';
 import { api } from '../../api/client.js';
 import { readGenerationEvents } from '../../api/generation-stream.js';
-import { runTrustedPromptHooks } from '../extensions/TrustedPromptHooks.js';
 
-type NonNormalMode = 'swipe' | 'regenerate' | 'continue';
+type NonNormalMode = 'swipe' | 'regenerate';
 
 export type GenerationStartInput =
   | { mode: 'normal'; userText: string }
@@ -32,6 +31,8 @@ const EMPTY_SNAPSHOT: GenerationSessionSnapshot = {
   streamedText: '',
   streamedReasoning: '',
   error: null,
+  activities: [],
+  viewPlaceholders: [],
   target: null,
 };
 
@@ -99,7 +100,6 @@ export class GenerationSessionController {
     if (this.active) return 'busy';
     this.active = true;
     let accepted = false;
-    let candidateId: string | undefined;
     const controller = new AbortController();
     this.activeRequest = controller;
     this.generationId = null;
@@ -109,6 +109,8 @@ export class GenerationSessionController {
       streamedText: '',
       streamedReasoning: '',
       error: null,
+      activities: [],
+      viewPlaceholders: [],
       target: input.mode === 'normal' ? null : {
         mode: input.mode,
         messageId: input.target.id,
@@ -119,26 +121,7 @@ export class GenerationSessionController {
       const requestInput: { mode: 'normal' | NonNormalMode; userText?: string } = input.mode === 'normal'
         ? { mode: 'normal', userText: input.userText }
         : { mode: input.mode };
-      let response: Response;
-      if (conversation.sceneId !== undefined) {
-        response = await api.startGeneration(conversation, requestInput, controller.signal);
-      } else {
-        const candidate = await api.createGenerationCandidate(conversation, requestInput, controller.signal);
-        candidateId = candidate.candidateId;
-        const trustedPatch = await runTrustedPromptHooks({
-          kind: candidate.kind,
-          messages: candidate.messages,
-          text: candidate.text,
-          stop: candidate.stop,
-          spreset: candidate.spreset,
-        }, false, { signal: controller.signal, timeoutMs: 10_000 });
-        const sealed = await api.sealGenerationCandidate(candidate.candidateId, trustedPatch, controller.signal);
-        candidateId = undefined;
-        response = await api.startGeneration(conversation, {
-          ...requestInput,
-          snapshotId: sealed.snapshotId,
-        }, controller.signal);
-      }
+      const response = await api.startGeneration(conversation, requestInput, controller.signal);
       let terminal = false;
       for await (const event of readGenerationEvents(response, controller.signal)) {
         if (!this.mounted) return accepted ? 'accepted' : 'rejected';
@@ -155,6 +138,19 @@ export class GenerationSessionController {
         } else if (event.type === 'delta') {
           this.patch({ streamedText: this.snapshot.streamedText + event.text }, false);
           this.notifyEvent({ type: 'text-delta', text: event.text });
+        } else if (event.type === 'activity') {
+          const activity = { kind: event.kind, label: event.label };
+          this.patch({ activities: [...this.snapshot.activities, activity].slice(-32) }, false);
+          this.notifyEvent({ type: 'activity', ...activity });
+        } else if (event.type === 'view_placeholder') {
+          if (this.snapshot.viewPlaceholders.some((placeholder) => placeholder.viewId === event.viewId)) continue;
+          const placeholder = {
+            viewId: event.viewId,
+            kind: event.kind,
+            offset: this.snapshot.streamedText.length,
+          };
+          this.patch({ viewPlaceholders: [...this.snapshot.viewPlaceholders, placeholder].slice(-16) }, false);
+          this.notifyEvent({ type: 'view-placeholder', ...placeholder });
         } else if (event.type === 'completed' || event.type === 'aborted' || event.type === 'failed') {
           terminal = true;
           if (event.type === 'failed') this.patch({ error: event.code });
@@ -169,7 +165,6 @@ export class GenerationSessionController {
       if (!terminal) throw new Error('Generation stream ended without a terminal event');
       return accepted ? 'accepted' : 'rejected';
     } catch (generationError) {
-      if (candidateId !== undefined) void api.discardGenerationCandidate(candidateId).catch(() => undefined);
       if (!this.mounted || controller.signal.aborted) return accepted ? 'accepted' : 'rejected';
       const error = generationError instanceof Error ? generationError.message : 'generation_failed';
       await this.dependencies.refreshAuthoritativeState(conversation.id).catch(() => undefined);

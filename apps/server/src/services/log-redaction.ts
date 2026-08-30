@@ -35,6 +35,11 @@ function isSensitiveKey(key: string, limits: RedactionLimits): boolean {
   return limits.sensitiveKeys.has(normalizedKey(key));
 }
 
+function isSensitiveEntry(key: string, parentKey: string | undefined, limits: RedactionLimits): boolean {
+  return isSensitiveKey(key, limits)
+    || (normalizedKey(parentKey ?? '') === 'credential' && normalizedKey(key) === 'key');
+}
+
 function enumerableDataEntries(value: object): Array<[string, unknown]> {
   const entries: Array<[string, unknown]> = [];
   for (const key of Object.keys(value)) {
@@ -69,17 +74,17 @@ function collectSensitiveValues(value: unknown, limits: RedactionLimits): Set<st
   const found = new Set<string>();
   const visited = new WeakSet<object>();
   const budget = { remaining: limits.maxEntries };
-  const visit = (candidate: unknown, depth: number): void => {
+  const visit = (candidate: unknown, depth: number, parentKey?: string): void => {
     if (budget.remaining <= 0 || depth > limits.maxDepth || typeof candidate !== 'object' || candidate === null) return;
     if (visited.has(candidate)) return;
     visited.add(candidate);
     for (const [key, child] of enumerableDataEntries(candidate)) {
       if (budget.remaining <= 0) return;
       budget.remaining -= 1;
-      if (isSensitiveKey(key, limits)) {
+      if (isSensitiveEntry(key, parentKey, limits)) {
         collectStrings(child, found, limits.maxDepth - depth, budget);
       } else {
-        visit(child, depth + 1);
+        visit(child, depth + 1, key);
       }
     }
   };
@@ -106,7 +111,7 @@ export function redactLogValue(value: unknown, options: LogRedactionOptions = {}
   const seen = new WeakSet<object>();
   const budget = { remaining: limits.maxEntries };
 
-  const clone = (candidate: unknown, depth: number): unknown => {
+  const clone = (candidate: unknown, depth: number, parentKey?: string): unknown => {
     if (typeof candidate === 'string') return scrubString(candidate, sensitiveValues, limits.maxStringLength);
     if (candidate === null || typeof candidate === 'number' || typeof candidate === 'boolean') return candidate;
     if (typeof candidate === 'bigint') return candidate.toString();
@@ -127,7 +132,9 @@ export function redactLogValue(value: unknown, options: LogRedactionOptions = {}
         break;
       }
       budget.remaining -= 1;
-      const projected = isSensitiveKey(key, limits) ? REDACTED_LOG_VALUE : clone(child, depth + 1);
+      const projected = isSensitiveEntry(key, parentKey, limits)
+        ? REDACTED_LOG_VALUE
+        : clone(child, depth + 1, key);
       if (Array.isArray(result)) result.push(projected);
       else result[key] = projected;
     }

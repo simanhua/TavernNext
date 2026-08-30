@@ -1,21 +1,33 @@
-import { GenerationCandidateTransportSchema } from '@tavernnext/domain';
 import type {
   Conversation,
   GenerationMode,
-  GenerationCandidateTransport,
   GlobalGenerationConfig,
   GlobalGenerationSelection,
   InstalledScene,
   ConversationSceneState,
   SceneCatalogEntry,
   ScenePatchFailure,
+  SaveAgentConfiguration,
   Message,
   MessageVariant,
+  AgentRun,
   PresetKind,
-  TrustedPromptPatch,
+  SaveMemory,
+  SaveMemoryConfiguration,
+  MemoryJob,
+  PlayerOperation,
 } from '@tavernnext/domain';
+import { SCENE_ACTION_ENVELOPE_PROTOCOL } from '@tavernnext/domain';
 
-export type { Conversation, Message, MessageVariant, PresetKind };
+export type { Conversation, Message, MessageVariant, PresetKind, SaveAgentConfiguration };
+export type { AgentRun };
+export type MemoryCenterView = {
+  configuration: SaveMemoryConfiguration | null;
+  memories: SaveMemory[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  jobs: Array<Omit<MemoryJob, 'payload'>>;
+  embedding: { enabled: boolean; configured: boolean; model: string | null; dimensions: number | null };
+};
 
 export interface SceneCatalogEntryView extends SceneCatalogEntry { installed: boolean; coverUrl?: string }
 export interface InstalledSceneView extends InstalledScene {
@@ -142,6 +154,7 @@ export interface PresetSelectorView {
   revision: number;
   name: string;
   kind: PresetKind;
+  official: boolean;
 }
 
 export interface PresetView extends PresetSelectorView, MutableView {
@@ -218,6 +231,11 @@ export interface WorldbookEntryView extends MutableView {
   automationId: string;
   triggers: string[];
   compatibilitySummary?: CompatibilitySummary;
+  effectiveEnabled?: boolean;
+  activationSource?: 'template' | 'save';
+  saveOverrideEnabled?: boolean;
+  contentOverridden?: boolean;
+  effectiveContent?: string;
 }
 
 export interface WorldbookView extends MutableView {
@@ -230,6 +248,20 @@ export interface WorldbookView extends MutableView {
   isGlobal: boolean;
   compatibilitySummary?: CompatibilitySummary;
   entries: WorldbookEntryView[];
+  effectiveEnabled?: boolean;
+}
+
+export type WorldbookEntryInput = Omit<WorldbookEntryView, keyof MutableView | 'worldbookId' | 'sourceUid' | 'sourceOrdinal' | 'compatibilitySummary' | 'effectiveEnabled' | 'activationSource' | 'saveOverrideEnabled' | 'contentOverridden' | 'effectiveContent'>;
+export type WorldbookEntryPatch = Partial<WorldbookEntryInput>;
+
+export interface SaveRuntimeReferencesView {
+  configuration: SaveAgentConfiguration;
+  worldbooks: Array<{
+    source: 'global' | 'character' | 'conversation';
+    saveOwned: boolean;
+    templateLineage?: { worldbookId: string | null; revision: number | null };
+    value: WorldbookView;
+  }>;
 }
 
 export interface ImportPreview {
@@ -248,85 +280,6 @@ export interface ImportReceipt {
   assetPath?: string;
 }
 
-export interface PromptTimedEntryView {
-  entryKey: string;
-  start: number;
-  end: number;
-  protected: boolean;
-}
-
-export interface PromptTimedStateView {
-  messageIndex: number | null;
-  stickyCount: number;
-  cooldownCount: number;
-  sticky: PromptTimedEntryView[];
-  cooldown: PromptTimedEntryView[];
-}
-
-export interface PromptPreviewView {
-  snapshotId: string;
-  kind: 'chat' | 'text';
-  messages?: Array<{ role: string; content: string }>;
-  text?: string;
-  stop: string[];
-  tokenBreakdown: Array<{ source: string; includedTokens: number; omittedTokens: number; reason?: string }>;
-  totalTokens: number;
-  tokenizerDecision: { requestedId?: number; tokenizerId: number; tokenizerName: string; model?: string; warning?: string; fallbackFrom?: number; fallbackTokenizerId?: number };
-  worldbook: {
-    activated: Array<{ entryKey: string; bookName?: string; sourceUid?: string | number; content?: string; activation?: string; tokenUsageAfter?: number }>;
-    excluded: Array<{ entryKey: string; reason: string }>;
-    timedState: PromptTimedStateView;
-    tokenUsage: { budget: number; used: number; overflowed: boolean };
-    recursionSteps: number;
-    warnings: Array<{ code: string; message: string }>;
-  };
-  previousTimedState?: PromptTimedStateView;
-  warnings: Array<{ code: string; message: string; source?: string }>;
-  entityRevisions: {
-    globalGenerationConfig: { revision: number };
-    conversation: { revision: number };
-    character: { revision: number };
-    persona: { revision: number };
-    provider: { revision: number };
-    presets: Array<{ revision: number; kind: string }>;
-    globalWorldbookCount: number;
-    worldbookCount: number;
-    messageCount: number;
-    runtimeStateRevision: number | null;
-  };
-}
-
-export type GenerationCandidateView = GenerationCandidateTransport & { preview: PromptPreviewView };
-
-interface PromptTimedStateResponse {
-  messageIndex: number | null;
-  sticky: unknown[];
-  cooldown: unknown[];
-}
-
-interface PromptPreviewResponse extends Omit<PromptPreviewView, 'worldbook' | 'previousTimedState' | 'entityRevisions'> {
-  worldbook: Omit<PromptPreviewView['worldbook'], 'timedState'> & { timedState: PromptTimedStateResponse };
-  previousTimedState?: PromptTimedStateResponse;
-  entityRevisions: {
-    globalGenerationConfig: { id?: string; revision: number };
-    conversation: { id?: string; revision: number };
-    character: { id?: string; revision: number };
-    persona: { id?: string; revision: number };
-    provider: { id?: string; revision: number };
-    presets: Array<{ id?: string; revision: number; kind: string }>;
-    globalWorldbooks?: Array<{ id?: string; revision: number }>;
-    worldbooks?: Array<{ id?: string; revision: number }>;
-    messages?: Array<{ id?: string; revision: number }>;
-    runtimeState?: { id?: string; revision: number } | null;
-  };
-}
-interface GenerationCandidateResponse extends Omit<PromptPreviewResponse, 'snapshotId' | 'messages'> {
-  candidateId: string;
-  expiresAt: string;
-  executableDigest: string;
-  compiledRequestHash: string;
-  messages?: GenerationCandidateTransport['messages'];
-}
 
 export interface ProviderProfileView {
   id: string;
@@ -334,10 +287,24 @@ export interface ProviderProfileView {
   createdAt: string;
   updatedAt: string;
   name: string;
+  providerId: string;
+  modelId: string;
   baseUrl: string;
-  model: string;
-  apiMode: 'chat' | 'text';
+  customBaseUrl?: string;
+  toolCalls: boolean;
   hasApiKey: boolean;
+}
+
+export interface ProviderCatalogEntryView {
+  id: string;
+  name: string;
+  authentication: 'api_key' | 'oauth' | 'subscription' | 'composite';
+  available: boolean;
+  customBaseUrl: boolean;
+  baseUrl?: string;
+  credentialLabel?: string;
+  unavailableReason?: string;
+  models: Array<{ id: string; name: string; baseUrl: string; toolCalls: boolean }>;
 }
 
 export interface ProviderModelView {
@@ -492,87 +459,37 @@ async function uploadAvatar<T>(kind: 'characters' | 'personas', id: string, revi
   return request<T>(`/api/${kind}/${id}/avatar?revision=${revision}`, { method: 'PUT', ...multipart });
 }
 
-function projectTimedState(state: PromptTimedStateResponse): PromptTimedStateView {
-  return {
-    messageIndex: state.messageIndex,
-    stickyCount: state.sticky.length,
-    cooldownCount: state.cooldown.length,
-    sticky: state.sticky.flatMap(projectTimedEntry),
-    cooldown: state.cooldown.flatMap(projectTimedEntry),
-  };
-}
-
-function projectTimedEntry(value: unknown): PromptTimedEntryView[] {
-  if (typeof value !== 'object' || value === null) return [];
-  const entry = value as Record<string, unknown>;
-  if (
-    typeof entry.entryKey !== 'string'
-    || typeof entry.start !== 'number'
-    || typeof entry.end !== 'number'
-    || typeof entry.protected !== 'boolean'
-  ) return [];
-  return [{ entryKey: entry.entryKey, start: entry.start, end: entry.end, protected: entry.protected }];
-}
-
-function projectPromptPreview(response: PromptPreviewResponse): PromptPreviewView {
-  const revisions = response.entityRevisions;
-  return {
-    snapshotId: response.snapshotId,
-    kind: response.kind,
-    ...(response.messages === undefined
-      ? {}
-      : { messages: response.messages.map(({ role, content }) => ({ role, content })) }),
-    ...(response.text === undefined ? {} : { text: response.text }),
-    stop: [...response.stop],
-    tokenBreakdown: response.tokenBreakdown.map(({ source, includedTokens, omittedTokens, reason }) => ({
-      source, includedTokens, omittedTokens, ...(reason === undefined ? {} : { reason }),
-    })),
-    totalTokens: response.totalTokens,
-    tokenizerDecision: {
-      tokenizerId: response.tokenizerDecision.tokenizerId,
-      tokenizerName: response.tokenizerDecision.tokenizerName,
-      ...(response.tokenizerDecision.requestedId === undefined ? {} : { requestedId: response.tokenizerDecision.requestedId }),
-      ...(response.tokenizerDecision.model === undefined ? {} : { model: response.tokenizerDecision.model }),
-      ...(response.tokenizerDecision.warning === undefined ? {} : { warning: response.tokenizerDecision.warning }),
-      ...(response.tokenizerDecision.fallbackFrom === undefined ? {} : { fallbackFrom: response.tokenizerDecision.fallbackFrom }),
-      ...(response.tokenizerDecision.fallbackTokenizerId === undefined ? {} : { fallbackTokenizerId: response.tokenizerDecision.fallbackTokenizerId }),
-    },
-    worldbook: {
-      activated: response.worldbook.activated.map((entry) => ({
-        entryKey: entry.entryKey,
-        ...(entry.bookName === undefined ? {} : { bookName: entry.bookName }),
-        ...(entry.sourceUid === undefined ? {} : { sourceUid: entry.sourceUid }),
-        ...(entry.content === undefined ? {} : { content: entry.content }),
-        ...(entry.activation === undefined ? {} : { activation: entry.activation }),
-        ...(entry.tokenUsageAfter === undefined ? {} : { tokenUsageAfter: entry.tokenUsageAfter }),
-      })),
-      excluded: response.worldbook.excluded.map(({ entryKey, reason }) => ({ entryKey, reason })),
-      timedState: projectTimedState(response.worldbook.timedState),
-      tokenUsage: { ...response.worldbook.tokenUsage },
-      recursionSteps: response.worldbook.recursionSteps,
-      warnings: response.worldbook.warnings.map(({ code, message }) => ({ code, message })),
-    },
-    ...(response.previousTimedState === undefined ? {} : { previousTimedState: projectTimedState(response.previousTimedState) }),
-    warnings: response.warnings.map(({ code, message, source }) => ({ code, message, ...(source === undefined ? {} : { source }) })),
-    entityRevisions: {
-      globalGenerationConfig: { revision: revisions.globalGenerationConfig.revision },
-      conversation: { revision: revisions.conversation.revision },
-      character: { revision: revisions.character.revision },
-      persona: { revision: revisions.persona.revision },
-      provider: { revision: revisions.provider.revision },
-      presets: revisions.presets.map(({ revision, kind }) => ({ revision, kind })),
-      globalWorldbookCount: revisions.globalWorldbooks?.length ?? 0,
-      worldbookCount: revisions.worldbooks?.length ?? 0,
-      messageCount: revisions.messages?.length ?? 0,
-      runtimeStateRevision: revisions.runtimeState?.revision ?? null,
-    },
-  };
-}
-
 export const api = {
   listSceneCatalog: () => request<SceneCatalogEntryView[]>('/api/scenes/catalog'),
   listScenes: () => request<InstalledSceneView[]>('/api/scenes'),
   getScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}`),
+  listAgentRuns: (conversationId: string) => request<AgentRun[]>(
+    `/api/development/agent-runs?conversationId=${encodeURIComponent(conversationId)}`,
+  ),
+  getMemoryCenter: (conversationId: string, page = 1, pageSize = 20) => request<MemoryCenterView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memories?page=${page}&pageSize=${pageSize}`,
+  ),
+  updateMemorySettings: (conversationId: string, revision: number | null, enabled: boolean) => request<SaveMemoryConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memory-settings`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  updateMemory: (memory: SaveMemory, patch: Pick<SaveMemory, 'pinned' | 'excluded'>) => request<SaveMemory>(
+    `/api/memories/${encodeURIComponent(memory.id)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision: memory.revision, ...patch }) },
+  ),
+  deleteMemory: (memory: SaveMemory) => request<void>(
+    `/api/memories/${encodeURIComponent(memory.id)}?revision=${memory.revision}`,
+    { method: 'DELETE' },
+  ),
+  rebuildMemoryIndex: (conversationId: string) => request<MemoryJob>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memory-index/rebuild`, { method: 'POST' },
+  ),
+  retryMemoryJob: (jobId: string) => request<MemoryJob>(
+    `/api/memory-jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' },
+  ),
+  backfillMemory: (conversationId: string) => request<{ created: number; skipped: number }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/memory-backfill`, { method: 'POST' },
+  ),
   installScene: (id: string) => request<InstalledSceneView>(`/api/scenes/${encodeURIComponent(id)}/install`, { method: 'POST' }),
   uninstallScene: (scene: InstalledSceneView) => request<{ backupPath: string }>(`/api/scenes/${encodeURIComponent(scene.id)}`, {
     method: 'DELETE', body: JSON.stringify({ revision: scene.revision, cascade: true }),
@@ -598,9 +515,18 @@ export const api = {
     `/api/conversations/${encodeURIComponent(conversationId)}/scene-state`,
     { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
   ),
-  runSceneAction: (conversationId: string, action: unknown) => request<{ state: ConversationSceneStateView; result: unknown }>(
+  runSceneAction: (conversationId: string, action: unknown, operation?: PlayerOperation) => request<{
+    state: ConversationSceneStateView;
+    result: unknown;
+    operation?: PlayerOperation & { messageId: string };
+  }>(
     `/api/conversations/${encodeURIComponent(conversationId)}/scene-actions`,
-    { method: 'POST', body: JSON.stringify(action) },
+    {
+      method: 'POST',
+      body: JSON.stringify(operation === undefined
+        ? action
+        : { $tavernnext: SCENE_ACTION_ENVELOPE_PROTOCOL, action, operation }),
+    },
   ),
   listCharacters: () => request<CharacterSummaryView[]>('/api/characters'),
   getCharacter: (id: string) => request<CharacterView>(`/api/characters/${id}`),
@@ -630,6 +556,7 @@ export const api = {
   deletePersona: (id: string, revision: number) => request<void>(`/api/personas/${id}?revision=${revision}`, { method: 'DELETE' }),
   uploadPersonaAvatar: (id: string, revision: number, file: File) => uploadAvatar<PersonaView>('personas', id, revision, file),
   listProviders: () => request<ProviderProfileView[]>('/api/providers'),
+  listProviderCatalog: () => request<ProviderCatalogEntryView[]>('/api/providers/catalog'),
   getGlobalGenerationConfig: () => request<GlobalGenerationConfigView>('/api/settings/generation'),
   saveGlobalGenerationConfig: (revision: number, patch: GlobalGenerationConfigPatch) => request<GlobalGenerationConfigView>(
     '/api/settings/generation', { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
@@ -641,6 +568,48 @@ export const api = {
     method: 'POST', body: JSON.stringify(input),
   }),
   listPresets: () => request<PresetSelectorView[]>('/api/presets'),
+  getSaveAgentConfiguration: (conversationId: string) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration`,
+  ),
+  getSaveRuntimeReferences: (conversationId: string) => request<SaveRuntimeReferencesView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references`,
+  ),
+  toggleSavePrompt: (conversationId: string, revision: number, identifier: string, enabled: boolean) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references/preset-prompts/${encodeURIComponent(identifier)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  toggleRuntimeWorldbook: (conversationId: string, worldbookId: string, revision: number, enabled: boolean) => request<WorldbookView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references/worldbooks/${encodeURIComponent(worldbookId)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  toggleRuntimeWorldbookEntry: (
+    conversationId: string,
+    worldbookId: string,
+    entryId: string,
+    revision: number,
+    enabled: boolean,
+  ) => request<WorldbookEntryView>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/runtime-references/worldbooks/${encodeURIComponent(worldbookId)}/entries/${encodeURIComponent(entryId)}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, enabled }) },
+  ),
+  updateSaveAgentConfiguration: (
+    conversationId: string,
+    revision: number,
+    patch: Pick<SaveAgentConfiguration, 'name' | 'settings'>,
+  ) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  replaceSaveAgentConfiguration: (conversationId: string, revision: number, presetId: string) => (
+    request<SaveAgentConfiguration>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration/replace`,
+      { method: 'POST', body: JSON.stringify({ revision, presetId }) },
+    )
+  ),
+  syncSaveAgentConfiguration: (conversationId: string, revision: number) => request<SaveAgentConfiguration>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/agent-configuration/sync`,
+    { method: 'POST', body: JSON.stringify({ revision }) },
+  ),
   getPreset: (id: string) => request<PresetView>(`/api/presets/${id}`),
   createPreset: (input: { name: string; kind: PresetKind; settings: Record<string, unknown> }) => request<PresetView>('/api/presets', {
     method: 'POST', body: JSON.stringify({ id: crypto.randomUUID(), ...input }),
@@ -701,16 +670,36 @@ export const api = {
   }),
   deleteWorldbook: (id: string, revision: number) => request<void>(`/api/worldbooks/${id}?revision=${revision}`, { method: 'DELETE' }),
   exportWorldbook: (id: string) => download(`/api/worldbooks/${id}/export?format=st-native`),
-  createWorldbookEntry: (worldbookId: string, input: Omit<WorldbookEntryView, keyof MutableView | 'worldbookId' | 'sourceUid' | 'sourceOrdinal' | 'compatibilitySummary'>) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries`, {
+  createWorldbookEntry: (worldbookId: string, input: WorldbookEntryInput) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries`, {
     method: 'POST', body: JSON.stringify(input),
   }),
-  updateWorldbookEntry: (worldbookId: string, entryId: string, revision: number, patch: Partial<Omit<WorldbookEntryView, keyof MutableView | 'worldbookId' | 'sourceUid' | 'sourceOrdinal' | 'compatibilitySummary'>>) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries/${entryId}`, {
+  updateWorldbookEntry: (worldbookId: string, entryId: string, revision: number, patch: WorldbookEntryPatch) => request<WorldbookEntryView>(`/api/worldbooks/${worldbookId}/entries/${entryId}`, {
     method: 'PATCH', body: JSON.stringify({ revision, patch }),
   }),
   deleteWorldbookEntry: (worldbookId: string, entryId: string, revision: number) => request<void>(`/api/worldbooks/${worldbookId}/entries/${entryId}?revision=${revision}`, { method: 'DELETE' }),
   reorderWorldbookEntries: (worldbookId: string, entries: Array<{ id: string; revision: number; order: number }>) => request<WorldbookEntryView[]>(`/api/worldbooks/${worldbookId}/entries/order`, {
     method: 'PUT', body: JSON.stringify({ entries }),
   }),
+  updateSaveWorldbook: (conversationId: string, worldbookId: string, revision: number, patch: Partial<Pick<WorldbookView, 'name' | 'description' | 'enabled' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning'>>) => request<WorldbookView>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  createSaveWorldbookEntry: (conversationId: string, worldbookId: string, input: WorldbookEntryInput) => request<WorldbookEntryView>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries`,
+    { method: 'POST', body: JSON.stringify(input) },
+  ),
+  updateSaveWorldbookEntry: (conversationId: string, worldbookId: string, entryId: string, revision: number, patch: WorldbookEntryPatch) => request<WorldbookEntryView>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries/${entryId}`,
+    { method: 'PATCH', body: JSON.stringify({ revision, patch }) },
+  ),
+  deleteSaveWorldbookEntry: (conversationId: string, worldbookId: string, entryId: string, revision: number) => request<void>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries/${entryId}?revision=${revision}`,
+    { method: 'DELETE' },
+  ),
+  reorderSaveWorldbookEntries: (conversationId: string, worldbookId: string, entries: Array<{ id: string; revision: number; order: number }>) => request<WorldbookEntryView[]>(
+    `/api/conversations/${conversationId}/save-worldbook/${worldbookId}/entries/order`,
+    { method: 'PUT', body: JSON.stringify({ entries }) },
+  ),
   inspectImport,
   commitImport: (inspectionToken: string) => request<ImportReceipt>('/api/imports/commit', {
     method: 'POST', body: JSON.stringify({ inspectionToken }),
@@ -719,9 +708,10 @@ export const api = {
     id?: string;
     revision?: number;
     name: string;
-    baseUrl: string;
-    model: string;
-    apiMode: 'chat' | 'text';
+    providerId: string;
+    modelId: string;
+    customBaseUrl?: string;
+    toolCalls?: boolean;
     apiKey?: string;
   }) => {
     const { id, revision, ...fields } = input;
@@ -754,33 +744,6 @@ export const api = {
     { method: 'DELETE' },
   ),
   getConversationMessages: (id: string) => request<ConversationDetail>(`/api/conversations/${id}/messages`),
-  previewPrompt: async (conversation: Conversation, userText: string) => projectPromptPreview(await request<PromptPreviewResponse>(
-    `/api/conversations/${conversation.id}/prompt-preview`,
-    { method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, mode: 'normal', userText }) },
-  )),
-  createGenerationCandidate: (
-    conversation: Conversation,
-    input: { mode: GenerationMode; userText?: string },
-    signal?: AbortSignal,
-  ) => request<unknown>(`/api/conversations/${conversation.id}/generation-candidates`, {
-    method: 'POST', body: JSON.stringify({ conversationRevision: conversation.revision, ...input }), signal,
-  }).then((raw): GenerationCandidateView => {
-    const response = GenerationCandidateTransportSchema.parse(raw) as unknown as GenerationCandidateResponse;
-    return {
-      ...response,
-      preview: projectPromptPreview({ ...response, snapshotId: response.candidateId }),
-    };
-  }),
-  sealGenerationCandidate: (
-    candidateId: string,
-    patch: TrustedPromptPatch,
-    signal?: AbortSignal,
-  ) => request<{ snapshotId: string }>(`/api/generation-candidates/${candidateId}/seal`, {
-    method: 'POST', body: JSON.stringify({ patch }), signal,
-  }),
-  discardGenerationCandidate: (candidateId: string) => request<void>(`/api/generation-candidates/${candidateId}`, {
-    method: 'DELETE',
-  }),
   updateMessage: (message: Message, content: string) => request<Message>(`/api/messages/${message.id}`, {
     method: 'PATCH', body: JSON.stringify({ revision: message.revision, patch: { content } }),
   }),
@@ -790,7 +753,7 @@ export const api = {
   }),
   startGeneration: async (
     conversation: Conversation,
-    input: { mode: GenerationMode; userText?: string; snapshotId?: string },
+    input: { mode: GenerationMode; userText?: string },
     signal?: AbortSignal,
   ) => {
     const response = await fetch(`/api/conversations/${conversation.id}/generations`, {

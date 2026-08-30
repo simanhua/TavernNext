@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { ZodType } from 'zod';
 import {
   CharacterSchema,
+  AgentRunSchema,
   ConversationSchema,
   ExtensionAssetSchema,
   ExtensionStateSchema,
@@ -12,7 +13,9 @@ import {
   ExtensionRemoteResourceSchema,
   ExtensionAuditEventSchema,
   GenerationSnapshotSchema,
+  GLOBAL_EMBEDDING_CONFIGURATION_ID,
   GLOBAL_GENERATION_CONFIG_ID,
+  GlobalEmbeddingConfigurationSchema,
   GlobalGenerationConfigSchema,
   ImportArtifactSchema,
   InstalledSceneSchema,
@@ -26,7 +29,13 @@ import {
   WorldbookSchema,
   ConversationSceneStateSchema,
   SceneStateTransitionSchema,
+  SaveAgentConfigurationSchema,
+  SaveWorldbookSchema,
+  SaveMemoryConfigurationSchema,
+  SaveMemorySchema,
+  MemoryJobSchema,
   type Character,
+  type AgentRun,
   type Conversation,
   type ExtensionAsset,
   type ExtensionOwnerKind,
@@ -36,6 +45,7 @@ import {
   type ExtensionRemoteResource,
   type ExtensionAuditEvent,
   type GenerationSnapshot,
+  type GlobalEmbeddingConfiguration,
   type GlobalGenerationConfig,
   type GlobalGenerationSelection,
   type ImportArtifact,
@@ -51,9 +61,15 @@ import {
   type ConversationSceneState,
   type SceneStateTransition,
   type SceneStateTransitionSourceKind,
+  type SaveAgentConfiguration,
+  type SaveWorldbook,
+  type SaveMemoryConfiguration,
+  type SaveMemory,
+  type MemoryJob,
 } from '@tavernnext/domain';
 import {
   characters,
+  agentRuns,
   conversationWorldbooks,
   conversations,
   extensionAssets,
@@ -63,6 +79,7 @@ import {
   extensionAuditEvents,
   generationSnapshots,
   globalGenerationConfigurations,
+  globalEmbeddingConfigurations,
   importArtifacts,
   installedScenes,
   messages,
@@ -75,6 +92,11 @@ import {
   worldbooks,
   conversationSceneStates,
   sceneStateTransitions,
+  saveAgentConfigurations,
+  saveWorldbooks,
+  saveMemoryConfigurations,
+  saveMemories,
+  memoryJobs,
 } from './schema.js';
 import type { TavernDatabase } from './client.js';
 import {
@@ -89,6 +111,7 @@ export const MAX_MESSAGES_PER_CONVERSATION = 2048;
 export const MAX_VARIANTS_PER_RELATION = 4096;
 export const MAX_ENTRIES_PER_WORLDBOOK = 4096;
 export const MAX_GLOBAL_WORLDBOOKS = 64;
+export const MAX_PINNED_SAVE_MEMORIES = 128;
 
 export type RelationshipLimitCode =
   | 'message_relation_limit'
@@ -119,6 +142,8 @@ type MutableEntity = {
 };
 type DefaultedField =
   | 'enabled' | 'position' | 'order' | 'settings' | 'worldbookIds' | 'apiMode' | 'headerSecretRefs'
+  | 'providerId' | 'modelId'
+  | 'toolCalls'
   | 'examples' | 'systemPrompt' | 'postHistoryInstructions' | 'creatorNotes' | 'creator' | 'characterVersion'
   | 'depthPrompt' | 'authorNote' | 'authorNotePosition' | 'authorNoteDepth' | 'authorNoteRole'
   | 'description' | 'scanDepth' | 'tokenBudget' | 'recursiveScanning' | 'extensions'
@@ -130,8 +155,13 @@ type DefaultedField =
   | 'matchCharacterPersonality' | 'matchCharacterDepthPrompt' | 'matchScenario' | 'matchCreatorNotes'
   | 'comment' | 'displayName' | 'addMemo' | 'displayIndex' | 'outletName' | 'automationId' | 'triggers'
   | 'isGlobal' | 'maxPromptTokens' | 'maxResponseTokens' | 'ordinal' | 'continuationBoundaries'
-  | 'diagnostics' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
-  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal';
+  | 'diagnostics' | 'document' | 'setup' | 'schemaVersion' | 'baseValue' | 'headTransitionId'
+  | 'parentTransitionId' | 'operations' | 'value' | 'sceneInternal' | 'trace'
+  | 'disabledAt' | 'tier' | 'detail' | 'entities' | 'salience' | 'confidence'
+  | 'sourceMessageId' | 'sourceVariantId' | 'sourceTransitionId' | 'sourceAgentRunId'
+  | 'sourceMemoryIds' | 'supersedesId' | 'pinned' | 'excluded' | 'status'
+  | 'attempts' | 'nextAttemptAt' | 'payload' | 'lastError' | 'baseUrl' | 'model'
+  | 'secretRef' | 'dimensions' | 'output';
 export type CreateInput<T extends MutableEntity> =
   Omit<T, 'revision' | 'createdAt' | 'updatedAt' | DefaultedField>
   & Partial<Pick<T, Extract<keyof T, DefaultedField>>>;
@@ -160,6 +190,12 @@ export interface WorldbookEntryRepository extends Repository<WorldbookEntry> {
 export interface WorldbookRepository extends Repository<Worldbook> {
   hasExternalReferences(worldbookId: string): boolean;
   listGlobal(): Worldbook[];
+  listShared(limit?: number): Worldbook[];
+}
+
+export interface SaveWorldbookRepository extends Repository<SaveWorldbook> {
+  getByConversationId(conversationId: string): SaveWorldbook | undefined;
+  getByWorldbookId(worldbookId: string): SaveWorldbook | undefined;
 }
 
 export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRuntimeState> {
@@ -169,6 +205,46 @@ export interface WorldbookRuntimeStateRepository extends Repository<WorldbookRun
 export interface ConversationSceneStateRepository extends Repository<ConversationSceneState> {
   getByConversationId(conversationId: string): ConversationSceneState | undefined;
   deleteByConversationId(conversationId: string): number;
+}
+
+export interface SaveAgentConfigurationRepository extends Repository<SaveAgentConfiguration> {
+  getByConversationId(conversationId: string): SaveAgentConfiguration | undefined;
+}
+
+export interface SaveMemoryConfigurationRepository extends Repository<SaveMemoryConfiguration> {
+  getByConversationId(conversationId: string): SaveMemoryConfiguration | undefined;
+}
+
+export interface SaveMemoryRepository extends Repository<SaveMemory> {
+  listByConversationId(conversationId: string): SaveMemory[];
+  pageByConversationId(input: { conversationId: string; page: number; pageSize: number }): {
+    items: SaveMemory[];
+    total: number;
+  };
+  listRecallCandidates(input: {
+    conversationId: string;
+    activeVariantIds: readonly string[];
+    excludedVariantIds: readonly string[];
+    searchTerms?: readonly string[];
+    limit?: number;
+  }): SaveMemory[];
+  listByIds(ids: readonly string[]): SaveMemory[];
+  listIndexable(conversationId: string): SaveMemory[];
+  countPinned(conversationId: string): number;
+  listActiveByTier(conversationId: string, tier: 'near' | 'far', limit?: number): SaveMemory[];
+  deleteBySourceVariantIds(conversationId: string, variantIds: readonly string[]): number;
+}
+
+export interface MemoryJobRepository extends Repository<MemoryJob> {
+  listByConversationId(conversationId: string): MemoryJob[];
+  listReady(now: string, limit?: number): MemoryJob[];
+  pruneCompleted(conversationId: string, keep?: number): number;
+}
+
+export interface AgentRunRepository extends Repository<AgentRun> {
+  getByGenerationId(generationId: string): AgentRun | undefined;
+  listByConversationId(conversationId: string): AgentRun[];
+  listRecentByConversationId(conversationId: string, limit: number): AgentRun[];
 }
 
 export interface SceneStateTransitionRepository extends Repository<SceneStateTransition> {
@@ -701,6 +777,9 @@ function createWorldbookRepository(database: TavernDatabase): WorldbookRepositor
         "SELECT 1 AS present FROM characters WHERE json_extract(payload, '$.worldbookId') = ? LIMIT 1",
       ).get(worldbookId);
       if (characterReference !== undefined) return true;
+      if (database.sqlite.prepare(
+        'SELECT 1 AS present FROM save_worldbooks WHERE worldbook_id = ? LIMIT 1',
+      ).get(worldbookId) !== undefined) return true;
       return database.sqlite.prepare(
         'SELECT 1 AS present FROM conversation_worldbooks WHERE worldbook_id = ? LIMIT 1',
       ).get(worldbookId) !== undefined;
@@ -717,6 +796,39 @@ function createWorldbookRepository(database: TavernDatabase): WorldbookRepositor
       }
       return rows.map((row) => WorldbookSchema.parse(row.payload));
     },
+    listShared(limit = 100) {
+      const rows = database.sqlite.prepare(`
+        SELECT worldbooks.payload
+        FROM worldbooks
+        LEFT JOIN save_worldbooks ON save_worldbooks.worldbook_id = worldbooks.id
+        WHERE save_worldbooks.worldbook_id IS NULL
+        ORDER BY worldbooks.created_at, worldbooks.id
+        LIMIT ?
+      `).all(limit);
+      return rows.map((row) => WorldbookSchema.parse(JSON.parse(String(row.payload))));
+    },
+  };
+}
+
+function createSaveWorldbookRepository(database: TavernDatabase): SaveWorldbookRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveWorldbooks),
+    schema: SaveWorldbookSchema,
+    toRow: (value: SaveWorldbook) => ({
+      ...baseRow(value),
+      conversationId: value.conversationId,
+      worldbookId: value.worldbookId,
+      sourceWorldbookId: value.sourceWorldbookId,
+    }),
+  });
+  const by = (column: 'conversation_id' | 'worldbook_id', value: string) => {
+    const row = database.sqlite.prepare(`SELECT payload FROM save_worldbooks WHERE ${column} = ? LIMIT 1`).get(value);
+    return row === undefined ? undefined : SaveWorldbookSchema.parse(JSON.parse(String(row.payload)));
+  };
+  return {
+    ...base,
+    getByConversationId: (conversationId) => by('conversation_id', conversationId),
+    getByWorldbookId: (worldbookId) => by('worldbook_id', worldbookId),
   };
 }
 
@@ -865,12 +977,19 @@ export interface Repositories {
   personas: Repository<Persona>;
   worldbooks: WorldbookRepository;
   worldbookEntries: WorldbookEntryRepository;
+  saveWorldbooks: SaveWorldbookRepository;
   presets: Repository<Preset>;
   conversations: ConversationRepository;
+  saveAgentConfigurations: SaveAgentConfigurationRepository;
+  saveMemoryConfigurations: SaveMemoryConfigurationRepository;
+  saveMemories: SaveMemoryRepository;
+  memoryJobs: MemoryJobRepository;
+  agentRuns: AgentRunRepository;
   messages: MessageRepository;
   messageVariants: MessageVariantRepository;
   providerProfiles: Repository<ProviderProfile>;
   globalGenerationConfig: GlobalGenerationConfigRepository;
+  globalEmbeddingConfiguration: GlobalEmbeddingConfigurationRepository;
   importArtifacts: Repository<ImportArtifact>;
   generationSnapshots: ImmutableRepository<GenerationSnapshot>;
   worldbookRuntimeStates: WorldbookRuntimeStateRepository;
@@ -882,6 +1001,254 @@ export interface Repositories {
   extensionTrustGrants: ExtensionTrustGrantRepository;
   extensionRemoteResources: ExtensionRemoteResourceRepository;
   extensionAuditEvents: ExtensionAuditEventRepository;
+}
+
+function createSaveMemoryConfigurationRepository(database: TavernDatabase): SaveMemoryConfigurationRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveMemoryConfigurations),
+    schema: SaveMemoryConfigurationSchema,
+    toRow: (value: SaveMemoryConfiguration) => ({ ...baseRow(value), conversationId: value.conversationId }),
+  });
+  return {
+    ...base,
+    getByConversationId(conversationId) {
+      const row = database.orm.select({ payload: saveMemoryConfigurations.payload })
+        .from(saveMemoryConfigurations)
+        .where(eq(saveMemoryConfigurations.conversationId, conversationId))
+        .get();
+      return row === undefined ? undefined : SaveMemoryConfigurationSchema.parse(row.payload);
+    },
+  };
+}
+
+function createSaveMemoryRepository(database: TavernDatabase): SaveMemoryRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveMemories),
+    schema: SaveMemorySchema,
+    toRow: (value: SaveMemory) => ({
+      ...baseRow(value), conversationId: value.conversationId,
+      kind: value.kind, tier: value.tier, status: value.status,
+    }),
+  });
+  return {
+    ...base,
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: saveMemories.payload }).from(saveMemories)
+        .where(eq(saveMemories.conversationId, conversationId))
+        .orderBy(asc(saveMemories.createdAt), asc(saveMemories.id)).all()
+        .map((row) => SaveMemorySchema.parse(row.payload));
+    },
+    pageByConversationId(input) {
+      const page = Math.max(1, Math.floor(input.page));
+      const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)));
+      const totalRow = database.sqlite.prepare(
+        'SELECT COUNT(*) AS total FROM save_memories WHERE conversation_id = ?',
+      ).get(input.conversationId);
+      const total = typeof totalRow?.total === 'number' ? totalRow.total : 0;
+      const items = database.sqlite.prepare(`
+        SELECT payload FROM save_memories WHERE conversation_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?
+      `).all(input.conversationId, pageSize, (page - 1) * pageSize)
+        .map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))));
+      return { items, total };
+    },
+    listRecallCandidates(input) {
+      const limit = Math.min(2_048, Math.max(1, Math.floor(input.limit ?? 1_024)));
+      const sourceVariant = "json_extract(payload, '$.sourceVariantId')";
+      const active = [...new Set(input.activeVariantIds)];
+      const excluded = [...new Set(input.excludedVariantIds)];
+      const activeClause = active.length === 0
+        ? `${sourceVariant} IS NULL`
+        : `(${sourceVariant} IS NULL OR ${sourceVariant} IN (SELECT value FROM json_each(?)))`;
+      const excludedClause = excluded.length === 0
+        ? '1 = 1'
+        : `(${sourceVariant} IS NULL OR ${sourceVariant} NOT IN (SELECT value FROM json_each(?)))`;
+      const branchArguments = [
+        ...(active.length === 0 ? [] : [JSON.stringify(active)]),
+        ...(excluded.length === 0 ? [] : [JSON.stringify(excluded)]),
+      ];
+      const baseWhere = `
+        WHERE conversation_id = ? AND status = 'active'
+          AND COALESCE(json_extract(payload, '$.excluded'), 0) = 0
+          AND ${activeClause} AND ${excludedClause}`;
+      const select = (extraWhere: string, orderBy: string, extraArguments: string[], boundedLimit: number) => (
+        database.sqlite.prepare(`
+          SELECT payload FROM save_memories ${baseWhere} ${extraWhere}
+          ORDER BY ${orderBy} LIMIT ?
+        `).all(input.conversationId, ...branchArguments, ...extraArguments, boundedLimit)
+          .map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))))
+      );
+      const selected = new Map<string, SaveMemory>();
+      const add = (memories: SaveMemory[]) => {
+        for (const memory of memories) {
+          if (selected.size >= limit) break;
+          selected.set(memory.id, memory);
+        }
+      };
+      add(select('', 'created_at DESC, id DESC', [], Math.min(2, limit)));
+      add(select("AND COALESCE(json_extract(payload, '$.pinned'), 0) = 1", 'created_at DESC, id DESC', [], limit));
+      const terms = [...new Set((input.searchTerms ?? []).map((term) => term.trim()).filter(Boolean))].slice(0, 16);
+      if (terms.length > 0 && selected.size < limit) {
+        const searchable = "LOWER(COALESCE(json_extract(payload, '$.summary'), '') || CHAR(10) || COALESCE(json_extract(payload, '$.detail'), ''))";
+        const matches = terms.map(() => `instr(${searchable}, LOWER(?)) > 0`);
+        const score = terms.map(() => `CASE WHEN instr(${searchable}, LOWER(?)) > 0 THEN 1 ELSE 0 END`).join(' + ');
+        add(select(`AND (${matches.join(' OR ')})`, `${score} DESC, created_at DESC, id DESC`, [...terms, ...terms], limit));
+      }
+      if (selected.size < limit) add(select('', 'created_at DESC, id DESC', [], limit));
+      return [...selected.values()];
+    },
+    listByIds(ids) {
+      const unique = [...new Set(ids)];
+      const memories: SaveMemory[] = [];
+      for (let offset = 0; offset < unique.length; offset += 500) {
+        const chunk = unique.slice(offset, offset + 500);
+        if (chunk.length === 0) continue;
+        memories.push(...database.sqlite.prepare(`
+          SELECT payload FROM save_memories WHERE id IN (${chunk.map(() => '?').join(', ')})
+        `).all(...chunk).map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload)))));
+      }
+      return memories;
+    },
+    listIndexable(conversationId) {
+      return database.sqlite.prepare(`
+        SELECT payload FROM save_memories
+        WHERE conversation_id = ? AND status = 'active'
+          AND COALESCE(json_extract(payload, '$.excluded'), 0) = 0
+        ORDER BY created_at, id
+      `).all(conversationId).map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))));
+    },
+    countPinned(conversationId) {
+      const row = database.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM save_memories
+        WHERE conversation_id = ? AND COALESCE(json_extract(payload, '$.pinned'), 0) = 1
+      `).get(conversationId);
+      return typeof row?.count === 'number' ? row.count : 0;
+    },
+    listActiveByTier(conversationId, tier, limit = 2_048) {
+      return database.sqlite.prepare(`
+        SELECT payload FROM save_memories
+        WHERE conversation_id = ? AND status = 'active' AND tier = ?
+          AND COALESCE(json_extract(payload, '$.excluded'), 0) = 0
+          AND COALESCE(json_extract(payload, '$.pinned'), 0) = 0
+        ORDER BY created_at, id LIMIT ?
+      `).all(conversationId, tier, Math.min(4_096, Math.max(2, Math.floor(limit))))
+        .map((row) => SaveMemorySchema.parse(JSON.parse(String(row.payload))));
+    },
+    deleteBySourceVariantIds(conversationId, variantIds) {
+      const variants = new Set(variantIds);
+      const memories = this.listByConversationId(conversationId);
+      const removed = new Set(memories.filter((memory) => (
+        memory.sourceVariantId !== null && variants.has(memory.sourceVariantId)
+      )).map((memory) => memory.id));
+      for (;;) {
+        const size = removed.size;
+        for (const memory of memories) {
+          if (memory.sourceMemoryIds.some((id) => removed.has(id))) removed.add(memory.id);
+        }
+        if (size === removed.size) break;
+      }
+      for (const memory of [...memories].reverse()) {
+        if (!removed.has(memory.id)) continue;
+        const deleted = base.delete(memory.id, memory.revision);
+        if (!deleted.ok) throw new Error(`memory_delete_${deleted.reason}`);
+      }
+      return removed.size;
+    },
+  };
+}
+
+function createMemoryJobRepository(database: TavernDatabase): MemoryJobRepository {
+  const base = createRepository(database, {
+    table: entityTable(memoryJobs),
+    schema: MemoryJobSchema,
+    toRow: (value: MemoryJob) => ({
+      ...baseRow(value), conversationId: value.conversationId, kind: value.kind,
+      status: value.status, nextAttemptAt: value.nextAttemptAt,
+    }),
+  });
+  return {
+    ...base,
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: memoryJobs.payload }).from(memoryJobs)
+        .where(eq(memoryJobs.conversationId, conversationId))
+        .orderBy(asc(memoryJobs.createdAt), asc(memoryJobs.id)).all()
+        .map((row) => MemoryJobSchema.parse(row.payload));
+    },
+    listReady(now, limit = 16) {
+      return database.sqlite.prepare(`
+        SELECT payload FROM memory_jobs
+        WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+        ORDER BY created_at, id LIMIT ?
+      `).all(now, Math.min(64, Math.max(1, Math.floor(limit))))
+        .map((row) => MemoryJobSchema.parse(JSON.parse(String(row.payload))));
+    },
+    pruneCompleted(conversationId, keep = 100) {
+      const retained = Math.min(1_000, Math.max(0, Math.floor(keep)));
+      return database.sqlite.prepare(`
+        DELETE FROM memory_jobs
+        WHERE conversation_id = ? AND status = 'completed'
+          AND id NOT IN (
+            SELECT id FROM memory_jobs
+            WHERE conversation_id = ? AND status = 'completed'
+            ORDER BY created_at DESC, id DESC LIMIT ?
+          )
+      `).run(conversationId, conversationId, retained).changes;
+    },
+  };
+}
+
+export interface GlobalEmbeddingConfigurationRepository {
+  get(): GlobalEmbeddingConfiguration;
+  update(expectedRevision: number, patch: Partial<CreateInput<GlobalEmbeddingConfiguration>>): UpdateResult<GlobalEmbeddingConfiguration>;
+}
+
+function createSaveAgentConfigurationRepository(database: TavernDatabase): SaveAgentConfigurationRepository {
+  const base = createRepository(database, {
+    table: entityTable(saveAgentConfigurations),
+    schema: SaveAgentConfigurationSchema,
+    toRow: (value: SaveAgentConfiguration) => ({ ...baseRow(value), conversationId: value.conversationId }),
+  });
+  return {
+    ...base,
+    getByConversationId(conversationId) {
+      const row = database.orm.select({ payload: saveAgentConfigurations.payload })
+        .from(saveAgentConfigurations)
+        .where(eq(saveAgentConfigurations.conversationId, conversationId))
+        .get();
+      return row === undefined ? undefined : SaveAgentConfigurationSchema.parse(row.payload);
+    },
+  };
+}
+
+function createAgentRunRepository(database: TavernDatabase): AgentRunRepository {
+  const base = createRepository(database, {
+    table: entityTable(agentRuns),
+    schema: AgentRunSchema,
+    toRow: (value: AgentRun) => ({
+      ...baseRow(value), conversationId: value.conversationId, generationId: value.generationId, status: value.status,
+    }),
+  });
+  return {
+    ...base,
+    getByGenerationId(generationId) {
+      const row = database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
+        .where(eq(agentRuns.generationId, generationId)).get();
+      return row === undefined ? undefined : AgentRunSchema.parse(row.payload);
+    },
+    listByConversationId(conversationId) {
+      return database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
+        .where(eq(agentRuns.conversationId, conversationId))
+        .orderBy(asc(agentRuns.createdAt), asc(agentRuns.id)).all()
+        .map((row) => AgentRunSchema.parse(row.payload));
+    },
+    listRecentByConversationId(conversationId, limit) {
+      const boundedLimit = Math.min(100, Math.max(1, Math.floor(limit)));
+      return database.orm.select({ payload: agentRuns.payload }).from(agentRuns)
+        .where(eq(agentRuns.conversationId, conversationId))
+        .orderBy(desc(agentRuns.createdAt), desc(agentRuns.id)).limit(boundedLimit).all()
+        .map((row) => AgentRunSchema.parse(row.payload));
+    },
+  };
 }
 
 function createConversationSceneStateRepository(database: TavernDatabase): ConversationSceneStateRepository {
@@ -1025,6 +1392,41 @@ function createGlobalGenerationConfigRepository(database: TavernDatabase): Globa
   };
 }
 
+function emptyGlobalEmbeddingConfiguration(): GlobalEmbeddingConfiguration {
+  return GlobalEmbeddingConfigurationSchema.parse({
+    id: GLOBAL_EMBEDDING_CONFIGURATION_ID,
+    revision: 0,
+    createdAt: '1970-01-01T00:00:00.000Z',
+    updatedAt: '1970-01-01T00:00:00.000Z',
+    enabled: false,
+    baseUrl: null,
+    model: null,
+    secretRef: null,
+    dimensions: null,
+  });
+}
+
+function createGlobalEmbeddingConfigurationRepository(database: TavernDatabase): GlobalEmbeddingConfigurationRepository {
+  const table = database.sqlite.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'global_embedding_configuration'",
+  ).get();
+  if (table === undefined) {
+    const fallback = emptyGlobalEmbeddingConfiguration();
+    return { get: () => structuredClone(fallback), update: () => ({ ok: false, reason: 'not_found' }) };
+  }
+  const base = createRepository(database, {
+    table: entityTable(globalEmbeddingConfigurations),
+    schema: GlobalEmbeddingConfigurationSchema,
+    toRow: (value: GlobalEmbeddingConfiguration) => baseRow(value),
+  });
+  return {
+    get: () => base.get(GLOBAL_EMBEDDING_CONFIGURATION_ID) ?? emptyGlobalEmbeddingConfiguration(),
+    update(expectedRevision, patch) {
+      return base.update(GLOBAL_EMBEDDING_CONFIGURATION_ID, expectedRevision, patch);
+    },
+  };
+}
+
 export function createRepositories(database: TavernDatabase, options: CreateRepositoriesOptions): Repositories {
   const charactersRepository = createRepository(database, {
     table: entityTable(characters), schema: CharacterSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }),
@@ -1065,6 +1467,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     },
   };
   const globalGenerationConfig = createGlobalGenerationConfigRepository(database);
+  const globalEmbeddingConfiguration = createGlobalEmbeddingConfigurationRepository(database);
   return {
     installedScenes: createRepository(database, {
       table: entityTable(installedScenes),
@@ -1077,12 +1480,19 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     personas: createPersonaRepository(database),
     worldbooks: createWorldbookRepository(database),
     worldbookEntries: createWorldbookEntryRepository(database),
+    saveWorldbooks: createSaveWorldbookRepository(database),
     presets: createRepository(database, { table: entityTable(presets), schema: PresetSchema, toRow: (value) => ({ ...baseRow(value), name: value.name, kind: value.kind }) }),
     conversations: conversationsRepository,
+    saveAgentConfigurations: createSaveAgentConfigurationRepository(database),
+    saveMemoryConfigurations: createSaveMemoryConfigurationRepository(database),
+    saveMemories: createSaveMemoryRepository(database),
+    memoryJobs: createMemoryJobRepository(database),
+    agentRuns: createAgentRunRepository(database),
     messages: messagesRepository,
     messageVariants: messageVariantsRepository,
     providerProfiles: createRepository(database, { table: entityTable(providerProfiles), schema: ProviderProfileSchema, toRow: (value) => ({ ...baseRow(value), name: value.name }) }),
     globalGenerationConfig,
+    globalEmbeddingConfiguration,
     importArtifacts: createRepository(database, { table: entityTable(importArtifacts), schema: ImportArtifactSchema, toRow: (value) => ({ ...baseRow(value), kind: value.kind, entityId: value.entityId ?? null }) }),
     generationSnapshots: createGenerationSnapshotRepository(database, options.snapshotIntegrityKey),
     worldbookRuntimeStates: createWorldbookRuntimeStateRepository(database),

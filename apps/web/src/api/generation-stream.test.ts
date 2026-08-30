@@ -12,10 +12,11 @@ function responseFrom(payloads: string[]): Response {
 }
 
 describe('readGenerationEvents', () => {
-  it('parses the seven generation event types across chunk boundaries', async () => {
+  it('parses all stable generation event types across chunk boundaries', async () => {
     const response = responseFrom([
       'event: started\ndata: {"generationId":"generation-1"}\n\nevent: del',
       'ta\ndata: {"text":"Hi"}\n\nevent: reasoning_delta\ndata: {"text":"Think"}\n\nevent: usage\ndata: {"inputTokens":1,"outputTokens":1}\n\n',
+      'event: activity\ndata: {"kind":"query-lore","label":"Querying world lore"}\n\nevent: view_placeholder\ndata: {"viewId":"view-1","kind":"combat"}\n\n',
       'event: completed\ndata: {"finishReason":"stop"}\n\nevent: aborted\ndata: {}\n\n',
       'event: failed\ndata: {"code":"connection"}\n\n',
     ]);
@@ -28,6 +29,8 @@ describe('readGenerationEvents', () => {
       { type: 'delta', text: 'Hi' },
       { type: 'reasoning_delta', text: 'Think' },
       { type: 'usage', inputTokens: 1, outputTokens: 1 },
+      { type: 'activity', kind: 'query-lore', label: 'Querying world lore' },
+      { type: 'view_placeholder', viewId: 'view-1', kind: 'combat' },
       { type: 'completed', finishReason: 'stop' },
       { type: 'aborted' },
       { type: 'failed', code: 'connection' },

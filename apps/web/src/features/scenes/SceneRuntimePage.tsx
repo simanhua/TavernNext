@@ -5,8 +5,10 @@ import type {
   SceneGenerationSnapshot,
   SceneRuntimeMode,
   SceneSdkV2,
+  SceneReferenceKind,
   SceneThemeSnapshot,
 } from '@tavernnext/domain';
+import { roleplayDocumentPlainText } from '@tavernnext/domain';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -20,6 +22,11 @@ import {
   type SceneRuntimeSignal,
 } from './scene-window.js';
 import { mountSceneStatusRail } from './status-rail.js';
+import { SaveAgentConfigurationPanel } from './SaveAgentConfigurationPanel.js';
+import { AgentRunInspector } from '../chat/AgentRunInspector.js';
+import { MemoryCenter } from './MemoryCenter.js';
+import { SceneReferenceTools } from './SceneReferenceTools.js';
+import { SceneReferenceViewer } from './SceneReferenceViewer.js';
 
 type LeaseState = 'checking' | 'active' | 'duplicate';
 
@@ -36,9 +43,9 @@ class SceneSdkError extends Error {
 
 function activeContent(message: MessageView): string {
   if (message.role !== 'assistant') return message.content;
-  return message.variants.find((variant) => variant.id === message.activeVariantId)?.content
-    ?? message.variants[0]?.content
-    ?? message.content;
+  const variant = message.variants.find((candidate) => candidate.id === message.activeVariantId)
+    ?? message.variants[0];
+  return variant?.document === undefined ? variant?.content ?? message.content : roleplayDocumentPlainText(variant.document);
 }
 
 function generationSnapshot(value: ReturnType<ReturnType<typeof useGeneration>['getSnapshot']>): SceneGenerationSnapshot {
@@ -47,6 +54,8 @@ function generationSnapshot(value: ReturnType<ReturnType<typeof useGeneration>['
     streamedText: value.streamedText,
     streamedReasoning: value.streamedReasoning,
     error: value.error,
+    activities: value.activities,
+    viewPlaceholders: value.viewPlaceholders,
   };
 }
 
@@ -110,6 +119,7 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
   const generationListeners = useRef(new Set<(event: SceneGenerationEvent) => void>());
   const themeListeners = useRef(new Set<(snapshot: SceneThemeSnapshot) => void>());
   const [moduleError, setModuleError] = useState<string>();
+  const [referenceKind, setReferenceKind] = useState<SceneReferenceKind>();
   const lease = useRuntimeLease(
     mode === 'setup' ? `setup:${sceneId}` : `save:${conversationId ?? ''}`,
     conversationId,
@@ -133,11 +143,14 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
 
   const refresh = async () => {
     if (conversationId === undefined) return;
-    await Promise.all([
-      queryClient.refetchQueries({ queryKey: ['conversation', conversationId] }),
-      queryClient.refetchQueries({ queryKey: ['scene-state', conversationId] }),
-      queryClient.invalidateQueries({ queryKey: ['scene-conversations', sceneId] }),
+    const [freshDetail, freshState] = await Promise.all([
+      api.getConversationMessages(conversationId),
+      api.getSceneState(conversationId),
     ]);
+    queryClient.setQueryData(['conversation', conversationId], freshDetail);
+    queryClient.setQueryData(['scene-state', conversationId], freshState);
+    latest.current = { ...latest.current, detail: freshDetail, state: freshState };
+    await queryClient.invalidateQueries({ queryKey: ['scene-conversations', sceneId] });
     announceSceneChanged(sceneId, conversationId);
   };
 
@@ -165,9 +178,14 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       }
       throw asSdkError(error);
     };
-    const generate = async (messageId: string, generationMode: 'continue' | 'regenerate' | 'swipe') => {
+    const tailAssistant = () => {
       const current = requireWorkspace();
-      const message = findMessage(messageId);
+      const message = current.messages.at(-1);
+      if (message?.role !== 'assistant') throw new SceneSdkError('tail_assistant_required', 409);
+      return { current, message };
+    };
+    const generate = async (generationMode: 'regenerate' | 'swipe') => {
+      const { current, message } = tailAssistant();
       const result = await latest.current.generation.start(current.conversation, {
         mode: generationMode,
         target: message,
@@ -234,13 +252,12 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
           try { await api.deleteMessage(findMessage(messageId)); await refresh(); }
           catch (error) { return refreshAfterConflict(error); }
         },
-        switchVariant: async (messageId, variantId) => {
-          try { const result = await api.switchActiveVariant(findMessage(messageId), variantId); await refresh(); return result; }
+        switchVariant: async (variantId) => {
+          try { const result = await api.switchActiveVariant(tailAssistant().message, variantId); await refresh(); return result; }
           catch (error) { return refreshAfterConflict(error); }
         },
-        continue: (messageId) => generate(messageId, 'continue'),
-        regenerate: (messageId) => generate(messageId, 'regenerate'),
-        swipe: (messageId) => generate(messageId, 'swipe'),
+        regenerate: () => generate('regenerate'),
+        swipe: () => generate('swipe'),
       },
       state: {
         get: async () => {
@@ -262,13 +279,11 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
         },
       },
       scene: {
-        action: async (action) => {
+        action: async (action, options) => {
           requireWorkspace();
           try {
-            const result = await api.runSceneAction(conversationId!, action);
-            queryClient.setQueryData(['scene-state', conversationId], result.state);
-            latest.current = { ...latest.current, state: result.state };
-            announceSceneChanged(sceneId, conversationId!);
+            const result = await api.runSceneAction(conversationId!, action, options?.operation);
+            await refresh();
             return result;
           } catch (error) {
             return refreshAfterConflict(error);
@@ -299,6 +314,12 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       },
       ui: {
         statusRail: { mount: mountSceneStatusRail },
+        referenceViewer: {
+          open: (kind) => {
+            requireWorkspace();
+            setReferenceKind(kind);
+          },
+        },
       },
     };
   }, [conversationId, mode, navigate, queryClient, sceneId]);
@@ -371,6 +392,22 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
   return (
     <main className="scene-standalone-page">
       {moduleError === undefined ? null : <div className="scene-runtime-error" role="alert">场景前端加载失败：{moduleError}</div>}
+      {mode === 'workspace' && conversationId !== undefined
+        ? <>
+          <SceneReferenceTools onOpen={setReferenceKind} />
+          {referenceKind === undefined ? null : (
+            <SceneReferenceViewer
+              conversationId={conversationId}
+              kind={referenceKind}
+              onKindChange={setReferenceKind}
+              onClose={() => setReferenceKind(undefined)}
+            />
+          )}
+          <SaveAgentConfigurationPanel conversationId={conversationId} />
+          <MemoryCenter conversationId={conversationId} />
+          <AgentRunInspector conversationId={conversationId} />
+        </>
+        : null}
       <div ref={mountRef} className="scene-runtime-root" />
     </main>
   );

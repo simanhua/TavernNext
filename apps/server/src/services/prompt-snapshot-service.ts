@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   EMPTY_WORLDBOOK_TIMED_STATE,
+  roleplayDocumentPlainText,
   WorldbookTimedStateSchema,
   type Character,
   type Conversation,
@@ -9,6 +10,7 @@ import {
   type MessageVariant,
   type Persona,
   type Preset,
+  type SaveAgentConfiguration,
   type ProviderProfile,
   type Worldbook,
   type WorldbookEntry,
@@ -27,7 +29,6 @@ import {
 import { createNodeRegexWorker } from '@tavernnext/extension-runtime/node';
 import {
   compileChatPrompt,
-  compileTextPrompt,
   evaluateWorldbooks,
   type PromptChatMessage,
   type PromptWarning,
@@ -36,7 +37,7 @@ import {
   type WorldbookEvaluationResult,
   type WorldbookRuntimeBook,
 } from '@tavernnext/prompt-engine';
-import type { ChatRequest, TextRequest } from '@tavernnext/provider-openai-compatible';
+import type { ChatRequest } from '@tavernnext/provider-openai-compatible';
 import {
   executablePresetFields,
   normalizeCharacterBook,
@@ -60,9 +61,8 @@ import {
   type Repositories,
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
-import { EXTENSION_TRUST_RISK_VERSION, extensionExecutableDigest } from './extension-trust-service.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 5 as const;
 const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
 
 export interface ServerTokenizerRuntime {
@@ -80,7 +80,6 @@ export interface PromptSnapshotInput {
   messageIndex?: number;
   targetMessageId?: string;
   targetVariantId?: string;
-  continuationByteBoundary?: number;
   /** Internal /trigger path: compile the already-persisted final user message without duplicating it. */
   reuseLastUser?: boolean;
 }
@@ -88,6 +87,18 @@ export interface PromptSnapshotInput {
 export interface ScenePromptContext {
   state: Record<string, unknown>;
   additions: ScenePromptAddition[];
+  memoryRecall?: MemoryRecallSnapshotEntry[];
+  memoryQueryCorpus?: MemoryRecallSnapshotEntry[];
+}
+
+export interface MemoryRecallSnapshotEntry {
+  id: string;
+  revision: number;
+  kind: string;
+  tier: string;
+  summary: string;
+  detail: string;
+  tokenCount: number;
 }
 
 export interface RevisionRef {
@@ -115,16 +126,13 @@ export interface PromptEntityRevisionManifest {
   persona: RevisionRef;
   provider: RevisionRef;
   presets: PresetRevisionRef[];
+  saveAgentConfiguration: RevisionRef;
   globalWorldbooks: RevisionRef[];
   worldbooks: WorldbookRevisionRef[];
   messages: MessageRevisionRef[];
   runtimeState: RevisionRef | null;
   installedScene?: RevisionRef | null;
   sceneState?: RevisionRef | null;
-  extensionState?: RevisionRef | null;
-  extensionTrust?: Array<{
-    ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string; riskVersion: number;
-  }>;
 }
 
 export interface SnapshotInputPayload {
@@ -136,34 +144,30 @@ export interface SnapshotInputPayload {
   messageIndex: number;
   targetMessageId: string | null;
   targetVariantId: string | null;
-  continuationByteBoundary: number | null;
   reuseLastUser?: boolean;
 }
 
 export interface PromptSnapshotPayload {
   schemaVersion: typeof PROMPT_SNAPSHOT_SCHEMA_VERSION;
   input: SnapshotInputPayload;
-  kind: 'chat' | 'text';
+  kind: 'chat';
   seed: string | number;
   messageIndex: number;
   entityRevisions: PromptEntityRevisionManifest;
   executable: Record<string, unknown>;
   worldbook: WorldbookEvaluationResult;
   tokenizerDecision: TokenizerDecision;
-  messages?: PromptChatMessage[];
-  text?: string;
+  messages: PromptChatMessage[];
   stop: string[];
   tokenBreakdown: TokenBreakdownEntry[];
   totalTokens: number;
   warnings: PromptWarning[];
   worldInfoOutlets: Record<string, string>;
-  compiledRequest: ChatRequest | TextRequest;
+  memoryRecall: MemoryRecallSnapshotEntry[];
+  memoryQueryCorpus: MemoryRecallSnapshotEntry[];
+  compiledRequest: ChatRequest;
   compiledRequestHash: string;
   payloadHash: string;
-}
-
-export interface PromptSnapshotPreview extends PromptSnapshotPayload {
-  snapshotId: string;
 }
 
 export type PromptSnapshotErrorCode =
@@ -172,6 +176,7 @@ export type PromptSnapshotErrorCode =
   | 'unsupported_mode'
   | 'not_found'
   | 'provider_not_configured'
+  | 'model_not_agent_capable'
   | 'preset_not_configured'
   | 'invalid_preset'
   | 'revision_conflict'
@@ -232,11 +237,9 @@ interface LoadedAggregate {
   manifest: PromptEntityRevisionManifest;
   compatibilityWarnings: PromptWarning[];
   regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
-  promptInjections: Array<{
-    key: string; content: string; role: 'system' | 'user' | 'assistant'; position: 'before' | 'after';
-    ownerKind: 'character' | 'preset'; ownerId: string; bundleDigest: string;
-  }>;
   scenePromptAdditions: ScenePromptAddition[];
+  memoryRecall: MemoryRecallSnapshotEntry[];
+  memoryQueryCorpus: MemoryRecallSnapshotEntry[];
 }
 
 interface BuiltSnapshot {
@@ -248,23 +251,24 @@ export interface AcceptedPromptSnapshot {
   snapshotId: string;
   payload: PromptSnapshotPayload;
   provider: ProviderProfile;
+  saveAgentConfiguration: SaveAgentConfiguration;
+  deferredSnapshotCommit?: true;
 }
 
+export type PromptSnapshotBeforeAccept = (
+  candidate: AcceptedPromptSnapshot,
+) => Promise<void | { deferSnapshotCommit: true }>;
+
 export interface PromptSnapshotService {
-  createCandidate(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
-  sealCandidate(
-    input: PromptSnapshotInput,
-    snapshotId: string,
-    candidate: PromptSnapshotPayload,
-    patch: { messages?: PromptChatMessage[]; text?: string; stop?: string[] },
-  ): Promise<PromptSnapshotPreview>;
-  createPreview(input: PromptSnapshotInput): Promise<PromptSnapshotPreview>;
   createAndAccept(
     input: PromptSnapshotInput,
     snapshotId: string,
     sceneContext?: ScenePromptContext,
+    beforeAccept?: PromptSnapshotBeforeAccept,
   ): Promise<AcceptedPromptSnapshot>;
-  acceptExisting(input: PromptSnapshotInput & { snapshotId: string }): Promise<AcceptedPromptSnapshot>;
+  commitDeferredSnapshot(snapshotId: string, payload: PromptSnapshotPayload): void;
+  completeDeferredSnapshot(snapshotId: string): void;
+  releaseDeferredSnapshot(snapshotId: string): void;
   commitTimedState(payload: PromptSnapshotPayload): void;
 }
 
@@ -460,7 +464,9 @@ function historyRows(repositories: Repositories, conversationId: string): {
       return {
         id: message.id,
         role: message.role,
-        content: message.role === 'assistant' && variant !== undefined ? variant.content : message.content,
+        content: message.role === 'assistant' && variant !== undefined
+          ? roleplayDocumentPlainText(variant.document)
+          : message.content,
       };
     }),
     manifest: messages.map((message) => {
@@ -498,6 +504,45 @@ function requestedPreset(
   return safePreset(preset, kind);
 }
 
+function privateSavePreset(configuration: SaveAgentConfiguration): Preset {
+  const requiredMarkers = [
+    { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'worldInfoBefore', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'chatHistory', marker: true, system_prompt: true },
+    { identifier: 'worldInfoAfter', marker: true, role: 'system', system_prompt: true },
+  ];
+  const rawPrompts = Array.isArray(configuration.settings.prompts)
+    ? configuration.settings.prompts.filter(record)
+    : [];
+  const requiredIds = new Set(requiredMarkers.map(({ identifier }) => identifier));
+  const prompts = [
+    ...rawPrompts.filter((prompt) => !requiredIds.has(String(prompt.identifier))),
+    ...requiredMarkers,
+  ];
+  const rawOrders = Array.isArray(configuration.settings.prompt_order)
+    ? configuration.settings.prompt_order.filter(record)
+    : [];
+  const orders = (rawOrders.length === 0 ? [{ character_id: 100001, order: [] }] : rawOrders).map((row) => ({
+    ...row,
+    order: [
+      ...(Array.isArray(row.order) ? row.order.filter(record) : [])
+        .filter((item) => !requiredIds.has(String(item.identifier))),
+      ...requiredMarkers.map(({ identifier }) => ({ identifier, enabled: true })),
+    ],
+  }));
+  return {
+    id: configuration.id,
+    revision: configuration.revision,
+    createdAt: configuration.createdAt,
+    updatedAt: configuration.updatedAt,
+    name: configuration.name,
+    kind: 'chat',
+    settings: { ...configuration.settings, prompts, prompt_order: orders },
+    extensions: {},
+  };
+}
+
 function persistedBook(
   repositories: Repositories,
   row: Worldbook,
@@ -513,16 +558,25 @@ function persistedBook(
   };
 }
 
-function scenePromptBook(book: LoadedBook): LoadedBook {
+export function applySceneWorldbookEntryOverrides(
+  book: LoadedBook,
+  entryOverrides: WorldbookRuntimeState['entryOverrides'],
+): LoadedBook {
+  const overrides = new Map(entryOverrides
+    .filter((override) => override.source === book.source)
+    .map((override) => [override.comment, override]));
   return {
     ...book,
     book: {
       ...book.book,
       entries: book.book.entries.map((entry) => {
         const label = `${entry.comment}\n${entry.displayName}`;
-        return label.includes('使用额外模型更新变量开')
-          ? { ...entry, enabled: false }
-          : entry;
+        const override = overrides.get(entry.comment);
+        const enabled = label.includes('使用额外模型更新变量开')
+          ? false
+          : override?.enabled ?? entry.enabled;
+        const content = override?.content ?? entry.content;
+        return enabled === entry.enabled && content === entry.content ? entry : { ...entry, enabled, content };
       }),
     },
   };
@@ -537,42 +591,6 @@ function runtimeStateFor(repositories: Repositories, conversationId: string): Wo
     }
     throw error;
   }
-}
-
-function resolveGenerationBinding(
-  configuration: ReturnType<Repositories['globalGenerationConfig']['get']>,
-  providerMode?: ProviderProfile['apiMode'],
-): {
-  providerId: string | undefined;
-  presets: Array<{ id: string | undefined; kind: PresetKind }>;
-} {
-  const providerId = configuration.providerId ?? undefined;
-  const selected = (id: string | null) => id ?? undefined;
-  if (providerMode === undefined) return { providerId, presets: [] };
-  return {
-    providerId,
-    presets: providerMode === 'chat'
-      ? [{ id: selected(configuration.chatPresetId), kind: 'chat' }]
-      : [
-        { id: selected(configuration.textPresetId), kind: 'text' },
-        { id: selected(configuration.contextPresetId), kind: 'context' },
-        { id: selected(configuration.instructPresetId), kind: 'instruct' },
-        { id: selected(configuration.systemPresetId), kind: 'system' },
-      ],
-  };
-}
-
-function resolveConversationGenerationBinding(
-  repositories: Repositories,
-  conversation: Conversation,
-  configuration: ReturnType<Repositories['globalGenerationConfig']['get']>,
-  providerMode?: ProviderProfile['apiMode'],
-): ReturnType<typeof resolveGenerationBinding> {
-  const fallback = resolveGenerationBinding(configuration, providerMode);
-  if (providerMode !== 'chat' || conversation.sceneId === undefined) return fallback;
-  const scene = repositories.installedScenes.get(conversation.sceneId);
-  if (scene?.manifest.generationRecipe === undefined || scene.backingPresetId === undefined) return fallback;
-  return { providerId: fallback.providerId, presets: [{ id: scene.backingPresetId, kind: 'chat' }] };
 }
 
 function loadAggregate(
@@ -591,7 +609,7 @@ function loadAggregate(
   const persona = repositories.personas.get(conversation.personaId);
   if (character === undefined || persona === undefined) throw new PromptSnapshotError('not_found');
   const globalGenerationConfig = repositories.globalGenerationConfig.get();
-  const providerId = resolveGenerationBinding(globalGenerationConfig).providerId;
+  const providerId = globalGenerationConfig.providerId ?? undefined;
   if (providerId === undefined) throw new PromptSnapshotError('provider_not_configured');
   const provider = repositories.providerProfiles.get(providerId);
   if (provider === undefined) throw new PromptSnapshotError('provider_not_configured');
@@ -602,13 +620,18 @@ function loadAggregate(
   appendCompatibilityWarnings(compatibilityWarnings, persona, `persona:${persona.id}`);
   appendCompatibilityWarnings(compatibilityWarnings, provider, `provider:${provider.id}`);
 
-  const binding = resolveConversationGenerationBinding(repositories, conversation, globalGenerationConfig, provider.apiMode);
-  const presets = binding.presets.map(({ id, kind }) => requestedPreset(repositories, id, kind, compatibilityWarnings));
+  const saveAgentConfiguration = repositories.saveAgentConfigurations.getByConversationId(conversation.id);
+  if (saveAgentConfiguration === undefined) throw new PromptSnapshotError('preset_not_configured');
+  const presets = [privateSavePreset(saveAgentConfiguration)];
   const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
   if (conversation.sceneId !== undefined && installedScene === undefined) throw new PromptSnapshotError('not_found');
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
   if (installedScene !== undefined && sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
   if (sceneContext !== undefined && installedScene === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+  const saveWorldbook = installedScene === undefined
+    ? undefined
+    : repositories.saveWorldbooks.getByConversationId(conversation.id);
+  if (installedScene !== undefined && saveWorldbook === undefined) throw new PromptSnapshotError('invalid_runtime_state');
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -624,18 +647,22 @@ function loadAggregate(
   };
   const globalBooks = boundedRelation(() => repositories.worldbooks.listGlobal());
   for (const row of globalBooks) addPersisted(row, 'global');
-  if (character.worldbookId !== undefined) addPersisted(repositories.worldbooks.get(character.worldbookId), 'character');
-  const embedded = stableEmbeddedBook(character);
+  const characterWorldbookId = saveWorldbook?.worldbookId ?? character.worldbookId;
+  if (characterWorldbookId !== undefined) addPersisted(repositories.worldbooks.get(characterWorldbookId), 'character');
+  const embedded = saveWorldbook === undefined ? stableEmbeddedBook(character) : undefined;
   if (embedded !== undefined) {
     compatibilityWarnings.push(...embedded.compatibilityWarnings);
     books.push(embedded);
   }
   for (const id of conversation.worldbookIds) addPersisted(repositories.worldbooks.get(id), 'conversation');
-  for (const id of [character.worldbookId, ...conversation.worldbookIds]) {
+  for (const id of [characterWorldbookId, ...conversation.worldbookIds]) {
     if (id !== undefined && repositories.worldbooks.get(id) === undefined) throw new PromptSnapshotError('not_found');
   }
+  const runtimeState = runtimeStateFor(repositories, conversation.id);
   if (installedScene !== undefined) {
-    for (let index = 0; index < books.length; index += 1) books[index] = scenePromptBook(books[index]!);
+    for (let index = 0; index < books.length; index += 1) {
+      books[index] = applySceneWorldbookEntryOverrides(books[index]!, runtimeState?.entryOverrides ?? []);
+    }
   }
 
   const history = historyRows(repositories, conversation.id);
@@ -656,7 +683,7 @@ function loadAggregate(
     throw new PromptSnapshotError('invalid_target');
   }
   const requiredMessageHeadroom = input.mode === 'normal' ? input.reuseLastUser === true ? 1 : 2 : 0;
-  const requiredVariantHeadroom = input.mode === 'continue' ? 0 : 1;
+  const requiredVariantHeadroom = 1;
   if (history.messages.length + requiredMessageHeadroom > MAX_MESSAGES_PER_CONVERSATION
     || history.variants.size + requiredVariantHeadroom > MAX_VARIANTS_PER_RELATION) {
     throw new PromptSnapshotError('aggregate_limit');
@@ -667,39 +694,6 @@ function loadAggregate(
   if (input.targetVariantId !== undefined && input.targetVariantId !== targetVariant?.id) {
     throw new PromptSnapshotError('invalid_target');
   }
-  const continuationByteBoundary = input.mode === 'continue'
-    ? Buffer.byteLength(targetVariant!.content, 'utf8')
-    : null;
-  if (input.continuationByteBoundary !== undefined
-    && input.continuationByteBoundary !== continuationByteBoundary) throw new PromptSnapshotError('invalid_target');
-  const runtimeState = runtimeStateFor(repositories, conversation.id);
-  const activeOwnerKeys = new Set([`character:${character.id}`, ...presets.slice(0, 1).map((preset) => `preset:${preset.id}`)]);
-  const extensionState = repositories.extensionStates.getByScope('conversation', conversation.id);
-  const rawInjections = extensionState?.value.runtimePromptInjections;
-  const injectionRecord = record(rawInjections) ? rawInjections : {};
-  const promptInjections = Object.entries(injectionRecord as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
-    .flatMap(([key, raw]) => {
-      const item = record(raw) ? raw : undefined;
-      const rawValue = item?.value;
-      const value = record(rawValue) ? rawValue : undefined;
-      const ownerKind = item?.ownerKind;
-      const ownerId = item?.ownerId;
-      const bundleDigest = item?.bundleDigest;
-      if ((ownerKind !== 'character' && ownerKind !== 'preset') || typeof ownerId !== 'string'
-        || typeof bundleDigest !== 'string' || !activeOwnerKeys.has(`${ownerKind}:${ownerId}`)) return [];
-      const injectionOwnerKind: 'character' | 'preset' = ownerKind;
-      const grant = repositories.extensionTrustGrants.getByOwner(ownerKind, ownerId);
-      if (grant?.bundleDigest !== bundleDigest || grant.riskVersion !== EXTENSION_TRUST_RISK_VERSION
-        || extensionExecutableDigest(repositories, ownerKind, ownerId) !== bundleDigest
-        || typeof value?.content !== 'string') return [];
-      const role: 'system' | 'user' | 'assistant' = value.role === 'user' || value.role === 'assistant'
-        ? value.role
-        : 'system';
-      return [{
-        key, content: value.content, role, position: value.position === 'after' ? 'after' as const : 'before' as const,
-        ownerKind: injectionOwnerKind, ownerId, bundleDigest,
-      }];
-    });
   const seed = input.seed ?? `${conversation.id}:${conversation.revision}`;
   const messageIndex = input.messageIndex ?? history.history.length;
   const snapshotInput: SnapshotInputPayload = {
@@ -711,7 +705,6 @@ function loadAggregate(
     messageIndex,
     targetMessageId: targetMessage?.id ?? null,
     targetVariantId: targetVariant?.id ?? null,
-    continuationByteBoundary,
     ...(input.reuseLastUser === true ? { reuseLastUser: true } : {}),
   };
   const globalWorldbooks = globalBooks.map(ref);
@@ -722,6 +715,7 @@ function loadAggregate(
     persona: ref(persona),
     provider: ref(provider),
     presets: presets.map((preset) => ({ ...ref(preset), kind: preset.kind })),
+    saveAgentConfiguration: ref(saveAgentConfiguration),
     globalWorldbooks,
     worldbooks: books.flatMap((loaded) => loaded.source === 'embedded' ? [] : [{
       ...ref(loaded.row),
@@ -732,14 +726,6 @@ function loadAggregate(
     runtimeState: runtimeState === undefined ? null : ref(runtimeState),
     installedScene: installedScene === undefined ? null : ref(installedScene),
     sceneState: sceneState === undefined ? null : ref(sceneState),
-    extensionState: extensionState === undefined ? null : ref(extensionState),
-    extensionTrust: [...new Map(promptInjections.map((injection) => [
-      `${injection.ownerKind}:${injection.ownerId}`,
-      {
-        ownerKind: injection.ownerKind, ownerId: injection.ownerId, bundleDigest: injection.bundleDigest,
-        riskVersion: EXTENSION_TRUST_RISK_VERSION,
-      },
-    ])).values()],
   };
 
   return {
@@ -763,20 +749,17 @@ function loadAggregate(
       preset: parsedRegexAssets(repositories.extensionAssets.listByOwner('preset', presets[0]!.id)),
       character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
     },
-    promptInjections,
-    scenePromptAdditions: sceneState === undefined ? [] : [{
-      role: 'system',
-      content: '<scene_state>\n'
-        + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
-        + '</scene_state>\nScene state fields are governed by the Worldbook variable rules. '
-        + 'Write the roleplay narrative first. Always append exactly one legacy MVU block at the end of every reply:\n'
-        + '<UpdateVariable><Analysis>brief variable reasoning</Analysis><JSONPatch>[operations]</JSONPatch></UpdateVariable>\n'
-        + 'Use an empty [] operation list when no Scene State fields changed. Any narrative claim that an item was acquired, '
-        + 'used, lost, equipped, unequipped, or that a resource changed must have matching operations. '
-        + 'Use only replace, delta, insert, remove, or move operations. Move uses from and to. '
-        + 'Each operation is applied independently; a failed operation does not cancel successful operations. '
-        + 'Do not place any text after </UpdateVariable>.',
-    }, ...(sceneContext?.additions ?? [])],
+    scenePromptAdditions: sceneState === undefined ? [] : [
+      {
+        role: 'system' as const,
+        content: '<scene_state>\n'
+          + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
+          + '</scene_state>\nCanonical Scene State may be changed only through the provided Agent tools.',
+      },
+      ...(sceneContext?.additions ?? []),
+    ],
+    memoryRecall: deepJson(sceneContext?.memoryRecall ?? []),
+    memoryQueryCorpus: deepJson(sceneContext?.memoryQueryCorpus ?? []),
   };
 }
 
@@ -818,20 +801,10 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   if (conversation === undefined || character === undefined || provider === undefined
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
-    || resolveGenerationBinding(globalGenerationConfig).providerId !== manifest.provider.id) stale();
-  const configuredPresets = resolveConversationGenerationBinding(
-    repositories, conversation, globalGenerationConfig, provider.apiMode,
-  ).presets;
-  if (configuredPresets.some(({ id }) => id === undefined)
-    || !sameCanonical(
-      manifest.presets.map(({ id, kind }) => ({ id, kind })),
-      configuredPresets,
-    )) stale();
-  for (const preset of manifest.presets) {
-    const current = repositories.presets.get(preset.id);
-    exact(current, preset);
-    if (current?.kind !== preset.kind) stale();
-  }
+    || globalGenerationConfig.providerId !== manifest.provider.id) stale();
+  const configuration = repositories.saveAgentConfigurations.getByConversationId(conversation.id);
+  exact(configuration, manifest.saveAgentConfiguration);
+  if (!sameCanonical(manifest.presets, [{ ...manifest.saveAgentConfiguration, kind: 'chat' }])) stale();
   const currentGlobals = revalidatedRelation(() => repositories.worldbooks.listGlobal()).map(ref);
   if (!sameCanonical(currentGlobals, manifest.globalWorldbooks)) stale();
   const expectedWorldbooks: Array<{ id: string; source: WorldbookRevisionRef['source'] }> = [];
@@ -842,7 +815,11 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     expectedWorldbooks.push({ id, source });
   };
   for (const global of currentGlobals) addExpectedWorldbook(global.id, 'global');
-  addExpectedWorldbook(character.worldbookId, 'character');
+  const saveWorldbook = conversation.sceneId === undefined
+    ? undefined
+    : repositories.saveWorldbooks.getByConversationId(conversation.id);
+  if (conversation.sceneId !== undefined && saveWorldbook === undefined) stale();
+  addExpectedWorldbook(saveWorldbook?.worldbookId ?? character.worldbookId, 'character');
   for (const id of conversation.worldbookIds) addExpectedWorldbook(id, 'conversation');
   if (!sameCanonical(
     manifest.worldbooks.map(({ id, source }) => ({ id, source })),
@@ -879,19 +856,16 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   } else {
     exact(sceneState, manifest.sceneState);
   }
-  const extensionState = repositories.extensionStates.getByScope('conversation', manifest.conversation.id);
-  if (manifest.extensionState === undefined) {
-    // Schema v4 snapshots created before runtime prompt injection support have no extension-state ref.
-  } else if (manifest.extensionState === null) {
-    if (extensionState !== undefined) stale();
-  } else {
-    exact(extensionState, manifest.extensionState);
-  }
-  for (const expected of manifest.extensionTrust ?? []) {
-    const grant = repositories.extensionTrustGrants.getByOwner(expected.ownerKind, expected.ownerId);
-    if (grant?.bundleDigest !== expected.bundleDigest || grant.riskVersion !== expected.riskVersion
-      || extensionExecutableDigest(repositories, expected.ownerKind, expected.ownerId) !== expected.bundleDigest) stale();
-  }
+}
+
+function acceptedSaveAgentConfiguration(
+  repositories: Repositories,
+  payload: PromptSnapshotPayload,
+): SaveAgentConfiguration {
+  const expected = payload.entityRevisions.saveAgentConfiguration;
+  const configuration = repositories.saveAgentConfigurations.getByConversationId(payload.input.conversationId);
+  if (configuration === undefined || configuration.id !== expected.id || configuration.revision !== expected.revision) stale();
+  return deepJson(configuration);
 }
 
 function tokenizerRequest(preset: Preset, provider: ProviderProfile): TokenizerSelectionInput {
@@ -1217,15 +1191,13 @@ async function compileAggregate(
     };
 
     let reservedRuntimeTokens = 0;
-    for (const content of [
-      ...aggregate.promptInjections.map((injection) => injection.content),
-      ...aggregate.scenePromptAdditions.map((addition) => addition.content),
-    ]) reservedRuntimeTokens += await tokenizer.countText(content);
+    for (const addition of aggregate.scenePromptAdditions) {
+      reservedRuntimeTokens += await tokenizer.countText(addition.content);
+    }
     const compilerPromptBudget = aggregate.conversation.maxPromptTokens - reservedRuntimeTokens;
     if (compilerPromptBudget <= 0) throw new PromptSnapshotError('context_overflow');
 
-    const compilation = aggregate.provider.apiMode === 'chat'
-      ? await compileChatPrompt({
+    const compilation = await compileChatPrompt({
         character: aggregate.character,
         persona: aggregate.persona,
         history,
@@ -1235,69 +1207,23 @@ async function compileAggregate(
         generationType: aggregate.input.mode,
         promptOrderCharacterId: aggregate.character.id,
         worldInfoPlacements: placements,
-      })
-      : await compileTextPrompt({
-        character: aggregate.character,
-        persona: aggregate.persona,
-        history,
-        textPreset: aggregate.presets[0]!,
-        contextPreset: aggregate.presets[1]!,
-        ...(aggregate.presets.find((preset) => preset.kind === 'instruct') === undefined ? {} : {
-          instructPreset: aggregate.presets.find((preset) => preset.kind === 'instruct'),
-        }),
-        ...(aggregate.presets.find((preset) => preset.kind === 'system') === undefined ? {} : {
-          systemPreset: aggregate.presets.find((preset) => preset.kind === 'system'),
-        }),
-        tokenizer,
-        maxPromptTokens: Math.min(
-          compilerPromptBudget,
-          finiteSetting(aggregate.presets[0]!.settings, 'max_context') ?? aggregate.conversation.maxPromptTokens,
-        ),
-        generationType: aggregate.input.mode,
-        worldInfoPlacements: placements,
       });
 
     if (compilation.kind === 'error') compilerError(compilation.code);
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     if (decisionFingerprint(decision) !== initialDecision) continue;
 
-    const beforeInjections = aggregate.promptInjections.filter((injection) => injection.position === 'before');
-    const afterInjections = aggregate.promptInjections.filter((injection) => injection.position === 'after');
-    const compiledMessages = compilation.kind === 'chat' ? [
-      ...beforeInjections.map(({ role, content }) => ({ role, content })),
-      ...compilation.messages,
-      ...afterInjections.map(({ role, content }) => ({ role, content })),
-    ] : undefined;
-    const triggerIndex = compiledMessages === undefined
-      ? -1
-      : compiledMessages.map((message) => message.role).lastIndexOf('user');
-    const runtimeMessages = compiledMessages === undefined ? undefined : [
+    const compiledMessages = compilation.messages;
+    const triggerIndex = compiledMessages.map((message) => message.role).lastIndexOf('user');
+    const runtimeMessages = [
       ...compiledMessages.slice(0, triggerIndex < 0 ? compiledMessages.length : triggerIndex),
       ...aggregate.scenePromptAdditions,
       ...compiledMessages.slice(triggerIndex < 0 ? compiledMessages.length : triggerIndex),
     ];
-    const runtimeText = compilation.kind === 'text' ? [
-      ...beforeInjections.map(({ content }) => content),
-      ...aggregate.scenePromptAdditions.map(({ content }) => content),
-      compilation.text,
-      ...afterInjections.map(({ content }) => content),
-    ].filter((value) => value !== '').join('\n') : undefined;
-    const runtimeTotalTokens = compilation.kind === 'chat'
-      ? await tokenizer.countMessages(runtimeMessages!)
-      : await tokenizer.countText(runtimeText!);
-    const runtimeMaxPromptTokens = compilation.kind === 'chat'
-      ? aggregate.conversation.maxPromptTokens
-      : Math.min(
-        aggregate.conversation.maxPromptTokens,
-        finiteSetting(aggregate.presets[0]!.settings, 'max_context') ?? aggregate.conversation.maxPromptTokens,
-      );
+    const runtimeTotalTokens = await tokenizer.countMessages(runtimeMessages);
+    const runtimeMaxPromptTokens = aggregate.conversation.maxPromptTokens;
     if (runtimeTotalTokens > runtimeMaxPromptTokens) throw new PromptSnapshotError('context_overflow');
     const injectionBreakdown: TokenBreakdownEntry[] = [];
-    for (const injection of aggregate.promptInjections) injectionBreakdown.push({
-      source: `runtime-injection:${injection.key}`,
-      includedTokens: await tokenizer.countText(injection.content),
-      omittedTokens: 0,
-    });
     for (const [index, addition] of aggregate.scenePromptAdditions.entries()) injectionBreakdown.push({
       source: `scene-prompt-addition:${index}`,
       includedTokens: await tokenizer.countText(addition.content),
@@ -1307,17 +1233,9 @@ async function compileAggregate(
     const primaryPreset = aggregate.presets[0]!;
     const temperature = finiteSetting(primaryPreset.settings, 'temperature');
     const maxTokens = responseTokens(aggregate.conversation, primaryPreset);
-    const compiledRequest: ChatRequest | TextRequest = compilation.kind === 'chat'
-      ? {
+    const compiledRequest: ChatRequest = {
         model: aggregate.provider.model,
-        messages: deepJson(runtimeMessages!),
-        ...(temperature === undefined ? {} : { temperature }),
-        ...(maxTokens === undefined ? {} : { maxTokens }),
-        stop: [...compilation.stop],
-      }
-      : {
-        model: aggregate.provider.model,
-        prompt: runtimeText!,
+        messages: deepJson(runtimeMessages),
         ...(temperature === undefined ? {} : { temperature }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
         stop: [...compilation.stop],
@@ -1339,21 +1257,21 @@ async function compileAggregate(
     const withoutPayloadHash: Omit<PromptSnapshotPayload, 'payloadHash'> = {
       schemaVersion: PROMPT_SNAPSHOT_SCHEMA_VERSION,
       input: aggregate.input,
-      kind: compilation.kind,
+      kind: 'chat',
       seed: aggregate.input.seed,
       messageIndex: aggregate.input.messageIndex,
       entityRevisions: aggregate.manifest,
       executable: executableAudit(aggregate),
       worldbook: deepJson(worldbook),
       tokenizerDecision: deepJson(decision),
-      ...(compilation.kind === 'chat'
-        ? { messages: deepJson(runtimeMessages!) }
-        : { text: runtimeText! }),
+      messages: deepJson(runtimeMessages),
       stop: [...compilation.stop],
       tokenBreakdown: deepJson([...compilation.tokenBreakdown, ...injectionBreakdown]),
       totalTokens: runtimeTotalTokens,
       warnings: deepJson(warnings),
       worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
+      memoryRecall: deepJson(aggregate.memoryRecall),
+      memoryQueryCorpus: deepJson(aggregate.memoryQueryCorpus),
       compiledRequest: deepJson(compiledRequest),
       compiledRequestHash: canonicalHash(compiledRequest),
     };
@@ -1396,12 +1314,12 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     || !Array.isArray(value.messages)
     || !hasOnlyKeys(value, [
       'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
-      'worldbooks', 'messages', 'runtimeState', 'installedScene', 'sceneState', 'extensionState', 'extensionTrust',
+      'worldbooks', 'messages', 'runtimeState', 'installedScene', 'sceneState', 'saveAgentConfiguration',
     ])) return false;
   if (!value.presets.every((item) => record(item)
     && typeof item.id === 'string'
     && nonNegativeInteger(item.revision)
-    && ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'].includes(String(item.kind))
+    && item.kind === 'chat'
     && hasOnlyKeys(item, ['id', 'revision', 'kind']))) return false;
   if (!value.globalWorldbooks.every(isRevisionRef)) return false;
   if (!value.worldbooks.every((item) => record(item)
@@ -1417,40 +1335,31 @@ function isManifest(value: unknown): value is PromptEntityRevisionManifest {
     && (item.activeVariant === null || isRevisionRef(item.activeVariant))
     && hasOnlyKeys(item, ['id', 'revision', 'activeVariant']))) return false;
   return (value.runtimeState === null || isRevisionRef(value.runtimeState))
+    && isRevisionRef(value.saveAgentConfiguration)
     && (value.installedScene === undefined || value.installedScene === null || isRevisionRef(value.installedScene))
-    && (value.sceneState === undefined || value.sceneState === null || isRevisionRef(value.sceneState))
-    && (value.extensionState === undefined || value.extensionState === null || isRevisionRef(value.extensionState))
-    && (value.extensionTrust === undefined || (Array.isArray(value.extensionTrust) && value.extensionTrust.every((item) => (
-      record(item) && (item.ownerKind === 'character' || item.ownerKind === 'preset')
-      && typeof item.ownerId === 'string' && typeof item.bundleDigest === 'string'
-      && nonNegativeInteger(item.riskVersion)
-      && hasOnlyKeys(item, ['ownerKind', 'ownerId', 'bundleDigest', 'riskVersion'])
-    ))));
+    && (value.sceneState === undefined || value.sceneState === null || isRevisionRef(value.sceneState));
 }
 
 function isInput(value: unknown): value is SnapshotInputPayload {
   if (!record(value)) return false;
   if (typeof value.conversationId !== 'string'
     || !nonNegativeInteger(value.conversationRevision)
-    || !['normal', 'swipe', 'regenerate', 'continue'].includes(String(value.mode))
+    || !['normal', 'swipe', 'regenerate'].includes(String(value.mode))
     || !(typeof value.seed === 'string' || finiteNumber(value.seed))
     || !nonNegativeInteger(value.messageIndex)
     || !hasOnlyKeys(value, [
       'conversationId', 'conversationRevision', 'mode', 'userText', 'seed', 'messageIndex',
-      'targetMessageId', 'targetVariantId', 'continuationByteBoundary',
+      'targetMessageId', 'targetVariantId',
       'reuseLastUser',
     ])) return false;
   if (value.reuseLastUser !== undefined && typeof value.reuseLastUser !== 'boolean') return false;
   if (value.mode === 'normal') {
     return typeof value.userText === 'string' && value.userText.trim() !== ''
-      && value.targetMessageId === null && value.targetVariantId === null
-      && value.continuationByteBoundary === null;
+      && value.targetMessageId === null && value.targetVariantId === null;
   }
   if (value.userText !== null || typeof value.targetMessageId !== 'string'
     || typeof value.targetVariantId !== 'string') return false;
-  return value.mode === 'continue'
-    ? nonNegativeInteger(value.continuationByteBoundary)
-    : value.continuationByteBoundary === null;
+  return true;
 }
 
 function nullableFinite(value: unknown): boolean {
@@ -1578,11 +1487,11 @@ function isExecutableAudit(value: unknown): value is Record<string, unknown> {
     || !hasOnlyKeys(persona, ['id', 'revision', 'name', 'description'])) return false;
   const provider = value.provider;
   if (typeof provider.id !== 'string' || !nonNegativeInteger(provider.revision)
-    || typeof provider.model !== 'string' || (provider.apiMode !== 'chat' && provider.apiMode !== 'text')
+    || typeof provider.model !== 'string' || provider.apiMode !== 'chat'
     || !hasOnlyKeys(provider, ['id', 'revision', 'model', 'apiMode'])) return false;
   if (!value.presets.every((preset) => record(preset)
     && typeof preset.id === 'string' && nonNegativeInteger(preset.revision)
-    && ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'].includes(String(preset.kind))
+    && preset.kind === 'chat'
     && record(preset.settings)
     && hasOnlyKeys(preset, ['id', 'revision', 'kind', 'settings']))) return false;
   if (!value.worldbooks.every((book) => record(book)
@@ -1612,6 +1521,18 @@ function isStop(value: unknown): value is string[] {
 
 function isWorldInfoOutlets(value: unknown): value is Record<string, string> {
   return record(value) && Object.values(value).every((item) => typeof item === 'string');
+}
+
+function isMemoryRecall(value: unknown): value is MemoryRecallSnapshotEntry[] {
+  return Array.isArray(value) && value.every((entry) => record(entry)
+    && typeof entry.id === 'string'
+    && nonNegativeInteger(entry.revision)
+    && typeof entry.kind === 'string'
+    && typeof entry.tier === 'string'
+    && typeof entry.summary === 'string'
+    && typeof entry.detail === 'string'
+    && nonNegativeInteger(entry.tokenCount)
+    && hasOnlyKeys(entry, ['id', 'revision', 'kind', 'tier', 'summary', 'detail', 'tokenCount']));
 }
 
 function isSourceUid(value: unknown): boolean {
@@ -1725,18 +1646,11 @@ function isChatRequest(value: unknown): value is ChatRequest {
     && Object.keys(value).every((key) => ['model', 'messages', 'temperature', 'maxTokens', 'stop'].includes(key));
 }
 
-function isTextRequest(value: unknown): value is TextRequest {
-  return hasCommonRequestFields(value)
-    && typeof value.prompt === 'string'
-    && value.messages === undefined
-    && Object.keys(value).every((key) => ['model', 'prompt', 'temperature', 'maxTokens', 'stop'].includes(key));
-}
-
 function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload {
   if (!record(value)
     || value.schemaVersion !== PROMPT_SNAPSHOT_SCHEMA_VERSION
     || !isInput(value.input)
-    || (value.kind !== 'chat' && value.kind !== 'text')
+    || value.kind !== 'chat'
     || !isManifest(value.entityRevisions)
     || !isExecutableAudit(value.executable)
     || !isWorldbookResult(value.worldbook)
@@ -1746,6 +1660,8 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
     || !nonNegativeInteger(value.totalTokens)
     || !isWarnings(value.warnings)
     || !isWorldInfoOutlets(value.worldInfoOutlets)
+    || !isMemoryRecall(value.memoryRecall)
+    || !isMemoryRecall(value.memoryQueryCorpus)
     || typeof value.compiledRequestHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.compiledRequestHash)
     || typeof value.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.payloadHash)
     || !sameCanonical(value.seed, value.input.seed)
@@ -1753,17 +1669,11 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
   const commonKeys = [
     'schemaVersion', 'input', 'kind', 'seed', 'messageIndex', 'entityRevisions', 'executable',
     'worldbook', 'tokenizerDecision', 'stop', 'tokenBreakdown', 'totalTokens', 'warnings',
-    'worldInfoOutlets', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
+    'worldInfoOutlets', 'memoryRecall', 'memoryQueryCorpus', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
   ];
-  return value.kind === 'chat'
-    ? isChatRequest(value.compiledRequest)
-      && isChatMessages(value.messages)
-      && value.text === undefined
-      && hasOnlyKeys(value, [...commonKeys, 'messages'])
-    : isTextRequest(value.compiledRequest)
-      && typeof value.text === 'string'
-      && value.messages === undefined
-      && hasOnlyKeys(value, [...commonKeys, 'text']);
+  return isChatRequest(value.compiledRequest)
+    && isChatMessages(value.messages)
+    && hasOnlyKeys(value, [...commonKeys, 'messages']);
 }
 
 function executableBindingsMatch(value: PromptSnapshotPayload): boolean {
@@ -1809,7 +1719,7 @@ function executableBindingsMatch(value: PromptSnapshotPayload): boolean {
   const provider = audit.provider;
   if (!record(provider)
     || provider.model !== value.compiledRequest.model
-    || (provider.apiMode === 'chat') !== (value.kind === 'chat')) return false;
+    || provider.apiMode !== 'chat') return false;
   if (value.tokenizerDecision.model !== undefined && value.tokenizerDecision.model !== provider.model) return false;
   if (value.tokenizerDecision.api !== undefined && value.tokenizerDecision.api !== 'openai') return false;
   return true;
@@ -1823,13 +1733,8 @@ function parseStoredPayload(value: unknown): PromptSnapshotPayload {
   if (!isPromptSnapshotPayload(value)) {
     throw new PromptSnapshotError('snapshot_invalid');
   }
-  if (value.kind === 'chat') {
-    if (!isChatRequest(value.compiledRequest)
-      || !sameCanonical(value.messages, value.compiledRequest.messages)
-      || value.text !== undefined) throw new PromptSnapshotError('snapshot_invalid');
-  } else if (!isTextRequest(value.compiledRequest)
-    || !sameCanonical(value.text, value.compiledRequest.prompt)
-    || value.messages !== undefined) throw new PromptSnapshotError('snapshot_invalid');
+  if (!isChatRequest(value.compiledRequest)
+    || !sameCanonical(value.messages, value.compiledRequest.messages)) throw new PromptSnapshotError('snapshot_invalid');
   if (!sameCanonical(value.stop, value.compiledRequest.stop ?? [])) throw new PromptSnapshotError('snapshot_invalid');
   if (!sameCanonical(value.executable.input, value.input)
     || !sameCanonical(value.executable.entityRevisions, value.entityRevisions)) {
@@ -1839,7 +1744,7 @@ function parseStoredPayload(value: unknown): PromptSnapshotPayload {
   const auditedProvider = value.executable.provider;
   if (!record(auditedProvider)
     || value.compiledRequest.model !== auditedProvider.model
-    || (value.kind === 'chat') !== (auditedProvider.apiMode === 'chat')) {
+    || auditedProvider.apiMode !== 'chat') {
     throw new PromptSnapshotError('snapshot_invalid');
   }
   if (canonicalHash(value.compiledRequest) !== value.compiledRequestHash) throw new PromptSnapshotError('snapshot_invalid');
@@ -1855,8 +1760,6 @@ function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapsh
     || payload.input.userText !== (input.userText ?? null)
     || (input.targetMessageId !== undefined && payload.input.targetMessageId !== input.targetMessageId)
     || (input.targetVariantId !== undefined && payload.input.targetVariantId !== input.targetVariantId)
-    || (input.continuationByteBoundary !== undefined
-      && payload.input.continuationByteBoundary !== input.continuationByteBoundary)
     || (payload.input.reuseLastUser ?? false) !== (input.reuseLastUser ?? false)
     || (input.seed !== undefined && !sameCanonical(payload.input.seed, input.seed))
     || (input.messageIndex !== undefined && payload.input.messageIndex !== input.messageIndex)) {
@@ -1867,19 +1770,26 @@ function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapsh
 function acceptUserTurn(
   repositories: Repositories,
   payload: PromptSnapshotPayload,
-): ProviderProfile {
+): { provider: ProviderProfile; createdUserMessage?: MessageRevisionRef } {
   revalidateManifest(repositories, payload.entityRevisions);
   const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
   if (provider === undefined) stale();
   if (payload.input.mode === 'normal') {
     if (payload.input.reuseLastUser !== true) {
-      repositories.messages.create({
+      const message = repositories.messages.create({
         id: randomUUID(),
         conversationId: payload.input.conversationId,
         role: 'user',
         content: payload.input.userText!,
         activeVariantId: null,
       });
+      const revision = repositories.conversations.update(
+        payload.input.conversationId,
+        payload.input.conversationRevision,
+        {},
+      );
+      if (!revision.ok) stale();
+      return { provider, createdUserMessage: { ...ref(message), activeVariant: null } };
     }
     const revision = repositories.conversations.update(
       payload.input.conversationId,
@@ -1888,7 +1798,23 @@ function acceptUserTurn(
     );
     if (!revision.ok) stale();
   }
-  return provider;
+  return { provider };
+}
+
+function acceptanceCandidate(
+  repositories: Repositories,
+  snapshotId: string,
+  payload: PromptSnapshotPayload,
+): AcceptedPromptSnapshot {
+  revalidateManifest(repositories, payload.entityRevisions);
+  const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
+  if (provider === undefined || provider.revision !== payload.entityRevisions.provider.revision) stale();
+  return {
+    snapshotId,
+    payload: deepJson(payload),
+    provider: deepJson(provider),
+    saveAgentConfiguration: acceptedSaveAgentConfiguration(repositories, payload),
+  };
 }
 
 export function createPromptSnapshotService(options: {
@@ -1897,7 +1823,10 @@ export function createPromptSnapshotService(options: {
   tokenizerRuntime: ServerTokenizerRuntime;
 }): PromptSnapshotService {
   const { database, repositories, tokenizerRuntime } = options;
-  const transientPreviews = new Map<string, { payload: PromptSnapshotPayload; expiresAt: number }>();
+  const pendingSnapshots = new Map<string, {
+    payload: PromptSnapshotPayload;
+    createdUserMessage?: MessageRevisionRef;
+  }>();
   const isConsumed = (snapshotId: string) => database.sqlite.prepare(`
     SELECT snapshot_id FROM consumed_generation_snapshots WHERE snapshot_id = ?
   `).get(snapshotId) !== undefined;
@@ -1911,86 +1840,21 @@ export function createPromptSnapshotService(options: {
     }
   };
   return {
-    async createCandidate(input) {
-      const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
-      return { snapshotId: randomUUID(), ...deepJson(built.payload) };
-    },
-    async sealCandidate(input, snapshotId, candidate, patch) {
-      assertSnapshotInput(candidate, input);
-      revalidateManifest(repositories, candidate.entityRevisions);
-      const stop = patch.stop ?? candidate.stop;
-      if (!isStop(stop)) throw new PromptSnapshotError('snapshot_invalid');
-      const decision = deepJson(candidate.tokenizerDecision);
-      const messages = candidate.kind === 'chat' ? patch.messages ?? candidate.messages : undefined;
-      const text = candidate.kind === 'text' ? patch.text ?? candidate.text : undefined;
-      if ((candidate.kind === 'chat' && !isChatMessages(messages))
-        || (candidate.kind === 'text' && typeof text !== 'string')
-        || (candidate.kind === 'chat' && patch.text !== undefined)
-        || (candidate.kind === 'text' && patch.messages !== undefined)) {
-        throw new PromptSnapshotError('snapshot_invalid');
-      }
-      let totalTokens: number;
-      let stopTokens: number;
-      try {
-        totalTokens = candidate.kind === 'chat'
-          ? validCount(await tokenizerRuntime.countMessages(messages!, decision))
-          : validCount(await tokenizerRuntime.countText(text!, decision));
-        stopTokens = 0;
-        for (const value of stop) stopTokens += validCount(await tokenizerRuntime.countText(value, decision));
-      } catch {
-        throw new PromptSnapshotError('tokenizer_error');
-      }
-      const auditedConversation = record(candidate.executable.conversation)
-        ? candidate.executable.conversation
-        : undefined;
-      const maxPromptTokens = finiteNumber(auditedConversation?.maxPromptTokens)
-        ? auditedConversation.maxPromptTokens
-        : undefined;
-      if (maxPromptTokens === undefined || totalTokens + stopTokens > maxPromptTokens) {
-        throw new PromptSnapshotError('context_overflow');
-      }
-      const compiledRequest: ChatRequest | TextRequest = candidate.kind === 'chat'
-        ? { ...deepJson(candidate.compiledRequest as ChatRequest), messages: deepJson(messages!), stop: [...stop] }
-        : { ...deepJson(candidate.compiledRequest as TextRequest), prompt: text!, stop: [...stop] };
-      const { payloadHash: _candidatePayloadHash, ...candidateWithoutPayloadHash } = deepJson(candidate);
-      const withoutPayloadHash: Omit<PromptSnapshotPayload, 'payloadHash'> = {
-        ...candidateWithoutPayloadHash,
-        ...(candidate.kind === 'chat' ? { messages: deepJson(messages!) } : { text }),
-        stop: [...stop],
-        tokenBreakdown: [
-          { source: 'trusted-prompt-hook-final', includedTokens: totalTokens, omittedTokens: 0 },
-          { source: 'trusted-prompt-hook-stop', includedTokens: stopTokens, omittedTokens: 0 },
-        ],
-        totalTokens: totalTokens + stopTokens,
-        compiledRequest: deepJson(compiledRequest),
-        compiledRequestHash: canonicalHash(compiledRequest),
-      };
-      const sealed = parseStoredPayload(deepJson({
-        ...withoutPayloadHash,
-        payloadHash: canonicalHash(withoutPayloadHash),
-      }));
-      database.transaction(() => {
-        revalidateManifest(repositories, sealed.entityRevisions);
-        repositories.generationSnapshots.create({
-          id: snapshotId,
-          conversationId: sealed.input.conversationId,
-          conversationRevision: sealed.input.conversationRevision,
-          payload: Object.fromEntries(Object.entries(deepJson(sealed))),
-          ...sceneSnapshotMetadata(repositories, sealed.input.conversationId),
-        });
-      });
-      return { snapshotId, ...deepJson(sealed) };
-    },
-    async createPreview(input) {
-      for (const [id, preview] of transientPreviews) if (preview.expiresAt <= Date.now()) transientPreviews.delete(id);
-      const built = await buildSnapshot(database, repositories, tokenizerRuntime, input);
-      revalidateManifest(repositories, built.manifest);
-      const snapshotId = randomUUID();
-      transientPreviews.set(snapshotId, { payload: deepJson(built.payload), expiresAt: Date.now() + 60_000 });
-      return { snapshotId, ...deepJson(built.payload) };
-    },
-    async createAndAccept(input, snapshotId, sceneContext) {
+    async createAndAccept(input, snapshotId, sceneContext, beforeAccept) {
       const built = await buildSnapshot(database, repositories, tokenizerRuntime, input, sceneContext);
+      const candidate = acceptanceCandidate(repositories, snapshotId, built.payload);
+      const directive = beforeAccept === undefined ? undefined : await beforeAccept(candidate);
+      if (directive?.deferSnapshotCommit === true) {
+        if (pendingSnapshots.has(snapshotId) || isConsumed(snapshotId)) {
+          throw new PromptSnapshotError('snapshot_mismatch');
+        }
+        const turn = database.transaction(() => acceptUserTurn(repositories, built.payload));
+        pendingSnapshots.set(snapshotId, {
+          payload: deepJson(built.payload),
+          ...(turn.createdUserMessage === undefined ? {} : { createdUserMessage: turn.createdUserMessage }),
+        });
+        return { ...candidate, deferredSnapshotCommit: true };
+      }
       const accepted = database.transaction(() => {
         revalidateManifest(repositories, built.manifest);
         repositories.generationSnapshots.create({
@@ -2001,67 +1865,47 @@ export function createPromptSnapshotService(options: {
           ...sceneSnapshotMetadata(repositories, built.payload.input.conversationId),
         });
         consume(snapshotId);
-        const provider = acceptUserTurn(repositories, built.payload);
-        return { snapshotId, payload: deepJson(built.payload), provider: deepJson(provider) };
+        const { provider } = acceptUserTurn(repositories, built.payload);
+        return {
+          snapshotId,
+          payload: deepJson(built.payload),
+          provider: deepJson(provider),
+          saveAgentConfiguration: acceptedSaveAgentConfiguration(repositories, built.payload),
+        };
       });
       return accepted;
     },
-    async acceptExisting(input) {
-      if (isConsumed(input.snapshotId)) throw new PromptSnapshotError('snapshot_mismatch');
-      const getStoredSnapshot = () => {
-        try {
-          return repositories.generationSnapshots.get(input.snapshotId);
-        } catch {
-          throw new PromptSnapshotError('snapshot_invalid');
-        }
-      };
-      const transient = transientPreviews.get(input.snapshotId);
-      if (transient !== undefined && transient.expiresAt <= Date.now()) transientPreviews.delete(input.snapshotId);
-      const liveTransient = transient !== undefined && transient.expiresAt > Date.now() ? transient : undefined;
-      const snapshot = getStoredSnapshot();
-      if (snapshot === undefined && liveTransient === undefined) throw new PromptSnapshotError('not_found');
-      let payload: PromptSnapshotPayload;
-      try {
-        payload = parseStoredPayload(liveTransient?.payload ?? snapshot!.payload);
-      } catch (error) {
-        if (error instanceof PromptSnapshotError) throw error;
-        throw new PromptSnapshotError('snapshot_invalid');
+    commitDeferredSnapshot(snapshotId, payload) {
+      const pending = pendingSnapshots.get(snapshotId);
+      if (pending === undefined || !sameCanonical(pending.payload, payload) || isConsumed(snapshotId)) {
+        throw new PromptSnapshotError('snapshot_mismatch');
       }
-      assertSnapshotInput(payload, input);
-      const accepted = database.transaction(() => {
-        if (liveTransient !== undefined) {
-          const currentTransient = transientPreviews.get(input.snapshotId);
-          if (currentTransient === undefined || !sameCanonical(currentTransient.payload, payload)) {
-            throw new PromptSnapshotError('snapshot_invalid');
-          }
-          transientPreviews.delete(input.snapshotId);
-          repositories.generationSnapshots.create({
-            id: input.snapshotId,
-            conversationId: payload.input.conversationId,
-            conversationRevision: payload.input.conversationRevision,
-            payload: Object.fromEntries(Object.entries(deepJson(payload))),
-            ...sceneSnapshotMetadata(repositories, payload.input.conversationId),
-          });
-          consume(input.snapshotId);
-          const provider = acceptUserTurn(repositories, payload);
-          return { snapshotId: input.snapshotId, payload, provider: deepJson(provider) };
-        }
-        const current = getStoredSnapshot();
-        if (current === undefined) throw new PromptSnapshotError('not_found');
-        let currentPayload: PromptSnapshotPayload;
-        try {
-          currentPayload = parseStoredPayload(current.payload);
-        } catch (error) {
-          if (error instanceof PromptSnapshotError) throw error;
-          throw new PromptSnapshotError('snapshot_invalid');
-        }
-        if (!sameCanonical(currentPayload, payload)) throw new PromptSnapshotError('snapshot_invalid');
-        assertSnapshotInput(currentPayload, input);
-        consume(input.snapshotId);
-        const provider = acceptUserTurn(repositories, currentPayload);
-        return { snapshotId: input.snapshotId, payload: currentPayload, provider: deepJson(provider) };
+      const acceptedManifest: PromptEntityRevisionManifest = {
+        ...payload.entityRevisions,
+        conversation: {
+          ...payload.entityRevisions.conversation,
+          revision: payload.entityRevisions.conversation.revision + (payload.input.mode === 'normal' ? 1 : 0),
+        },
+        messages: [
+          ...payload.entityRevisions.messages,
+          ...(pending.createdUserMessage === undefined ? [] : [pending.createdUserMessage]),
+        ],
+      };
+      revalidateManifest(repositories, acceptedManifest);
+      repositories.generationSnapshots.create({
+        id: snapshotId,
+        conversationId: payload.input.conversationId,
+        conversationRevision: payload.input.conversationRevision,
+        payload: Object.fromEntries(Object.entries(deepJson(payload))),
+        ...sceneSnapshotMetadata(repositories, payload.input.conversationId),
       });
-      return accepted;
+      consume(snapshotId);
+    },
+    completeDeferredSnapshot(snapshotId) {
+      pendingSnapshots.delete(snapshotId);
+    },
+    releaseDeferredSnapshot(snapshotId) {
+      pendingSnapshots.delete(snapshotId);
     },
     commitTimedState(payload) {
       if (payload.input.mode !== 'normal') return;
@@ -2074,6 +1918,7 @@ export function createPromptSnapshotService(options: {
             id: randomUUID(),
             conversationId: payload.input.conversationId,
             timedState: WorldbookTimedStateSchema.parse(deepJson(payload.worldbook.timedState)),
+            entryOverrides: [],
           });
           return;
         }

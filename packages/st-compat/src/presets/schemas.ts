@@ -52,6 +52,9 @@ export const ChatPresetSchema = z.object({
   seed: z.number().optional(),
   tokenizer: z.union([z.number(), z.string()]).optional(),
   max_tokens: z.number().optional(),
+  reasoning_effort: z.enum([
+    'auto', 'none', 'disabled', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
+  ]).optional(),
   squash_system_messages: z.boolean().optional(),
   send_if_empty: z.string().optional(),
   assistant_prefill: z.string().optional(),

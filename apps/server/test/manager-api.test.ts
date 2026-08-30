@@ -73,6 +73,7 @@ async function context() {
   });
   const entry = {
     worldbookId: ids.worldbook, keys: ['archive'], content: 'The archive remembers.', sourceUid: 42, sourceOrdinal: 0,
+    comment: 'Reader core', enabled: false,
     compatibility: {
       sourceFormat: 'worldbook-entry:st-native', rawPayload: { hidden: 'RAW-ENTRY-SENTINEL' },
       unknownFields: { vendor: 'ENTRY-SECRET' }, compatWarnings: ['future_entry'], parserVersion: '1',
@@ -91,6 +92,94 @@ async function context() {
 }
 
 describe('sanitized manager APIs', () => {
+  it('returns the effective Save Preset and deduplicated Worldbooks in runtime precedence order', async () => {
+    const { app, repositories } = await context();
+    const globalWorldbookId = '018f0000-0000-7000-8000-000000000960';
+    repositories.worldbooks.create({
+      id: globalWorldbookId, name: 'Global Rules', description: '', enabled: true,
+      scanDepth: null, tokenBudget: null, recursiveScanning: false, isGlobal: true, extensions: {},
+    });
+    repositories.conversations.create({
+      id: ids.conversation, characterId: ids.character, personaId: ids.persona,
+      title: 'Scene Save', worldbookIds: [ids.worldbook, globalWorldbookId],
+    });
+    repositories.saveAgentConfigurations.create({
+      id: '018f0000-0000-7000-8000-000000000961', conversationId: ids.conversation,
+      sourcePresetId: ids.preset, sourcePresetRevision: 0, name: 'Save narrator', settings: {
+        temperature: 0.7,
+        prompts: [
+          { identifier: 'scene-tone', name: 'Scene tone', role: 'system', content: 'Be vivid.', enabled: true },
+          { identifier: 'chatHistory', marker: true, enabled: true },
+        ],
+        prompt_order: [{ character_id: 100000, order: [
+          { identifier: 'scene-tone', enabled: true }, { identifier: 'chatHistory', enabled: true },
+        ] }],
+      },
+    });
+    repositories.worldbookRuntimeStates.create({
+      id: '018f0000-0000-7000-8000-000000000962',
+      conversationId: ids.conversation,
+      timedState: { messageIndex: null, sticky: [], cooldown: [] },
+      entryOverrides: [{ source: 'character', comment: 'Reader core', enabled: true }],
+    });
+
+    const response = await app.inject({
+      method: 'GET', url: `/api/conversations/${ids.conversation}/runtime-references`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      configuration: { name: 'Save narrator', settings: { temperature: 0.7 } },
+      worldbooks: [
+        { source: 'global', value: { id: globalWorldbookId, name: 'Global Rules' } },
+        { source: 'character', value: { id: ids.worldbook, name: 'Archive Lore' } },
+      ],
+    });
+    expect(response.json().worldbooks).toHaveLength(2);
+    expect(response.json().worldbooks[1].value.entries[0]).toMatchObject({
+      comment: 'Reader core',
+      enabled: false,
+      effectiveEnabled: true,
+      activationSource: 'save',
+      saveOverrideEnabled: true,
+    });
+
+    const prompt = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${ids.conversation}/runtime-references/preset-prompts/scene-tone`,
+      payload: { revision: 0, enabled: false },
+    });
+    expect(prompt.statusCode).toBe(200);
+    const toggledPrompt = prompt.json();
+    expect(toggledPrompt.revision).toBe(1);
+    expect(toggledPrompt.settings.prompts.find((item: { identifier: string }) => item.identifier === 'scene-tone'))
+      .toMatchObject({ enabled: false });
+    expect(toggledPrompt.settings.prompt_order[0].order.find((item: { identifier: string }) => item.identifier === 'scene-tone'))
+      .toMatchObject({ enabled: false });
+    const required = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${ids.conversation}/runtime-references/preset-prompts/chatHistory`,
+      payload: { revision: 1, enabled: false },
+    });
+    expect(required.statusCode).toBe(400);
+    expect(required.json()).toEqual({ error: 'prompt_required' });
+
+    const book = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${ids.conversation}/runtime-references/worldbooks/${ids.worldbook}`,
+      payload: { revision: 0, enabled: false },
+    });
+    expect(book.statusCode).toBe(200);
+    expect(book.json()).toMatchObject({ id: ids.worldbook, revision: 1, enabled: false });
+    const entry = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${ids.conversation}/runtime-references/worldbooks/${ids.worldbook}/entries/${ids.entry}`,
+      payload: { revision: 0, enabled: true },
+    });
+    expect(entry.statusCode).toBe(200);
+    expect(entry.json()).toMatchObject({ id: ids.entry, revision: 1, enabled: true });
+  });
+
   it('returns bounded safe DTOs without raw compatibility, secret, path, or preset marker values', async () => {
     const { app } = await context();
     const responses = await Promise.all([

@@ -4,20 +4,14 @@ import {
   api,
   errorCode,
   type GlobalGenerationConfigPatch,
-  type PresetKind,
   type ProviderProfileView,
 } from '../../api/client.js';
 import { useI18n } from '../../app/i18n.js';
 
-type PresetSelection = Pick<GlobalGenerationConfigPatch,
-  'chatPresetId' | 'textPresetId' | 'contextPresetId' | 'instructPresetId' | 'systemPresetId'>;
+type PresetSelection = Pick<GlobalGenerationConfigPatch, 'chatPresetId'>;
 
 const emptyPresetSelection: PresetSelection = {
   chatPresetId: null,
-  textPresetId: null,
-  contextPresetId: null,
-  instructPresetId: null,
-  systemPresetId: null,
 };
 
 export function ActiveProviderConfiguration({ providers }: { providers: ProviderProfileView[] }) {
@@ -91,41 +85,33 @@ export function ActivePresetConfiguration() {
 
   useEffect(() => {
     if (configuration.data === undefined) return;
-    const { chatPresetId, textPresetId, contextPresetId, instructPresetId, systemPresetId } = configuration.data;
-    setSelection({ chatPresetId, textPresetId, contextPresetId, instructPresetId, systemPresetId });
+    setSelection({ chatPresetId: configuration.data.chatPresetId });
   }, [configuration.data]);
 
   const save = useMutation({
-    mutationFn: () => api.saveGlobalGenerationConfig(configuration.data!.revision, selection),
+    mutationFn: () => api.saveGlobalGenerationConfig(configuration.data!.revision, {
+      ...selection,
+      textPresetId: null,
+      contextPresetId: null,
+      instructPresetId: null,
+      systemPresetId: null,
+    }),
     onSuccess: (saved) => {
       queryClient.setQueryData(['global-generation-config'], saved);
       void queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
-      const { chatPresetId, textPresetId, contextPresetId, instructPresetId, systemPresetId } = saved;
-      setSelection({ chatPresetId, textPresetId, contextPresetId, instructPresetId, systemPresetId });
+      setSelection({ chatPresetId: saved.chatPresetId });
     },
   });
   const setSelectionField = (key: keyof PresetSelection, value: string) => {
     save.reset();
     setSelection((current) => ({ ...current, [key]: value === '' ? null : value }));
   };
-  const presetSelect = (label: string, key: keyof PresetSelection, kind: PresetKind) => (
-    <label>
-      {t(label)}
-      <select value={selection[key] ?? ''} onChange={(event) => setSelectionField(key, event.target.value)}>
-        <option value="">{t('Not selected')}</option>
-        {(presets.data ?? []).filter((preset) => preset.kind === kind).map((preset) => (
-          <option value={preset.id} key={preset.id}>{preset.name}</option>
-        ))}
-      </select>
-    </label>
-  );
-
   return (
     <section className="global-generation-configuration" aria-labelledby="active-preset-configuration-heading">
       <div className="section-heading">
         <div>
-          <h2 id="active-preset-configuration-heading">{t('Active Presets')}</h2>
-          <span>{t('Used across every Conversation')}</span>
+          <h2 id="active-preset-configuration-heading">{t('Default Chat template')}</h2>
+          <span>{t('Copied into each new Save as its private starting Preset')}</span>
         </div>
       </div>
       {configuration.isLoading || presets.isLoading ? <p>{t('Loading generation configuration…')}</p> : null}
@@ -138,19 +124,26 @@ export function ActivePresetConfiguration() {
         <p role="status">{t('An active Preset was cleared after deletion. Choose a replacement and save.')}</p>
       ) : null}
       <div className="connection-form-grid">
-        {presetSelect('Chat preset', 'chatPresetId', 'chat')}
-        {presetSelect('Text preset', 'textPresetId', 'text')}
-        {presetSelect('Context preset', 'contextPresetId', 'context')}
-        {presetSelect('Instruct preset', 'instructPresetId', 'instruct')}
-        {presetSelect('System preset', 'systemPresetId', 'system')}
+        <label>
+          {t('Chat template')}
+          <select
+            value={selection.chatPresetId ?? ''}
+            onChange={(event) => setSelectionField('chatPresetId', event.target.value)}
+          >
+            <option value="">{t('Not selected')}</option>
+            {(presets.data ?? []).filter((preset) => preset.kind === 'chat').map((preset) => (
+              <option value={preset.id} key={preset.id}>{preset.name}</option>
+            ))}
+          </select>
+        </label>
       </div>
       <button
         type="button"
         disabled={configuration.data === undefined || save.isPending}
         onClick={() => { void save.mutateAsync().catch(() => undefined); }}
-      >{t('Save active Presets')}</button>
-      {save.isSuccess ? <span role="status">{t('Active Presets saved.')}</span> : null}
-      {save.error ? <span role="alert">{t('Unable to save active Presets: {{error}}', { error: errorCode(save.error) })}</span> : null}
+      >{t('Save default Chat template')}</button>
+      {save.isSuccess ? <span role="status">{t('Default Chat template saved.')}</span> : null}
+      {save.error ? <span role="alert">{t('Unable to save default Chat template: {{error}}', { error: errorCode(save.error) })}</span> : null}
     </section>
   );
 }

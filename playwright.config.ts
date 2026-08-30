@@ -12,7 +12,6 @@ export default defineConfig({
     '**/first-run-chat.spec.ts',
     '**/imports-and-exports.spec.ts',
     '**/restart-recovery.spec.ts',
-    '**/text-mode.spec.ts',
   ],
   fullyParallel: false,
   workers: 1,

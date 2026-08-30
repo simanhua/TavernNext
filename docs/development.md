@@ -2,13 +2,13 @@
 
 ## Package boundaries
 
-- `apps/web` is the React/Vite browser application. It owns navigation, forms, chat interaction, Prompt Preview, and browser-side stream consumption. It talks only to `/api`.
-- `apps/server` is the local Fastify application. It owns persistence, imports, exports, provider credentials, generation lifecycle, backups, assets, and HTTP response redaction.
+- `apps/web` is the React/Vite browser application. It owns navigation, forms, Scene workspaces, Save Agent configuration, and browser-side event-stream consumption. It talks only to `/api`.
+- `apps/server` is the local Fastify application. It owns persistence, imports, exports, provider credentials, Agent Run lifecycle, tools, backups, assets, and HTTP response redaction.
 - `packages/domain` defines shared schemas and entities. It has no UI, database, or provider behavior.
 - `packages/st-compat` detects, inspects, normalizes, preserves, and exports SillyTavern-compatible artifacts. It is pure compatibility code and does not start SillyTavern.
 - `packages/tokenizer-engine` selects tokenizer IDs, loads bounded local/cache models, and performs token counting.
 - `packages/prompt-engine` compiles Chat and Text prompts and evaluates Worldbooks. It has no network or database ownership.
-- `packages/provider-openai-compatible` is the server-side OpenAI-compatible HTTP/SSE client.
+- `packages/provider-openai-compatible` owns safe model discovery plus the Pi provider/model adapter used by the Agent Runtime.
 - `packages/extension-runtime` consumes normalized attached assets and owns pure regex execution, shared Worker timeout orchestration, and trusted TavernHelper script manifest/tree projection (stable ownership, buttons, and pinned remote-cache URLs). It depends inward on `packages/domain`; SillyTavern artifact extraction/export stays in `packages/st-compat`, while browser and Node Worker adapters are exposed as separate package entry points. The web app owns the same-origin iframe and compatibility globals.
 - `tests/fixtures` contains deterministic compatibility and golden inputs. `tests/e2e` owns the restartable local stack and real-browser release scenarios.
 - `scripts/verify-st-oracle.mjs` and `scripts/smoke-local.mjs` are release gates, not runtime dependencies.

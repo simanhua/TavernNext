@@ -15,7 +15,6 @@ export type { ScriptRuntimeDiagnostic } from './ScriptCompatibilityEnvironment.j
 export interface ScriptRuntimeFrame {
   start(manifest: TrustedScriptManifest): Promise<void>;
   invoke(scriptId: string, name: string): Promise<boolean>;
-  runPromptHook(candidate: Parameters<ScriptCompatibilityEnvironment['runPromptHook']>[0], dryRun: boolean): ReturnType<ScriptCompatibilityEnvironment['runPromptHook']>;
   destroy(): void;
 }
 
@@ -129,14 +128,6 @@ export class SameOriginScriptRuntimeFrame implements ScriptRuntimeFrame {
 
   invoke(scriptId: string, name: string): Promise<boolean> {
     return this.runtimeWindow === undefined ? Promise.resolve(false) : this.environment.invoke(scriptId, name);
-  }
-
-  async runPromptHook(
-    candidate: Parameters<ScriptCompatibilityEnvironment['runPromptHook']>[0],
-    dryRun: boolean,
-  ): ReturnType<ScriptCompatibilityEnvironment['runPromptHook']> {
-    if (this.manifest === undefined) throw new Error('runtime_not_ready');
-    return this.environment.runPromptHook(candidate, dryRun);
   }
 
   destroy(): void {

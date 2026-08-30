@@ -22,7 +22,7 @@ import {
 import { join, parse, relative, resolve, sep } from 'node:path';
 
 export const SECRET_STORE_FILE = 'secrets.json';
-const SECRET_STORE_VERSION = 1;
+const SECRET_STORE_VERSION = 2;
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_STORE_BYTES = 16 * 1024 * 1024;
@@ -31,9 +31,9 @@ const TEMPORARY_PREFIX = `.${SECRET_STORE_FILE}.`;
 const TEMPORARY_SUFFIX = '.tmp';
 
 export interface StoredProviderSecret {
-  providerId: string;
+  profileId: string;
   baseUrl: string;
-  value: string;
+  credential: { type: 'api_key'; key: string };
 }
 
 export interface SecretStore {
@@ -49,7 +49,7 @@ export interface SecretStoreOptions {
 }
 
 interface SecretStoreDocument {
-  version: 1;
+  version: 2;
   entries: Record<string, StoredProviderSecret>;
 }
 
@@ -179,9 +179,12 @@ function validSecretRef(value: string): boolean {
 }
 
 function validateSecret(secret: StoredProviderSecret): StoredProviderSecret {
-  if (typeof secret.providerId !== 'string' || secret.providerId === '' || secret.providerId.length > 512
+  if (typeof secret.profileId !== 'string' || secret.profileId === '' || secret.profileId.length > 512
     || typeof secret.baseUrl !== 'string' || secret.baseUrl.length > 4_096
-    || typeof secret.value !== 'string' || secret.value === '' || secret.value.length > 1_048_576) {
+    || typeof secret.credential !== 'object' || secret.credential === null
+    || secret.credential.type !== 'api_key'
+    || typeof secret.credential.key !== 'string' || secret.credential.key === ''
+    || secret.credential.key.length > 1_048_576) {
     throw new Error('Invalid provider secret.');
   }
   try {
@@ -189,7 +192,11 @@ function validateSecret(secret: StoredProviderSecret): StoredProviderSecret {
   } catch {
     throw new Error('Invalid provider secret.');
   }
-  return { providerId: secret.providerId, baseUrl: secret.baseUrl, value: secret.value };
+  return {
+    profileId: secret.profileId,
+    baseUrl: secret.baseUrl,
+    credential: { type: 'api_key', key: secret.credential.key },
+  };
 }
 
 function emptyDocument(): SecretStoreDocument {
@@ -205,7 +212,8 @@ function parseDocument(bytes: Uint8Array): SecretStoreDocument {
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Secret storage is untrusted.');
   const root = parsed as Record<string, unknown>;
-  if (root.version !== SECRET_STORE_VERSION || typeof root.entries !== 'object' || root.entries === null || Array.isArray(root.entries)) {
+  if ((root.version !== 1 && root.version !== SECRET_STORE_VERSION)
+    || typeof root.entries !== 'object' || root.entries === null || Array.isArray(root.entries)) {
     throw new Error('Secret storage is untrusted.');
   }
   const entries = Object.create(null) as Record<string, StoredProviderSecret>;
@@ -214,7 +222,14 @@ function parseDocument(bytes: Uint8Array): SecretStoreDocument {
       throw new Error('Secret storage is untrusted.');
     }
     try {
-      entries[reference] = validateSecret(candidate as StoredProviderSecret);
+      const value = candidate as Record<string, unknown>;
+      entries[reference] = root.version === 1
+        ? validateSecret({
+          profileId: String(value.providerId ?? ''),
+          baseUrl: String(value.baseUrl ?? ''),
+          credential: { type: 'api_key', key: String(value.value ?? '') },
+        })
+        : validateSecret(candidate as StoredProviderSecret);
     } catch {
       throw new Error('Secret storage is untrusted.');
     }

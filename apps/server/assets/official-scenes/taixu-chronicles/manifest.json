@@ -1,0 +1,189 @@
+{
+  "id": "018f2000-0000-7000-8000-000000000003",
+  "slug": "taixu-chronicles",
+  "version": "1.3.1",
+  "name": "太虚问道",
+  "summary": "与楚霁寒同行，藏锋入宗，在九州修行中追索万年前的长生局。",
+  "description": "由楚霁寒角色卡转化的官方 TavernNext 修仙 Scene。每个存档拥有独立的境界、太虚子魂力、关系、任务、线索与九州地图状态。",
+  "author": "海海边上 / TavernNext Scene adaptation",
+  "minimumTavernNextVersion": "1.0.0",
+  "sceneSdkVersion": 2,
+  "frontendEntry": "frontend/app.js",
+  "frontendStyles": ["frontend/styles.css", "frontend/themes.css", "frontend/chapter.css"],
+  "serverEntry": "server/index.mjs",
+  "coverPath": "content/character.png",
+  "backingCharacterPath": "content/character.png",
+  "backingPresetPath": "content/preset.json",
+  "setupSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["opening", "loreDetail", "relationshipMode", "redThread", "contentMode", "theme"],
+    "allOf": [{
+      "if": { "properties": { "redThread": { "const": "intimacy" } }, "required": ["redThread"] },
+      "then": { "properties": { "contentMode": { "const": "mature" } }, "required": ["contentMode"] }
+    }],
+    "properties": {
+      "opening": { "type": "string", "enum": ["ruined-temple", "market-red-thread"] },
+      "loreDetail": { "type": "string", "enum": ["concise", "full"] },
+      "relationshipMode": { "type": "string", "enum": ["adventure-focus", "original-multi-romance"] },
+      "redThread": { "type": "string", "enum": ["none", "fated", "intimacy"] },
+      "contentMode": { "type": "string", "enum": ["general", "mature"] },
+      "theme": { "type": "string", "enum": ["xuanqing", "danxia", "xuanzang", "yuebai"] }
+    }
+  },
+  "stateSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["世界", "楚霁寒", "太虚子", "第一章", "长生局", "关系", "任务", "地图", "界面"],
+    "properties": {
+      "世界": {
+        "type": "object", "additionalProperties": false,
+        "required": ["日期", "时辰", "地点", "天气", "章节"],
+        "properties": {
+          "日期": { "type": "string" }, "时辰": { "type": "string" }, "地点": { "type": "string" },
+          "天气": { "type": "string" }, "章节": { "type": "string" }
+        }
+      },
+      "楚霁寒": {
+        "type": "object", "additionalProperties": false,
+        "required": ["姓名", "年龄", "公开身份", "衣着", "境界", "灵根", "功法", "丹道", "背包", "暴露风险"],
+        "properties": {
+          "姓名": { "type": "string" }, "年龄": { "type": "integer", "minimum": 18 },
+          "公开身份": { "type": "string" }, "衣着": { "type": "string" },
+          "境界": {
+            "type": "object", "additionalProperties": false, "required": ["名称", "阶段", "进度"],
+            "properties": { "名称": { "type": "string" }, "阶段": { "type": "string" }, "进度": { "type": "number", "minimum": 0, "maximum": 100 } }
+          },
+          "灵根": {
+            "type": "object", "additionalProperties": false, "required": ["对外", "真实", "已解锁", "未解锁"],
+            "properties": {
+              "对外": { "type": "string" }, "真实": { "type": "string" },
+              "已解锁": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+              "未解锁": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+            }
+          },
+          "功法": { "type": "array", "items": { "type": "string" } },
+          "丹道": { "type": "object", "additionalProperties": true },
+          "背包": { "type": "array", "items": { "type": "string" } },
+          "暴露风险": { "type": "number", "minimum": 0, "maximum": 100 }
+        }
+      },
+      "太虚子": {
+        "type": "object", "additionalProperties": false,
+        "required": ["状态", "魂力", "可接管次数", "沉睡至", "还魂丹进度"],
+        "properties": {
+          "状态": { "type": "string" }, "魂力": { "type": "number", "minimum": 0, "maximum": 100 },
+          "可接管次数": { "type": "integer", "minimum": 0 }, "沉睡至": { "type": "string" },
+          "还魂丹进度": { "type": "number", "minimum": 0, "maximum": 100 }
+        }
+      },
+      "第一章": {
+        "type": "object", "additionalProperties": false,
+        "required": ["阶段", "当前事件", "已完成事件", "藏拙判定"],
+        "properties": {
+          "阶段": { "type": "string" },
+          "当前事件": { "type": "string" },
+          "已完成事件": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "藏拙判定": { "type": "string" }
+        }
+      },
+      "长生局": {
+        "type": "object", "additionalProperties": false, "required": ["阶段", "目标", "线索", "嫌疑人"],
+        "properties": {
+          "阶段": { "type": "string" }, "目标": { "type": "string" },
+          "线索": { "type": "array", "maxItems": 64, "items": { "type": "object", "additionalProperties": false, "required": ["id", "标题", "详情"], "properties": { "id": { "type": "string" }, "标题": { "type": "string" }, "详情": { "type": "string" } } } },
+          "嫌疑人": { "type": "array", "maxItems": 16, "items": { "type": "object", "additionalProperties": false, "required": ["id", "姓名", "状态"], "properties": { "id": { "type": "string" }, "姓名": { "type": "string" }, "状态": { "type": "string" } } } }
+        }
+      },
+      "关系": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": true } },
+      "任务": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": true } },
+      "地图": {
+        "type": "object", "additionalProperties": false, "required": ["区域"],
+        "properties": { "区域": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "描述", "已解锁"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "描述": { "type": "string" }, "已解锁": { "type": "boolean" } } } } }
+      },
+      "界面": {
+        "type": "object", "additionalProperties": false, "required": ["主题"],
+        "properties": { "主题": { "type": "string", "enum": ["xuanqing", "danxia", "xuanzang", "yuebai"] } }
+      }
+    }
+  },
+  "agentTools": [
+    {
+      "name": "taixu_advance_world",
+      "description": "Advance the Save to a concrete location, time, date, or weather after travel or a scene transition.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["location"], "properties": { "location": { "type": "string", "minLength": 1, "maxLength": 160 }, "date": { "type": "string", "maxLength": 120 }, "time": { "type": "string", "maxLength": 120 }, "weather": { "type": "string", "maxLength": 120 }, "chapter": { "type": "string", "maxLength": 160 } } }
+    },
+    {
+      "name": "taixu_adjust_cultivation",
+      "description": "Adjust Chu Jihan's bounded cultivation progress for a concrete training, battle, insight, or injury.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["amount", "reason"], "properties": { "amount": { "type": "integer", "minimum": -25, "maximum": 25 }, "reason": { "type": "string", "minLength": 1, "maxLength": 240 }, "realmName": { "type": "string", "maxLength": 80 }, "realmStage": { "type": "string", "maxLength": 80 }, "unlockElement": { "type": "string", "maxLength": 20 } } }
+    },
+    {
+      "name": "taixu_update_relationship",
+      "description": "Create or update one relationship with a stable id and a bounded affinity change.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["entityId", "name", "affinityDelta", "relation"], "properties": { "entityId": { "type": "string", "minLength": 1, "maxLength": 120 }, "name": { "type": "string", "minLength": 1, "maxLength": 160 }, "affinityDelta": { "type": "integer", "minimum": -50, "maximum": 50 }, "relation": { "type": "string", "minLength": 1, "maxLength": 160 }, "description": { "type": "string", "maxLength": 500 } } }
+    },
+    {
+      "name": "taixu_add_clue",
+      "description": "Record one newly earned clue in the Long-Life Scheme investigation without revealing unearned conclusions.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["id", "title", "detail"], "properties": { "id": { "type": "string", "minLength": 1, "maxLength": 120 }, "title": { "type": "string", "minLength": 1, "maxLength": 160 }, "detail": { "type": "string", "minLength": 1, "maxLength": 1000 }, "suspectId": { "type": "string", "maxLength": 120 }, "suspectStatus": { "type": "string", "maxLength": 160 } } }
+    },
+    {
+      "name": "taixu_update_quest",
+      "description": "Create or update a quest milestone in the Save's canonical Scene State.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["questId", "title", "status", "description"], "properties": { "questId": { "type": "string", "minLength": 1, "maxLength": 120 }, "title": { "type": "string", "minLength": 1, "maxLength": 160 }, "status": { "type": "string", "enum": ["active", "completed", "failed"] }, "description": { "type": "string", "maxLength": 1000 } } }
+    },
+    {
+      "name": "taixu_adjust_soul",
+      "description": "Adjust Taixuzi's bounded soul strength after teaching, concealment, intervention, rest, or recovery.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["amount", "reason"], "properties": { "amount": { "type": "integer", "minimum": -30, "maximum": 10 }, "reason": { "type": "string", "minLength": 1, "maxLength": 240 }, "status": { "type": "string", "maxLength": 80 }, "takeoverDelta": { "type": "integer", "minimum": -3, "maximum": 3 }, "sleepingUntil": { "type": "string", "maxLength": 120 }, "resurrectionProgressDelta": { "type": "integer", "minimum": -20, "maximum": 20 } } }
+    },
+    {
+      "name": "taixu_adjust_exposure",
+      "description": "Adjust the bounded risk that Chu Jihan's hidden identity, root, or inheritance will be exposed.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["amount", "reason"], "properties": { "amount": { "type": "integer", "minimum": -30, "maximum": 30 }, "reason": { "type": "string", "minLength": 1, "maxLength": 240 } } }
+    },
+    {
+      "name": "taixu_unlock_region",
+      "description": "Unlock one known Jiuzhou region after credible travel, intelligence, or map discovery.",
+      "parameters": { "type": "object", "additionalProperties": false, "required": ["regionId", "reason"], "properties": { "regionId": { "type": "string", "minLength": 1, "maxLength": 120 }, "reason": { "type": "string", "minLength": 1, "maxLength": 240 } } }
+    }
+  ],
+  "sceneViews": [
+    {
+      "kind": "status", "schemaVersion": 1,
+      "projection": { "hook": "projectSceneView", "schema": { "type": "object", "additionalProperties": false, "required": ["name", "identity", "realm", "progress", "soul", "risk"], "properties": { "name": { "type": "string" }, "identity": { "type": "string" }, "realm": { "type": "string" }, "progress": { "type": "number" }, "soul": { "type": "number" }, "risk": { "type": "number" } } } },
+      "renderer": { "id": "taixu-status-v1" }
+    },
+    {
+      "kind": "relationship", "schemaVersion": 1,
+      "projection": { "hook": "projectSceneView", "schema": { "type": "object", "additionalProperties": false, "required": ["entries"], "properties": { "entries": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "name", "relation", "affinity", "stage"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "relation": { "type": "string" }, "affinity": { "type": "number" }, "stage": { "type": "string" } } } } } } },
+      "renderer": { "id": "taixu-relationship-v1" }
+    },
+    {
+      "kind": "investigation", "schemaVersion": 1,
+      "projection": { "hook": "projectSceneView", "schema": { "type": "object", "additionalProperties": false, "required": ["stage", "goal", "clues"], "properties": { "stage": { "type": "string" }, "goal": { "type": "string" }, "clues": { "type": "array", "maxItems": 64, "items": { "type": "object", "additionalProperties": false, "required": ["id", "title", "detail"], "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "detail": { "type": "string" } } } } } } },
+      "renderer": { "id": "taixu-investigation-v1" }
+    },
+    {
+      "kind": "map", "schemaVersion": 1,
+      "projection": { "hook": "projectSceneView", "schema": { "type": "object", "additionalProperties": false, "required": ["location", "regions"], "properties": { "location": { "type": "string" }, "regions": { "type": "array", "maxItems": 16, "items": { "type": "object", "additionalProperties": false, "required": ["id", "name", "description", "unlocked"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "unlocked": { "type": "boolean" } } } } } } },
+      "renderer": { "id": "taixu-map-v1" }
+    }
+  ],
+  "files": [
+    "manifest.json",
+    "frontend/app.js",
+    "frontend/styles.css",
+    "frontend/themes.css",
+    "frontend/chapter.css",
+    "server/index.mjs",
+    "content/initial-state.json",
+    "content/openings/ruined-temple.md",
+    "content/openings/market-red-thread.md",
+    "content/character.png",
+    "content/background.png",
+    "content/preset.json"
+  ]
+}

@@ -2,7 +2,7 @@
   "name": "tavernnext",
   "private": true,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "workspaces": [
     "apps/*",
@@ -16,6 +16,7 @@
     "setup:e2e": "playwright install chromium",
     "test:e2e": "npm run setup:e2e && playwright test",
     "verify:compat": "node scripts/verify-st-oracle.mjs",
+    "generate:destined-poem-setup": "node scripts/generate-destined-poem-setup-catalog.mjs",
     "smoke:local": "tsx --tsconfig apps/server/tsconfig.json scripts/smoke-local.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run verify:compat && npm run test:e2e"
   },

@@ -41,7 +41,7 @@ test('attached compatibility release gate stays offline and crosses import, trus
   });
   await apiJson(stack.baseUrl, '/api/providers', { method: 'POST', body: {
     id: ids.provider, name: 'Release provider', baseUrl: `${stack.provider.baseUrl}/v1`,
-    model: 'mock-model', apiMode: 'chat', apiKey: 'release-secret',
+    model: 'mock-model', apiMode: 'chat', toolCalls: true, apiKey: 'release-secret',
   } });
   await apiJson(stack.baseUrl, '/api/personas', { method: 'POST', body: {
     id: ids.persona, name: 'Release traveler', description: '', isDefault: true,
