@@ -141,12 +141,107 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
 长生局必须以玩家与楚霁寒实际取得的碎片线索推进；不得提前揭露凶手。太虚子能教导、遮掩和在濒死时短暂接管身体，但不能直接常驻出手。` }] };
   },
 
-  handleAction({ action }) {
+  handleAction({ action, state }) {
     const value = record(action);
-    if (value.type !== 'set-theme' || !THEMES.has(value.theme)) {
-      return { result: { ok: false, code: 'taixu_action_unknown' } };
+    if (value.type === 'set-theme' && THEMES.has(value.theme)) {
+      return { statePatch: [{ op: 'replace', path: '/界面/主题', value: value.theme }], result: { ok: true } };
     }
-    return { statePatch: [{ op: 'replace', path: '/界面/主题', value: value.theme }], result: { ok: true } };
+    if (value.type === 'chapter-event') {
+      const chapter = record(record(state).第一章);
+      const eventId = short(value.eventId, 120);
+      if (eventId !== chapter.当前事件) {
+        return { result: { ok: false, code: 'chapter_event_out_of_order', expected: chapter.当前事件 } };
+      }
+      if (eventId === 'water-root-test') {
+        return {
+          statePatch: [
+            { op: 'replace', path: '/世界/地点', value: '太虚仙宗·问心坪' },
+            { op: 'replace', path: '/世界/章节', value: '第一章·叩问山门' },
+            { op: 'replace', path: '/第一章/阶段', value: '入门试炼' },
+            { op: 'replace', path: '/第一章/当前事件', value: 'concealment-check' },
+            { op: 'replace', path: '/第一章/已完成事件', value: ['water-root-test'] },
+          ],
+          result: { ok: true, eventId, nextEvent: 'concealment-check' },
+        };
+      }
+      if (eventId === 'concealment-check') {
+        return {
+          statePatch: [
+            { op: 'replace', path: '/楚霁寒/暴露风险', value: 12 },
+            { op: 'replace', path: '/第一章/当前事件', value: 'taixuzi-first-spend' },
+            { op: 'replace', path: '/第一章/藏拙判定', value: '成功·测灵石仅显露水属性单灵根' },
+            { op: 'replace', path: '/第一章/已完成事件', value: [...chapter.已完成事件, eventId] },
+          ],
+          result: { ok: true, eventId, nextEvent: 'taixuzi-first-spend' },
+        };
+      }
+      if (eventId === 'taixuzi-first-spend') {
+        return {
+          statePatch: [
+            { op: 'replace', path: '/太虚子/魂力', value: 64 },
+            { op: 'replace', path: '/太虚子/状态', value: '短暂虚弱' },
+            { op: 'replace', path: '/第一章/当前事件', value: 'meet-talent' },
+            { op: 'replace', path: '/第一章/已完成事件', value: [...chapter.已完成事件, eventId] },
+          ],
+          result: { ok: true, eventId, nextEvent: 'meet-talent' },
+        };
+      }
+      if (eventId === 'meet-talent') {
+        return {
+          statePatch: [
+            {
+              op: 'insert', path: '/关系/shen-hantang', value: {
+                姓名: '沈寒棠',
+                关系: '同届试炼者·丹阁真传',
+                好感: 18,
+                阶段: '路人',
+                描述: '在测灵石异响时注意到楚霁寒的丹阁真传。',
+                红线: '无',
+              },
+            },
+            { op: 'replace', path: '/第一章/当前事件', value: 'first-clue' },
+            { op: 'replace', path: '/第一章/已完成事件', value: [...chapter.已完成事件, eventId] },
+          ],
+          result: { ok: true, eventId, nextEvent: 'first-clue' },
+        };
+      }
+      if (eventId === 'first-clue') {
+        return {
+          statePatch: [
+            { op: 'replace', path: '/世界/地点', value: '太虚仙宗·外门临时居所' },
+            { op: 'replace', path: '/世界/章节', value: '第一章·山门留名' },
+            { op: 'replace', path: '/楚霁寒/公开身份', value: '太虚仙宗外门记名弟子' },
+            { op: 'replace', path: '/第一章/阶段', value: '已获得临时身份' },
+            { op: 'replace', path: '/第一章/当前事件', value: 'completed' },
+            { op: 'replace', path: '/第一章/已完成事件', value: [...chapter.已完成事件, eventId] },
+            { op: 'replace', path: '/长生局/目标', value: '在外门站稳脚跟，查明测灵石五行残响的来源' },
+            {
+              op: 'replace', path: '/长生局/线索', value: [{
+                id: 'spirit-stone-fivefold-echo',
+                标题: '测灵石中的五行残响',
+                详情: '太虚子遮掩灵根时，测灵石内部回应了不属于当代阵纹的五行轮转。',
+              }],
+            },
+            {
+              op: 'replace', path: '/任务/enter-taixu', value: {
+                标题: '叩问太虚',
+                状态: 'completed',
+                描述: '楚霁寒以水灵根散修身份通过入门试炼，取得外门记名弟子玉牌。',
+              },
+            },
+            {
+              op: 'insert', path: '/任务/outer-sect-foothold', value: {
+                标题: '外门藏锋',
+                状态: 'active',
+                描述: '在外门建立可信身份，同时追查测灵石中的五行残响。',
+              },
+            },
+          ],
+          result: { ok: true, eventId, nextEvent: 'completed' },
+        };
+      }
+    }
+    return { result: { ok: false, code: 'taixu_action_unknown' } };
   },
 
   executeAgentTool({ toolName, arguments: args, workspace }) {

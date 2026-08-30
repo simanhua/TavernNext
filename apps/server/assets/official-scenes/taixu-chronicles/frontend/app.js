@@ -57,7 +57,7 @@ const themeOptions = [
 ];
 
 function themePicker(theme) {
-  return `<div class="tx-themes" role="group" aria-label="主题皮肤">${themeOptions.map(([id, label]) => `<button type="button" data-theme="${id}" class="${theme === id ? 'active' : ''}" aria-pressed="${theme === id}"><i></i>${label}</button>`).join('')}</div>`;
+  return `<div class="tx-themes" role="group" aria-label="主题皮肤">${themeOptions.map(([id, label]) => `<button type="button" data-theme="${id}" class="${theme === id ? 'active' : ''}" aria-label="${label}主题" aria-pressed="${theme === id}"><i></i>${label}</button>`).join('')}</div>`;
 }
 
 const openingCards = [
@@ -65,6 +65,15 @@ const openingCards = [
   ['market-red-thread', '坊市红线', '命数初显', '青石坊市擦肩而过，看见只有彼此可见的红线。'],
   ['traveling-companion', '同路问山', '已有羁绊', '同行三月，在太虚山门前迎来真正的考验。'],
 ];
+
+const chapterEvents = {
+  'water-root-test': { eyebrow: '入门试炼 · 第一关', title: '水灵根测试', description: '踏上问心坪，将手按上测灵石。石中阵纹会判断楚霁寒对外显露的灵根。', action: '接受测灵石检验' },
+  'concealment-check': { eyebrow: '灵光将起', title: '藏拙判定', description: '混沌灵根引发了极淡的五行残响。必须在执事察觉前把异象压回水色。', action: '收束五行灵息' },
+  'taixuzi-first-spend': { eyebrow: '戒中传音', title: '太虚子第一次消耗魂力', description: '旧阵纹仍在回应混沌气息。太虚子可以用残魂之力遮去最后一层痕迹。', action: '请太虚子遮掩残响' },
+  'meet-talent': { eyebrow: '丹阁来客', title: '与天骄相遇', description: '丹阁真传沈寒棠停在测灵石旁。她似乎注意到了那一瞬不合常理的稳定。', action: '平静回应沈寒棠' },
+  'first-clue': { eyebrow: '石中旧痕', title: '第一条长生局线索', description: '测灵石边缘剥落了一枚碎屑，其内五行轮转的手法与太虚子的记忆同源。', action: '收起碎屑并领取玉牌' },
+  completed: { eyebrow: '第一章完成', title: '山门留名', description: '楚霁寒取得外门记名弟子身份。真正的调查，将从这块不起眼的玉牌开始。', action: '' },
+};
 
 async function renderSetup(root, sdk) {
   const personas = await sdk.setup.listPersonas();
@@ -156,20 +165,33 @@ function mapMarkup(state) {
   return `<section class="tx-module tx-map-module"><header><span>NINE PROVINCES</span><h1>九州舆图</h1><p>当前行迹 · ${esc(location)}</p></header><div class="tx-region-grid">${regions.map((region, index) => `<article class="${region.已解锁 ? '' : 'locked'}"><span>${String(index + 1).padStart(2, '0')}</span><h2>${esc(region.名称)}</h2><p>${esc(region.描述)}</p><small>${region.已解锁 ? '已录入行迹' : '云深不知处'}</small></article>`).join('')}</div></section>`;
 }
 
-function storyMarkup(detail) {
-  return `<section class="tx-story"><header><div><small>当前篇章</small><strong>${esc(detail.conversation.title)}</strong></div><span id="tx-generation">灵台清明</span></header><div class="tx-messages">${detail.messages.map((message) => `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div><div class="tx-choices"><button type="button" data-choice="先观察四周，不急着开口。"><span>01</span>静观其变</button><button type="button" data-choice="询问太虚仙宗的方向与开山试炼。"><span>02</span>问路太虚</button><button type="button" data-choice="留意楚霁寒手上的青铜古戒。"><span>03</span>观察古戒</button></div><form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
+function chapterEventMarkup(state) {
+  const chapter = record(state.第一章);
+  const eventId = chapter.当前事件 || 'completed';
+  const event = chapterEvents[eventId] ?? chapterEvents.completed;
+  return `<section class="tx-chapter-event" data-chapter-event="${esc(eventId)}"><div><small>${esc(event.eyebrow)}</small><strong>${esc(event.title)}</strong><p>${esc(event.description)}</p></div><span>${(chapter.已完成事件 ?? []).length}/5</span>${event.action === '' ? '<b>临时身份已取得</b>' : `<button type="button" data-run-chapter-event="${esc(eventId)}">${esc(event.action)} <i>→</i></button>`}</section>`;
+}
+
+function storyMarkup(detail, state) {
+  return `<section class="tx-story"><header><div><small>当前篇章</small><strong>${esc(detail.conversation.title)}</strong></div><span id="tx-generation">灵台清明</span></header><div class="tx-messages">${detail.messages.map((message) => `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}<div class="tx-choices"><button type="button" data-choice="先观察四周，不急着开口。"><span>01</span>静观其变</button><button type="button" data-choice="询问太虚仙宗的方向与开山试炼。"><span>02</span>问路太虚</button><button type="button" data-choice="留意楚霁寒手上的青铜古戒。"><span>03</span>观察古戒</button></div><form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
 }
 
 async function renderWorkspace(root, sdk) {
   const [detail, stateRow] = await Promise.all([sdk.messages.list(), sdk.state.get()]);
   const state = stateRow.value; const theme = record(state.界面).主题 || 'xuanqing';
   const background = sdk.scene.assetUrl('content/background.png'); const portrait = sdk.scene.assetUrl('content/character.png');
-  const center = workspaceMode === 'fate' ? fateMarkup(state) : workspaceMode === 'clues' ? cluesMarkup(state) : workspaceMode === 'map' ? mapMarkup(state) : storyMarkup(detail);
+  const center = workspaceMode === 'fate' ? fateMarkup(state) : workspaceMode === 'clues' ? cluesMarkup(state) : workspaceMode === 'map' ? mapMarkup(state) : storyMarkup(detail, state);
   root.innerHTML = `<main class="tx-workspace theme-${esc(theme)}" style="--tx-bg:url('${background}')"><div class="tx-backdrop"></div><header class="tx-header"><a href="/"><span class="tx-seal">太</span><div><strong>太虚问道</strong><small>TAIXU CHRONICLES</small></div></a><div class="tx-chapter"><span>${esc(record(state.世界).章节)}</span><i></i><strong>${esc(record(state.世界).地点)}</strong></div>${themePicker(theme)}</header><div class="tx-layout">${characterPanel(state, portrait)}${center}${statusPanel(state)}</div></main>`;
   mountMessageViews(root, detail.messages);
   root.querySelectorAll('[data-mode]').forEach((button) => { button.onclick = () => { workspaceMode = button.dataset.mode; void renderWorkspace(root, sdk); }; });
   root.querySelectorAll('[data-theme]').forEach((button) => { button.onclick = async () => { await sdk.scene.action({ type: 'set-theme', theme: button.dataset.theme }); await renderWorkspace(root, sdk); }; });
   root.querySelectorAll('[data-choice]').forEach((button) => { button.onclick = () => { const draft = root.querySelector('#tx-draft'); if (draft) { draft.value = button.dataset.choice; draft.focus(); } }; });
+  root.querySelector('[data-run-chapter-event]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await sdk.scene.action({ type: 'chapter-event', eventId: button.dataset.runChapterEvent }); }
+    finally { await renderWorkspace(root, sdk); }
+  });
   const composer = root.querySelector('.tx-composer');
   if (composer) composer.onsubmit = async (event) => { event.preventDefault(); const draft = root.querySelector('#tx-draft'); const text = draft.value.trim(); if (!text) return; draft.value = ''; await sdk.messages.send(text); await renderWorkspace(root, sdk); };
   root.querySelector('[data-stop]')?.addEventListener('click', () => sdk.messages.stop());

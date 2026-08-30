@@ -1,7 +1,7 @@
 {
   "id": "018f2000-0000-7000-8000-000000000003",
   "slug": "taixu-chronicles",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "太虚问道",
   "summary": "与楚霁寒同行，藏锋入宗，在九州修行中追索万年前的长生局。",
   "description": "由楚霁寒角色卡转化的官方 TavernNext 修仙 Scene。每个存档拥有独立的境界、太虚子魂力、关系、任务、线索与九州地图状态。",
@@ -9,7 +9,7 @@
   "minimumTavernNextVersion": "1.0.0",
   "sceneSdkVersion": 2,
   "frontendEntry": "frontend/app.js",
-  "frontendStyles": ["frontend/styles.css", "frontend/themes.css"],
+  "frontendStyles": ["frontend/styles.css", "frontend/themes.css", "frontend/chapter.css"],
   "serverEntry": "server/index.mjs",
   "coverPath": "content/character.png",
   "backingCharacterPath": "content/character.png",
@@ -35,7 +35,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": false,
-    "required": ["世界", "楚霁寒", "太虚子", "长生局", "关系", "任务", "地图", "界面"],
+    "required": ["世界", "楚霁寒", "太虚子", "第一章", "长生局", "关系", "任务", "地图", "界面"],
     "properties": {
       "世界": {
         "type": "object", "additionalProperties": false,
@@ -76,6 +76,16 @@
           "状态": { "type": "string" }, "魂力": { "type": "number", "minimum": 0, "maximum": 100 },
           "可接管次数": { "type": "integer", "minimum": 0 }, "沉睡至": { "type": "string" },
           "还魂丹进度": { "type": "number", "minimum": 0, "maximum": 100 }
+        }
+      },
+      "第一章": {
+        "type": "object", "additionalProperties": false,
+        "required": ["阶段", "当前事件", "已完成事件", "藏拙判定"],
+        "properties": {
+          "阶段": { "type": "string" },
+          "当前事件": { "type": "string" },
+          "已完成事件": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "藏拙判定": { "type": "string" }
         }
       },
       "长生局": {
@@ -167,6 +177,7 @@
     "frontend/app.js",
     "frontend/styles.css",
     "frontend/themes.css",
+    "frontend/chapter.css",
     "server/index.mjs",
     "content/initial-state.json",
     "content/character.png",
