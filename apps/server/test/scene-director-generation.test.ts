@@ -551,6 +551,32 @@ describe('per-Save Pi Scene Director', () => {
     });
   });
 
+  it('promotes an enabled SUOT preset request into a final player-visible UI contract', async () => {
+    const contexts: Context[] = [];
+    const seeded = await context(() => completedRuntime(['Reply with generated choices'], contexts));
+    expect(seeded.repositories.saveAgentConfigurations.update(seeded.configuration.id, 0, {
+      settings: {
+        prompts: [{
+          identifier: 'choices', role: 'system',
+          content: 'End with <SUOT>\n1. first action\n2. second action\n</SUOT>.',
+        }],
+        prompt_order: [{
+          character_id: seeded.character.id,
+          order: [{ identifier: 'choices', enabled: true }],
+        }],
+      },
+    }).ok).toBe(true);
+
+    expect(parse((await generate(seeded.app, 0)).payload).at(-1)).toEqual({
+      event: 'completed', data: { finishReason: 'stop' },
+    });
+    const system = contexts[0]?.systemPrompt ?? '';
+    expect(system).toContain('explicitly configured player-visible UI blocks');
+    expect(system).toContain('[TavernNext player-visible action option contract]');
+    expect(system).toContain('exactly seven concise, context-specific actions');
+    expect(system).toContain('Put nothing after </SUOT>');
+  });
+
   it('tiers activated Worldbook rules to about half of the Agent prompt while keeping deferred lore queryable', async () => {
     const contexts: Context[] = [];
     const runtime = oneToolRuntime(contexts, 'world_query', { query: 'TIERED_RULE_6', limit: 4 }, '分级规则查询完成。');

@@ -1,0 +1,15 @@
+.tx-choices {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.tx-choices button {
+  align-items: flex-start;
+  min-width: 0;
+  text-align: left;
+  line-height: 1.5;
+}
+
+.tx-choices span {
+  flex: 0 0 auto;
+  margin-top: .18em;
+}

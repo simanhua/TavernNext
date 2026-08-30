@@ -1,3 +1,9 @@
+import {
+  renderTaixuActionOptions,
+  stripTaixuActionOptions,
+  taixuActionOptionsForMessages,
+} from './action-options.mjs?v=1.3.3';
+
 let generationCleanup;
 let workspaceMode = 'story';
 let generationWasBusy = false;
@@ -33,10 +39,12 @@ export function renderSceneView({ root, block }) {
 function messageBody(message) {
   const variant = activeVariant(message);
   const document = variant?.document;
-  if (!Array.isArray(document?.blocks)) return textMarkup(variant?.content ?? message.content ?? '');
+  if (!Array.isArray(document?.blocks)) {
+    return textMarkup(stripTaixuActionOptions(variant?.content ?? message.content ?? ''));
+  }
   return document.blocks.map((block, index) => block.type === 'scene-view'
     ? `<div data-scene-view="${index}"></div>`
-    : textMarkup(block.content ?? '')).join('');
+    : textMarkup(stripTaixuActionOptions(block.content ?? ''))).join('');
 }
 
 function playerOperationMarkup(operation) {
@@ -78,6 +86,18 @@ const chapterEvents = {
   'first-clue': { eyebrow: '石中旧痕', title: '第一条长生局线索', description: '测灵石边缘剥落了一枚碎屑，其内五行轮转的手法与太虚子的记忆同源。', action: '收起碎屑并领取玉牌' },
   completed: { eyebrow: '第一章完成', title: '山门留名', description: '楚霁寒取得外门记名弟子身份。真正的调查，将从这块不起眼的玉牌开始。', action: '' },
 };
+
+const fallbackActionOptions = [
+  '先观察四周，不急着开口。',
+  '询问太虚仙宗的方向与开山试炼。',
+  '留意楚霁寒手上的青铜古戒。',
+];
+
+function actionOptionsMarkup(messages) {
+  const generated = taixuActionOptionsForMessages(messages);
+  const options = generated.length > 0 ? generated : fallbackActionOptions;
+  return renderTaixuActionOptions(options, generated.length > 0 ? 'generated' : 'fallback');
+}
 
 async function renderSetup(root, sdk) {
   const personas = await sdk.setup.listPersonas();
@@ -182,7 +202,7 @@ function chapterEventMarkup(state) {
 function storyMarkup(detail, state) {
   return `<section class="tx-story"><header><div><small>当前篇章</small><strong>${esc(detail.conversation.title)}</strong></div><span id="tx-generation">灵台清明</span></header><div class="tx-messages">${detail.messages.map((message) => message.playerOperation
     ? playerOperationMarkup(message.playerOperation)
-    : `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}<div class="tx-choices"><button type="button" data-choice="先观察四周，不急着开口。"><span>01</span>静观其变</button><button type="button" data-choice="询问太虚仙宗的方向与开山试炼。"><span>02</span>问路太虚</button><button type="button" data-choice="留意楚霁寒手上的青铜古戒。"><span>03</span>观察古戒</button></div><form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
+    : `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}${actionOptionsMarkup(detail.messages)}<form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
 }
 
 async function renderWorkspace(root, sdk) {

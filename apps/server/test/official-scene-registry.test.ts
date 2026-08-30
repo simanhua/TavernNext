@@ -11,8 +11,10 @@ import {
   DESTINED_POEM_SCENE_ID,
   officialCatalog,
   SCENE_LAB_SCENE_ID,
+  TAIXU_CHRONICLES_SCENE_ID,
 } from '../src/scenes/official-package.js';
 import { upgradeInstalledOfficialScenes } from '../src/scenes/official-scene-upgrade.js';
+import { executableChatPresetSettings } from '../src/services/save-agent-configuration-service.js';
 import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 
 const directories: string[] = [];
@@ -136,6 +138,49 @@ describe('official Scene registry', () => {
     expect(repositories.presets.get(originalPresetId)).toBeDefined();
     expect(repositories.saveWorldbooks.getByConversationId(createdId)).toEqual(ownership);
     expect(repositories.worldbookEntries.get(nullCore.id)?.content).toBe('Only this Save remembers the altered rule.');
+  }, 30_000);
+
+  it('uses the promoted Taixu Save configuration as the default for new Saves', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tavernnext-taixu-preset-'));
+    directories.push(directory);
+    const database = createDatabase(join(directory, 'tavernnext.sqlite'));
+    migrateDatabase(database);
+    const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+    const app = createApp({ database, snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    apps.push(app);
+    await app.ready();
+
+    const installedResponse = await app.inject({
+      method: 'POST',
+      url: `/api/scenes/${TAIXU_CHRONICLES_SCENE_ID}/install`,
+    });
+    expect(installedResponse.statusCode).toBe(201);
+    const installed = repositories.installedScenes.get(TAIXU_CHRONICLES_SCENE_ID)!;
+    const backingPreset = repositories.presets.get(installed.backingPresetId!)!;
+    expect(backingPreset.name).toBe('夏瑾 天琴座 Beta 3.6');
+    expect(Array.isArray(backingPreset.settings.prompts) ? backingPreset.settings.prompts : []).toHaveLength(142);
+
+    const created = await app.inject({
+      method: 'POST',
+      url: `/api/scenes/${TAIXU_CHRONICLES_SCENE_ID}/conversations`,
+      payload: {
+        title: '太虚默认预设验证',
+        playerProfile: { name: '风信子', description: '测试存档' },
+        setup: {
+          opening: 'ruined-temple',
+          loreDetail: 'full',
+          relationshipMode: 'adventure-focus',
+          redThread: 'none',
+          contentMode: 'general',
+          theme: 'xuanqing',
+        },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const configuration = repositories.saveAgentConfigurations.getByConversationId(created.json().id)!;
+    expect(configuration.sourcePresetId).toBe(backingPreset.id);
+    expect(configuration.name).toBe(backingPreset.name);
+    expect(configuration.settings).toEqual(executableChatPresetSettings(backingPreset.settings, backingPreset));
   }, 30_000);
 
 
