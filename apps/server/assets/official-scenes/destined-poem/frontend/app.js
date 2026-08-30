@@ -1,5 +1,6 @@
 let root;
 import { bindActionInfoPanels, renderCombatActionInfoMessage } from './action-info.mjs?v=2.8.0';
+import { bindDestinedPoemWorldMap, renderDestinedPoemWorldMap } from './map-viewer.mjs?v=2.16.4';
 import {
   attributeAllocationPatch,
   createDestinedPoemStatusRailModel,
@@ -12,6 +13,7 @@ let activeStatusRailTab = 'status';
 let statusRailOpen = false;
 let statusRailController;
 let generationView = { status: 'idle', streamedText: '', streamedReasoning: '', error: null };
+let mapCleanup;
 
 const request = (method, args = []) => {
   const [scope, name] = method.split('.');
@@ -230,11 +232,13 @@ function bindStatusRail(state) {
 }
 
 async function renderWorkspace() {
+  mapCleanup?.();
+  mapCleanup = undefined;
   const [detail, stateRow] = await Promise.all([request('messages.list'), request('state.get')]);
   const state = stateRow.value || {};
   const tabs = [['chat', '对话'], ['quests', '任务'], ['relationships', '关系'], ['map', '地图']];
   statusRailController?.destroy();
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.8.0</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="scene-brand"><strong>命定之诗</strong><small>Destined Journey</small></div><nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${activeTab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div class="sidebar-foot">TavernNext Scene · v2.16.4</div></aside><main class="main"><header class="top"><div><strong>${esc(context.playerProfile.name)}</strong><span class="muted">${esc(detail.conversation.title)}</span></div><button type="button" id="status-rail-toggle">状态</button></header><section class="content" id="content"></section></main></div>`;
   document.querySelectorAll('[data-tab]').forEach((button) => { button.onclick = () => { activeTab = button.dataset.tab; renderWorkspace(); }; });
   bindStatusRail(state);
   const area = document.querySelector('#content');
@@ -279,7 +283,12 @@ async function renderWorkspace() {
     updateGeneration(generationView);
     return;
   }
-  const mapping = { quests: ['任务', '任务列表'], relationships: ['关系', '关系列表'], map: ['地图', '地图.标记'] };
+  if (activeTab === 'map') {
+    area.innerHTML = renderDestinedPoemWorldMap(state);
+    mapCleanup = bindDestinedPoemWorldMap(area);
+    return;
+  }
+  const mapping = { quests: ['任务', '任务列表'], relationships: ['关系', '关系列表'] };
   const [title, path] = mapping[activeTab];
   const data = valueAt(state, path, {});
   const entries = Array.isArray(data) ? data.map((value, index) => [index, value]) : Object.entries(data || {});
@@ -304,6 +313,8 @@ export async function mount(input) {
   return () => {
     statusRailController?.destroy();
     statusRailController = undefined;
+    mapCleanup?.();
+    mapCleanup = undefined;
     unsubscribeTheme();
     unsubscribeGeneration();
     root.replaceChildren();

@@ -1,7 +1,7 @@
 {
   "id": "018f2000-0000-7000-8000-000000000001",
   "slug": "destined-poem",
-  "version": "2.8.0",
+  "version": "2.16.4",
   "name": "命定之诗与黄昏之歌",
   "summary": "在阿斯塔利亚开启一段拥有独立状态、任务、关系与地图的命运旅程。",
   "description": "完整迁移自命定之诗与黄昏之歌 v4.2 的官方 TavernNext 场景。每个存档拥有隔离的消息和世界状态。",
@@ -9,7 +9,7 @@
   "minimumTavernNextVersion": "1.0.0",
   "sceneSdkVersion": 2,
   "frontendEntry": "frontend/app.js",
-  "frontendStyles": ["frontend/styles.css"],
+  "frontendStyles": ["frontend/styles.css", "frontend/map-viewer.css"],
   "serverEntry": "server/index.mjs",
   "coverPath": "content/cover.png",
   "backingCharacterPath": "content/character.png",
@@ -487,6 +487,8 @@
   "files": [
     "manifest.json",
     "frontend/app.js",
+    "frontend/map-viewer.mjs",
+    "frontend/map-viewer.css",
     "frontend/action-info.mjs",
     "frontend/status-rail.mjs",
     "frontend/styles.css",
