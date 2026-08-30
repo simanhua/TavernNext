@@ -222,7 +222,8 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
   }
   const repositories = createRepositories(database, { snapshotIntegrityKey });
   if (startup.result === 'writable') {
-    const syncOfficialPresets = options.synchronizeOfficialPresetCatalog ?? options.database === undefined;
+    const syncOfficialPresets = options.synchronizeOfficialPresetCatalog
+      ?? (process.env.NODE_ENV !== 'test' && options.database === undefined);
     if (syncOfficialPresets) database.transaction(() => synchronizeOfficialPresets(repositories));
     for (const failure of upgradeInstalledOfficialScenes(database, config.dataDir, repositories)) {
       app.log.error(failure, 'Official Scene upgrade failed; the prior installed package remains active.');
