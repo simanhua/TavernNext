@@ -87,7 +87,7 @@ export function explicitPatchFields<T extends Record<string, unknown>>(raw: unkn
   ))) as Partial<T>;
 }
 
-function rawPatch(body: unknown): unknown {
+export function rawPatch(body: unknown): unknown {
   return typeof body === 'object' && body !== null && !Array.isArray(body) && 'patch' in body
     ? (body as { patch: unknown }).patch
     : undefined;

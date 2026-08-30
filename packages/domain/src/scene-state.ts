@@ -68,7 +68,6 @@ export const SceneInitializeResultSchema = z.object({
 export const SceneBeforeGenerationResultSchema = z.object({
   statePatch: z.array(ScenePatchOperationSchema).optional(),
   promptAdditions: z.array(ScenePromptAdditionSchema).max(16).optional(),
-  worldbookEntryOverrides: z.array(WorldbookEntryOverrideSchema).max(2_048).optional(),
 }).strict();
 
 export const SceneAfterGenerationResultSchema = z.object({

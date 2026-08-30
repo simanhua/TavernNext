@@ -9,7 +9,7 @@ import {
   saveAgentConfigurationFields,
 } from '../services/save-agent-configuration-service.js';
 import { worldbookDetail, worldbookEntryDetail } from './manager-dtos.js';
-import { BookPatchSchema, EntryEditableSchema, EntryPatchSchema, ReorderSchema, explicitPatchFields } from './worldbooks.js';
+import { BookPatchSchema, EntryEditableSchema, EntryPatchSchema, ReorderSchema, explicitPatchFields, rawPatch } from './worldbooks.js';
 
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -106,12 +106,6 @@ function configurationError(error: unknown, reply: FastifyReply) {
 function ownedSaveWorldbook(repositories: Repositories, conversationId: string, worldbookId: string) {
   const ownership = repositories.saveWorldbooks.getByConversationId(conversationId);
   return ownership?.worldbookId === worldbookId ? repositories.worldbooks.get(worldbookId) : undefined;
-}
-
-function rawPatch(body: unknown): unknown {
-  return typeof body === 'object' && body !== null && !Array.isArray(body) && 'patch' in body
-    ? (body as { patch: unknown }).patch
-    : undefined;
 }
 
 export function registerSaveAgentConfigurationRoutes(

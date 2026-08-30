@@ -55,6 +55,8 @@ test('creates a Taixu Save, changes its workspace, and commits one generated sta
   await expect(scene.getByRole('heading', { name: '混沌命盘' })).toBeVisible();
   await scene.getByRole('button', { name: /浮生录/ }).click();
 
+  await expect(scene.locator('[data-chapter-event="journey-to-sect"]')).toBeVisible();
+  await scene.getByRole('button', { name: /踏上问山路/ }).click();
   await expect(scene.locator('[data-chapter-event="water-root-test"]')).toBeVisible();
   await scene.getByRole('button', { name: /接受测灵石检验/ }).click();
   await expect(scene.locator('[data-chapter-event="concealment-check"]')).toBeVisible();

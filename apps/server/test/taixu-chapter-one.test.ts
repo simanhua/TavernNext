@@ -43,7 +43,19 @@ describe('Taixu Chronicles chapter one', () => {
     const conversationId = created.json().id as string;
     const initial = await app.inject({ method: 'GET', url: `/api/conversations/${conversationId}/scene-state` });
     expect(initial.json().value).toMatchObject({
-      第一章: { 阶段: '前往太虚仙宗', 当前事件: 'water-root-test', 已完成事件: [] },
+      第一章: { 阶段: '前往太虚仙宗', 当前事件: 'journey-to-sect', 已完成事件: [] },
+    });
+
+    const journey = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversationId}/scene-actions`,
+      payload: { type: 'chapter-event', eventId: 'journey-to-sect' },
+    });
+    expect(journey.json()).toMatchObject({
+      result: { ok: true, eventId: 'journey-to-sect', nextEvent: 'water-root-test' },
+      state: { value: {
+        世界: { 地点: '太虚仙宗·山门石阶', 章节: '第一章·问山路' },
+        第一章: { 阶段: '抵达山门', 当前事件: 'water-root-test', 已完成事件: [] },
+      } },
     });
 
     const event = await app.inject({
@@ -84,6 +96,15 @@ describe('Taixu Chronicles chapter one', () => {
       } },
     });
 
+    const priorSoulChange = await app.inject({
+      method: 'PATCH', url: `/api/conversations/${conversationId}/scene-state`,
+      payload: {
+        revision: concealment.json().state.revision,
+        patch: [{ op: 'replace', path: '/太虚子/魂力', value: 70 }],
+      },
+    });
+    expect(priorSoulChange.statusCode).toBe(200);
+
     const soulSpend = await app.inject({
       method: 'POST', url: `/api/conversations/${conversationId}/scene-actions`,
       payload: { type: 'chapter-event', eventId: 'taixuzi-first-spend' },
@@ -91,7 +112,7 @@ describe('Taixu Chronicles chapter one', () => {
     expect(soulSpend.json()).toMatchObject({
       result: { ok: true, eventId: 'taixuzi-first-spend', nextEvent: 'meet-talent' },
       state: { value: {
-        太虚子: { 魂力: 64, 状态: '短暂虚弱' },
+        太虚子: { 魂力: 62, 状态: '短暂虚弱' },
         第一章: {
           当前事件: 'meet-talent',
           已完成事件: ['water-root-test', 'concealment-check', 'taixuzi-first-spend'],

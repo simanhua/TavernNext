@@ -14,7 +14,6 @@ import {
   type ProviderProfile,
   type Worldbook,
   type WorldbookEntry,
-  type WorldbookEntryOverride,
   type WorldbookRuntimeState,
   type WorldbookTimedState,
   type ScenePromptAddition,
@@ -88,7 +87,6 @@ export interface PromptSnapshotInput {
 export interface ScenePromptContext {
   state: Record<string, unknown>;
   additions: ScenePromptAddition[];
-  worldbookEntryOverrides?: WorldbookEntryOverride[];
   memoryRecall?: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus?: MemoryRecallSnapshotEntry[];
 }
@@ -662,12 +660,8 @@ function loadAggregate(
   }
   const runtimeState = runtimeStateFor(repositories, conversation.id);
   if (installedScene !== undefined) {
-    const effectiveOverrides = [
-      ...(runtimeState?.entryOverrides ?? []),
-      ...(sceneContext?.worldbookEntryOverrides ?? []),
-    ];
     for (let index = 0; index < books.length; index += 1) {
-      books[index] = applySceneWorldbookEntryOverrides(books[index]!, effectiveOverrides);
+      books[index] = applySceneWorldbookEntryOverrides(books[index]!, runtimeState?.entryOverrides ?? []);
     }
   }
 

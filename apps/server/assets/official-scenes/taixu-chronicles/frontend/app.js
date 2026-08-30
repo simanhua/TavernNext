@@ -67,6 +67,7 @@ const openingCards = [
 ];
 
 const chapterEvents = {
+  'journey-to-sect': { eyebrow: '第一章 · 序', title: '前往太虚仙宗', description: '晨雾漫过古道尽头，太虚山门已在云间显出轮廓。走完最后一段问山路，才算真正踏入棋局。', action: '踏上问山路' },
   'water-root-test': { eyebrow: '入门试炼 · 第一关', title: '水灵根测试', description: '踏上问心坪，将手按上测灵石。石中阵纹会判断楚霁寒对外显露的灵根。', action: '接受测灵石检验' },
   'concealment-check': { eyebrow: '灵光将起', title: '藏拙判定', description: '混沌灵根引发了极淡的五行残响。必须在执事察觉前把异象压回水色。', action: '收束五行灵息' },
   'taixuzi-first-spend': { eyebrow: '戒中传音', title: '太虚子第一次消耗魂力', description: '旧阵纹仍在回应混沌气息。太虚子可以用残魂之力遮去最后一层痕迹。', action: '请太虚子遮掩残响' },

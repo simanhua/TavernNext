@@ -659,7 +659,6 @@ export function createGenerationService(options: {
             scenePromptContext = {
               state: stagedState,
               additions: before.promptAdditions ?? [],
-              worldbookEntryOverrides: before.worldbookEntryOverrides ?? [],
               memoryRecall,
               memoryQueryCorpus,
             };

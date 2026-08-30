@@ -152,6 +152,17 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
       if (eventId !== chapter.当前事件) {
         return { result: { ok: false, code: 'chapter_event_out_of_order', expected: chapter.当前事件 } };
       }
+      if (eventId === 'journey-to-sect') {
+        return {
+          statePatch: [
+            { op: 'replace', path: '/世界/地点', value: '太虚仙宗·山门石阶' },
+            { op: 'replace', path: '/世界/章节', value: '第一章·问山路' },
+            { op: 'replace', path: '/第一章/阶段', value: '抵达山门' },
+            { op: 'replace', path: '/第一章/当前事件', value: 'water-root-test' },
+          ],
+          result: { ok: true, eventId, nextEvent: 'water-root-test' },
+        };
+      }
       if (eventId === 'water-root-test') {
         return {
           statePatch: [
@@ -176,9 +187,10 @@ Scene State 是世界时间、楚霁寒境界、太虚子魂力、关系、任�
         };
       }
       if (eventId === 'taixuzi-first-spend') {
+        const soulAfterSpend = Math.max(0, finite(record(record(state).太虚子).魂力) - 8);
         return {
           statePatch: [
-            { op: 'replace', path: '/太虚子/魂力', value: 64 },
+            { op: 'replace', path: '/太虚子/魂力', value: soulAfterSpend },
             { op: 'replace', path: '/太虚子/状态', value: '短暂虚弱' },
             { op: 'replace', path: '/第一章/当前事件', value: 'meet-talent' },
             { op: 'replace', path: '/第一章/已完成事件', value: [...chapter.已完成事件, eventId] },
