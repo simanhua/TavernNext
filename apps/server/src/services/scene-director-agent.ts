@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Agent, type AgentEvent, type AgentTool } from '@earendil-works/pi-agent-core';
+import { Agent, type AgentEvent, type AgentTool, type ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, Context, Message, Usage } from '@earendil-works/pi-ai';
 import type {
   AgentRun,
@@ -461,6 +461,15 @@ const samplerKeys = [
   'repetition_penalty', 'min_tokens',
 ] as const;
 
+const thinkingLevels = new Set<ThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+function configuredThinkingLevel(value: unknown): ThinkingLevel {
+  if (value === 'none' || value === 'disabled') return 'off';
+  return typeof value === 'string' && thinkingLevels.has(value as ThinkingLevel)
+    ? value as ThinkingLevel
+    : 'off';
+}
+
 function samplingParameters(
   configuration: SaveAgentConfiguration,
   payload: PromptSnapshotPayload,
@@ -666,6 +675,7 @@ export class SceneDirectorExecution {
     runtime: PiAgentModelRuntime;
     responseLimit: number;
     temperature?: number;
+    thinkingLevel: ThinkingLevel;
     sampling: Record<string, unknown>;
     supportedSampling: Record<string, unknown>;
     tools: AgentTool[];
@@ -726,6 +736,7 @@ export class SceneDirectorExecution {
       Math.max(1, Math.floor(finite(frozenConfiguration.settings.max_tokens) ?? frozenConversation.maxResponseTokens)),
     );
     const temperature = finite(frozenConfiguration.settings.temperature);
+    const thinkingLevel = configuredThinkingLevel(frozenConfiguration.settings.reasoning_effort);
     const sampling = samplingParameters(frozenConfiguration, input.payload);
     const supportedSampling = samplingForApi(runtime.model.api, runtime.model.provider, sampling);
     this.workspace = new TurnWorkspace({
@@ -763,6 +774,7 @@ export class SceneDirectorExecution {
       runtime,
       responseLimit,
       ...(temperature === undefined ? {} : { temperature }),
+      thinkingLevel,
       sampling,
       supportedSampling,
       tools,
@@ -801,6 +813,7 @@ export class SceneDirectorExecution {
         model: this.plan.runtime.model,
         responseLimit: this.plan.responseLimit,
         temperature: this.plan.temperature,
+        thinkingLevel: this.plan.thinkingLevel,
         samplingParams: this.plan.supportedSampling,
         payloadSampling: applySamplingPayload(
           {},
@@ -892,6 +905,7 @@ export class SceneDirectorExecution {
           initialState: {
             systemPrompt: this.plan.systemPrompt,
             model: runtime.model,
+            thinkingLevel: this.plan.thinkingLevel,
             tools: this.plan.tools,
             messages: this.plan.messages,
           },

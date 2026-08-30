@@ -13,6 +13,7 @@
     "order": [{ "identifier": "main", "enabled": true }]
   }],
   "temperature": 0.82,
+  "reasoning_effort": "max",
   "top_p": 0.92,
   "tokenizer": 0,
   "max_tokens": 8192

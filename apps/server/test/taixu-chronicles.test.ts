@@ -39,6 +39,7 @@ describe('Taixu Chronicles Scene Package', () => {
       '修仙状态栏', '古风多人状态栏', '现代状态栏',
     ]));
     expect(repositories.presets.get(installed.backingPresetId!)?.name).toBe('太虚问道 Scene 生成配置');
+    expect(repositories.presets.get(installed.backingPresetId!)?.settings.reasoning_effort).toBe('max');
 
     const created = await app.inject({
       method: 'POST', url: `/api/scenes/${TAIXU_CHRONICLES_SCENE_ID}/conversations`,

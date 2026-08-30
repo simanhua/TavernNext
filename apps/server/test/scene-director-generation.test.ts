@@ -95,6 +95,7 @@ function completedRuntime(
           options: {
             temperature: options?.temperature,
             maxTokens: options?.maxTokens,
+            reasoning: options?.reasoning,
             samplingParams: options?.samplingParams,
           },
           payload: await options?.onPayload?.({ model: runtimeModel.id, messages: [] }, runtimeModel),
@@ -374,6 +375,7 @@ describe('per-Save Pi Scene Director', () => {
       settings: {
         temperature: 0.4,
         max_tokens: 64,
+        reasoning_effort: 'max',
         top_p: 0.8,
         top_k: 40,
         min_p: 0.05,
@@ -430,6 +432,7 @@ describe('per-Save Pi Scene Director', () => {
       options: {
         temperature: 0.4,
         maxTokens: 64,
+        reasoning: 'max',
         samplingParams: {
           top_p: 0.8, top_k: 40, min_p: 0.05, frequency_penalty: 0.2, presence_penalty: 0.1,
           seed: 1234,
