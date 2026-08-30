@@ -30,7 +30,14 @@ describe('Taixu Chronicles Scene Package', () => {
 
     expect((await app.inject({ method: 'POST', url: `/api/scenes/${TAIXU_CHRONICLES_SCENE_ID}/install` })).statusCode).toBe(201);
     const installed = repositories.installedScenes.get(TAIXU_CHRONICLES_SCENE_ID)!;
-    expect(repositories.characters.get(installed.backingCharacterId)?.name).toBe('楚霁寒（衍生）');
+    const backingCharacter = repositories.characters.get(installed.backingCharacterId)!;
+    expect(backingCharacter.name).toBe('楚霁寒（衍生）');
+    expect(backingCharacter.alternateGreetings).toEqual([]);
+    expect(repositories.extensionAssets.listByOwner('character', backingCharacter.id)).toEqual([]);
+    const templateEntries = repositories.worldbookEntries.listByWorldbookId(backingCharacter.worldbookId!);
+    expect(templateEntries.map((entry) => entry.comment)).not.toEqual(expect.arrayContaining([
+      '修仙状态栏', '古风多人状态栏', '现代状态栏',
+    ]));
     expect(repositories.presets.get(installed.backingPresetId!)?.name).toBe('太虚问道 Scene 生成配置');
 
     const created = await app.inject({
@@ -100,7 +107,7 @@ describe('Taixu Chronicles Scene Package', () => {
     expect(enabled.get('主线（跑主线再开）')).toBe(true);
     expect(enabled.get('第二个设定:姻缘红线')).toBe(true);
     expect(enabled.get('两百年后的char')).toBe(false);
-    expect(enabled.get('古风多人状态栏')).toBe(false);
+    expect(enabled.get('古风多人状态栏')).toBeUndefined();
     expect(secondEnabled.get('九州地域图（详细版）')).toBe(true);
     expect(secondEnabled.get('九州地域图（简洁版）')).toBe(false);
     expect(secondEnabled.get('nsfw（用时开）')).toBe(true);
