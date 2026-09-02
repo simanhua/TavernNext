@@ -11,6 +11,7 @@ import {
   type SceneManifest,
   roleplayDocumentFromMarkdown,
   roleplayDocumentPlainText,
+  replaceRoleplayActionOptions,
   type RoleplayDocument,
 } from '@tavernnext/domain';
 import { ProviderError } from '@tavernnext/provider-openai-compatible';
@@ -51,6 +52,7 @@ import {
   queryFrozenMemory,
   type SaveMemoryService,
 } from './save-memory-service.js';
+import { generatePostNarrativeActionOptions } from './action-options-runtime.js';
 
 interface ActiveGeneration {
   generationId: string;
@@ -812,6 +814,59 @@ export function createGenerationService(options: {
         conversationId, conversationRevision: conversation.revision,
         mode: 'normal', userText: last.content, reuseLastUser: true,
       }, signal);
+    },
+    async regenerateActionOptions(input, signal) {
+      if (activeByConversation.has(input.conversationId)) return { ok: false, reason: 'generation_active' };
+      const operationId = randomUUID();
+      activeByConversation.set(input.conversationId, operationId);
+      try {
+        const conversation = repositories.conversations.get(input.conversationId);
+        const message = repositories.messages.get(input.messageId);
+        const variant = repositories.messageVariants.get(input.variantId);
+        if (conversation === undefined || message === undefined || variant === undefined) {
+          return { ok: false, reason: 'not_found' };
+        }
+        const messages = repositories.messages.listByConversationId(conversation.id);
+        if (message.conversationId !== conversation.id || message.role !== 'assistant'
+          || messages.at(-1)?.id !== message.id || message.activeVariantId !== variant.id
+          || variant.messageId !== message.id) {
+          return { ok: false, reason: 'invalid_target' };
+        }
+        if (variant.revision !== input.variantRevision) return { ok: false, reason: 'conflict' };
+        const providerId = repositories.globalGenerationConfig.get().providerId;
+        const provider = providerId === null ? undefined : repositories.providerProfiles.get(providerId);
+        if (provider === undefined) return { ok: false, reason: 'provider_not_configured' };
+        if (!provider.toolCalls || options.piAgentRuntimeFactory === undefined) {
+          return { ok: false, reason: 'model_not_agent_capable' };
+        }
+        const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
+        const priorPlayer = [...messages.slice(0, messageIndex)].reverse().find((candidate) => candidate.role === 'user');
+        const sceneState = conversation.sceneId === undefined
+          ? {}
+          : sceneService?.state(conversation.id)?.value ?? {};
+        const generated = await generatePostNarrativeActionOptions({
+          runtime: options.piAgentRuntimeFactory(provider),
+          narrative: roleplayDocumentPlainText(variant.document),
+          playerInput: priorPlayer?.content ?? '',
+          sceneState,
+          signal,
+        });
+        if (!generated.ok) return { ok: false, reason: 'action_options_generation_failed' };
+        const document = replaceRoleplayActionOptions(variant.document, generated.options);
+        const updated = repositories.messageVariants.update(variant.id, variant.revision, {
+          document,
+          content: roleplayDocumentPlainText(document),
+        });
+        return updated.ok
+          ? { ok: true, variant: updated.value }
+          : { ok: false, reason: updated.reason === 'not_found' ? 'not_found' : 'conflict' };
+      } catch {
+        return { ok: false, reason: 'action_options_generation_failed' };
+      } finally {
+        if (activeByConversation.get(input.conversationId) === operationId) {
+          activeByConversation.delete(input.conversationId);
+        }
+      }
     },
     cancel(generationId) {
       const active = activeById.get(generationId);

@@ -48,6 +48,36 @@ const usage = (): Usage => ({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
 
+const generatedActionOptions = [
+  { kind: 'smooth', text: '观察档案馆入口。' },
+  { kind: 'smooth', text: '询问守卫当前局势。' },
+  { kind: 'engage', text: '正面回应守卫的警告。' },
+  { kind: 'advance', text: '在黎明进入档案馆。' },
+  { kind: 'mainline', text: '追查命运丝线的来源。' },
+  { kind: 'twist', text: '与突然现身的对手合作。' },
+  { kind: 'dark', text: '打开被封禁的地下书库。' },
+];
+
+function actionOptionsTurn() {
+  const events = createAssistantMessageEventStream();
+  queueMicrotask(() => {
+    const toolCall = {
+      type: 'toolCall' as const, id: 'options-1', name: 'action_options_stage',
+      arguments: { options: generatedActionOptions },
+    };
+    const partial: AssistantMessage = {
+      role: 'assistant', content: [toolCall], api: model.api, provider: model.provider,
+      model: model.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
+    };
+    events.push({ type: 'start', partial });
+    events.push({ type: 'toolcall_end', contentIndex: 0, toolCall, partial });
+    const message: AssistantMessage = { ...partial, stopReason: 'toolUse' };
+    events.push({ type: 'done', reason: 'toolUse', message });
+    events.end(message);
+  });
+  return events;
+}
+
 function runtime(contexts: Context[]): PiAgentModelRuntime {
   let turn = 0;
   return {
@@ -62,6 +92,7 @@ function runtime(contexts: Context[]): PiAgentModelRuntime {
           })),
         }),
       });
+      if (context.systemPrompt?.includes('post-narrative Action Options planner')) return actionOptionsTurn();
       const events = createAssistantMessageEventStream();
       queueMicrotask(() => {
         if (turn++ === 0) {
@@ -114,6 +145,7 @@ function viewRuntime(contexts: Context[]): PiAgentModelRuntime {
           })),
         }),
       });
+      if (context.systemPrompt?.includes('post-narrative Action Options planner')) return actionOptionsTurn();
       const events = createAssistantMessageEventStream();
       queueMicrotask(() => {
         if (turn++ === 0) {
@@ -230,6 +262,7 @@ describe('bundled Scene Agent tools', () => {
         type: 'scene-view', kind: 'status', rendererId: 'destined-poem-status-v1',
         props: expect.objectContaining({ fate: 3, attributes: expect.any(Object) }),
       }),
+      expect.objectContaining({ type: 'action-options', options: expect.any(Array) }),
     ]);
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toEqual([
       'save_state_read', 'world_query', 'memory_query', 'deterministic_check', 'scene_patch_stage',
@@ -486,13 +519,18 @@ describe('bundled Scene Agent tools', () => {
         },
       }),
       { type: 'markdown', content: '局势仍在变化。' },
+      expect.objectContaining({ type: 'action-options', options: expect.any(Array) }),
     ]);
     expect(repositories.agentRuns.listByConversationId(conversation.id).map((run) => run.activities)).toEqual([
       [expect.objectContaining({
         kind: 'scene-action', label: 'Performing a Scene action', status: 'completed',
+      }), expect.objectContaining({
+        kind: 'stage-options', label: 'Generating Action Options', status: 'completed',
       })],
       [expect.objectContaining({
         kind: 'stage-view', label: 'Preparing a Scene view', status: 'completed',
+      }), expect.objectContaining({
+        kind: 'stage-options', label: 'Generating Action Options', status: 'completed',
       })],
     ]);
     expect(JSON.stringify(repositories.agentRuns.listByConversationId(conversation.id)))
@@ -518,21 +556,23 @@ describe('bundled Scene Agent tools', () => {
       host: { call: async () => ({}) } as unknown as SceneModuleHost,
       conversation: repositories.conversations.get(conversation.id)!,
     })).toBeUndefined();
-    expect(() => createSceneAgentToolFactory({
-      scene: {
-        ...official,
-        manifest: {
-          ...official.manifest,
-          agentTools: [{
-            name: 'scene_view_stage',
-            description: 'Must remain reserved for the platform.',
-            parameters: { type: 'object' },
-          }],
+    for (const name of ['scene_view_stage', 'action_options_stage']) {
+      expect(() => createSceneAgentToolFactory({
+        scene: {
+          ...official,
+          manifest: {
+            ...official.manifest,
+            agentTools: [{
+              name,
+              description: 'Must remain reserved for the platform.',
+              parameters: { type: 'object' },
+            }],
+          },
         },
-      },
-      host: { call: async () => ({}) } as unknown as SceneModuleHost,
-      conversation: repositories.conversations.get(conversation.id)!,
-    })).toThrow('scene_agent_tool_name_reserved');
+        host: { call: async () => ({}) } as unknown as SceneModuleHost,
+        conversation: repositories.conversations.get(conversation.id)!,
+      })).toThrow('scene_agent_tool_name_reserved');
+    }
 
     const partialWorkspace = new TurnWorkspace({
       generationId: randomUUID(),

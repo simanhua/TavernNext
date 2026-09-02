@@ -26,6 +26,7 @@ async function createTaixuSave(activeGeneration: boolean | (() => boolean) = fal
   const activeRuntime: SaveAgentRuntime = {
     start: async () => ({ ok: false, reason: 'generation_active' }),
     triggerLastUser: async () => ({ ok: false, reason: 'generation_active' }),
+    regenerateActionOptions: async () => ({ ok: false, reason: 'generation_active' }),
     cancel: () => false,
     isConversationActive: typeof activeGeneration === 'function' ? activeGeneration : () => activeGeneration,
   };

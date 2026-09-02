@@ -1,4 +1,12 @@
-export function RuntimePanelCloseButton({ label, text }: { label: string; text: string }) {
+export function RuntimePanelCloseButton({
+  label,
+  text,
+  onClose,
+}: {
+  label: string;
+  text: string;
+  onClose?(): void;
+}) {
   return (
     <button
       type="button"
@@ -8,6 +16,10 @@ export function RuntimePanelCloseButton({ label, text }: { label: string; text: 
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
+        if (onClose !== undefined) {
+          onClose();
+          return;
+        }
         const panel = event.currentTarget.closest('details');
         if (panel === null) return;
         panel.open = false;

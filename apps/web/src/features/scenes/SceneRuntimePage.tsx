@@ -22,9 +22,8 @@ import {
   type SceneRuntimeSignal,
 } from './scene-window.js';
 import { mountSceneStatusRail } from './status-rail.js';
-import { SaveAgentConfigurationPanel } from './SaveAgentConfigurationPanel.js';
-import { AgentRunInspector } from '../chat/AgentRunInspector.js';
-import { MemoryCenter } from './MemoryCenter.js';
+import { mountSpeechInput } from '../input/speech-input.js';
+import { SceneRuntimeTools } from './SceneRuntimeTools.js';
 import { SceneReferenceTools } from './SceneReferenceTools.js';
 import { SceneReferenceViewer } from './SceneReferenceViewer.js';
 
@@ -258,6 +257,19 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
         },
         regenerate: () => generate('regenerate'),
         swipe: () => generate('swipe'),
+        regenerateActionOptions: async () => {
+          const { message } = tailAssistant();
+          if (message.activeVariantId === null) throw new SceneSdkError('assistant_active_variant_missing', 409);
+          const variant = message.variants.find((candidate) => candidate.id === message.activeVariantId);
+          if (variant === undefined) throw new SceneSdkError('assistant_active_variant_invalid', 409);
+          try {
+            const result = await api.regenerateActionOptions(conversationId!, message, variant);
+            await refresh();
+            return result;
+          } catch (error) {
+            return refreshAfterConflict(error);
+          }
+        },
       },
       state: {
         get: async () => {
@@ -314,6 +326,7 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
       },
       ui: {
         statusRail: { mount: mountSceneStatusRail },
+        speechInput: { mount: mountSpeechInput },
         referenceViewer: {
           open: (kind) => {
             requireWorkspace();
@@ -403,9 +416,7 @@ export function SceneRuntimePage({ mode }: { mode: SceneRuntimeMode }) {
               onClose={() => setReferenceKind(undefined)}
             />
           )}
-          <SaveAgentConfigurationPanel conversationId={conversationId} />
-          <MemoryCenter conversationId={conversationId} />
-          <AgentRunInspector conversationId={conversationId} />
+          <SceneRuntimeTools conversationId={conversationId} />
         </>
         : null}
       <div ref={mountRef} className="scene-runtime-root" />

@@ -9,7 +9,15 @@ function settingsText(configuration: SaveAgentConfiguration): string {
   return JSON.stringify(configuration.settings, null, 2);
 }
 
-export function SaveAgentConfigurationPanel({ conversationId }: { conversationId: string }) {
+export function SaveAgentConfigurationPanel({
+  conversationId,
+  open,
+  onClose,
+}: {
+  conversationId: string;
+  open?: boolean;
+  onClose?(): void;
+}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const configuration = useQuery({
@@ -61,9 +69,9 @@ export function SaveAgentConfigurationPanel({ conversationId }: { conversationId
   const mutationError = save.error ?? replace.error ?? sync.error;
 
   return (
-    <details className="scene-agent-configuration">
-      <summary><RuntimePanelIcon kind="configuration" /><span className="runtime-panel-title">{t('Save Agent configuration')}</span></summary>
-      <RuntimePanelCloseButton label={t('Close Save Agent configuration')} text={t('Close')} />
+    <details className="scene-agent-configuration" open={open} hidden={open === false}>
+      <summary onClick={(event) => { if (open !== undefined) event.preventDefault(); }}><RuntimePanelIcon kind="configuration" /><span className="runtime-panel-title">{t('Save Agent configuration')}</span></summary>
+      <RuntimePanelCloseButton label={t('Close Save Agent configuration')} text={t('Close')} onClose={onClose} />
       {configuration.isLoading || presets.isLoading ? <p>{t('Loading Agent configuration…')}</p> : null}
       {configuration.error || presets.error ? (
         <p role="alert">{t('Unable to load Agent configuration: {{error}}', {

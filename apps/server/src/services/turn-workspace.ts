@@ -17,6 +17,7 @@ const MAX_STATE_PATH_SUGGESTIONS = 5;
 
 export const PLATFORM_AGENT_TOOL_NAMES = [
   'save_state_read', 'world_query', 'memory_query', 'deterministic_check', 'scene_patch_stage', 'scene_view_stage',
+  'action_options_stage',
 ] as const;
 
 export type TurnMemoryQuery = (query: string, limit?: number) => unknown | Promise<unknown>;

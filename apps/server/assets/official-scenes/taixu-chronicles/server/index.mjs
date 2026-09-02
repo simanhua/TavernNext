@@ -117,6 +117,10 @@ export default {
     state.世界.时辰 = opening.time;
     state.世界.章节 = `第一卷·${openingTitle}`;
     state.界面.主题 = normalizedSetup.theme;
+    if (record(state.玩家) !== undefined) {
+      state.玩家.姓名 = short(playerProfile.name, 160) || '无名旅人';
+      state.玩家.身份 = short(playerProfile.description, 500) || '身份尚未记录';
+    }
     state.关系.player = {
       姓名: short(playerProfile.name, 160) || '无名旅人',
       关系: opening.relation,

@@ -1,4 +1,5 @@
 let cleanupGeneration;
+let speechInputController;
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -28,20 +29,31 @@ function messageMarkup(message) {
   if (!Array.isArray(document?.blocks)) return escapeHtml(message.content);
   return document.blocks.map((block, index) => block.type === 'scene-view'
     ? `<div data-scene-lab-view="${index}"></div>`
-    : escapeHtml(block.content || '')).join('');
+    : block.type === 'action-options'
+      ? `<div class="scene-lab-options">${block.options.map((option, optionIndex) => `<button type="button" data-scene-lab-option="${escapeHtml(option.text)}"><span>${optionIndex + 1}</span>${escapeHtml(option.text)}</button>`).join('')}</div>`
+      : escapeHtml(block.content || '')).join('');
 }
 
 async function renderWorkspace(root, sdk) {
+  speechInputController?.destroy();
+  speechInputController = undefined;
   const [detail, stateRow] = await Promise.all([sdk.messages.list(), sdk.state.get()]);
   root.innerHTML = `<main class="scene-lab-page"><section class="scene-lab-panel">
     <header><h1>${escapeHtml(stateRow.value.experimentName)}</h1><p>Phase ${escapeHtml(stateRow.value.phase)} · Signal ${escapeHtml(stateRow.value.signal)}</p></header>
     <div id="scene-lab-messages">${detail.messages.map((message) => `<article class="scene-lab-message" data-message-id="${escapeHtml(message.id)}">${messageMarkup(message)}</article>`).join('')}</div>
     <label>输入观察<textarea id="scene-lab-draft" placeholder="记录一次观察"></textarea></label>
+    <button id="scene-lab-voice" type="button" aria-label="开始语音输入"></button>
     <button id="scene-lab-acknowledge" type="button">确认记录当前观察</button>
     <button id="scene-lab-send" type="button">发送</button>
     <button id="scene-lab-stop" type="button">停止</button>
     <p id="scene-lab-status" class="scene-lab-status"></p>
   </section></main>`;
+  speechInputController = sdk.ui.speechInput.mount({
+    input: root.querySelector('#scene-lab-draft'),
+    button: root.querySelector('#scene-lab-voice'),
+    language: 'zh-CN',
+    labels: { start: '开始语音输入', stop: '停止语音输入', unsupported: '当前浏览器不支持语音输入', permissionDenied: '麦克风权限被拒绝', unavailable: '语音输入当前不可用', noSpeech: '未检测到语音' },
+  });
   for (const message of detail.messages) {
     const document = activeDocument(message);
     if (!Array.isArray(document?.blocks)) continue;
@@ -53,6 +65,11 @@ async function renderWorkspace(root, sdk) {
     }
   }
   const status = root.querySelector('#scene-lab-status');
+  root.querySelectorAll('[data-scene-lab-option]').forEach((button) => { button.onclick = () => {
+    const draft = root.querySelector('#scene-lab-draft');
+    draft.value = button.dataset.sceneLabOption || '';
+    draft.focus();
+  }; });
   root.querySelector('#scene-lab-acknowledge').onclick = async () => {
     status.textContent = '正在记录观察…';
     try {
@@ -92,7 +109,13 @@ export async function mount({ root, mode, sdk }) {
   } else await renderWorkspace(root, sdk);
   cleanupGeneration = sdk.generation.subscribe((event) => {
     const status = root.querySelector('#scene-lab-status');
-    if (status && event.type === 'snapshot') status.textContent = event.value.status === 'idle' ? '' : '正在生成回复…';
+    if (event.type !== 'snapshot') return;
+    const busy = event.value.status !== 'idle';
+    if (status) status.textContent = busy ? '正在生成回复…' : '';
+    const draft = root.querySelector('#scene-lab-draft');
+    const send = root.querySelector('#scene-lab-send');
+    if (draft) draft.disabled = busy;
+    if (send) send.disabled = busy;
   });
-  return () => { cleanupGeneration?.(); cleanupGeneration = undefined; root.replaceChildren(); };
+  return () => { cleanupGeneration?.(); cleanupGeneration = undefined; speechInputController?.destroy(); speechInputController = undefined; root.replaceChildren(); };
 }

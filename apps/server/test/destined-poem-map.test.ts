@@ -47,7 +47,7 @@ describe('Destined Poem native world map', () => {
     const host = document.createElement('div');
     host.innerHTML = renderDestinedPoemWorldMap(initialState);
 
-    expect(manifest.version).toBe('2.17.0');
+    expect(manifest.version).toBe('2.17.2');
     expect(manifest.files).toContain('frontend/map-viewer.mjs');
     expect(manifest.files).toContain('frontend/map-viewer.css');
     expect(manifest.frontendStyles).toContain('frontend/map-viewer.css');

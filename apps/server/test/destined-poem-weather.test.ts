@@ -21,7 +21,7 @@ describe('Destined Poem authoritative weather state', () => {
     });
 
     expect(initialized.initialState.世界).toMatchObject({ 地点: '梵尼亚', 天气: '' });
-    expect(manifest.version).toBe('2.17.0');
+    expect(manifest.version).toBe('2.17.2');
     expect(manifest.stateSchema.properties.世界.properties).toHaveProperty('天气');
     expect(manifest.stateSchema.properties.世界.required).not.toContain('天气');
     expect(manifest.agentTools.find((tool) => tool.name === 'destined_poem_travel')

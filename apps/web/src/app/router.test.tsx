@@ -36,7 +36,7 @@ afterEach(() => cleanup());
 afterAll(() => server.close());
 
 describe('application routes', () => {
-  it('uses the Scene library and unified settings as the only product destinations', async () => {
+  it('uses the Scene library and unified settings as the primary product destinations', async () => {
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(<ThemeProvider><I18nProvider><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></I18nProvider></ThemeProvider>);
@@ -49,5 +49,14 @@ describe('application routes', () => {
     expect(await screen.findByRole('heading', { name: '设置' })).not.toBeNull();
     expect(screen.getByRole('button', { name: 'Persona 模板' })).not.toBeNull();
     expect(screen.getByRole('button', { name: '全局回退预设' })).not.toBeNull();
+  });
+
+  it('keeps recovered legacy chats available outside the primary navigation', async () => {
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/legacy-chat'] });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<ThemeProvider><I18nProvider><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></I18nProvider></ThemeProvider>);
+
+    expect(await screen.findByRole('combobox', { name: /Conversation|对话/ })).not.toBeNull();
+    expect(screen.queryByRole('link', { name: /Legacy chat|旧版聊天/ })).toBeNull();
   });
 });

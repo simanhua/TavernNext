@@ -44,6 +44,10 @@ _Avoid_: Click event, Agent action, interactive Scene View
 One isolated Conversation, player-profile snapshot, setup snapshot, messages, variants, and Scene State belonging to exactly one installed Scene.
 _Avoid_: Global chat, Character state
 
+**Legacy Conversation**:
+A scene-less TavernNext schema-v9 Conversation restored only by an explicit one-time recovery and reachable only through the hidden compatibility route. It is not a Save and cannot be created through the product UI.
+_Avoid_: Save, imported SillyTavern chat, Scene
+
 **Save Agent Configuration**:
 The revisioned, Save-owned copy of one Chat Preset's executable settings and template lineage used by that Save's Agent Runs.
 _Avoid_: Conversation preset binding, global active Preset
@@ -65,8 +69,12 @@ The in-memory staged projection of one Scene State revision used by tools during
 _Avoid_: Temporary Save, mutable database transaction, Agent memory
 
 **Roleplay Document**:
-The canonical versioned assistant response made of ordered Markdown and Scene View blocks. Plain text is a derived compatibility/search projection, never a second response source.
+The canonical versioned assistant response made of ordered Markdown, Scene View, and Action Options blocks. Plain text is a derived compatibility/search projection, never a second response source.
 _Avoid_: HTML response, message text plus widgets, model-authored UI
+
+**Action Options**:
+Player-visible choices derived after an assistant narrative and owned by that Message Variant. They remain optional presentation data until the player selects and submits one as new input.
+_Avoid_: SUOT block, quick replies, static choices
 
 **Scene View**:
 A typed, read-only block inside a Roleplay Document whose objective props are projected by trusted Scene code from the Turn Workspace and stored as a commit-time snapshot.

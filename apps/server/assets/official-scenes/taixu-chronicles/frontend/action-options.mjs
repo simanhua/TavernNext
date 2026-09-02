@@ -78,6 +78,17 @@ function messageSource(message) {
   return String(variant?.content ?? message?.content ?? '');
 }
 
+function typedActionOptions(message) {
+  const variants = Array.isArray(message?.variants) ? message.variants : [];
+  const variant = variants.find((candidate) => candidate.id === message?.activeVariantId) ?? variants[0];
+  const blocks = variant?.document?.blocks;
+  if (!Array.isArray(blocks)) return [];
+  const block = [...blocks].reverse().find((candidate) => candidate?.type === 'action-options');
+  if (!Array.isArray(block?.options) || block.options.length !== MAX_OPTIONS) return [];
+  const values = block.options.map((option) => normalizedOption(option?.text));
+  return values.every((value) => value !== '' && value.length <= MAX_OPTION_LENGTH) ? values : [];
+}
+
 export function parseTaixuActionOptions(content) {
   const source = String(content ?? '');
   const pair = pairedBlocks(source).at(-1);
@@ -101,13 +112,28 @@ export function taixuActionOptionsForMessages(messages) {
   const latestAssistant = [...(Array.isArray(messages) ? messages : [])]
     .reverse()
     .find((message) => message?.role === 'assistant');
-  return latestAssistant === undefined ? [] : parseTaixuActionOptions(messageSource(latestAssistant));
+  if (latestAssistant === undefined) return [];
+  const typed = typedActionOptions(latestAssistant);
+  return typed.length > 0 ? typed : parseTaixuActionOptions(messageSource(latestAssistant));
 }
 
-export function renderTaixuActionOptions(options, source = 'generated') {
+export function renderTaixuActionOptions(options, source = 'generated', retry = false) {
   const values = Array.isArray(options) ? options.slice(0, MAX_OPTIONS) : [];
   const safeSource = source === 'generated' ? 'generated' : 'fallback';
-  return `<div class="tx-choices" data-choice-source="${safeSource}" aria-label="行动选项">${values.map((option, index) => (
+  return `<div class="tx-choice-area"><div class="tx-choices" data-choice-source="${safeSource}" aria-label="行动选项">${values.map((option, index) => (
     `<button type="button" data-choice="${escapeHtml(option)}"><span>${String(index + 1).padStart(2, '0')}</span>${escapeHtml(option)}</button>`
-  )).join('')}</div>`;
+  )).join('')}</div>${retry ? '<button type="button" class="tx-options-retry" data-regenerate-action-options>重新生成剧情选项</button>' : ''}</div>`;
+}
+
+export function bindTaixuActionOptions(root, handlers = {}) {
+  root.querySelectorAll('[data-choice]').forEach((button) => { button.onclick = () => {
+    if (typeof handlers.onSelect === 'function') handlers.onSelect(button.dataset.choice || '');
+  }; });
+  const retry = root.querySelector('[data-regenerate-action-options]');
+  if (retry) retry.onclick = async () => {
+    retry.disabled = true;
+    retry.textContent = '正在重新生成…';
+    try { await handlers.onRetry?.(); }
+    finally { retry.disabled = false; }
+  };
 }

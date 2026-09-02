@@ -751,6 +751,13 @@ export const api = {
   switchActiveVariant: (message: Message, variantId: string) => request<Message>(`/api/messages/${message.id}/active-variant`, {
     method: 'PUT', body: JSON.stringify({ revision: message.revision, variantId }),
   }),
+  regenerateActionOptions: (conversationId: string, message: Message, variant: MessageVariant) => request<MessageVariant>(
+    `/api/messages/${message.id}/action-options/regenerate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ conversationId, variantId: variant.id, variantRevision: variant.revision }),
+    },
+  ),
   startGeneration: async (
     conversation: Conversation,
     input: { mode: GenerationMode; userText?: string },

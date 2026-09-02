@@ -4,7 +4,15 @@ import { useI18n } from '../../app/i18n.js';
 import { RuntimePanelCloseButton } from '../shared/RuntimePanelCloseButton.js';
 import { RuntimePanelIcon } from '../shared/RuntimePanelIcon.js';
 
-export function AgentRunInspector({ conversationId }: { conversationId: string | null }) {
+export function AgentRunInspector({
+  conversationId,
+  open,
+  onClose,
+}: {
+  conversationId: string | null;
+  open?: boolean;
+  onClose?(): void;
+}) {
   const { t } = useI18n();
   const runs = useQuery({
     queryKey: ['agent-runs', conversationId],
@@ -13,9 +21,9 @@ export function AgentRunInspector({ conversationId }: { conversationId: string |
   });
   if (!import.meta.env.DEV || conversationId === null) return null;
   return (
-    <details className="agent-run-inspector">
-      <summary><RuntimePanelIcon kind="inspector" /><span className="runtime-panel-title">{t('Agent Run inspector')}</span></summary>
-      <RuntimePanelCloseButton label={t('Close Agent Run inspector')} text={t('Close')} />
+    <details className="agent-run-inspector" open={open} hidden={open === false}>
+      <summary onClick={(event) => { if (open !== undefined) event.preventDefault(); }}><RuntimePanelIcon kind="inspector" /><span className="runtime-panel-title">{t('Agent Run inspector')}</span></summary>
+      <RuntimePanelCloseButton label={t('Close Agent Run inspector')} text={t('Close')} onClose={onClose} />
       <button type="button" onClick={() => { void runs.refetch(); }} disabled={runs.isFetching}>
         {runs.isFetching ? t('Refreshing Agent Runs…') : t('Refresh Agent Runs')}
       </button>

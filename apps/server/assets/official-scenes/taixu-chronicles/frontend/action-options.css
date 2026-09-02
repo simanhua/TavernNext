@@ -1,5 +1,31 @@
+.tx-choice-area {
+  display: grid;
+  gap: 7px;
+}
+
 .tx-choices {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.tx-options-retry {
+  justify-self: end;
+  margin: 0 clamp(18px, 4vw, 60px) 4px;
+  border: 1px solid var(--tx-line);
+  border-radius: 2px;
+  padding: 7px 11px;
+  color: var(--tx-accent-2);
+  background: rgb(var(--tx-ink)/.66);
+  font-size: .62rem;
+}
+
+.tx-options-retry:hover:not(:disabled) {
+  border-color: var(--tx-accent);
+  color: var(--tx-paper);
+}
+
+.tx-options-retry:disabled {
+  cursor: wait;
+  opacity: .55;
 }
 
 .tx-choices button {

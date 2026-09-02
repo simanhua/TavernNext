@@ -213,7 +213,7 @@ export function MessageList({
                     ? renderStreaming(streamedText)
                     : <>{blocks.map((block, blockIndex) => block.type === 'scene-view' ? (
                     <SceneViewBlock key={block.viewId} block={block} />
-                  ) : <RegexProjectedMarkdownContent
+                  ) : block.type === 'action-options' ? null : <RegexProjectedMarkdownContent
                     key={blockIndex}
                     content={block.content}
                     role={message.role}
