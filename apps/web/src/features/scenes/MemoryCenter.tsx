@@ -5,7 +5,15 @@ import { useI18n } from '../../app/i18n.js';
 import { RuntimePanelCloseButton } from '../shared/RuntimePanelCloseButton.js';
 import { RuntimePanelIcon } from '../shared/RuntimePanelIcon.js';
 
-export function MemoryCenter({ conversationId }: { conversationId: string }) {
+export function MemoryCenter({
+  conversationId,
+  open,
+  onClose,
+}: {
+  conversationId: string;
+  open?: boolean;
+  onClose?(): void;
+}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
@@ -45,9 +53,9 @@ export function MemoryCenter({ conversationId }: { conversationId: string }) {
   const backfill = useMutation({ mutationFn: () => api.backfillMemory(conversationId), onSuccess: refresh });
 
   return (
-    <details className="scene-memory-center">
-      <summary><RuntimePanelIcon kind="memory" /><span className="runtime-panel-title">{t('Save memory')}</span></summary>
-      <RuntimePanelCloseButton label={t('Close Save memory')} text={t('Close')} />
+    <details className="scene-memory-center" open={open} hidden={open === false}>
+      <summary onClick={(event) => { if (open !== undefined) event.preventDefault(); }}><RuntimePanelIcon kind="memory" /><span className="runtime-panel-title">{t('Save memory')}</span></summary>
+      <RuntimePanelCloseButton label={t('Close Save memory')} text={t('Close')} onClose={onClose} />
       {memory.isLoading ? <p>{t('Loading memory…')}</p> : memory.error !== null ? <p role="alert">{t('Memory unavailable.')}</p> : <div>
         <header className="memory-center-header">
           <span>{memory.data?.configuration?.enabled === false ? t('Disabled') : t('Enabled')}</span>

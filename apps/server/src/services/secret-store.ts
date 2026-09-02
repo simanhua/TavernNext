@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
@@ -74,67 +73,6 @@ function sameFile(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-const hardenWindowsAclScript = Buffer.from(String.raw`
-$ErrorActionPreference = 'Stop'
-$path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_SECRET_ACL_PATH', 'Process')
-$kind = [Environment]::GetEnvironmentVariable('TAVERNNEXT_SECRET_ACL_KIND', 'Process')
-$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 41 }
-if (($kind -eq 'directory') -ne [bool]$item.PSIsContainer) { exit 42 }
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-if ($kind -eq 'directory') {
-  $security = New-Object Security.AccessControl.DirectorySecurity
-  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-} else {
-  $security = New-Object Security.AccessControl.FileSecurity
-  $inheritance = [Security.AccessControl.InheritanceFlags]::None
-}
-$security.SetOwner($currentSid)
-$security.SetAccessRuleProtection($true, $false)
-$rule = New-Object Security.AccessControl.FileSystemAccessRule($currentSid,[Security.AccessControl.FileSystemRights]::FullControl,$inheritance,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
-[void]$security.AddAccessRule($rule)
-if ($kind -eq 'directory') { [IO.Directory]::SetAccessControl($path, $security) } else { [IO.File]::SetAccessControl($path, $security) }
-exit 0
-`, 'utf16le').toString('base64');
-
-const verifyWindowsAclScript = Buffer.from(String.raw`
-$ErrorActionPreference = 'Stop'
-$path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_SECRET_ACL_PATH', 'Process')
-$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 41 }
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = [IO.File]::GetAccessControl($path, 'Owner,Access')
-$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-if ($owner.Value -ne $currentSid.Value -or -not $acl.AreAccessRulesProtected -or $rules.Count -ne 1) { exit 42 }
-$rule = $rules[0]
-if ($rule.IsInherited -or $rule.IdentityReference.Value -ne $currentSid.Value -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) { exit 43 }
-exit 0
-`, 'utf16le').toString('base64');
-
-function runWindowsAcl(path: string, script: string, kind?: 'directory' | 'file'): void {
-  const systemRoot = process.env.SystemRoot;
-  if (systemRoot === undefined) throw new Error('Secret storage is unavailable.');
-  const result = spawnSync(
-    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', script],
-    {
-      env: {
-        ...process.env,
-        TAVERNNEXT_SECRET_ACL_PATH: path,
-        ...(kind === undefined ? {} : { TAVERNNEXT_SECRET_ACL_KIND: kind }),
-      },
-      shell: false,
-      stdio: 'ignore',
-      timeout: 5_000,
-      windowsHide: true,
-    },
-  );
-  if (result.error !== undefined || result.signal !== null || result.status !== 0) {
-    throw new Error('Secret storage is unavailable.');
-  }
-}
-
 function ensureDirectDirectory(path: string): void {
   const resolved = resolve(path);
   const root = parse(resolved).root;
@@ -147,9 +85,7 @@ function ensureDirectDirectory(path: string): void {
     if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('Secret storage is unavailable.');
   }
   const stats = lstatSync(resolved);
-  if (process.platform === 'win32') {
-    runWindowsAcl(resolved, hardenWindowsAclScript, 'directory');
-  } else {
+  if (process.platform !== 'win32') {
     if (typeof process.getuid !== 'function' || stats.uid !== process.getuid()) {
       throw new Error('Secret storage is unavailable.');
     }
@@ -237,7 +173,7 @@ function parseDocument(bytes: Uint8Array): SecretStoreDocument {
   return { version: SECRET_STORE_VERSION, entries };
 }
 
-function readTrustedFile(path: string, verifyWindowsAcl = true): Uint8Array | undefined {
+function readTrustedFile(path: string): Uint8Array | undefined {
   let before: Stats;
   try {
     before = lstatSync(path);
@@ -248,15 +184,8 @@ function readTrustedFile(path: string, verifyWindowsAcl = true): Uint8Array | un
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MAX_STORE_BYTES) {
     throw new Error('Secret storage is untrusted.');
   }
-  if (process.platform === 'win32') {
-    if (verifyWindowsAcl) {
-      try {
-        runWindowsAcl(path, verifyWindowsAclScript);
-      } catch {
-        throw new Error('Secret storage is untrusted.');
-      }
-    }
-  } else if (typeof process.getuid !== 'function' || before.uid !== process.getuid() || (before.mode & 0o777) !== PRIVATE_FILE_MODE) {
+  if (process.platform !== 'win32'
+    && (typeof process.getuid !== 'function' || before.uid !== process.getuid() || (before.mode & 0o777) !== PRIVATE_FILE_MODE)) {
     throw new Error('Secret storage is untrusted.');
   }
 
@@ -390,7 +319,6 @@ function acquireLock(directory: string, timeoutMs: number): { path: string; stat
       const stats = fstatSync(descriptor);
       closeSync(descriptor);
       descriptor = undefined;
-      if (process.platform === 'win32') runWindowsAcl(path, hardenWindowsAclScript, 'file');
       return { path, stats };
     } catch (error) {
       if (descriptor !== undefined) closeSync(descriptor);
@@ -454,16 +382,12 @@ function writeDocument(
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
-    if (process.platform === 'win32') runWindowsAcl(temporaryPath, hardenWindowsAclScript, 'file');
-    // This process just created the file in the private directory and the ACL
-    // hardener completed successfully; the descriptor/identity checks still
-    // protect the publication path without spawning a redundant verifier.
-    const verified = readTrustedFile(temporaryPath, false);
+    const verified = readTrustedFile(temporaryPath);
     if (verified === undefined || !Buffer.from(verified).equals(serialized)) throw new Error('Secret storage is unavailable.');
     options.beforePublish?.(temporaryPath, path);
     renameSync(temporaryPath, path);
     syncDirectory(directory);
-    const published = readTrustedFile(path, false);
+    const published = readTrustedFile(path);
     if (published === undefined || !Buffer.from(published).equals(serialized)) throw new Error('Secret storage is unavailable.');
   } catch {
     if (descriptor !== undefined) closeSync(descriptor);
@@ -513,7 +437,7 @@ class FileSecretStore implements SecretStore {
     if (!validSecretRef(secretRef)) return undefined;
     // Atomic replacement gives readers a coherent old-or-new document. A cheap
     // identity/version check keeps live instances coherent; every change is
-    // then reloaded through the full ACL, no-follow, and descriptor checks.
+    // then reloaded through the no-follow and descriptor checks.
     const observed = fileVersion(this.path);
     if (!sameVersion(this.version, observed)) {
       const latest = readLatestDocument(this.path);

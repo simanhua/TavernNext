@@ -24,6 +24,9 @@ function createRuntimeStub(overrides: Partial<SaveAgentRuntime>): SaveAgentRunti
     async triggerLastUser() {
       return { ok: false, reason: 'not_found' };
     },
+    async regenerateActionOptions() {
+      return { ok: false, reason: 'not_found' };
+    },
     cancel() {
       return false;
     },

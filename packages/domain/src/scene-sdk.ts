@@ -115,6 +115,27 @@ export interface SceneStatusRailMountOptions {
   onAction?(actionId: string): void | Promise<void>;
 }
 
+export interface SceneSpeechInputLabels {
+  start: string;
+  stop: string;
+  unsupported: string;
+  permissionDenied: string;
+  unavailable: string;
+  noSpeech: string;
+}
+
+export interface SceneSpeechInputMountOptions {
+  input: HTMLTextAreaElement;
+  button: HTMLButtonElement;
+  language?: string;
+  labels?: Partial<SceneSpeechInputLabels>;
+}
+
+export interface SceneSpeechInputController {
+  stop(): void;
+  destroy(): void;
+}
+
 export type SceneReferenceKind = 'preset' | 'worldbook';
 
 export interface SceneSdkErrorShape {
@@ -156,6 +177,7 @@ export interface SceneSdkV2 {
     switchVariant(variantId: string): Promise<Message>;
     regenerate(): Promise<unknown>;
     swipe(): Promise<unknown>;
+    regenerateActionOptions(): Promise<MessageVariant>;
   };
   state: {
     get(): Promise<ConversationSceneState>;
@@ -184,6 +206,9 @@ export interface SceneSdkV2 {
   ui: {
     statusRail: {
       mount(options: SceneStatusRailMountOptions): SceneStatusRailController;
+    };
+    speechInput: {
+      mount(options: SceneSpeechInputMountOptions): SceneSpeechInputController;
     };
     referenceViewer: {
       open(kind: SceneReferenceKind): void;

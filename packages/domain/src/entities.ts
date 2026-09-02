@@ -532,7 +532,8 @@ export const AgentRunLifecycleEventSchema = z.object({
   at: z.string().datetime(),
 }).strict();
 export const AgentActivityKindSchema = z.enum([
-  'inspect-save', 'query-lore', 'query-memory', 'perform-check', 'update-state', 'stage-view', 'scene-action',
+  'inspect-save', 'query-lore', 'query-memory', 'perform-check', 'update-state', 'stage-view',
+  'stage-options', 'scene-action',
 ]);
 export const AgentRunActivitySchema = z.object({
   sequence: z.number().int().nonnegative(),

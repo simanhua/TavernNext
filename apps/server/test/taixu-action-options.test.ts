@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from 'vitest';
 // Scene browser assets intentionally stay framework-free and ship as native ES modules.
 // @ts-expect-error The runtime asset has no declaration file.
-import { parseTaixuActionOptions, renderTaixuActionOptions, stripTaixuActionOptions, taixuActionOptionsForMessages } from '../assets/official-scenes/taixu-chronicles/frontend/action-options.mjs';
+import { bindTaixuActionOptions, parseTaixuActionOptions, renderTaixuActionOptions, stripTaixuActionOptions, taixuActionOptionsForMessages } from '../assets/official-scenes/taixu-chronicles/frontend/action-options.mjs';
 
 describe('Taixu generated action options', () => {
-  it('parses the final complete SUOT block and caps it at seven concise choices', () => {
+  it('parses the final complete SUOT block and caps it at seven concise Action Options', () => {
     const content = `正文。
 <SUOT>
 1. 顺着石阶继续上山
@@ -52,11 +53,43 @@ describe('Taixu generated action options', () => {
     expect(taixuActionOptionsForMessages([prior, { role: 'assistant', content: '没有选项' }])).toEqual([]);
   });
 
+  it('prefers the platform Action Options block over legacy prose tags', () => {
+    const options = ['平滑一', '平滑二', '互动', '推进', '主线', '转折', '黑暗'];
+    const message = {
+      role: 'assistant', activeVariantId: 'typed', variants: [{
+        id: 'typed', content: '正文', document: { blocks: [
+          { type: 'markdown', content: '正文' },
+          { type: 'action-options', options: options.map((text, index) => ({ id: `option-${index + 1}`, text })) },
+        ] },
+      }],
+    };
+    expect(taixuActionOptionsForMessages([message])).toEqual(options);
+  });
+
   it('escapes generated choice text before placing it in buttons and data attributes', () => {
     const html = renderTaixuActionOptions(['<script>never()</script> "继续"', '安全选项']);
     expect(html).toContain('data-choice-source="generated"');
     expect(html).toContain('&lt;script&gt;never()&lt;/script&gt; &quot;继续&quot;');
     expect(html).not.toContain('<script>');
     expect(html.match(/data-choice=/g)).toHaveLength(2);
+    const fallback = renderTaixuActionOptions(['默认一', '默认二', '默认三'], 'fallback', true);
+    expect(fallback).toContain('data-choice-source="fallback"');
+    expect(fallback).toContain('data-regenerate-action-options');
+    expect(fallback).toContain('重新生成剧情选项');
+  });
+
+  it('binds Action Options and the retry button without sending a narrative turn', async () => {
+    const root = document.createElement('div');
+    root.innerHTML = renderTaixuActionOptions(['默认一', '默认二', '默认三'], 'fallback', true);
+    const onSelect = vi.fn();
+    const onRetry = vi.fn(async () => undefined);
+    bindTaixuActionOptions(root, { onSelect, onRetry });
+
+    root.querySelector<HTMLButtonElement>('[data-choice]')!.click();
+    root.querySelector<HTMLButtonElement>('[data-regenerate-action-options]')!.click();
+    await vi.waitFor(() => expect(onRetry).toHaveBeenCalledOnce());
+
+    expect(onSelect).toHaveBeenCalledWith('默认一');
+    expect(root.querySelector('[data-regenerate-action-options]')?.textContent).toBe('正在重新生成…');
   });
 });

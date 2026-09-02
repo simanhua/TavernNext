@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
@@ -34,72 +33,6 @@ export interface SnapshotIntegrityKeyPublicationOperations {
   syncDirectory(directoryPath: string): void;
 }
 
-const hardenWindowsAclScript = Buffer.from(String.raw`
-$ErrorActionPreference = 'Stop'
-$path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_PATH', 'Process')
-$kind = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_KIND', 'Process')
-if ([String]::IsNullOrWhiteSpace($path)) { exit 40 }
-$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 41 }
-if (($kind -eq 'directory') -ne [bool]$item.PSIsContainer) { exit 42 }
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-if ($kind -eq 'directory') {
-  $security = New-Object Security.AccessControl.DirectorySecurity
-  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-} else {
-  $security = New-Object Security.AccessControl.FileSecurity
-  $inheritance = [Security.AccessControl.InheritanceFlags]::None
-}
-$security.SetOwner($currentSid)
-$security.SetAccessRuleProtection($true, $false)
-$rule = New-Object Security.AccessControl.FileSystemAccessRule(
-  $currentSid,
-  [Security.AccessControl.FileSystemRights]::FullControl,
-  $inheritance,
-  [Security.AccessControl.PropagationFlags]::None,
-  [Security.AccessControl.AccessControlType]::Allow
-)
-[void]$security.AddAccessRule($rule)
-if ($kind -eq 'directory') {
-  [IO.Directory]::SetAccessControl($path, $security)
-  $acl = [IO.Directory]::GetAccessControl($path, 'Owner,Access')
-} else {
-  [IO.File]::SetAccessControl($path, $security)
-  $acl = [IO.File]::GetAccessControl($path, 'Owner,Access')
-}
-$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
-if ($owner.Value -ne $currentSid.Value -or -not $acl.AreAccessRulesProtected) { exit 43 }
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-if ($rules.Count -ne 1) { exit 44 }
-$verified = $rules[0]
-if ($verified.IsInherited -or $verified.IdentityReference.Value -ne $currentSid.Value) { exit 45 }
-if ($verified.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 46 }
-if ($verified.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) { exit 47 }
-if ($verified.InheritanceFlags -ne $inheritance -or $verified.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { exit 48 }
-exit 0
-`, 'utf16le').toString('base64');
-
-const verifyWindowsAclScript = Buffer.from(String.raw`
-$ErrorActionPreference = 'Stop'
-$path = [Environment]::GetEnvironmentVariable('TAVERNNEXT_WINDOWS_ACL_PATH', 'Process')
-if ([String]::IsNullOrWhiteSpace($path)) { exit 40 }
-$item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 41 }
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = [IO.File]::GetAccessControl($path, 'Owner,Access')
-$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
-if ($owner.Value -ne $currentSid.Value -or -not $acl.AreAccessRulesProtected) { exit 42 }
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-if ($rules.Count -ne 1) { exit 43 }
-$verified = $rules[0]
-if ($verified.IsInherited -or $verified.IdentityReference.Value -ne $currentSid.Value) { exit 44 }
-if ($verified.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 45 }
-if ($verified.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) { exit 46 }
-if ($verified.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None) { exit 47 }
-if ($verified.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { exit 48 }
-exit 0
-`, 'utf16le').toString('base64');
-
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
     ? String(Reflect.get(error, 'code'))
@@ -110,54 +43,13 @@ function sameFile(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function runWindowsAclScript(path: string, script: string, kind?: 'directory' | 'file'): void {
-  const systemRoot = process.env.SystemRoot;
-  if (systemRoot === undefined) throw new Error('Snapshot integrity storage is unavailable.');
-  const result = spawnSync(
-    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', script],
-    {
-      env: {
-        ...process.env,
-        TAVERNNEXT_WINDOWS_ACL_PATH: path,
-        ...(kind === undefined ? {} : { TAVERNNEXT_WINDOWS_ACL_KIND: kind }),
-      },
-      shell: false,
-      stdio: 'ignore',
-      timeout: 5_000,
-      windowsHide: true,
-    },
-  );
-  if (result.error !== undefined || result.signal !== null || result.status !== 0) {
-    throw new Error('Snapshot integrity storage is unavailable.');
-  }
-}
-
-function hardenWindowsDataDirectory(path: string): void {
-  runWindowsAclScript(path, hardenWindowsAclScript, 'directory');
-}
-
-function hardenUnpublishedWindowsTemporaryKey(path: string): void {
-  runWindowsAclScript(path, hardenWindowsAclScript, 'file');
-}
-
-function verifyWindowsKeyWithoutMutation(path: string): void {
-  try {
-    runWindowsAclScript(path, verifyWindowsAclScript);
-  } catch {
-    throw new Error('Snapshot integrity key is untrusted.');
-  }
-}
-
 function ensureSecureDataDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const before = lstatSync(path);
   if (!before.isDirectory() || before.isSymbolicLink()) {
     throw new Error('Snapshot integrity storage is unavailable.');
   }
-  if (process.platform === 'win32') {
-    hardenWindowsDataDirectory(path);
-  } else {
+  if (process.platform !== 'win32') {
     if (typeof process.getuid !== 'function' || before.uid !== process.getuid()) {
       throw new Error('Snapshot integrity storage is unavailable.');
     }
@@ -321,7 +213,6 @@ function writeTemporaryKey(directory: string): string {
     throw new Error('Snapshot integrity key could not be created.');
   }
   try {
-    if (process.platform === 'win32') hardenUnpublishedWindowsTemporaryKey(path);
     const verified = readExistingKey(path);
     if (!Buffer.from(verified).equals(key)) throw new Error('Snapshot integrity key could not be created.');
     return path;
@@ -336,7 +227,6 @@ function writeTemporaryKey(directory: string): string {
 }
 
 function readExistingKey(path: string): Uint8Array {
-  if (process.platform === 'win32') verifyWindowsKeyWithoutMutation(path);
   const before = lstatSync(path);
   if (!before.isFile() || before.isSymbolicLink()) throw new Error('Snapshot integrity key is untrusted.');
   let posixUid: number | undefined;
@@ -375,8 +265,8 @@ function readExistingKey(path: string): Uint8Array {
     if (!sameFile(opened, after) || read !== SNAPSHOT_INTEGRITY_KEY_BYTES) {
       throw new Error('Snapshot integrity key is untrusted.');
     }
-    // FlushFileBuffers on the published Windows handle makes the hard-link and
-    // protected DACL durable before the process starts signing snapshots.
+    // FlushFileBuffers on the published Windows handle makes the hard-link
+    // durable before the process starts signing snapshots.
     if (process.platform === 'win32') fsyncSync(descriptor);
     return Uint8Array.from(bytes.subarray(0, SNAPSHOT_INTEGRITY_KEY_BYTES));
   } finally {

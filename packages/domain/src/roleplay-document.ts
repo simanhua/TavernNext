@@ -18,9 +18,37 @@ export const RoleplaySceneViewBlockSchema = z.object({
   props: z.record(z.string(), z.unknown()),
 }).strict();
 
+export const ActionOptionKindSchema = z.enum([
+  'smooth', 'engage', 'advance', 'mainline', 'twist', 'dark',
+]);
+
+export const ActionOptionSchema = z.object({
+  id: z.string().regex(/^option-[1-7]$/),
+  kind: ActionOptionKindSchema,
+  text: z.string().trim().min(1).max(300),
+}).strict();
+
+const orderedActionOption = (id: `option-${1 | 2 | 3 | 4 | 5 | 6 | 7}`, kind: z.infer<typeof ActionOptionKindSchema>) => (
+  ActionOptionSchema.extend({ id: z.literal(id), kind: z.literal(kind) })
+);
+
+export const RoleplayActionOptionsBlockSchema = z.object({
+  type: z.literal('action-options'),
+  options: z.tuple([
+    orderedActionOption('option-1', 'smooth'),
+    orderedActionOption('option-2', 'smooth'),
+    orderedActionOption('option-3', 'engage'),
+    orderedActionOption('option-4', 'advance'),
+    orderedActionOption('option-5', 'mainline'),
+    orderedActionOption('option-6', 'twist'),
+    orderedActionOption('option-7', 'dark'),
+  ]),
+}).strict();
+
 export const RoleplayDocumentBlockSchema = z.discriminatedUnion('type', [
   RoleplayMarkdownBlockSchema,
   RoleplaySceneViewBlockSchema,
+  RoleplayActionOptionsBlockSchema,
 ]);
 
 export const RoleplayDocumentSchema = z.object({
@@ -30,6 +58,9 @@ export const RoleplayDocumentSchema = z.object({
 
 export type RoleplayMarkdownBlock = z.infer<typeof RoleplayMarkdownBlockSchema>;
 export type RoleplaySceneViewBlock = z.infer<typeof RoleplaySceneViewBlockSchema>;
+export type ActionOptionKind = z.infer<typeof ActionOptionKindSchema>;
+export type ActionOption = z.infer<typeof ActionOptionSchema>;
+export type RoleplayActionOptionsBlock = z.infer<typeof RoleplayActionOptionsBlockSchema>;
 export type RoleplayDocumentBlock = z.infer<typeof RoleplayDocumentBlockSchema>;
 export type RoleplayDocument = z.infer<typeof RoleplayDocumentSchema>;
 
@@ -50,5 +81,15 @@ export function appendRoleplayMarkdown(document: RoleplayDocument, content: stri
   const last = blocks.at(-1);
   if (last?.type === 'markdown') last.content += content;
   else blocks.push({ type: 'markdown', content });
+  return RoleplayDocumentSchema.parse({ version: 1, blocks });
+}
+
+export function replaceRoleplayActionOptions(
+  document: RoleplayDocument,
+  options: ActionOption[],
+): RoleplayDocument {
+  const blocks: RoleplayDocumentBlock[] = structuredClone(document.blocks)
+    .filter((block) => block.type !== 'action-options');
+  if (options.length > 0) blocks.push(RoleplayActionOptionsBlockSchema.parse({ type: 'action-options', options }));
   return RoleplayDocumentSchema.parse({ version: 1, blocks });
 }

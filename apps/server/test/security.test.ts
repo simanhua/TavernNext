@@ -2,6 +2,7 @@ import {
   chmodSync,
   linkSync,
   lstatSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   symlinkSync,
@@ -114,7 +115,7 @@ describe('operational security', () => {
     expect(JSON.stringify(redactLogValue(wide, { maxEntries: 12, maxDepth: 2 }))).toContain('[Truncated]');
   });
 
-  it('atomically persists owner-only secrets and merges stale instances without losing stable references', async () => {
+  it('atomically persists secrets and merges stale instances without losing stable references', async () => {
     const directory = await temporaryDirectory('tavernnext-secret-store-');
     const first = createSecretStore(directory);
     const staleSecond = createSecretStore(directory);
@@ -151,6 +152,19 @@ describe('operational security', () => {
       expect(lstatSync(directory).mode & 0o777).toBe(0o700);
     }
     expect(readFileSync(join(directory, SECRET_STORE_FILE), 'utf8')).not.toContain(failedValue);
+  });
+
+  it.runIf(process.platform === 'win32')('accepts an existing secret store without a protected Windows ACL', async () => {
+    const parent = await temporaryDirectory('tavernnext-secret-shared-acl-');
+    const directory = join(parent, 'inherited');
+    mkdirSync(directory);
+    const expected = providerSecret('shared-acl-value');
+    writeFileSync(join(directory, SECRET_STORE_FILE), JSON.stringify({
+      version: 2,
+      entries: { 'provider:shared': expected },
+    }));
+
+    expect(createSecretStore(directory).get('provider:shared')).toEqual(expected);
   });
 
   it('reads legacy scalar credentials and publishes structured version 2 on the next write', async () => {

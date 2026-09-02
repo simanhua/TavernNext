@@ -54,6 +54,17 @@ const calls: ToolCall[] = [
     arguments: { key: 'vault-door', difficulty: 10, modifier: 2, sides: 20 },
   },
 ];
+const actionOptionsCall: ToolCall = {
+  type: 'toolCall', id: 'action-options', name: 'action_options_stage', arguments: { options: [
+    { kind: 'smooth', text: 'Observe the gate.' },
+    { kind: 'smooth', text: 'Ask the keeper.' },
+    { kind: 'engage', text: 'Challenge the warning.' },
+    { kind: 'advance', text: 'Enter at dawn.' },
+    { kind: 'mainline', text: 'Follow the seal clue.' },
+    { kind: 'twist', text: 'Trust the rival.' },
+    { kind: 'dark', text: 'Open the lower vault.' },
+  ] },
+};
 
 function toolTurn(toolCalls: readonly ToolCall[]): ReturnType<typeof createAssistantMessageEventStream> {
   const events = createAssistantMessageEventStream();
@@ -120,6 +131,9 @@ function scriptedRuntime(options: {
           })),
         }),
       });
+      if (context.systemPrompt?.includes('post-narrative Action Options planner')) {
+        return toolTurn([actionOptionsCall]);
+      }
       if (turn++ === 0) return toolTurn(options.toolCalls ?? calls);
       options.beforeFinal?.();
       return textTurn(options.finalText ?? 'The archive gate opens.', options.fail);

@@ -1,4 +1,4 @@
-import type { AgentActivityKind, GenerationMode } from '@tavernnext/domain';
+import type { AgentActivityKind, GenerationMode, MessageVariant } from '@tavernnext/domain';
 import type { PromptSnapshotErrorCode } from './prompt-snapshot-service.js';
 
 export type SaveAgentRuntimeEvent =
@@ -34,6 +34,16 @@ export type StartSaveAgentRunResult =
 export interface SaveAgentRuntime {
   start(input: SaveAgentRunInput, signal?: AbortSignal): Promise<StartSaveAgentRunResult>;
   triggerLastUser(conversationId: string, signal?: AbortSignal): Promise<StartSaveAgentRunResult>;
+  regenerateActionOptions(input: {
+    conversationId: string;
+    messageId: string;
+    variantId: string;
+    variantRevision: number;
+  }, signal?: AbortSignal): Promise<
+    | { ok: true; variant: MessageVariant }
+    | { ok: false; reason: 'not_found' | 'invalid_target' | 'conflict' | 'generation_active'
+      | 'provider_not_configured' | 'model_not_agent_capable' | 'action_options_generation_failed' }
+  >;
   cancel(generationId: string): boolean;
   isConversationActive(conversationId: string): boolean;
 }

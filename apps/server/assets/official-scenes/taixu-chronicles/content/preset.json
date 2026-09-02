@@ -85,7 +85,6 @@
       "role": "system",
       "content": "{{trim}}{{getvar::JailbreakPrompt}}",
       "system_prompt": true,
-      "enabled": true,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -199,7 +198,7 @@
       "role": "user",
       "content": "Haruki，最后，请你注意正式创作中的特殊格式：\n- 完整回忆前文或要求的特殊格式，譬如剧情前后的XML标签/状态栏（StatusBlock）/行动选项/变量操作 等，确保在创作时将其按前文或要求输出在正确的位置\n- 若有StatusBlock/行动选项 ，输出于正文底部\n\nHaruki，现在开始正式输出，剧情{{getvar::wordsCloud}}字。",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -213,7 +212,7 @@
       "role": "user",
       "content": "<追加行动选项>\n你**必须**在剧情正文后给出7个行动选项，作为最底部的非文学格式。\n\n选项内容的隐形主语：\n- {{user}}必定作为隐形主语，无论视角如何；除非{{user}}未出现在你的上个response\n\n选项规则：\n选项1、2：平滑选项。行动会自然顺承前文发展，对剧情产生较小推动，平滑过度到下轮剧情。两个平滑选项风格、侧重各不相同。若在NSFW情景中，体现为不同的性互动、情趣玩法或情绪表达。\n选项3：NSFW选项。行动会尝试引入NSFW内容，无论当前氛围如何。若已在NSFW，视同选项1、2。\n选项4：{{random::快进选项。行动将推动时间发展，让故事快进一段时间::转场选项。主体的言行将推动空间转场，让故事转移到其他场合}}\n选项5：严肃选项。期待一种相对严肃的发展，行动将探索故事的潜在主线/线索，或回收前文的伏笔。\n选项6：超展开选项。发展完全出乎意料。行动将{{random::大幅深化当前的故事基调::引入脑洞清奇的新剧情::完全颠覆当前的基调}}\n选项7：黑暗选项。行动可能带有残忍/暴虐/幽邃/邪恶/阴暗，引导故事向更加沉重压抑、黑暗痛苦的方向发展，可能引起角色间的矛盾冲突。\n\n\n\n格式：\n- 选项以<SUOT> </SUOT>包裹，追加于模板最底。以换行分隔，形如：\n<SUOT>\n1. （选项内容）\n2.\n……\n</SUOT>\n\nNOTE：\n对选项内容的要求：\n- 内容简练；单纯给出言行，省略主语，不加解释，不做评述（如：微笑着对他说：“我喜欢你。”）\n- 紧密衔接前文，逻辑合理，推动后续剧情。\n- 言行不得重复前文\n- 以对白为主，可为纯对白\n</追加行动选项>",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -763,7 +762,7 @@
       "role": "user",
       "content": "# 段落安排：\n- 内心独白、无对白的描写和叙事集中为大段、长段。\n- 对白总是另起一行，单独成段，省略发言人（略去 他说/某某说），以引号“ ”包裹",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -1347,7 +1346,7 @@
       "role": "user",
       "content": "<核心文字风格>\n- ***忘掉前文文风，现在的文字风格必须深度复刻《金瓶梅》***\n</核心文字风格>",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -1529,7 +1528,7 @@
       "role": "user",
       "content": "# 角色互动模式：\n- 角色之间尽可能平等而互相尊重，绝不应表现得傲慢、残忍、粗暴或霸道。\n- 性互动总是温柔而充满爱欲的，角色务必更注重语言、心灵和情感的交流，而非单纯的肉欲宣泄。\n- 即便关系中存在强势的一方，强势方也必将体量对方的感受。\n- 若有特殊的性行为设定或要求，仅为情趣玩法，不应改变角色的性格底色。",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -1555,7 +1554,7 @@
       "role": "user",
       "content": "# 角色表现准则：{{//⟦P-ALL⟧}}\n- 角色务必有生动有趣的生活化表现，不会呆板、僵硬、机械化；无论角色人设如何，角色的对白和描写绝**不应**采用数据分析或学术报告式的口吻；无论角色人设如何，角色的对白中都不会出现大量精确数值。",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -1790,7 +1789,7 @@
       "role": "user",
       "content": "重要提示：\n\n以任务链在心中进行预创作，仔细思考。\n<任务链>\nStep1.理解和构思\n综合前文、背景设定和最新互动。理解需求，构思创作。\nStep2.故事性检查\n打草稿，边写边检查：\n- **逐项**检查<创作准则>内的诸要求\n- 情节未与人设、世界观等故事设定矛盾\n- 角色动机、需求、立场、人物间关系合理，不能混淆角色\n- 未出现超游认知；人物仅得到符合其视角情报\nStep3.风格性检查\n打草稿，边写边检查：\n- 第一优先：按<核心文字风格>进行**彻底、深入**的风格化。\n- 第二优先：**逐项**检查 <第一写作指导>和<通用写作规范>内的诸要求\n- 兼顾：其他文字风格要求\nStep4.格式检查\n进行一次格式检查：\n- 检查非文学格式是否有错误或遗漏、是否构建至正确位置\nStep5.最终输出\n在思考外部构建final answer。\n</任务链>\n\n你心中的隐式内部思考，必须严格以`<｜begin▁of▁thinking｜>我们需要`开始。\n\n现在开始创作。",
       "system_prompt": false,
-      "enabled": true,
+      "enabled": false,
       "marker": false,
       "injection_position": 0,
       "injection_depth": 4,
@@ -1867,7 +1866,7 @@
         },
         {
           "identifier": "enhanceDefinitions",
-          "enabled": true
+          "enabled": false
         },
         {
           "identifier": "nsfw",
@@ -1887,34 +1886,6 @@
         },
         {
           "identifier": "jailbreak",
-          "enabled": true
-        },
-        {
-          "identifier": "c0637bef-c794-4f08-8c4e-a481cd37d761",
-          "enabled": true
-        },
-        {
-          "identifier": "5d7c4d1b-3a2c-4c27-b784-ba4e8d50f041",
-          "enabled": true
-        },
-        {
-          "identifier": "25dbac3f-a107-4a9a-b0b7-804c86994f9e",
-          "enabled": true
-        },
-        {
-          "identifier": "b3e73bb4-5397-4efa-b004-27c77854f89d",
-          "enabled": true
-        },
-        {
-          "identifier": "89e119ef-2a48-47c8-9a75-389558aadad6",
-          "enabled": true
-        },
-        {
-          "identifier": "666bf0a1-735e-4363-b06d-be762f477bc1",
-          "enabled": true
-        },
-        {
-          "identifier": "62107281-be0b-46ef-bbe5-7480c42bcfae",
           "enabled": true
         }
       ]
@@ -2024,7 +1995,7 @@
         },
         {
           "identifier": "5d7c4d1b-3a2c-4c27-b784-ba4e8d50f041",
-          "enabled": true
+          "enabled": false
         },
         {
           "identifier": "ef8f3817-53b8-444f-85b1-bf99df2a01ce",
@@ -2068,7 +2039,7 @@
         },
         {
           "identifier": "666bf0a1-735e-4363-b06d-be762f477bc1",
-          "enabled": true
+          "enabled": false
         },
         {
           "identifier": "e28c0002-c507-43e4-b8cc-0b5d4bee6a1c",
@@ -2088,7 +2059,7 @@
         },
         {
           "identifier": "89e119ef-2a48-47c8-9a75-389558aadad6",
-          "enabled": true
+          "enabled": false
         },
         {
           "identifier": "c30ed85d-d408-4627-af1b-84e517df563b",

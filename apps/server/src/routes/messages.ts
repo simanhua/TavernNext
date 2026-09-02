@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { roleplayDocumentFromMarkdown } from '@tavernnext/domain';
+import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
 import type { Repositories } from '../db/repositories.js';
 import type { SaveAgentRuntime } from '../services/save-agent-runtime.js';
@@ -106,6 +107,31 @@ export function registerMessageRoutes(
     } catch (error) {
       if (error instanceof SceneServiceError) return reply.status(error.statusCode).send({ error: error.code });
       return reply.status(409).send({ error: 'constraint_conflict' });
+    }
+  });
+  app.post<{ Params: { id: string }; Body: unknown }>('/api/messages/:id/action-options/regenerate', async (request, reply) => {
+    const parsed = z.object({
+      conversationId: z.string().uuid(),
+      variantId: z.string().uuid(),
+      variantRevision: z.number().int().nonnegative(),
+    }).strict().safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    request.raw.once('aborted', abort);
+    try {
+      const result = await generations.regenerateActionOptions({
+        ...parsed.data,
+        messageId: request.params.id,
+      }, controller.signal);
+      if (result.ok) return reply.send(result.variant);
+      const status = result.reason === 'not_found' ? 404
+        : result.reason === 'invalid_target' || result.reason === 'conflict' || result.reason === 'generation_active' ? 409
+          : result.reason === 'provider_not_configured' || result.reason === 'model_not_agent_capable' ? 400
+            : 502;
+      return reply.status(status).send({ error: result.reason });
+    } finally {
+      request.raw.off('aborted', abort);
     }
   });
   app.delete<{ Params: { id: string }; Querystring: { revision?: string }; Body: Body }>('/api/messages/:id', async (request, reply) => {

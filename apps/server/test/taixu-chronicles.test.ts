@@ -63,11 +63,39 @@ describe('Taixu Chronicles Scene Package', () => {
     expect(marketVariant.content).not.toContain('【返回】');
     expect(repositories.conversationSceneStates.getByConversationId(conversationId)?.value).toMatchObject({
       世界: { 地点: '中州边境·青石坊市', 天气: '阴' },
-      楚霁寒: { 年龄: 20, 公开身份: '水灵根散修' },
-      太虚子: { 魂力: 72 },
+      玩家: {
+        姓名: '沈照微', 身份: '游历中州的剑修', 品阶: '品阶未定',
+        基本属性: { 体魄: '未记录', 身法: '未记录', 灵识: '未记录', 悟性: '未记录' },
+        物品: [], 技能: [],
+      },
+      楚霁寒: {
+        年龄: 20, 公开身份: '水灵根散修',
+        基本属性: { 体魄: 78, 身法: 74, 灵识: 88, 悟性: 91 },
+        状态栏物品: expect.arrayContaining([
+          expect.objectContaining({ id: 'bronze-ring', 解锁好感: 30 }),
+          expect.objectContaining({ id: 'mother-notes', 解锁好感: 80 }),
+        ]),
+        状态栏技能: expect.arrayContaining([
+          expect.objectContaining({ id: 'chaos-root', 解锁好感: 160 }),
+        ]),
+      },
+      太虚子: {
+        魂力: 72,
+        状态栏物品: expect.arrayContaining([
+          expect.objectContaining({ id: 'soul-ring', 解锁好感: 30 }),
+          expect.objectContaining({ id: 'resurrection-recipe', 解锁好感: 100 }),
+        ]),
+        状态栏技能: expect.arrayContaining([
+          expect.objectContaining({ id: 'soul-takeover', 解锁好感: 80 }),
+          expect.objectContaining({ id: 'ancient-memory', 解锁好感: 160 }),
+        ]),
+      },
       关系: { player: { 姓名: '沈照微', 红线: '姻缘红线' } },
       界面: { 主题: 'xuanzang' },
     });
+    expect(installed.manifest.files).toEqual(expect.arrayContaining([
+      'frontend/status-profiles.mjs', 'frontend/status-profiles.css',
+    ]));
 
     const invalidAdultGuard = await app.inject({
       method: 'POST', url: `/api/scenes/${TAIXU_CHRONICLES_SCENE_ID}/conversations`,

@@ -1,11 +1,20 @@
 import {
+  bindTaixuActionOptions,
   renderTaixuActionOptions,
   stripTaixuActionOptions,
   taixuActionOptionsForMessages,
-} from './action-options.mjs?v=1.3.3';
+} from './action-options.mjs?v=1.3.5';
+import {
+  normalizeTaixuStatusProfiles,
+  renderTaixuStatusProfile,
+  renderTaixuStatusTabs,
+  taixuSecretIdentity,
+} from './status-profiles.mjs?v=1.3.8';
 
 let generationCleanup;
+let speechInputController;
 let workspaceMode = 'story';
+let characterStatusSubject = 'chu-jihan';
 let generationWasBusy = false;
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -96,7 +105,7 @@ const fallbackActionOptions = [
 function actionOptionsMarkup(messages) {
   const generated = taixuActionOptionsForMessages(messages);
   const options = generated.length > 0 ? generated : fallbackActionOptions;
-  return renderTaixuActionOptions(options, generated.length > 0 ? 'generated' : 'fallback');
+  return renderTaixuActionOptions(options, generated.length > 0 ? 'generated' : 'fallback', generated.length === 0);
 }
 
 async function renderSetup(root, sdk) {
@@ -166,9 +175,10 @@ function meter(label, value, tone = '') {
   return `<div class="tx-meter ${tone}"><div><span>${esc(label)}</span><strong>${esc(value)}%</strong></div><i><b style="width:${Math.max(0, Math.min(100, Number(value) || 0))}%"></b></i></div>`;
 }
 
-function characterPanel(state, portrait) {
+function characterPanel(state, portrait, affinity) {
   const character = record(state.楚霁寒); const realm = record(character.境界);
-  return `<aside class="tx-character-panel"><div class="tx-portrait"><img src="${portrait}" alt="楚霁寒"><span>楚</span></div><div class="tx-character-title"><small>${esc(character.公开身份)}</small><h2>${esc(character.姓名)}</h2><p>${esc(record(character.灵根).对外)} · ${esc(character.年龄)}岁</p></div>${meter(`${realm.名称}·${realm.阶段}`, realm.进度)}<nav><button type="button" data-mode="story" class="${workspaceMode === 'story' ? 'active' : ''}"><span>卷</span>浮生录</button><button type="button" data-mode="fate" class="${workspaceMode === 'fate' ? 'active' : ''}"><span>命</span>混沌命盘</button><button type="button" data-mode="clues" class="${workspaceMode === 'clues' ? 'active' : ''}"><span>案</span>长生局</button><button type="button" data-mode="map" class="${workspaceMode === 'map' ? 'active' : ''}"><span>山</span>九州舆图</button></nav><div class="tx-secret"><small>藏锋</small><strong>${esc(record(character.灵根).真实)}</strong><p>暴露风险 ${esc(character.暴露风险)}%</p></div></aside>`;
+  const secret = taixuSecretIdentity(record(character.灵根), affinity);
+  return `<aside class="tx-character-panel"><div class="tx-portrait"><img src="${portrait}" alt="楚霁寒"><span>楚</span></div><div class="tx-character-title"><small>${esc(character.公开身份)}</small><h2>${esc(character.姓名)}</h2><p>${esc(record(character.灵根).对外)} · ${esc(character.年龄)}岁</p></div>${meter(`${realm.名称}·${realm.阶段}`, realm.进度)}<nav><button type="button" data-mode="story" class="${workspaceMode === 'story' ? 'active' : ''}"><span>卷</span>浮生录</button><button type="button" data-mode="player-status" class="${workspaceMode === 'player-status' ? 'active' : ''}"><span>我</span>我的状态</button><button type="button" data-mode="character-status" class="${workspaceMode === 'character-status' ? 'active' : ''}"><span>楚</span>楚霁寒状态</button><button type="button" data-mode="fate" class="${workspaceMode === 'fate' ? 'active' : ''}"><span>命</span>混沌命盘</button><button type="button" data-mode="clues" class="${workspaceMode === 'clues' ? 'active' : ''}"><span>案</span>长生局</button><button type="button" data-mode="map" class="${workspaceMode === 'map' ? 'active' : ''}"><span>山</span>九州舆图</button></nav><div class="tx-secret${secret.locked ? ' locked' : ''}"><small>藏锋</small><strong>${esc(secret.label)}</strong><p>${secret.locked ? `关系好感 ${affinity} / 160` : `暴露风险 ${esc(character.暴露风险)}%`}</p></div></aside>`;
 }
 
 function statusPanel(state) {
@@ -176,10 +186,14 @@ function statusPanel(state) {
   return `<aside class="tx-status-panel"><header><div><small>此身此世</small><strong>命格录</strong></div><span class="tx-seal small">命</span></header><div class="tx-world"><span>${esc(world.日期)} · ${esc(world.时辰)}</span><strong>${esc(world.地点)}</strong><small>${esc(world.天气)} · ${esc(world.章节)}</small></div>${meter('太虚子魂力', soul.魂力, 'soul')}<section><h3>当前牵绊 <span>${Object.keys(relationships).length}</span></h3>${entries(relationships).map(([id, relation]) => `<div class="tx-bond"><i>${esc(relation.姓名?.slice(0, 1) || '?')}</i><div><strong>${esc(relation.姓名 || id)}</strong><small>${esc(relation.关系)} · ${esc(relation.阶段)}</small></div><em>${esc(relation.好感)}/500</em></div>`).join('')}</section><section><h3>长生局 <span>${clues.length} 线索</span></h3><p class="tx-goal">${esc(record(state.长生局).目标)}</p>${clues.slice(-3).map((clue) => `<div class="tx-clue"><i></i>${esc(clue.标题)}</div>`).join('') || '<p class="tx-empty">雾锁太虚，尚待叩门。</p>'}</section><section><h3>当前任务 <span>${Object.keys(record(state.任务)).length}</span></h3>${entries(state.任务).map(([, quest]) => `<div class="tx-quest"><span>${esc(quest.状态)}</span><strong>${esc(quest.标题)}</strong><p>${esc(quest.描述)}</p></div>`).join('')}</section></aside>`;
 }
 
-function fateMarkup(state) {
+function fateMarkup(state, affinity) {
   const character = record(state.楚霁寒); const root = record(character.灵根); const soul = record(state.太虚子); const realm = record(character.境界);
-  const nodes = [...(root.已解锁 ?? []).map((name) => [name, '已通']), ...(root.未解锁 ?? []).map((name) => [name, '未启'])];
-  return `<section class="tx-module tx-fate"><header><span>INNER REALM</span><h1>混沌命盘</h1><p>公开身份只是一层水色。真正的根骨与师徒代价，皆藏在无人得见的内景中。</p></header><div class="tx-fate-board"><div class="tx-orbit one"></div><div class="tx-orbit two"></div><div class="tx-fate-core"><small>当前境界</small><strong>${esc(realm.名称)}</strong><span>${esc(realm.阶段)} · ${esc(realm.进度)}%</span></div>${nodes.map(([name, status], index) => `<div class="tx-fate-node n${index + 1} ${status === '未启' ? 'locked' : ''}"><span>${esc(name)}</span><small>${esc(status)}</small></div>`).join('')}</div><div class="tx-module-cards"><article><small>师承</small><strong>太虚子</strong><p>${esc(soul.状态)} · 魂力 ${esc(soul.魂力)}%</p></article><article><small>丹道</small><strong>${esc(record(character.丹道).品阶)}</strong><p>${esc(record(character.丹道).下一目标)}</p></article><article><small>绝密</small><strong>${esc(root.真实)}</strong><p>对外仅显露：${esc(root.对外)}</p></article></div></section>`;
+  const secret = taixuSecretIdentity(root, affinity);
+  const nodes = affinity >= 60
+    ? [...(root.已解锁 ?? []).map((name) => [name, '已通']), ...(root.未解锁 ?? []).map((name) => [name, '未启'])]
+    : [[root.对外 || '水', '公开'], ['未解', '好感不足'], ['未解', '好感不足']];
+  const alchemy = record(character.丹道);
+  return `<section class="tx-module tx-fate"><header><span>INNER REALM</span><h1>混沌命盘</h1><p>公开身份只是一层水色。真正的根骨与师徒代价，会随关系与信任逐步显现。</p></header><div class="tx-fate-board"><div class="tx-orbit one"></div><div class="tx-orbit two"></div><div class="tx-fate-core"><small>当前境界</small><strong>${esc(realm.名称)}</strong><span>${esc(realm.阶段)} · ${esc(realm.进度)}%</span></div>${nodes.map(([name, status], index) => `<div class="tx-fate-node n${index + 1} ${status === '未启' || status === '好感不足' ? 'locked' : ''}"><span>${esc(name)}</span><small>${esc(status)}</small></div>`).join('')}</div><div class="tx-module-cards"><article class="${affinity < 30 ? 'locked' : ''}"><small>师承</small><strong>${affinity < 30 ? '尚未解锁' : '太虚子'}</strong><p>${affinity < 30 ? `当前好感 ${affinity} / 30` : `${esc(soul.状态)} · 魂力 ${esc(soul.魂力)}%`}</p></article><article class="${affinity < 80 ? 'locked' : ''}"><small>丹道</small><strong>${esc(affinity < 80 ? alchemy.公开品阶 : alchemy.品阶)}</strong><p>${affinity < 80 ? `当前好感 ${affinity} / 80` : esc(alchemy.下一目标)}</p></article><article class="${secret.locked ? 'locked' : ''}"><small>绝密</small><strong>${esc(secret.label)}</strong><p>${secret.locked ? `当前好感 ${affinity} / 160` : `对外仅显露：${esc(root.对外)}`}</p></article></div></section>`;
 }
 
 function cluesMarkup(state) {
@@ -202,19 +216,41 @@ function chapterEventMarkup(state) {
 function storyMarkup(detail, state) {
   return `<section class="tx-story"><header><div><small>当前篇章</small><strong>${esc(detail.conversation.title)}</strong></div><span id="tx-generation">灵台清明</span></header><div class="tx-messages">${detail.messages.map((message) => message.playerOperation
     ? playerOperationMarkup(message.playerOperation)
-    : `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}${actionOptionsMarkup(detail.messages)}<form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><textarea id="tx-draft" rows="1" placeholder="你打算如何应对……"></textarea><button type="submit">遣</button></form></section>`;
+    : `<article class="tx-message ${message.role === 'user' ? 'user' : 'assistant'}" data-message-id="${esc(message.id)}"><header>${message.role === 'user' ? esc(detail.conversation.playerProfile?.name || '你') : '楚霁寒'}</header><div>${messageBody(message)}</div></article>`).join('')}</div>${chapterEventMarkup(state)}${actionOptionsMarkup(detail.messages)}<form class="tx-composer"><button type="button" data-stop title="停止生成">止</button><span style="position:relative;display:grid"><textarea id="tx-draft" rows="1" style="padding-right:42px" placeholder="你打算如何应对……"></textarea><button type="button" data-speech-input aria-label="开始语音输入" style="position:absolute;right:3px;bottom:2px;width:32px;height:32px"></button></span><button type="submit">遣</button></form></section>`;
 }
 
 async function renderWorkspace(root, sdk) {
+  speechInputController?.destroy();
+  speechInputController = undefined;
   const [detail, stateRow] = await Promise.all([sdk.messages.list(), sdk.state.get()]);
   const state = stateRow.value; const theme = record(state.界面).主题 || 'xuanqing';
   const background = sdk.scene.assetUrl('content/background.png'); const portrait = sdk.scene.assetUrl('content/character.png');
-  const center = workspaceMode === 'fate' ? fateMarkup(state) : workspaceMode === 'clues' ? cluesMarkup(state) : workspaceMode === 'map' ? mapMarkup(state) : storyMarkup(detail, state);
-  root.innerHTML = `<main class="tx-workspace theme-${esc(theme)}" style="--tx-bg:url('${background}')"><div class="tx-backdrop"></div><header class="tx-header"><a href="/"><span class="tx-seal">太</span><div><strong>太虚问道</strong><small>TAIXU CHRONICLES</small></div></a><div class="tx-chapter"><span>${esc(record(state.世界).章节)}</span><i></i><strong>${esc(record(state.世界).地点)}</strong></div>${themePicker(theme)}</header><div class="tx-layout">${characterPanel(state, portrait)}${center}${statusPanel(state)}</div></main>`;
+  const profiles = normalizeTaixuStatusProfiles(state, detail.conversation.playerProfile);
+  const companionStatus = characterStatusSubject === 'taixuzi' ? profiles.taixuzi : profiles.character;
+  const center = workspaceMode === 'player-status'
+    ? renderTaixuStatusProfile(profiles.player, { affinity: profiles.affinity })
+    : workspaceMode === 'character-status'
+      ? `<div class="tx-status-workspace">${renderTaixuStatusTabs(characterStatusSubject)}${renderTaixuStatusProfile(companionStatus, { affinity: profiles.affinity, privateProfile: true })}</div>`
+      : workspaceMode === 'fate' ? fateMarkup(state, profiles.affinity)
+        : workspaceMode === 'clues' ? cluesMarkup(state)
+          : workspaceMode === 'map' ? mapMarkup(state)
+            : storyMarkup(detail, state);
+  root.innerHTML = `<main class="tx-workspace theme-${esc(theme)}" style="--tx-bg:url('${background}')"><div class="tx-backdrop"></div><header class="tx-header"><a href="/"><span class="tx-seal">太</span><div><strong>太虚问道</strong><small>TAIXU CHRONICLES</small></div></a><div class="tx-chapter"><span>${esc(record(state.世界).章节)}</span><i></i><strong>${esc(record(state.世界).地点)}</strong></div>${themePicker(theme)}</header><div class="tx-layout">${characterPanel(state, portrait, profiles.affinity)}${center}${statusPanel(state)}</div></main>`;
   mountMessageViews(root, detail.messages);
   root.querySelectorAll('[data-mode]').forEach((button) => { button.onclick = () => { workspaceMode = button.dataset.mode; void renderWorkspace(root, sdk); }; });
+  root.querySelectorAll('[data-status-subject]').forEach((button) => { button.onclick = () => { characterStatusSubject = button.dataset.statusSubject; void renderWorkspace(root, sdk); }; });
   root.querySelectorAll('[data-theme]').forEach((button) => { button.onclick = async () => { await sdk.scene.action({ type: 'set-theme', theme: button.dataset.theme }); await renderWorkspace(root, sdk); }; });
-  root.querySelectorAll('[data-choice]').forEach((button) => { button.onclick = () => { const draft = root.querySelector('#tx-draft'); if (draft) { draft.value = button.dataset.choice; draft.focus(); } }; });
+  bindTaixuActionOptions(root, {
+    onSelect(value) {
+      const draft = root.querySelector('#tx-draft');
+      if (draft) { draft.value = value; draft.focus(); }
+    },
+    async onRetry() {
+      try { await sdk.messages.regenerateActionOptions(); }
+      catch { /* The static choices remain available after a failed retry. */ }
+      await renderWorkspace(root, sdk);
+    },
+  });
   root.querySelector('[data-run-chapter-event]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
     const eventId = button.dataset.runChapterEvent;
@@ -229,6 +265,14 @@ async function renderWorkspace(root, sdk) {
     finally { await renderWorkspace(root, sdk); }
   });
   const composer = root.querySelector('.tx-composer');
+  const draft = root.querySelector('#tx-draft');
+  const speechButton = root.querySelector('[data-speech-input]');
+  if (draft && speechButton) speechInputController = sdk.ui.speechInput.mount({
+    input: draft,
+    button: speechButton,
+    language: 'zh-CN',
+    labels: { start: '开始语音输入', stop: '停止语音输入', unsupported: '当前浏览器不支持语音输入', permissionDenied: '麦克风权限被拒绝', unavailable: '语音输入当前不可用', noSpeech: '未检测到语音' },
+  });
   if (composer) composer.onsubmit = async (event) => { event.preventDefault(); const draft = root.querySelector('#tx-draft'); const text = draft.value.trim(); if (!text) return; draft.value = ''; await sdk.messages.send(text); await renderWorkspace(root, sdk); };
   root.querySelector('[data-stop]')?.addEventListener('click', () => sdk.messages.stop());
   root.querySelector('.tx-messages')?.scrollTo({ top: root.querySelector('.tx-messages').scrollHeight });
@@ -243,8 +287,12 @@ export async function mount({ root, mode, sdk }) {
     const status = root.querySelector('#tx-generation');
     const busy = event.value.status !== 'idle';
     if (status) status.textContent = busy ? '推演天机中…' : '灵台清明';
+    const draft = root.querySelector('#tx-draft');
+    const send = root.querySelector('.tx-composer button[type="submit"]');
+    if (draft) draft.disabled = busy;
+    if (send) send.disabled = busy;
     if (!busy && generationWasBusy && mode === 'workspace') void renderWorkspace(root, sdk);
     generationWasBusy = busy;
   });
-  return () => { generationCleanup?.(); generationCleanup = undefined; root.replaceChildren(); };
+  return () => { generationCleanup?.(); generationCleanup = undefined; speechInputController?.destroy(); speechInputController = undefined; root.replaceChildren(); };
 }

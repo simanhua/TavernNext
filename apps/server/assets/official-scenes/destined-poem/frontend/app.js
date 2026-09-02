@@ -16,6 +16,7 @@ let context;
 let activeTab = 'chat';
 let generationView = { status: 'idle', streamedText: '', streamedReasoning: '', error: null };
 let mapCleanup;
+let speechInputController;
 const openSidebarSections = new Set(['attributes', 'effects', 'equipment', 'skills', 'inventory', 'quests']);
 
 export const DESTINED_POEM_THEMES = [
@@ -312,7 +313,9 @@ function roleplayDocumentMarkup(message) {
   if (!Array.isArray(blocks)) return renderDestinedPoemMessage(message.content, { idPrefix: `message-${message.id}` });
   return blocks.map((block, index) => block.type === 'scene-view'
     ? sceneViewMarkup(block)
-    : renderDestinedPoemMessage(block.content || '', { idPrefix: `message-${message.id}-${index}` })).join('');
+    : block.type === 'action-options'
+      ? renderDestinedPoemMessage(`<options>\n${block.options.map((option, optionIndex) => `${optionIndex + 1}. ${option.text}`).join('\n')}\n</options>`, { idPrefix: `message-${message.id}-${index}` })
+      : renderDestinedPoemMessage(block.content || '', { idPrefix: `message-${message.id}-${index}` })).join('');
 }
 
 function streamingMarkup() {
@@ -363,6 +366,8 @@ function diagnosticMarkup(diagnostics, messageId) {
 }
 
 async function renderWorkspace() {
+  speechInputController?.destroy();
+  speechInputController = undefined;
   mapCleanup?.();
   mapCleanup = undefined;
   const [detail, stateRow] = await Promise.all([request('messages.list'), request('state.get')]);
@@ -389,7 +394,13 @@ async function renderWorkspace() {
       const operation = message.playerOperation !== undefined;
       const menu = operation ? '' : `<menu><button data-op="edit" data-id="${message.id}">编辑</button><button data-op="delete" data-id="${message.id}">删除</button>${tailAssistant ? `<button data-op="regenerate" data-id="${message.id}">重生成</button><button data-op="swipe" data-id="${message.id}">换一个回复</button>` : ''}</menu>`;
       return `<article class="message ${operation ? 'player-operation' : message.role}">${message.role === 'user' ? '<span class="speaker-rune">你</span>' : ''}<div class="message-body">${messageMarkup(message)}</div>${operation ? '' : diagnosticMarkup(diagnostics, message.id)}${menu}</article>`;
-    }).join('') || '<div class="empty-story"><i>◇</i><p>诗篇尚未落下第一行文字。</p></div>'}</div><div class="composer-wrap"><div class="composer"><textarea id="draft" placeholder="你准备做什么？"></textarea><button class="action primary" id="send" aria-label="发送">➤</button><button class="action" id="stop">停止</button></div><div id="generation-status" class="generation-status"></div></div></div>`;
+    }).join('') || '<div class="empty-story"><i>◇</i><p>诗篇尚未落下第一行文字。</p></div>'}</div><div class="composer-wrap"><div class="composer"><textarea id="draft" placeholder="你准备做什么？"></textarea><button class="action" id="voice-input" type="button" aria-label="开始语音输入"></button><button class="action primary" id="send" aria-label="发送">➤</button><button class="action" id="stop">停止</button></div><div id="generation-status" class="generation-status"></div></div></div>`;
+    speechInputController = sdk.ui.speechInput.mount({
+      input: document.querySelector('#draft'),
+      button: document.querySelector('#voice-input'),
+      language: 'zh-CN',
+      labels: { start: '开始语音输入', stop: '停止语音输入', unsupported: '当前浏览器不支持语音输入', permissionDenied: '麦克风权限被拒绝', unavailable: '语音输入当前不可用', noSpeech: '未检测到语音' },
+    });
     bindDestinedPoemMessageBlocks(area, (value) => {
       const draft = document.querySelector('#draft');
       if (!draft) return;
@@ -462,6 +473,8 @@ export async function mount(input) {
   return () => {
     unsubscribeTheme();
     unsubscribeGeneration();
+    speechInputController?.destroy();
+    speechInputController = undefined;
     mapCleanup?.();
     mapCleanup = undefined;
     root.onclick = null;

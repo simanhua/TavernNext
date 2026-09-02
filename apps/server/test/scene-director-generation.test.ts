@@ -10,6 +10,7 @@ import {
   type Usage,
 } from '@earendil-works/pi-ai';
 import type { PiAgentModelRuntime } from '@tavernnext/provider-openai-compatible';
+import { replaceRoleplayActionOptions } from '@tavernnext/domain';
 import { TokenizerId } from '@tavernnext/tokenizer-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -68,11 +69,26 @@ const model: Model<'openai-completions'> = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4_096,
 };
 
+const generatedActionOptions = [
+  { kind: 'smooth', text: 'Observe the archive door.' },
+  { kind: 'smooth', text: 'Ask Aster about the seal.' },
+  { kind: 'engage', text: 'Challenge Aster to explain the warning.' },
+  { kind: 'advance', text: 'Enter the archive at dawn.' },
+  { kind: 'mainline', text: 'Follow the hidden catalog clue.' },
+  { kind: 'twist', text: 'Trust the unexpected rival archivist.' },
+  { kind: 'dark', text: 'Open the forbidden lower vault.' },
+];
+const generatedActionOptionsBlock = {
+  type: 'action-options',
+  options: generatedActionOptions.map((option, index) => ({ id: `option-${index + 1}`, ...option })),
+};
+
 function completedRuntime(
   outputs: string[],
   contexts: Context[] = [],
   requests: Array<{ options: Record<string, unknown>; payload: unknown }> = [],
   runtimeModel: PiAgentModelRuntime['model'] = model,
+  stageActionOptions = true,
 ): PiAgentModelRuntime {
   return {
     model: runtimeModel,
@@ -88,7 +104,9 @@ function completedRuntime(
           })),
         }),
       });
-      const text = outputs.shift() ?? '';
+      const forcedTool = (options as unknown as { toolChoice?: { function?: { name?: string } } })
+        .toolChoice?.function?.name;
+      const text = forcedTool === 'action_options_stage' && stageActionOptions ? '' : outputs.shift() ?? '';
       const events = createAssistantMessageEventStream();
       queueMicrotask(async () => {
         requests.push({
@@ -101,6 +119,24 @@ function completedRuntime(
           },
           payload: await options?.onPayload?.({ model: runtimeModel.id, messages: [] }, runtimeModel),
         });
+        if (forcedTool === 'action_options_stage' && stageActionOptions) {
+          const toolCall = {
+            type: 'toolCall' as const,
+            id: `action-options-${contexts.length}`,
+            name: 'action_options_stage',
+            arguments: { options: generatedActionOptions },
+          };
+          const partial: AssistantMessage = {
+            role: 'assistant', content: [toolCall], api: runtimeModel.api, provider: runtimeModel.provider,
+            model: runtimeModel.id, usage: usage(), stopReason: 'pending', timestamp: Date.now(),
+          };
+          events.push({ type: 'start', partial });
+          events.push({ type: 'toolcall_end', contentIndex: 0, toolCall, partial });
+          const message: AssistantMessage = { ...partial, stopReason: 'toolUse' };
+          events.push({ type: 'done', reason: 'toolUse', message });
+          events.end(message);
+          return;
+        }
         const partial: AssistantMessage = {
           role: 'assistant', content: [], api: runtimeModel.api, provider: runtimeModel.provider, model: runtimeModel.id,
           usage: usage(), stopReason: 'pending', timestamp: Date.now(),
@@ -445,7 +481,7 @@ describe('per-Save Pi Scene Director', () => {
     expect(contexts[0]!.tools?.map((tool) => tool.name).join(' ')).not.toMatch(
       /bash|shell|file|network|http|code|exec/i,
     );
-    expect(contexts[1]!.systemPrompt).toContain('Write with lyrical cadence.');
+    expect(contexts[2]!.systemPrompt).toContain('Write with lyrical cadence.');
     expect(requests[0]).toMatchObject({
       options: {
         temperature: 0.4,
@@ -463,7 +499,7 @@ describe('per-Save Pi Scene Director', () => {
         stop: expect.any(Array),
       }),
     });
-    expect(contexts[1]!.messages.some((message) => (
+    expect(contexts[2]!.messages.some((message) => (
       message.role === 'assistant' && message.content.some((block) => block.type === 'text' && block.text === 'First agent reply')
     ))).toBe(true);
     expect(seeded.repositories.messageVariants.listByConversationId(seeded.conversation.id).map((variant) => ({
@@ -472,11 +508,11 @@ describe('per-Save Pi Scene Director', () => {
     }))).toEqual([
       {
         content: 'First agent reply',
-        document: { version: 1, blocks: [{ type: 'markdown', content: 'First agent reply' }] },
+        document: { version: 1, blocks: [{ type: 'markdown', content: 'First agent reply' }, generatedActionOptionsBlock] },
       },
       {
         content: 'Second agent reply',
-        document: { version: 1, blocks: [{ type: 'markdown', content: 'Second agent reply' }] },
+        document: { version: 1, blocks: [{ type: 'markdown', content: 'Second agent reply' }, generatedActionOptionsBlock] },
       },
     ]);
     const runs = seeded.repositories.agentRuns.listByConversationId(seeded.conversation.id);
@@ -551,7 +587,7 @@ describe('per-Save Pi Scene Director', () => {
     });
   });
 
-  it('promotes an enabled SUOT preset request into a final player-visible UI contract', async () => {
+  it('filters legacy SUOT instructions and stages typed Action Options after the narrative', async () => {
     const contexts: Context[] = [];
     const seeded = await context(() => completedRuntime(['Reply with generated choices'], contexts));
     expect(seeded.repositories.saveAgentConfigurations.update(seeded.configuration.id, 0, {
@@ -570,11 +606,57 @@ describe('per-Save Pi Scene Director', () => {
     expect(parse((await generate(seeded.app, 0)).payload).at(-1)).toEqual({
       event: 'completed', data: { finishReason: 'stop' },
     });
-    const system = contexts[0]?.systemPrompt ?? '';
-    expect(system).toContain('explicitly configured player-visible UI blocks');
-    expect(system).toContain('[TavernNext player-visible action option contract]');
-    expect(system).toContain('exactly seven concise, context-specific actions');
-    expect(system).toContain('Put nothing after </SUOT>');
+    const narrativeSystem = contexts[0]?.systemPrompt ?? '';
+    expect(narrativeSystem).toContain('TavernNext generates typed Action Options after the narrative');
+    expect(narrativeSystem).not.toContain('End with <SUOT>');
+    expect(contexts[1]?.systemPrompt).toContain('post-narrative Action Options planner');
+    const variant = seeded.repositories.messageVariants.listByConversationId(ids.conversation).at(-1)!;
+    expect(variant.content).toBe('Reply with generated choices');
+    expect(variant.document.blocks.at(-1)).toEqual(generatedActionOptionsBlock);
+    const withoutOptions = replaceRoleplayActionOptions(variant.document, []);
+    const removed = seeded.repositories.messageVariants.update(variant.id, variant.revision, {
+      document: withoutOptions,
+      content: variant.content,
+    });
+    expect(removed.ok).toBe(true);
+    const retry = await seeded.app.inject({
+      method: 'POST',
+      url: `/api/messages/${variant.messageId}/action-options/regenerate`,
+      payload: {
+        conversationId: ids.conversation,
+        variantId: variant.id,
+        variantRevision: removed.ok ? removed.value.revision : -1,
+      },
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({
+      content: 'Reply with generated choices',
+      document: { blocks: expect.arrayContaining([generatedActionOptionsBlock]) },
+    });
+  });
+
+  it('commits the narrative with a failed Action Options activity when the post pass omits the Tool', async () => {
+    const contexts: Context[] = [];
+    const seeded = await context(() => completedRuntime(
+      ['Narrative survives.', 'No tool call.', 'Still no tool call.'],
+      contexts,
+      [],
+      model,
+      false,
+    ));
+    expect(parse((await generate(seeded.app, 0)).payload).at(-1)).toEqual({
+      event: 'completed', data: { finishReason: 'stop' },
+    });
+    const variant = seeded.repositories.messageVariants.listByConversationId(ids.conversation).at(-1)!;
+    expect(variant.content).toBe('Narrative survives.');
+    expect(variant.document.blocks).toEqual([{ type: 'markdown', content: 'Narrative survives.' }]);
+    expect(seeded.repositories.agentRuns.listByConversationId(ids.conversation).at(-1)).toMatchObject({
+      status: 'completed',
+      diagnostics: expect.arrayContaining(['action_options_generation_failed']),
+      activities: expect.arrayContaining([expect.objectContaining({
+        kind: 'stage-options', status: 'failed',
+      })]),
+    });
   });
 
   it('tiers activated Worldbook rules to about half of the Agent prompt while keeping deferred lore queryable', async () => {

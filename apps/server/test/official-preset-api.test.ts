@@ -39,7 +39,7 @@ describe('Official Preset API', () => {
       'apps/server/assets/official-scenes/taixu-chronicles/content/preset.json',
     ]) {
       const id = officialPresetIdForBytes(new Uint8Array(readFileSync(resolve(path))), path);
-      expect(id).toSatisfy((value: unknown) => typeof value === 'string' && isOfficialPresetId(value));
+      expect(id, path).toSatisfy((value: unknown) => typeof value === 'string' && isOfficialPresetId(value));
     }
 
     const listed = await app.inject({ method: 'GET', url: '/api/presets' });

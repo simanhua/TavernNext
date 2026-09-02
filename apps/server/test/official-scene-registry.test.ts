@@ -132,7 +132,7 @@ describe('official Scene registry', () => {
     }).ok).toBe(true);
     expect(upgradeInstalledOfficialScenes(database, directory, repositories)).toEqual([]);
     const upgraded = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
-    expect(upgraded.version).toBe('2.17.0');
+    expect(upgraded.version).toBe('2.17.2');
     expect(upgraded.backingPresetId).toBe(originalPresetId);
     expect(repositories.presets.get(upgraded.backingPresetId!)?.name).toBe('命定之诗 Kemini5 3.8 专属预设');
     expect(repositories.presets.get(originalPresetId)).toBeDefined();
@@ -224,7 +224,7 @@ describe('official Scene registry', () => {
     expect(downgraded.ok).toBe(true);
     expect(upgradeInstalledOfficialScenes(database, directory, repositories)).toEqual([]);
     const upgraded = repositories.installedScenes.get(SCENE_LAB_SCENE_ID)!;
-    expect(upgraded.version).toBe('1.0.1');
+    expect(upgraded.version).toBe('1.0.3');
     expect(repositories.conversationSceneStates.getByConversationId(created.json().id)?.value).toEqual({
       experimentName: '信号观测', phase: 'ready', signal: 0,
     });
@@ -262,6 +262,6 @@ describe('official Scene registry', () => {
     expect(upgradeInstalledOfficialScenes(database, directory, repositories)).toEqual([{
       sceneId: DESTINED_POEM_SCENE_ID, code: 'official_scene_install_record_invalid',
     }]);
-    expect(repositories.installedScenes.get(SCENE_LAB_SCENE_ID)?.version).toBe('1.0.1');
+    expect(repositories.installedScenes.get(SCENE_LAB_SCENE_ID)?.version).toBe('1.0.3');
   }, 30_000);
 });

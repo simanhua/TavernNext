@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev -w @tavernnext/server\" \"npm:dev -w @tavernnext/web\"",
     "build": "tsc -b && npm run build -w @tavernnext/web",
-    "test": "vitest run --no-file-parallelism --maxWorkers 1",
+    "test": "node scripts/run-tests.mjs",
     "typecheck": "tsc -b",
     "setup:e2e": "playwright install chromium",
     "test:e2e": "npm run setup:e2e && playwright test",

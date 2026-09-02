@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { SceneLibraryPage } from '../features/scenes/SceneLibraryPage.js';
 import { SceneDetailPage } from '../features/scenes/SceneDetailPage.js';
 import { SceneRuntimePage } from '../features/scenes/SceneRuntimePage.js';
+import { ChatPage } from '../features/chat/ChatPage.js';
 import { SettingsPage } from '../features/settings/SettingsPage.js';
 import { useI18n } from './i18n.js';
 import { useTheme } from './theme.js';
@@ -51,6 +52,7 @@ export const appRoutes = [
   { path: '/scenes/:sceneId', element: <Layout><SceneDetailPage /></Layout> },
   { path: '/scene-runtime/:sceneId/new', element: <SceneRuntimePage mode="setup" /> },
   { path: '/scene-runtime/:sceneId/conversations/:conversationId', element: <SceneRuntimePage mode="workspace" /> },
+  { path: '/legacy-chat', element: <ChatPage /> },
   { path: '/settings', element: <Layout><SettingsPage /></Layout> },
 ];
 

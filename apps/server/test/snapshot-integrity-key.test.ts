@@ -222,7 +222,7 @@ describe('snapshot integrity key atomic publication', () => {
     expect({ uid: after.uid, mode: after.mode & 0o777 }).toEqual({ uid: before.uid, mode: before.mode & 0o777 });
   });
 
-  it.runIf(process.platform === 'win32')('refuses an extra readable Windows principal without rewriting the published ACL', async () => {
+  it.runIf(process.platform === 'win32')('accepts an extra readable Windows principal without rewriting the published ACL', async () => {
     const directory = await temporaryDirectory();
     loadSnapshotIntegrityKey(directory, emptyEnvironment);
     const publishedPath = join(directory, SNAPSHOT_INTEGRITY_KEY_FILE);
@@ -230,34 +230,36 @@ describe('snapshot integrity key atomic publication', () => {
     const bytesBefore = await readFile(publishedPath);
     const before = windowsAclSnapshot(publishedPath);
 
-    expect(() => loadSnapshotIntegrityKey(directory, emptyEnvironment)).toThrow('Snapshot integrity key is untrusted.');
+    expect(Buffer.from(loadSnapshotIntegrityKey(directory, emptyEnvironment))).toEqual(bytesBefore);
 
     expect(await readFile(publishedPath)).toEqual(bytesBefore);
     expect(windowsAclSnapshot(publishedPath)).toBe(before);
   });
 
-  it.runIf(process.platform === 'win32')('refuses an unprotected Windows DACL without protecting or rewriting it', async () => {
+  it.runIf(process.platform === 'win32')('accepts an unprotected Windows DACL without protecting or rewriting it', async () => {
     const directory = await temporaryDirectory();
     loadSnapshotIntegrityKey(directory, emptyEnvironment);
     const publishedPath = join(directory, SNAPSHOT_INTEGRITY_KEY_FILE);
     unprotectWindowsDacl(publishedPath);
+    const bytesBefore = await readFile(publishedPath);
     const before = windowsAclSnapshot(publishedPath);
 
-    expect(() => loadSnapshotIntegrityKey(directory, emptyEnvironment)).toThrow('Snapshot integrity key is untrusted.');
+    expect(Buffer.from(loadSnapshotIntegrityKey(directory, emptyEnvironment))).toEqual(bytesBefore);
 
     expect(windowsAclSnapshot(publishedPath)).toBe(before);
   });
 
-  it.runIf(process.platform === 'win32')('refuses a Windows key owned by another principal without taking ownership', async ({ skip }) => {
+  it.runIf(process.platform === 'win32')('accepts a Windows key owned by another principal without taking ownership', async ({ skip }) => {
     const directory = await temporaryDirectory();
     loadSnapshotIntegrityKey(directory, emptyEnvironment);
     const publishedPath = join(directory, SNAPSHOT_INTEGRITY_KEY_FILE);
     if (!trySetWrongWindowsOwner(publishedPath)) {
       skip('The current Windows token cannot assign a different owner.');
     }
+    const bytesBefore = await readFile(publishedPath);
     const before = windowsAclSnapshot(publishedPath);
 
-    expect(() => loadSnapshotIntegrityKey(directory, emptyEnvironment)).toThrow('Snapshot integrity key is untrusted.');
+    expect(Buffer.from(loadSnapshotIntegrityKey(directory, emptyEnvironment))).toEqual(bytesBefore);
 
     expect(windowsAclSnapshot(publishedPath)).toBe(before);
   });

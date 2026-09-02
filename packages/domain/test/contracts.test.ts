@@ -8,6 +8,7 @@ import {
   roleplayDocumentFromMarkdown,
   roleplayDocumentPlainText,
   RoleplayDocumentSchema,
+  replaceRoleplayActionOptions,
   appendRoleplayMarkdown,
   SceneManifestSchema,
 } from '../src/index.js';
@@ -49,6 +50,18 @@ describe('domain contracts', () => {
       ],
     });
     expect(roleplayDocumentPlainText(withView)).toBe('Before after');
+    const withOptions = replaceRoleplayActionOptions(withView, [
+      { id: 'option-1', kind: 'smooth', text: 'Observe the gate.' },
+      { id: 'option-2', kind: 'smooth', text: 'Ask the guide.' },
+      { id: 'option-3', kind: 'engage', text: 'Challenge the warning.' },
+      { id: 'option-4', kind: 'advance', text: 'Enter the city at dawn.' },
+      { id: 'option-5', kind: 'mainline', text: 'Follow the hidden clue.' },
+      { id: 'option-6', kind: 'twist', text: 'Trust the unexpected rival.' },
+      { id: 'option-7', kind: 'dark', text: 'Take the forbidden road.' },
+    ]);
+    expect(withOptions.blocks.at(-1)).toMatchObject({ type: 'action-options', options: expect.any(Array) });
+    expect(roleplayDocumentPlainText(withOptions)).toBe('Before after');
+    expect(replaceRoleplayActionOptions(withOptions, []).blocks).toEqual(withView.blocks);
     expect(appendRoleplayMarkdown(withView, ' continued').blocks).toEqual([
       ...withView.blocks.slice(0, -1),
       { type: 'markdown', content: 'after continued' },

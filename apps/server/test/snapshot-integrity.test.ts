@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 describe('snapshot integrity trust anchor', () => {
-  it('creates one owner-private 256-bit local key and reuses it across app restarts', async () => {
+  it('creates one 256-bit local key and reuses it across app restarts', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tavernnext-integrity-key-'));
     directories.push(directory);
     const config = {

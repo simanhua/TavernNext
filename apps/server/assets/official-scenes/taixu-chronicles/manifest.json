@@ -1,7 +1,7 @@
 {
   "id": "018f2000-0000-7000-8000-000000000003",
   "slug": "taixu-chronicles",
-  "version": "1.3.3",
+  "version": "1.3.8",
   "name": "太虚问道",
   "summary": "与楚霁寒同行，藏锋入宗，在九州修行中追索万年前的长生局。",
   "description": "由楚霁寒角色卡转化的官方 TavernNext 修仙 Scene。每个存档拥有独立的境界、太虚子魂力、关系、任务、线索与九州地图状态。",
@@ -9,7 +9,7 @@
   "minimumTavernNextVersion": "1.0.0",
   "sceneSdkVersion": 2,
   "frontendEntry": "frontend/app.js",
-  "frontendStyles": ["frontend/styles.css", "frontend/themes.css", "frontend/chapter.css", "frontend/action-options.css"],
+  "frontendStyles": ["frontend/styles.css", "frontend/themes.css", "frontend/chapter.css", "frontend/action-options.css", "frontend/status-profiles.css"],
   "serverEntry": "server/index.mjs",
   "coverPath": "content/character.png",
   "backingCharacterPath": "content/character.png",
@@ -45,6 +45,20 @@
           "天气": { "type": "string" }, "章节": { "type": "string" }
         }
       },
+      "玩家": {
+        "type": "object", "additionalProperties": false,
+        "required": ["姓名", "身份", "品阶", "境界", "基本属性", "物品", "技能"],
+        "properties": {
+          "姓名": { "type": "string" }, "身份": { "type": "string" }, "品阶": { "type": "string" },
+          "境界": {
+            "type": "object", "additionalProperties": false, "required": ["名称", "阶段", "进度"],
+            "properties": { "名称": { "type": "string" }, "阶段": { "type": "string" }, "进度": { "type": "number", "minimum": 0, "maximum": 100 } }
+          },
+          "基本属性": { "type": "object", "additionalProperties": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+          "物品": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "品阶", "描述"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "品阶": { "type": "string" }, "描述": { "type": "string" } } } },
+          "技能": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "品阶", "描述"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "品阶": { "type": "string" }, "描述": { "type": "string" } } } }
+        }
+      },
       "楚霁寒": {
         "type": "object", "additionalProperties": false,
         "required": ["姓名", "年龄", "公开身份", "衣着", "境界", "灵根", "功法", "丹道", "背包", "暴露风险"],
@@ -63,9 +77,12 @@
               "未解锁": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
             }
           },
+          "基本属性": { "type": "object", "additionalProperties": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
           "功法": { "type": "array", "items": { "type": "string" } },
           "丹道": { "type": "object", "additionalProperties": true },
           "背包": { "type": "array", "items": { "type": "string" } },
+          "状态栏物品": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "品阶", "描述", "解锁好感"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "品阶": { "type": "string" }, "描述": { "type": "string" }, "解锁好感": { "type": "number", "minimum": 0, "maximum": 500 } } } },
+          "状态栏技能": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "品阶", "描述", "解锁好感"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "品阶": { "type": "string" }, "描述": { "type": "string" }, "解锁好感": { "type": "number", "minimum": 0, "maximum": 500 } } } },
           "暴露风险": { "type": "number", "minimum": 0, "maximum": 100 }
         }
       },
@@ -75,7 +92,9 @@
         "properties": {
           "状态": { "type": "string" }, "魂力": { "type": "number", "minimum": 0, "maximum": 100 },
           "可接管次数": { "type": "integer", "minimum": 0 }, "沉睡至": { "type": "string" },
-          "还魂丹进度": { "type": "number", "minimum": 0, "maximum": 100 }
+          "还魂丹进度": { "type": "number", "minimum": 0, "maximum": 100 },
+          "状态栏物品": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "品阶", "描述", "解锁好感"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "品阶": { "type": "string" }, "描述": { "type": "string" }, "解锁好感": { "type": "number", "minimum": 0, "maximum": 500 } } } },
+          "状态栏技能": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "名称", "品阶", "描述", "解锁好感"], "properties": { "id": { "type": "string" }, "名称": { "type": "string" }, "品阶": { "type": "string" }, "描述": { "type": "string" }, "解锁好感": { "type": "number", "minimum": 0, "maximum": 500 } } } }
         }
       },
       "第一章": {
@@ -177,6 +196,8 @@
     "frontend/app.js",
     "frontend/action-options.mjs",
     "frontend/action-options.css",
+    "frontend/status-profiles.mjs",
+    "frontend/status-profiles.css",
     "frontend/styles.css",
     "frontend/themes.css",
     "frontend/chapter.css",
