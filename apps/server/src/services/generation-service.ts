@@ -40,6 +40,7 @@ import {
 import {
   SceneDirectorExecution,
   SceneDirectorRunError,
+  createSceneDirectorToolset,
   type SceneDirectorLimits,
   type SceneDirectorTerminal,
   type SceneDirectorEvent,
@@ -53,6 +54,7 @@ import {
   type SaveMemoryService,
 } from './save-memory-service.js';
 import { generatePostNarrativeActionOptions } from './action-options-runtime.js';
+import { TurnWorkspace } from './turn-workspace.js';
 
 interface ActiveGeneration {
   generationId: string;
@@ -256,7 +258,7 @@ export function createGenerationService(options: {
         const next = await providerIterator.next();
         if (next.done) break;
         const event = next.value;
-        if (event.type === 'agent_raw_delta') {
+        if (event.type === 'agent_narrative_delta') {
           if (event.text !== '') {
             content += event.text;
             hasDelta = true;
@@ -668,6 +670,32 @@ export function createGenerationService(options: {
             sceneViewRuntimeFactory = createSceneViewRuntimeFactory({ scene, host, conversation });
           }
         }
+        const planningWorkspace = new TurnWorkspace({
+          generationId,
+          payload: {
+            seed: input.seed ?? `${input.conversationId}:${input.conversationRevision}`,
+            executable: { worldbooks: [] },
+          },
+          ...(memoryConfiguration?.enabled !== true ? {} : { memoryQuery: async () => [] }),
+          ...(sceneTransition === undefined ? {} : {
+            state: {
+              revision: sceneTransition.stateRevision,
+              value: sceneTransition.baseValue,
+              manifest: sceneTransition.manifest,
+            },
+          }),
+        });
+        const plannedToolset = createSceneDirectorToolset({
+          workspace: planningWorkspace,
+          ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
+          ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
+        });
+        scenePromptContext = {
+          ...scenePromptContext,
+          memoryRecall,
+          memoryQueryCorpus,
+          toolDescriptors: plannedToolset.toolDescriptors,
+        };
         let sceneDirector: SceneDirectorExecution | undefined;
         const beforeAccept = async (candidate: AcceptedPromptSnapshot) => {
           if (!candidate.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
@@ -689,17 +717,12 @@ export function createGenerationService(options: {
             playerInput,
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
-            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
-            ...(candidate.payload.memoryRecall.length === 0 ? {} : { recalledMemories: candidate.payload.memoryRecall }),
             ...(memoryConfiguration?.enabled !== true ? {} : {
               memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
                 candidate.payload.memoryQueryCorpus,
                 query,
                 limit,
               ),
-            }),
-            ...(scenePromptContext?.additions === undefined ? {} : {
-              scenePromptAdditions: scenePromptContext.additions,
             }),
             ...(sceneTransition === undefined ? {} : {
               workspaceState: {
@@ -753,17 +776,12 @@ export function createGenerationService(options: {
             playerInput,
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
-            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
-            ...(accepted.payload.memoryRecall.length === 0 ? {} : { recalledMemories: accepted.payload.memoryRecall }),
             ...(memoryConfiguration?.enabled !== true ? {} : {
               memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
                 accepted.payload.memoryQueryCorpus,
                 query,
                 limit,
               ),
-            }),
-            ...(scenePromptContext?.additions === undefined ? {} : {
-              scenePromptAdditions: scenePromptContext.additions,
             }),
             ...(sceneTransition === undefined ? {} : {
               workspaceState: {

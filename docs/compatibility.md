@@ -16,7 +16,8 @@ Import/schema failures remain at the inspection or transaction boundary: a block
 
 ## Preset compatibility and Agent execution
 
-- A `chat` Preset can initialize or explicitly replace one Save Agent Configuration. Its copied prompt definitions/order, roles, enabled flags, supported sampler settings, stop strings, and token budget participate beneath the platform, world, and Character precedence layers.
+- A `chat` Preset can initialize or explicitly replace one Save Agent Configuration. Its copied prompt definitions/order, markers, roles, enabled flags, supported sampler settings, stop strings, token budget, dialogue examples, Author's Note placement, Worldbook placement, macros, and history budgeting compile into the Save Agent Prompt Plan beneath a minimal immutable platform envelope.
+- The Generation Snapshot's Chat messages and tool descriptors are the exact initial prompt material executed and budgeted by the Save Agent. Required Character, Persona, Worldbook, and history markers keep their Preset position when present and receive a deterministic fallback when absent; in-history system messages are preserved as labelled user instructions because the provider-neutral Agent message model has one top-level system prompt.
 - Text, Context, Instruct, System, and Reasoning Presets are detected, editable, preserved, and exportable library data. They have no Agent Runtime execution slot.
 - Provider/model selection is global and must resolve to a tool-capable Pi Chat model. Provider credentials remain server-side.
 

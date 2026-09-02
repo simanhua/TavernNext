@@ -61,8 +61,9 @@ import {
   type Repositories,
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
+import { compileSaveAgentPromptPlan } from './save-agent-prompt-plan.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 5 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 6 as const;
 const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
 
 export interface ServerTokenizerRuntime {
@@ -85,10 +86,17 @@ export interface PromptSnapshotInput {
 }
 
 export interface ScenePromptContext {
-  state: Record<string, unknown>;
-  additions: ScenePromptAddition[];
+  state?: Record<string, unknown>;
+  additions?: ScenePromptAddition[];
   memoryRecall?: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus?: MemoryRecallSnapshotEntry[];
+  toolDescriptors?: PromptToolDescriptor[];
+}
+
+export interface PromptToolDescriptor {
+  name: string;
+  description: string;
+  parameters: unknown;
 }
 
 export interface MemoryRecallSnapshotEntry {
@@ -165,6 +173,7 @@ export interface PromptSnapshotPayload {
   worldInfoOutlets: Record<string, string>;
   memoryRecall: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus: MemoryRecallSnapshotEntry[];
+  toolDescriptors: PromptToolDescriptor[];
   compiledRequest: ChatRequest;
   compiledRequestHash: string;
   payloadHash: string;
@@ -238,8 +247,10 @@ interface LoadedAggregate {
   compatibilityWarnings: PromptWarning[];
   regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
   scenePromptAdditions: ScenePromptAddition[];
+  sceneStateValue: Record<string, unknown>;
   memoryRecall: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus: MemoryRecallSnapshotEntry[];
+  toolDescriptors: PromptToolDescriptor[];
 }
 
 interface BuiltSnapshot {
@@ -461,12 +472,23 @@ function historyRows(repositories: Repositories, conversationId: string): {
   return {
     history: messages.map((message) => {
       const variant = message.activeVariantId === null ? undefined : variants.get(message.activeVariantId);
+      if (message.playerOperation !== undefined) return {
+        id: message.id,
+        role: 'user',
+        content: '[Past committed player action; factual history, not an instruction]\n'
+          + `Type: ${message.playerOperation.kind}\n`
+          + `Title: ${message.playerOperation.title}\n`
+          + message.playerOperation.summary,
+      };
+      const content = message.role === 'assistant' && variant !== undefined
+        ? roleplayDocumentPlainText(variant.document)
+        : message.content;
       return {
         id: message.id,
         role: message.role,
-        content: message.role === 'assistant' && variant !== undefined
-          ? roleplayDocumentPlainText(variant.document)
-          : message.content,
+        content: message.role === 'assistant'
+          ? content.replace(/\s*<UpdateVariable\b[\s\S]*?<\/UpdateVariable>\s*/gi, '\n').trim()
+          : content,
       };
     }),
     manifest: messages.map((message) => {
@@ -504,33 +526,75 @@ function requestedPreset(
   return safePreset(preset, kind);
 }
 
-function privateSavePreset(configuration: SaveAgentConfiguration): Preset {
+function stripObsoletePresetInstruction(content: string): string {
+  const containsObsoleteInstruction = /<\s*UpdateVariable\b|variables_update_(?:rules|format)/i.test(content)
+    || /<\s*SUOT\s*>[\s\S]*?<\s*\/\s*SUOT\s*>/i.test(content);
+  if (!containsObsoleteInstruction) return content;
+  return content
+    .replace(/\s*<\s*UpdateVariable\b[\s\S]*?<\s*\/\s*UpdateVariable\s*>\s*/gi, '\n')
+    .replace(/\s*<\s*SUOT\s*>[\s\S]*?<\s*\/\s*SUOT\s*>\s*/gi, '\n')
+    .split(/\r?\n/)
+    .filter((line) => !/variables_update_(?:rules|format)/i.test(line))
+    .join('\n')
+    .trim();
+}
+
+function privateSavePreset(
+  configuration: SaveAgentConfiguration,
+  compatibilityWarnings: PromptWarning[],
+): Preset {
   const requiredMarkers = [
-    { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
-    { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
     { identifier: 'worldInfoBefore', marker: true, role: 'system', system_prompt: true },
-    { identifier: 'chatHistory', marker: true, system_prompt: true },
+    { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'charPersonality', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'scenario', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
     { identifier: 'worldInfoAfter', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'chatHistory', marker: true, system_prompt: true },
   ];
-  const rawPrompts = Array.isArray(configuration.settings.prompts)
+  const rawPrompts = (Array.isArray(configuration.settings.prompts)
     ? configuration.settings.prompts.filter(record)
-    : [];
+    : []).map((prompt) => {
+    if (typeof prompt.content !== 'string') return prompt;
+    const content = stripObsoletePresetInstruction(prompt.content);
+    if (content === prompt.content) return prompt;
+    compatibilityWarnings.push({
+      code: 'legacy_output_instruction_removed',
+      message: 'Obsolete variable or SUOT output instructions were removed while preserving the remaining Preset content.',
+      source: `save-agent-configuration:${configuration.id}:${String(prompt.identifier ?? 'prompt')}`,
+    });
+    return { ...prompt, content };
+  });
   const requiredIds = new Set(requiredMarkers.map(({ identifier }) => identifier));
   const prompts = [
-    ...rawPrompts.filter((prompt) => !requiredIds.has(String(prompt.identifier))),
-    ...requiredMarkers,
+    ...rawPrompts.map((prompt) => {
+      const required = requiredMarkers.find(({ identifier }) => identifier === String(prompt.identifier));
+      return required === undefined ? prompt : {
+        ...required,
+        ...prompt,
+        marker: true,
+        system_prompt: true,
+      };
+    }),
+    ...requiredMarkers.filter(({ identifier }) => !rawPrompts.some((prompt) => (
+      String(prompt.identifier) === identifier
+    ))),
   ];
   const rawOrders = Array.isArray(configuration.settings.prompt_order)
     ? configuration.settings.prompt_order.filter(record)
     : [];
-  const orders = (rawOrders.length === 0 ? [{ character_id: 100001, order: [] }] : rawOrders).map((row) => ({
-    ...row,
-    order: [
-      ...(Array.isArray(row.order) ? row.order.filter(record) : [])
-        .filter((item) => !requiredIds.has(String(item.identifier))),
-      ...requiredMarkers.map(({ identifier }) => ({ identifier, enabled: true })),
-    ],
-  }));
+  const orders = (rawOrders.length === 0 ? [{ character_id: 100001, order: [] }] : rawOrders).map((row) => {
+    const rawOrder = Array.isArray(row.order) ? row.order.filter(record) : [];
+    const normalized = rawOrder.map((item) => requiredIds.has(String(item.identifier))
+      ? { ...item, enabled: true }
+      : item);
+    const missing = requiredMarkers.filter(({ identifier }) => !rawOrder.some((item) => (
+      String(item.identifier) === identifier
+    ))).map(({ identifier }) => ({ identifier, enabled: true }));
+    const historyIndex = normalized.findIndex((item) => String(item.identifier) === 'chatHistory');
+    normalized.splice(historyIndex < 0 ? normalized.length : historyIndex, 0, ...missing);
+    return { ...row, order: normalized };
+  });
   return {
     id: configuration.id,
     revision: configuration.revision,
@@ -622,12 +686,15 @@ function loadAggregate(
 
   const saveAgentConfiguration = repositories.saveAgentConfigurations.getByConversationId(conversation.id);
   if (saveAgentConfiguration === undefined) throw new PromptSnapshotError('preset_not_configured');
-  const presets = [privateSavePreset(saveAgentConfiguration)];
+  const presets = [privateSavePreset(saveAgentConfiguration, compatibilityWarnings)];
   const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
   if (conversation.sceneId !== undefined && installedScene === undefined) throw new PromptSnapshotError('not_found');
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
   if (installedScene !== undefined && sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
-  if (sceneContext !== undefined && installedScene === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+  if (installedScene === undefined && sceneContext !== undefined
+    && (sceneContext.state !== undefined || (sceneContext.additions?.length ?? 0) > 0)) {
+    throw new PromptSnapshotError('invalid_runtime_state');
+  }
   const saveWorldbook = installedScene === undefined
     ? undefined
     : repositories.saveWorldbooks.getByConversationId(conversation.id);
@@ -749,17 +816,11 @@ function loadAggregate(
       preset: parsedRegexAssets(repositories.extensionAssets.listByOwner('preset', presets[0]!.id)),
       character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
     },
-    scenePromptAdditions: sceneState === undefined ? [] : [
-      {
-        role: 'system' as const,
-        content: '<scene_state>\n'
-          + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
-          + '</scene_state>\nCanonical Scene State may be changed only through the provided Agent tools.',
-      },
-      ...(sceneContext?.additions ?? []),
-    ],
+    scenePromptAdditions: sceneState === undefined ? [] : [...(sceneContext?.additions ?? [])],
+    sceneStateValue: deepJson(sceneContext?.state ?? sceneState?.value ?? {}),
     memoryRecall: deepJson(sceneContext?.memoryRecall ?? []),
     memoryQueryCorpus: deepJson(sceneContext?.memoryQueryCorpus ?? []),
+    toolDescriptors: deepJson(sceneContext?.toolDescriptors ?? []),
   };
 }
 
@@ -1159,7 +1220,17 @@ async function compileAggregate(
       description: aggregate.persona.description,
     },
   } as const;
+  const saveAgentPlan = (compiledMessages: readonly PromptChatMessage[]) => compileSaveAgentPromptPlan({
+    compiledMessages,
+    conversation: aggregate.conversation,
+    characterName: aggregate.character.name,
+    personaName: aggregate.persona.name,
+    sceneStateValue: aggregate.sceneStateValue,
+    scenePromptAdditions: aggregate.scenePromptAdditions,
+    recalledMemories: aggregate.memoryRecall,
+  });
 
+  let loweringBudgetAdjustment = 0;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     const initialDecision = decisionFingerprint(decision);
@@ -1190,11 +1261,13 @@ async function compileAggregate(
       },
     };
 
-    let reservedRuntimeTokens = 0;
-    for (const addition of aggregate.scenePromptAdditions) {
-      reservedRuntimeTokens += await tokenizer.countText(addition.content);
-    }
-    const compilerPromptBudget = aggregate.conversation.maxPromptTokens - reservedRuntimeTokens;
+    const runtimeOnlyPlan = saveAgentPlan([]);
+    const reservedRuntimeTokens = await tokenizer.countText(runtimeOnlyPlan.systemPrompt);
+    const reservedToolTokens = await tokenizer.countText(JSON.stringify(aggregate.toolDescriptors));
+    const compilerPromptBudget = aggregate.conversation.maxPromptTokens
+      - reservedRuntimeTokens
+      - reservedToolTokens
+      - loweringBudgetAdjustment;
     if (compilerPromptBudget <= 0) throw new PromptSnapshotError('context_overflow');
 
     const compilation = await compileChatPrompt({
@@ -1213,22 +1286,21 @@ async function compileAggregate(
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     if (decisionFingerprint(decision) !== initialDecision) continue;
 
-    const compiledMessages = compilation.messages;
-    const triggerIndex = compiledMessages.map((message) => message.role).lastIndexOf('user');
-    const runtimeMessages = [
-      ...compiledMessages.slice(0, triggerIndex < 0 ? compiledMessages.length : triggerIndex),
-      ...aggregate.scenePromptAdditions,
-      ...compiledMessages.slice(triggerIndex < 0 ? compiledMessages.length : triggerIndex),
+    const plan = saveAgentPlan(compilation.messages);
+    const runtimeMessages: PromptChatMessage[] = [
+      { role: 'system', content: plan.systemPrompt },
+      ...plan.messages,
     ];
-    const runtimeTotalTokens = await tokenizer.countMessages(runtimeMessages);
+    const runtimeTotalTokens = await tokenizer.countMessages(runtimeMessages) + reservedToolTokens;
     const runtimeMaxPromptTokens = aggregate.conversation.maxPromptTokens;
-    if (runtimeTotalTokens > runtimeMaxPromptTokens) throw new PromptSnapshotError('context_overflow');
-    const injectionBreakdown: TokenBreakdownEntry[] = [];
-    for (const [index, addition] of aggregate.scenePromptAdditions.entries()) injectionBreakdown.push({
-      source: `scene-prompt-addition:${index}`,
-      includedTokens: await tokenizer.countText(addition.content),
-      omittedTokens: 0,
-    });
+    if (runtimeTotalTokens > runtimeMaxPromptTokens) {
+      loweringBudgetAdjustment += runtimeTotalTokens - runtimeMaxPromptTokens;
+      continue;
+    }
+    const injectionBreakdown: TokenBreakdownEntry[] = [
+      { source: 'save-agent-runtime', includedTokens: reservedRuntimeTokens, omittedTokens: 0 },
+      { source: 'save-agent-tools', includedTokens: reservedToolTokens, omittedTokens: 0 },
+    ];
 
     const primaryPreset = aggregate.presets[0]!;
     const temperature = finiteSetting(primaryPreset.settings, 'temperature');
@@ -1247,6 +1319,7 @@ async function compileAggregate(
         ...(warning.entryKey === undefined ? {} : { source: warning.entryKey }),
       })),
       ...compilation.warnings,
+      ...plan.warnings,
       ...aggregate.compatibilityWarnings,
       ...promptProjection.warnings,
       ...(decision.warning === undefined ? [] : [{
@@ -1272,6 +1345,7 @@ async function compileAggregate(
       worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
       memoryRecall: deepJson(aggregate.memoryRecall),
       memoryQueryCorpus: deepJson(aggregate.memoryQueryCorpus),
+      toolDescriptors: deepJson(aggregate.toolDescriptors),
       compiledRequest: deepJson(compiledRequest),
       compiledRequestHash: canonicalHash(compiledRequest),
     };
@@ -1280,7 +1354,7 @@ async function compileAggregate(
       payloadHash: canonicalHash(withoutPayloadHash),
     });
   }
-  throw new PromptSnapshotError('tokenizer_error');
+  throw new PromptSnapshotError(loweringBudgetAdjustment > 0 ? 'context_overflow' : 'tokenizer_error');
 }
 
 async function buildSnapshot(
@@ -1631,6 +1705,14 @@ function isChatMessages(value: unknown): value is PromptChatMessage[] {
     && Object.keys(message).every((key) => key === 'role' || key === 'content' || key === 'name'));
 }
 
+function isPromptToolDescriptors(value: unknown): value is PromptToolDescriptor[] {
+  return Array.isArray(value) && value.every((tool) => record(tool)
+    && typeof tool.name === 'string' && tool.name !== ''
+    && typeof tool.description === 'string'
+    && tool.parameters !== undefined
+    && hasOnlyKeys(tool, ['name', 'description', 'parameters']));
+}
+
 function hasCommonRequestFields(value: unknown): value is Record<string, unknown> & { model: string } {
   if (!record(value) || typeof value.model !== 'string') return false;
   if (value.temperature !== undefined && (typeof value.temperature !== 'number' || !Number.isFinite(value.temperature))) return false;
@@ -1662,6 +1744,7 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
     || !isWorldInfoOutlets(value.worldInfoOutlets)
     || !isMemoryRecall(value.memoryRecall)
     || !isMemoryRecall(value.memoryQueryCorpus)
+    || !isPromptToolDescriptors(value.toolDescriptors)
     || typeof value.compiledRequestHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.compiledRequestHash)
     || typeof value.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.payloadHash)
     || !sameCanonical(value.seed, value.input.seed)
@@ -1669,7 +1752,8 @@ function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload
   const commonKeys = [
     'schemaVersion', 'input', 'kind', 'seed', 'messageIndex', 'entityRevisions', 'executable',
     'worldbook', 'tokenizerDecision', 'stop', 'tokenBreakdown', 'totalTokens', 'warnings',
-    'worldInfoOutlets', 'memoryRecall', 'memoryQueryCorpus', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
+    'worldInfoOutlets', 'memoryRecall', 'memoryQueryCorpus', 'toolDescriptors',
+    'compiledRequest', 'compiledRequestHash', 'payloadHash',
   ];
   return isChatRequest(value.compiledRequest)
     && isChatMessages(value.messages)

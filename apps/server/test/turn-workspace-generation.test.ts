@@ -290,7 +290,7 @@ describe('Scene Director Turn Workspace integration', () => {
     });
 
     expect(terminal((await generate(seeded.app, seeded.conversation.id)).payload).event).toBe('completed');
-    expect(contexts[0]!.systemPrompt).toContain('[5C RECALLED SAVE MEMORY]');
+    expect(contexts[0]!.systemPrompt).toContain('[RECALLED MEMORY]');
     expect(contexts[0]!.systemPrompt).toContain('阿斯特承诺在黎明前返回。');
     expect(contexts[0]!.tools?.map((tool) => tool.name)).toContain('memory_query');
     expect(toolDetails(contexts[1]!, 'memory_query')).toMatchObject({
@@ -299,7 +299,7 @@ describe('Scene Director Turn Workspace integration', () => {
       results: [expect.objectContaining({ kind: 'commitment', summary: '阿斯特承诺在黎明前返回。' })],
     });
     expect(seeded.repositories.generationSnapshots.list()[0]?.payload).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       memoryRecall: [expect.objectContaining({
         kind: 'commitment', summary: '阿斯特承诺在黎明前返回。', revision: 0,
       })],
@@ -488,7 +488,7 @@ describe('Scene Director Turn Workspace integration', () => {
     expect(regenerationContexts[0]!.systemPrompt).toContain('HOOK:Open the vault.');
     expect(JSON.stringify(regenerationContexts[0]!.messages)).not.toContain('First timeline.');
     expect(regenerationContexts[0]!.messages.at(-1)).toMatchObject({
-      role: 'user', content: [{ type: 'text', text: 'Open the vault.' }],
+      role: 'user', content: 'Open the vault.',
     });
 
     const afterRegenerationMessage = seeded.repositories.messages.get(message.id)!;

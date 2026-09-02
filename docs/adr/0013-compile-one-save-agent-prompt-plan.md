@@ -1,0 +1,5 @@
+# Compile one Save Agent Prompt Plan
+
+TavernNext compiles each Chat Preset through the SillyTavern-compatible prompt engine, lowers that result once into an immutable Save Agent Prompt Plan, and uses the same initial transcript and tool directory for snapshot audit, token budgeting, and Agent execution. A short, non-configurable platform envelope protects narrative-only output and tool-backed Save State changes; required Character, Persona, Worldbook, and history markers retain their Preset position when present and receive a deterministic fallback when absent, while provider-neutral lowering preserves in-history system instructions as labelled user instructions with an explicit compatibility warning.
+
+This supersedes the prompt-assembly portion of ADR 0007. The Save Agent, bounded multi-turn tool loop, Turn Workspace, Roleplay Document, and atomic commit model remain unchanged; browser prompt hooks, legacy variable output, SUOT, Text Completion, and continuation remain outside Agent Runtime. Legacy variable and SUOT fragments are removed from Preset instructions and generated narrative by server-owned code rather than repeated platform prose.

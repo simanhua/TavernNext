@@ -64,6 +64,10 @@ _Avoid_: Persisted Pi session, coding agent, background agent
 One user-triggered, bounded execution of a Save Agent against immutable input revisions. It may perform multiple model/tool turns and commits completed narrative, state, views, and audit outcome atomically.
 _Avoid_: Generation request, autonomous task, Pi session
 
+**Save Agent Prompt Plan**:
+The immutable, provider-neutral prompt transcript and tool directory compiled for one Agent Run. Its initial system and conversation messages are the same transcript audited in the Generation Snapshot and executed by the Save Agent; later model turns only append Agent tool calls and results.
+_Avoid_: Prompt preview, Preset text, reconstructed runtime prompt
+
 **Turn Workspace**:
 The in-memory staged projection of one Scene State revision used by tools during an Agent Run. Successful operations are visible to later tools in the same run but reach persistent Scene State only at the final atomic commit.
 _Avoid_: Temporary Save, mutable database transaction, Agent memory
