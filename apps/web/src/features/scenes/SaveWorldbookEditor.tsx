@@ -134,7 +134,6 @@ export function SaveWorldbookEditor({ conversationId, value, onChanged, onClose 
       </div>
       {addingEntry || selectedEntry !== undefined ? (
         <WorldbookEntryEditor
-          worldbookId={detail.id}
           entry={selectedEntry}
           onSaved={replaceEntry}
           onCancel={() => { setAddingEntry(false); setEditingEntryId(undefined); }}

@@ -84,17 +84,16 @@ export async function runOwnedRegexProjectionInWorker(
   return { value, trace };
 }
 
-export async function runOwnedRegexModeProjectionInWorker(
+export async function runOwnedPromptRegexProjectionInWorker(
   raw: string,
   scripts: { preset: readonly TavernRegex[]; character: readonly TavernRegex[] },
-  context: Omit<RegexRunContext, 'isMarkdown' | 'isPrompt'>,
-  mode: 'prompt' | 'display',
+  context: Omit<RegexRunContext, 'isPrompt'>,
   createWorker: RegexWorkerFactory,
   limits: RegexWorkerLimits = DEFAULT_REGEX_WORKER_LIMITS,
 ): Promise<OwnedRegexRunResult> {
-  const common = await runOwnedRegexProjectionInWorker(raw, scripts, { ...context, isMarkdown: false, isPrompt: false }, createWorker, limits);
+  const common = await runOwnedRegexProjectionInWorker(raw, scripts, { ...context, isPrompt: false }, createWorker, limits);
   const projected = await runOwnedRegexProjectionInWorker(common.value, scripts, {
-    ...context, isMarkdown: mode === 'display', isPrompt: mode === 'prompt',
+    ...context, isPrompt: true,
   }, createWorker, limits);
   return { value: projected.value, trace: [...common.trace, ...projected.trace] };
 }

@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
-import { createRepositories, type Repositories } from '../src/db/repositories.js';
+import { createRepositories } from '../src/db/repositories.js';
 import { createSaveWorldbook } from '../src/services/save-worldbook-service.js';
 import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 import { unitTokenizerRuntime } from './prompt-integration-fixtures.js';

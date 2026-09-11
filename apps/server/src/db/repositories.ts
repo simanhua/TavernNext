@@ -9,9 +9,6 @@ import {
   ConversationSchema,
   ExtensionAssetSchema,
   ExtensionStateSchema,
-  ExtensionTrustGrantSchema,
-  ExtensionRemoteResourceSchema,
-  ExtensionAuditEventSchema,
   GenerationSnapshotSchema,
   GLOBAL_EMBEDDING_CONFIGURATION_ID,
   GLOBAL_GENERATION_CONFIG_ID,
@@ -41,9 +38,6 @@ import {
   type ExtensionOwnerKind,
   type ExtensionState,
   type ExtensionStateScope,
-  type ExtensionTrustGrant,
-  type ExtensionRemoteResource,
-  type ExtensionAuditEvent,
   type GenerationSnapshot,
   type GlobalEmbeddingConfiguration,
   type GlobalGenerationConfig,
@@ -74,9 +68,6 @@ import {
   conversations,
   extensionAssets,
   extensionStates,
-  extensionTrustGrants,
-  extensionRemoteResources,
-  extensionAuditEvents,
   generationSnapshots,
   globalGenerationConfigurations,
   globalEmbeddingConfigurations,
@@ -282,19 +273,6 @@ export interface ExtensionStateRepository extends Repository<ExtensionState> {
   deleteScriptStatesByOwner(ownerKind: 'character' | 'preset', ownerId: string): number;
 }
 
-export interface ExtensionTrustGrantRepository extends Repository<ExtensionTrustGrant> {
-  getByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionTrustGrant | undefined;
-  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
-}
-export interface ExtensionRemoteResourceRepository extends Repository<ExtensionRemoteResource> {
-  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionRemoteResource[];
-  getByOwnerUrl(ownerKind: ExtensionOwnerKind, ownerId: string, url: string): ExtensionRemoteResource | undefined;
-  deleteByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): number;
-}
-export interface ExtensionAuditEventRepository extends Repository<ExtensionAuditEvent> {
-  listByOwner(ownerKind: ExtensionOwnerKind, ownerId: string): ExtensionAuditEvent[];
-}
-
 export interface MessageRepository extends Repository<Message> {
   listByConversationId(conversationId: string): Message[];
 }
@@ -304,9 +282,7 @@ export interface MessageVariantRepository extends Repository<MessageVariant> {
   listByConversationId(conversationId: string): MessageVariant[];
 }
 
-export interface ConversationRepository extends Repository<Conversation> {
-  createWithGreeting(input: CreateInput<Conversation>): Conversation;
-}
+export type ConversationRepository = Repository<Conversation>;
 
 export interface GlobalGenerationConfigRepository {
   get(): GlobalGenerationConfig;
@@ -583,74 +559,6 @@ function createExtensionStateRepository(database: TavernDatabase): ExtensionStat
       ).run(`${ownerKind}:${ownerId}:%`).changes;
       database.persist();
       return changes;
-    },
-  };
-}
-
-function createExtensionTrustGrantRepository(database: TavernDatabase): ExtensionTrustGrantRepository {
-  const base = createRepository(database, {
-    table: entityTable(extensionTrustGrants), schema: ExtensionTrustGrantSchema,
-    toRow: (value: ExtensionTrustGrant) => ({ ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId }),
-  });
-  return {
-    ...base,
-    getByOwner(ownerKind, ownerId) {
-      const row = database.orm.select({ payload: extensionTrustGrants.payload }).from(extensionTrustGrants)
-        .where(and(eq(extensionTrustGrants.ownerKind, ownerKind), eq(extensionTrustGrants.ownerId, ownerId))).get();
-      return row === undefined ? undefined : ExtensionTrustGrantSchema.parse(row.payload);
-    },
-    deleteByOwner(ownerKind, ownerId) {
-      const changes = database.sqlite.prepare(
-        'DELETE FROM extension_trust_grants WHERE owner_kind = ? AND owner_id = ?',
-      ).run(ownerKind, ownerId).changes;
-      database.persist(); return changes;
-    },
-  };
-}
-
-function createExtensionRemoteResourceRepository(database: TavernDatabase): ExtensionRemoteResourceRepository {
-  const base = createRepository(database, {
-    table: entityTable(extensionRemoteResources), schema: ExtensionRemoteResourceSchema,
-    toRow: (value: ExtensionRemoteResource) => ({
-      ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId, url: value.url, sha256: value.sha256,
-    }),
-  });
-  return {
-    ...base,
-    listByOwner(ownerKind, ownerId) {
-      return database.orm.select({ payload: extensionRemoteResources.payload }).from(extensionRemoteResources)
-        .where(and(eq(extensionRemoteResources.ownerKind, ownerKind), eq(extensionRemoteResources.ownerId, ownerId)))
-        .orderBy(asc(extensionRemoteResources.url)).all()
-        .map((row) => ExtensionRemoteResourceSchema.parse(row.payload));
-    },
-    getByOwnerUrl(ownerKind, ownerId, url) {
-      const row = database.orm.select({ payload: extensionRemoteResources.payload }).from(extensionRemoteResources)
-        .where(and(eq(extensionRemoteResources.ownerKind, ownerKind), eq(extensionRemoteResources.ownerId, ownerId), eq(extensionRemoteResources.url, url))).get();
-      return row === undefined ? undefined : ExtensionRemoteResourceSchema.parse(row.payload);
-    },
-    deleteByOwner(ownerKind, ownerId) {
-      const changes = database.sqlite.prepare(
-        'DELETE FROM extension_remote_resources WHERE owner_kind = ? AND owner_id = ?',
-      ).run(ownerKind, ownerId).changes;
-      database.persist(); return changes;
-    },
-  };
-}
-
-function createExtensionAuditEventRepository(database: TavernDatabase): ExtensionAuditEventRepository {
-  const base = createRepository(database, {
-    table: entityTable(extensionAuditEvents), schema: ExtensionAuditEventSchema,
-    toRow: (value: ExtensionAuditEvent) => ({
-      ...baseRow(value), ownerKind: value.ownerKind, ownerId: value.ownerId, event: value.event,
-    }),
-  });
-  return {
-    ...base,
-    listByOwner(ownerKind, ownerId) {
-      return database.orm.select({ payload: extensionAuditEvents.payload }).from(extensionAuditEvents)
-        .where(and(eq(extensionAuditEvents.ownerKind, ownerKind), eq(extensionAuditEvents.ownerId, ownerId)))
-        .orderBy(asc(extensionAuditEvents.createdAt), asc(extensionAuditEvents.id)).limit(2048).all()
-        .map((row) => ExtensionAuditEventSchema.parse(row.payload));
     },
   };
 }
@@ -998,9 +906,6 @@ export interface Repositories {
   avatarAssets: AvatarAssetRepository;
   extensionAssets: ExtensionAssetRepository;
   extensionStates: ExtensionStateRepository;
-  extensionTrustGrants: ExtensionTrustGrantRepository;
-  extensionRemoteResources: ExtensionRemoteResourceRepository;
-  extensionAuditEvents: ExtensionAuditEventRepository;
 }
 
 function createSaveMemoryConfigurationRepository(database: TavernDatabase): SaveMemoryConfigurationRepository {
@@ -1178,6 +1083,8 @@ function createMemoryJobRepository(database: TavernDatabase): MemoryJobRepositor
       return database.sqlite.prepare(`
         SELECT payload FROM memory_jobs
         WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+          AND EXISTS (SELECT 1 FROM conversations WHERE conversations.id = memory_jobs.conversation_id
+            AND conversations.scene_id IS NOT NULL)
         ORDER BY created_at, id LIMIT ?
       `).all(now, Math.min(64, Math.max(1, Math.floor(limit))))
         .map((row) => MemoryJobSchema.parse(JSON.parse(String(row.payload))));
@@ -1321,7 +1228,6 @@ function createSceneStateTransitionRepository(database: TavernDatabase): SceneSt
 
 export interface CreateRepositoriesOptions {
   snapshotIntegrityKey: Uint8Array;
-  createId?: () => string;
 }
 
 function emptyGlobalGenerationConfig(): GlobalGenerationConfig {
@@ -1442,30 +1348,7 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
       title: value.title,
     }), syncRelationships: syncConversationWorldbooks,
   });
-  const createId = options.createId ?? randomUUID;
-  const conversationsRepository: ConversationRepository = {
-    ...baseConversations,
-    createWithGreeting(input) {
-      return database.transaction(() => {
-        const character = charactersRepository.get(input.characterId);
-        if (character === undefined) throw new Error('character_not_found');
-        const conversation = baseConversations.create(input);
-        if (character.firstMessage === '') return conversation;
-        const message = messagesRepository.create({
-          id: createId(), conversationId: conversation.id, role: 'assistant',
-          content: character.firstMessage, activeVariantId: null,
-        });
-        const variants = [character.firstMessage, ...character.alternateGreetings].map((content, ordinal) => (
-          messageVariantsRepository.create({
-            id: createId(), messageId: message.id, ordinal, content, status: 'completed', finishReason: 'stop',
-          })
-        ));
-        const activated = messagesRepository.update(message.id, message.revision, { activeVariantId: variants[0]!.id });
-        if (!activated.ok) throw new Error('greeting_activation_failed');
-        return conversation;
-      });
-    },
-  };
+  const conversationsRepository = baseConversations;
   const globalGenerationConfig = createGlobalGenerationConfigRepository(database);
   const globalEmbeddingConfiguration = createGlobalEmbeddingConfigurationRepository(database);
   return {
@@ -1501,8 +1384,5 @@ export function createRepositories(database: TavernDatabase, options: CreateRepo
     avatarAssets: createAvatarAssetRepository(database),
     extensionAssets: createExtensionAssetRepository(database),
     extensionStates: createExtensionStateRepository(database),
-    extensionTrustGrants: createExtensionTrustGrantRepository(database),
-    extensionRemoteResources: createExtensionRemoteResourceRepository(database),
-    extensionAuditEvents: createExtensionAuditEventRepository(database),
   };
 }

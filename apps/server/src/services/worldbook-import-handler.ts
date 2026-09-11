@@ -1,18 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Worldbook, WorldbookEntry } from '@tavernnext/domain';
 import {
-  decodeWorldbookArtifact,
-  diagnostic,
   type DecodedWorldbookArtifact,
   type ImportDiagnostic,
   type NormalizedWorldbook,
   type NormalizedWorldbookEntry,
   type WorldbookSourceFormat,
-  WorldbookCodecError,
-  WorldbookValidationError,
 } from '@tavernnext/st-compat';
 import type { Repositories } from '../db/repositories.js';
-import type { ImportHandler } from './import-service.js';
 
 export interface StoredWorldbookSource {
   sourceFormat: WorldbookSourceFormat;
@@ -209,38 +204,4 @@ export function persistDecodedWorldbook(
     });
   }
   return worldbook;
-}
-
-/** Typed commits decode digest-checked staged bytes and run inside ImportService's outer transaction. */
-export function createWorldbookImportHandler(): ImportHandler {
-  return {
-    id: 'tavernnext-worldbook',
-    matches: (preview) => preview.detected.kind === 'worldbook',
-    async inspect(context) {
-      try {
-        const decoded = decodeWorldbookArtifact(context.artifact.bytes, context.artifact.fileName);
-        return {
-          normalizedPreview: decoded.worldbook,
-          warnings: decoded.warnings,
-          blockingErrors: [],
-        };
-      } catch (error) {
-        return {
-          normalizedPreview: null,
-          warnings: [],
-          blockingErrors: error instanceof WorldbookValidationError
-            ? error.issues
-            : [diagnostic(
-              error instanceof WorldbookCodecError ? error.code : 'worldbook_decode_failed',
-              error instanceof Error ? error.message : 'Worldbook could not be decoded safely.',
-            )],
-        };
-      }
-    },
-    commit(context) {
-      const decoded = decodeWorldbookArtifact(context.artifact.bytes, context.artifact.fileName);
-      const worldbook = persistDecodedWorldbook(context.repositories, decoded, context.preview.warnings);
-      return { entityId: worldbook.id };
-    },
-  };
 }

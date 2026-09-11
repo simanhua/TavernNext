@@ -2,15 +2,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from 'react-hook-form';
 import { z } from 'zod';
-import { ApiError, api, errorCode, type PresetKind, type PresetView } from '../../api/client.js';
-import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
-import { AttachedExtensionInventory } from '../shared/AttachedExtensionInventory.js';
+import { ApiError, api, errorCode, type PresetView } from '../../api/client.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { DeleteConfirmation } from '../shared/DeleteConfirmation.js';
 import { hasPatchFields, minimalPatch, minimalRecordPatch } from '../shared/minimalPatch.js';
 import { useI18n } from '../../app/i18n.js';
 
-const kinds = ['chat', 'text', 'context', 'instruct', 'system', 'reasoning'] as const;
 const ChatKeys = new Set([
   'prompts', 'prompt_order', 'temperature', 'top_p', 'top_k', 'top_a', 'min_p', 'repetition_penalty',
   'frequency_penalty', 'presence_penalty', 'seed', 'tokenizer', 'max_tokens', 'squash_system_messages',
@@ -23,29 +20,6 @@ const ChatPromptKeys = new Set([
   'identifier', 'name', 'role', 'content', 'system_prompt', 'enabled', 'marker', 'injection_position',
   'injection_depth', 'injection_order', 'forbid_overrides', 'injection_trigger', 'generation_trigger',
 ]);
-const TextKeys = new Set([
-  'temperature', 'temp', 'top_p', 'top_k', 'top_a', 'min_p', 'typical_p', 'typical', 'tail_free_sampling',
-  'tfs', 'repetition_penalty', 'repetition_penalty_range', 'repetition_penalty_slope',
-  'repetition_penalty_frequency', 'repetition_penalty_presence', 'repetition_penalty_decay',
-  'repetition_penalty_size', 'rep_pen', 'rep_pen_range', 'rep_pen_slope', 'rep_pen_decay', 'rep_pen_size',
-  'frequency_penalty', 'presence_penalty', 'freq_pen', 'encoder_rep_pen', 'sampler_order', 'sampler_priority',
-  'samplers', 'samplers_priorities', 'order', 'tokenizer', 'max_context', 'max_length', 'max_new_tokens',
-  'min_length', 'min_keep', 'length_penalty', 'min_temp', 'max_temp', 'add_bos_token', 'ban_eos_token',
-  'banned_tokens', 'do_sample', 'dry_allowed_length', 'dry_base', 'dry_multiplier', 'dry_penalty_last_n',
-  'dry_sequence_breakers', 'dynatemp', 'dynatemp_exponent', 'epsilon_cutoff', 'eta_cutoff', 'guidance_scale',
-  'ignore_eos_token', 'json_schema', 'json_schema_allow_empty', 'mirostat_mode', 'mirostat', 'mirostat_eta',
-  'mirostat_tau', 'mirostat_lr', 'negative_prompt', 'no_repeat_ngram_size', 'nsigma', 'num_beams',
-  'penalty_alpha', 'skew', 'skip_special_tokens', 'smoothing_curve', 'smoothing_factor',
-  'spaces_between_special_tokens', 'speculative_ngram', 'temperature_last', 'xtc_probability', 'xtc_threshold',
-  'grammar_string', 'grammar', 'early_stopping', 'logit_bias', 'use_default_badwordsids', 'phrase_rep_pen',
-  'math1_temp', 'math1_quad', 'math1_quad_entropy_scale',
-]);
-const FamilyKeys: Record<Exclude<PresetKind, 'chat' | 'text'>, Set<string>> = {
-  context: new Set(['story_string', 'story_string_position', 'story_string_depth', 'story_string_role', 'example_separator', 'chat_start', 'use_stop_strings', 'names_as_stop_strings', 'always_force_name2', 'single_line', 'trim_sentences']),
-  instruct: new Set(['input_sequence', 'output_sequence', 'system_sequence', 'activation_regex', 'first_input_sequence', 'first_output_sequence', 'input_suffix', 'last_input_sequence', 'last_output_sequence', 'last_system_sequence', 'macro', 'names_behavior', 'output_suffix', 'sequences_as_stop_strings', 'skip_examples', 'stop_sequence', 'story_string_prefix', 'story_string_suffix', 'system_same_as_user', 'system_suffix', 'user_alignment_message', 'wrap']),
-  system: new Set(['content', 'post_history']),
-  reasoning: new Set(['prefix', 'separator', 'suffix', 'extract_regex', 'reasoning', 'reasoning_config']),
-};
 const OptionalBooleanSchema = z.enum(['', 'true', 'false']);
 const OptionalNumberSchema = z.string().refine(
   (value) => value.trim() === '' || Number.isFinite(Number(value)),
@@ -73,10 +47,8 @@ function pick(source: Record<string, unknown>, allowed: Set<string>): Record<str
   return Object.fromEntries([...allowed].flatMap((key) => Object.hasOwn(source, key) ? [[key, structuredClone(source[key])]] : []));
 }
 
-function sanitizeSettings(kind: PresetKind, value: unknown): Record<string, unknown> {
+function sanitizeSettings(value: unknown): Record<string, unknown> {
   const source = record(value);
-  if (kind === 'text') return pick(source, TextKeys);
-  if (kind !== 'chat') return pick(source, FamilyKeys[kind]);
   const output = pick(source, ChatKeys);
   output.prompts = Array.isArray(source.prompts)
     ? source.prompts.map((prompt) => pick(record(prompt), ChatPromptKeys))
@@ -94,18 +66,8 @@ function sanitizeSettings(kind: PresetKind, value: unknown): Record<string, unkn
   return output;
 }
 
-function defaultSettings(kind: PresetKind): Record<string, unknown> {
-  if (kind === 'chat') return { prompts: [], prompt_order: [] };
-  if (kind === 'context') return { story_string: '' };
-  if (kind === 'instruct') return { input_sequence: '', output_sequence: '', system_sequence: '' };
-  if (kind === 'system') return { content: '', post_history: '' };
-  if (kind === 'reasoning') return { prefix: '', separator: '', suffix: '' };
-  return {};
-}
-
 const FormSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
-  kind: z.enum(kinds),
   temperature: z.string().refine((value) => value === '' || Number.isFinite(Number(value)), 'Temperature must be a number'),
   executableSettings: z.string().refine((value) => {
     try {
@@ -160,8 +122,8 @@ function optionalStringArray(value: unknown): string {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string') ? JSON.stringify(value) : '';
 }
 
-function valuesFrom(kind: PresetKind, name: string, settingsValue: unknown): FormValues {
-  const settings = sanitizeSettings(kind, settingsValue);
+function valuesFrom(name: string, settingsValue: unknown): FormValues {
+  const settings = sanitizeSettings(settingsValue);
   const prompts = Array.isArray(settings.prompts) ? settings.prompts.map((value) => {
     const prompt = record(value);
     const extras = { ...prompt };
@@ -181,7 +143,6 @@ function valuesFrom(kind: PresetKind, name: string, settingsValue: unknown): For
   delete advanced.temperature;
   return {
     name,
-    kind,
     temperature: typeof settings.temperature === 'number' ? String(settings.temperature) : '',
     executableSettings: JSON.stringify(advanced, null, 2),
     prompts,
@@ -260,24 +221,22 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
   onDeleted: () => void;
 }) {
   const { t } = useI18n();
-  const initialKind = preset?.kind ?? 'chat';
-  const [baseSettings, setBaseSettings] = useState<Record<string, unknown>>(sanitizeSettings(initialKind, preset?.settings ?? defaultSettings(initialKind)));
+  const [baseSettings, setBaseSettings] = useState<Record<string, unknown>>(sanitizeSettings(preset?.settings ?? { prompts: [], prompt_order: [] }));
   const [baseline, setBaseline] = useState(preset);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState<PresetView>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const readOnly = preset?.official === true;
-  const form = useForm<FormValues>({ resolver: zodResolver(FormSchema), defaultValues: valuesFrom(initialKind, preset?.name ?? '', baseSettings) });
+  const form = useForm<FormValues>({ resolver: zodResolver(FormSchema), defaultValues: valuesFrom(preset?.name ?? '', baseSettings) });
   const prompts = useFieldArray({ control: form.control, name: 'prompts' });
   const promptOrders = useFieldArray({ control: form.control, name: 'promptOrders' });
 
   useEffect(() => {
-    const kind = preset?.kind ?? 'chat';
-    const settings = sanitizeSettings(kind, preset?.settings ?? defaultSettings(kind));
+    const settings = sanitizeSettings(preset?.settings ?? { prompts: [], prompt_order: [] });
     setBaseSettings(settings);
     setBaseline(preset);
-    form.reset(valuesFrom(kind, preset?.name ?? '', settings));
+    form.reset(valuesFrom(preset?.name ?? '', settings));
     setConflict(undefined);
     setError(undefined);
   }, [preset?.id, creating]);
@@ -285,83 +244,77 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
   const submit = async (values: FormValues, revision = baseline?.revision) => {
     setPending(true);
     setError(undefined);
-    const advanced = sanitizeSettings(values.kind, JSON.parse(values.executableSettings));
-    let settings: Record<string, unknown> = advanced;
-    if (values.kind === 'chat') {
-      const promptValues = values.prompts.map((prompt) => ({
-        ...prompt.extras,
-        identifier: prompt.identifier,
-        name: prompt.name,
-        role: prompt.role,
-        content: prompt.content,
-        enabled: prompt.enabled,
-        ...(prompt.systemPrompt === '' ? {} : { system_prompt: prompt.systemPrompt === 'true' }),
-        ...(prompt.marker === '' ? {} : { marker: prompt.marker === 'true' }),
-        ...(prompt.injectionPosition.trim() === '' ? {} : { injection_position: Number(prompt.injectionPosition) }),
-        ...(prompt.injectionDepth.trim() === '' ? {} : { injection_depth: Number(prompt.injectionDepth) }),
-        ...(prompt.injectionOrder.trim() === '' ? {} : { injection_order: Number(prompt.injectionOrder) }),
-        ...(prompt.forbidOverrides === '' ? {} : { forbid_overrides: prompt.forbidOverrides === 'true' }),
-        ...(prompt.injectionTrigger === '' ? {} : { injection_trigger: JSON.parse(prompt.injectionTrigger) as string[] }),
-        ...(prompt.generationTrigger === '' ? {} : { generation_trigger: JSON.parse(prompt.generationTrigger) as string[] }),
-      }));
-      const priorPromptIds = new Set(Array.isArray(baseSettings.prompts)
-        ? baseSettings.prompts.map((prompt) => String(record(prompt).identifier ?? '')).filter(Boolean)
-        : []);
-      const baselinePromptIds = Array.isArray(baseSettings.prompts)
-        ? baseSettings.prompts.map((prompt) => String(record(prompt).identifier ?? '')).filter(Boolean)
-        : [];
-      const currentPromptIds = promptValues.map((prompt) => prompt.identifier).filter(Boolean);
-      const definitionsReordered = baselinePromptIds.filter((id) => currentPromptIds.includes(id)).join('\0')
-        !== currentPromptIds.filter((id) => priorPromptIds.has(id)).join('\0');
-      let promptOrder = values.promptOrders.map((group) => ({
-        ...(group.characterId.trim() === '' ? {} : {
-          character_id: group.characterIdKind === 'number' && /^-?\d+$/.test(group.characterId.trim())
-            ? Number(group.characterId)
-            : group.characterId,
-        }),
-        order: group.items.filter((item) => item.identifier !== '').map((item) => ({ ...item })),
-      }));
-      const defaultOrderIndex = promptOrder.findIndex((group) => group.character_id === 100000);
-      if (definitionsReordered && defaultOrderIndex >= 0) {
-        const enabled = new Map(promptOrder[defaultOrderIndex]!.order.map((item) => [item.identifier, item.enabled]));
-        promptOrder[defaultOrderIndex] = {
-          ...promptOrder[defaultOrderIndex],
-          order: currentPromptIds.filter((id) => enabled.has(id)).map((identifier) => ({ identifier, enabled: enabled.get(identifier)! })),
-        };
-      }
-      const added = promptValues.filter((prompt) => !priorPromptIds.has(prompt.identifier));
-      if (added.length > 0) {
-        if (defaultOrderIndex < 0) {
-          promptOrder.push({ character_id: 100000, order: added.map((prompt) => ({ identifier: prompt.identifier, enabled: prompt.enabled })) });
-        } else {
-          promptOrder = promptOrder.map((group, index) => index === defaultOrderIndex
-            ? { ...group, order: [...group.order, ...added.map((prompt) => ({ identifier: prompt.identifier, enabled: prompt.enabled }))] }
-            : group);
-        }
-      }
-      settings = { ...advanced, prompts: promptValues, prompt_order: promptOrder };
-      if (values.temperature.trim() !== '') settings.temperature = Number(values.temperature);
+    const advanced = sanitizeSettings(JSON.parse(values.executableSettings));
+    const promptValues = values.prompts.map((prompt) => ({
+      ...prompt.extras,
+      identifier: prompt.identifier,
+      name: prompt.name,
+      role: prompt.role,
+      content: prompt.content,
+      enabled: prompt.enabled,
+      ...(prompt.systemPrompt === '' ? {} : { system_prompt: prompt.systemPrompt === 'true' }),
+      ...(prompt.marker === '' ? {} : { marker: prompt.marker === 'true' }),
+      ...(prompt.injectionPosition.trim() === '' ? {} : { injection_position: Number(prompt.injectionPosition) }),
+      ...(prompt.injectionDepth.trim() === '' ? {} : { injection_depth: Number(prompt.injectionDepth) }),
+      ...(prompt.injectionOrder.trim() === '' ? {} : { injection_order: Number(prompt.injectionOrder) }),
+      ...(prompt.forbidOverrides === '' ? {} : { forbid_overrides: prompt.forbidOverrides === 'true' }),
+      ...(prompt.injectionTrigger === '' ? {} : { injection_trigger: JSON.parse(prompt.injectionTrigger) as string[] }),
+      ...(prompt.generationTrigger === '' ? {} : { generation_trigger: JSON.parse(prompt.generationTrigger) as string[] }),
+    }));
+    const priorPromptIds = new Set(Array.isArray(baseSettings.prompts)
+      ? baseSettings.prompts.map((prompt) => String(record(prompt).identifier ?? '')).filter(Boolean)
+      : []);
+    const baselinePromptIds = Array.isArray(baseSettings.prompts)
+      ? baseSettings.prompts.map((prompt) => String(record(prompt).identifier ?? '')).filter(Boolean)
+      : [];
+    const currentPromptIds = promptValues.map((prompt) => prompt.identifier).filter(Boolean);
+    const definitionsReordered = baselinePromptIds.filter((id) => currentPromptIds.includes(id)).join('\0')
+      !== currentPromptIds.filter((id) => priorPromptIds.has(id)).join('\0');
+    let promptOrder = values.promptOrders.map((group) => ({
+      ...(group.characterId.trim() === '' ? {} : {
+        character_id: group.characterIdKind === 'number' && /^-?\d+$/.test(group.characterId.trim())
+          ? Number(group.characterId)
+          : group.characterId,
+      }),
+      order: group.items.filter((item) => item.identifier !== '').map((item) => ({ ...item })),
+    }));
+    const defaultOrderIndex = promptOrder.findIndex((group) => group.character_id === 100000);
+    if (definitionsReordered && defaultOrderIndex >= 0) {
+      const enabled = new Map(promptOrder[defaultOrderIndex]!.order.map((item) => [item.identifier, item.enabled]));
+      promptOrder[defaultOrderIndex] = {
+        ...promptOrder[defaultOrderIndex],
+        order: currentPromptIds.filter((id) => enabled.has(id)).map((identifier) => ({ identifier, enabled: enabled.get(identifier)! })),
+      };
     }
+    const added = promptValues.filter((prompt) => !priorPromptIds.has(prompt.identifier));
+    if (added.length > 0) {
+      if (defaultOrderIndex < 0) {
+        promptOrder.push({ character_id: 100000, order: added.map((prompt) => ({ identifier: prompt.identifier, enabled: prompt.enabled })) });
+      } else {
+        promptOrder = promptOrder.map((group, index) => index === defaultOrderIndex
+          ? { ...group, order: [...group.order, ...added.map((prompt) => ({ identifier: prompt.identifier, enabled: prompt.enabled }))] }
+          : group);
+      }
+    }
+    const settings: Record<string, unknown> = { ...advanced, prompts: promptValues, prompt_order: promptOrder };
+    if (values.temperature.trim() !== '') settings.temperature = Number(values.temperature);
     try {
       let patch: Partial<{ name: string; settings: Record<string, unknown>; deleteSettingKeys: string[] }> | undefined;
       if (!creating && baseline !== undefined) {
         patch = minimalPatch({ name: baseline.name }, { name: values.name.trim() }, ['name'] as const);
-        const allowedSettings = values.kind === 'chat' ? [...ChatKeys]
-          : values.kind === 'text' ? [...TextKeys]
-            : [...FamilyKeys[values.kind]];
         const settingsPatch = minimalRecordPatch(
-          sanitizeSettings(baseline.kind, baseline.settings),
+          sanitizeSettings(baseline.settings),
           settings,
-          allowedSettings,
+          [...ChatKeys],
         );
         if (hasPatchFields(settingsPatch.values)) patch.settings = settingsPatch.values;
         if (settingsPatch.deletedKeys.length > 0) patch.deleteSettingKeys = settingsPatch.deletedKeys;
       }
       if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = creating
-        ? await api.createPreset({ name: values.name.trim(), kind: values.kind, settings })
+        ? await api.createPreset({ name: values.name.trim(), kind: 'chat', settings })
         : await api.updatePreset(baseline!.id, revision!, patch!);
-      setBaseSettings(sanitizeSettings(saved.kind, saved.settings));
+      setBaseSettings(sanitizeSettings(saved.settings));
       setBaseline(saved);
       setConflict(undefined);
       onSaved(saved);
@@ -386,7 +339,6 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
       setPending(false);
     }
   };
-  const currentKind = form.watch('kind');
   const watchedPrompts = form.watch('prompts');
   const promptValidationMessages = Array.isArray(form.formState.errors.prompts)
     ? form.formState.errors.prompts.flatMap((promptErrors) => promptErrors === undefined ? [] : [
@@ -405,23 +357,8 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
     <form className="preset-editor" onSubmit={form.handleSubmit((values) => void submit(values))}>
       <h2>{creating ? t('New Preset') : preset?.name}</h2>
       {readOnly ? <p>{t('Official Presets are read-only templates. Edit the copy owned by a Save instead.')}</p> : null}
-      <CompatibilitySummary value={preset?.compatibilitySummary} />
-      {preset === undefined ? null : (
-        <>
-          <AttachedExtensionInventory value={preset.attachedExtensions} />
-          <aside className="compatibility-summary" aria-label={t('SPreset compatibility data')}>
-            <strong>{t('SPreset compatibility data')}</strong>
-            <span>{t(preset.spreset.present ? 'Present' : 'Not present')}</span>
-            {Object.entries(preset.spreset.features).map(([feature, enabled]) => (
-              <span key={feature}>{feature}: {t(enabled ? 'Enabled' : 'Disabled')}</span>
-            ))}
-          </aside>
-        </>
-      )}
       <label>{t('Name')}<input {...form.register('name')} /></label>
-      {creating ? <label>{t('Kind')}<select {...form.register('kind')}>{kinds.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}</select></label> : <p>{t('Family: {{kind}}', { kind: t(preset?.kind ?? '') })}</p>}
-      {currentKind === 'chat' ? (
-        <>
+      <>
           <label>{t('Temperature')}<input inputMode="decimal" {...form.register('temperature')} /></label>
           <fieldset className="preset-section">
             <legend>{t('Chat prompts')}</legend>
@@ -488,8 +425,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
             ))}
             <button type="button" onClick={() => promptOrders.append({ characterId: '', characterIdKind: 'string', items: [] })}>{t('Add prompt order group')}</button>
           </fieldset>
-        </>
-      ) : null}
+      </>
       <ExpandableCard
         testId="advanced-settings"
         summary={(
@@ -513,7 +449,7 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
       {conflict === undefined ? null : (
         <ConflictBanner
           revision={conflict.revision}
-          onReload={() => { setBaseline(conflict); setBaseSettings(sanitizeSettings(conflict.kind, conflict.settings)); form.reset(valuesFrom(conflict.kind, conflict.name, conflict.settings)); setConflict(undefined); onSaved(conflict); }}
+          onReload={() => { setBaseline(conflict); setBaseSettings(sanitizeSettings(conflict.settings)); form.reset(valuesFrom(conflict.name, conflict.settings)); setConflict(undefined); onSaved(conflict); }}
           onRetry={() => void form.handleSubmit((values) => submit(values, conflict.revision))()}
         />
       )}
@@ -522,7 +458,6 @@ export function PresetEditor({ preset, creating, onSaved, onDeleted }: {
         <button type="submit" disabled={pending || readOnly}>{t(creating ? 'Create Preset' : 'Save Preset')}</button>
         {preset === undefined ? null : (
           <>
-            <button type="button" onClick={async () => { try { await api.exportPreset(preset.id); } catch (cause) { setError(errorCode(cause)); } }}>{t('Export Preset')}</button>
             <button type="button" disabled={readOnly} onClick={() => setDeleteOpen(true)}>{t('Delete Preset')}</button>
           </>
         )}

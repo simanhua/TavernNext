@@ -1,3 +1,4 @@
+import { createTestSceneSave } from './scene-save-fixture.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -23,6 +24,7 @@ async function seeded() {
   databases.push(database);
   migrateDatabase(database);
   const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+  return database.transaction(() => {
   const character = repositories.characters.create({
     id: randomUUID(), name: 'Aster', description: '', personality: '', scenario: '',
     firstMessage: '', alternateGreetings: [], tags: [],
@@ -30,11 +32,12 @@ async function seeded() {
   const persona = repositories.personas.create({
     id: randomUUID(), name: 'Traveler', description: '', isDefault: true,
   });
-  const conversation = repositories.conversations.create({
+  const conversation = createTestSceneSave(repositories, {
     id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Memory Save',
   });
   repositories.saveMemoryConfigurations.create({ id: randomUUID(), conversationId: conversation.id, enabled: true });
   return { repositories, conversation };
+  });
 }
 
 describe('Save Memory service', () => {
@@ -146,7 +149,7 @@ describe('Save Memory service', () => {
       sourceMessageId: null, sourceVariantId: null, sourceTransitionId: null, sourceAgentRunId: null,
       sourceMemoryIds: [], supersedesId: null, contentHash: 'f'.repeat(64), tokenCount: 8,
     });
-    const otherConversation = repositories.conversations.create({
+    const otherConversation = createTestSceneSave(repositories, {
       id: randomUUID(), characterId: conversation.characterId, personaId: conversation.personaId,
       title: 'Other Save',
     });

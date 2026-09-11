@@ -1,10 +1,8 @@
-import multipart from '@fastify/multipart';
 import {
   createOpenAICompatibleClient,
   createPiAgentModelRuntime,
   type OpenAICompatibleProfile,
 } from '@tavernnext/provider-openai-compatible';
-import { DEFAULT_INSPECTION_LIMITS } from '@tavernnext/st-compat';
 import { countMessages, countText, selectTokenizer } from '@tavernnext/tokenizer-engine';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -13,26 +11,15 @@ import { loadConfig, loadProviderSecrets, type ProviderSecretMap, type ServerCon
 import { createDatabase, type TavernDatabase } from './db/client.js';
 import { AGENT_FIRST_RESET_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, migrateDatabase, readSchemaVersion } from './db/migrate.js';
 import { createRepositories } from './db/repositories.js';
-import { registerCharacterRoutes } from './routes/characters.js';
-import { registerAvatarRoutes } from './routes/avatars.js';
-import { registerCharacterExportRoutes } from './routes/character-exports.js';
 import { registerConversationRoutes } from './routes/conversations.js';
+import { registerSaveAccessGuard } from './routes/save-access.js';
 import { registerGenerationRoutes } from './routes/generations.js';
 import { registerGlobalGenerationConfigRoutes } from './routes/global-generation-config.js';
-import { registerExtensionAssetRoutes } from './routes/extension-assets.js';
-import { registerRuntimeStateRoutes } from './routes/runtime-states.js';
-import { registerExtensionTrustRoutes } from './routes/extension-trust.js';
-import { registerExtensionRuntimeRpcRoutes } from './routes/extension-runtime-rpc.js';
 import { registerMessageRoutes } from './routes/messages.js';
-import { registerInteractiveActionRoutes } from './routes/interactive-actions.js';
-import { registerImportRoutes } from './routes/imports.js';
 import { registerPersonaRoutes } from './routes/personas.js';
-import { registerPresetExportRoutes } from './routes/preset-exports.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import type { ProviderProbeFactory } from './routes/providers.js';
-import { registerWorldbookExportRoutes } from './routes/worldbook-exports.js';
-import { registerWorldbookRoutes } from './routes/worldbooks.js';
 import { registerSceneRoutes } from './routes/scenes.js';
 import { registerSaveAgentConfigurationRoutes } from './routes/save-agent-configurations.js';
 import { registerAgentRunRoutes } from './routes/agent-runs.js';
@@ -41,16 +28,11 @@ import { createGenerationService } from './services/generation-service.js';
 import type { PiAgentRuntimeFactory } from './services/scene-director-agent.js';
 import type { SaveAgentRuntime } from './services/save-agent-runtime.js';
 import { createPromptSnapshotService, type ServerTokenizerRuntime } from './services/prompt-snapshot-service.js';
-import { createCharacterImportHandler } from './services/character-import-handler.js';
-import { createPresetImportHandler } from './services/preset-import-handler.js';
 import {
   deduplicateOfficialPresets,
   duplicateOfficialPresets,
   synchronizeOfficialPresets,
 } from './services/official-preset-registry.js';
-import { createWorldbookImportHandler } from './services/worldbook-import-handler.js';
-import { createImportService, type ImportHandler, type ImportStagingLimits } from './services/import-service.js';
-import { createExtensionTrustService, type ExtensionRemoteFetcher } from './services/extension-trust-service.js';
 import {
   acquireDatabaseOwnership,
   createPreMigrationBackup,
@@ -80,20 +62,10 @@ export interface CreateAppOptions {
   providerProbeFactory?: ProviderProbeFactory;
   providerSecrets?: ProviderSecretMap;
   tokenizerRuntime?: ServerTokenizerRuntime;
-  importHandlers?: readonly ImportHandler[];
-  importClock?: () => number;
-  importMoveAssets?: (source: string, destination: string) => void;
-  importRemoveStage?: (path: string) => void;
-  importCleanupIntervalMs?: number;
-  importLimits?: ImportStagingLimits;
-  avatarBeforeCommit?: () => void;
-  avatarLegacyAfterFirstChunk?: () => void;
-  avatarMaxBytes?: number;
   snapshotIntegrityKey?: Uint8Array;
   loggerStream?: { write(message: string): void };
   backupClock?: () => Date;
   migrationRunner?: (database: TavernDatabase) => void;
-  extensionRemoteFetcher?: ExtensionRemoteFetcher;
   databaseOwnershipTimeoutMs?: number;
   memoryWorkerIntervalMs?: number | false;
   synchronizeOfficialPresetCatalog?: boolean;
@@ -249,22 +221,6 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     }
   }
   const scenes = createSceneService({ dataDir: config.dataDir, database, repositories });
-  const imports = createImportService({
-    dataDir: config.dataDir,
-    database,
-    repositories,
-    handlers: options.importHandlers ?? [
-      createCharacterImportHandler(),
-      createPresetImportHandler(),
-      createWorldbookImportHandler(),
-    ],
-    ...(options.importClock === undefined ? {} : { clock: options.importClock }),
-    ...(options.importMoveAssets === undefined ? {} : { moveAssets: options.importMoveAssets }),
-    ...(options.importRemoveStage === undefined ? {} : { removeStage: options.importRemoveStage }),
-    ...(options.importCleanupIntervalMs === undefined ? {} : { cleanupIntervalMs: options.importCleanupIntervalMs }),
-    ...(options.importLimits === undefined ? {} : { limits: options.importLimits }),
-    ...(options.avatarMaxBytes === undefined ? {} : { avatarMaxBytes: options.avatarMaxBytes }),
-  });
   const providerSecrets = options.providerSecrets ?? loadProviderSecrets();
   for (const [secretRef, secret] of Object.entries(providerSecrets)) {
     const existing = secretStore.get(secretRef);
@@ -342,14 +298,6 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
     sceneService: scenes,
     saveMemoryService: saveMemory,
   });
-  const extensionTrust = createExtensionTrustService(repositories, options.extensionRemoteFetcher ?? (async (url) => {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('remote_fetch_failed');
-    return {
-      bytes: new Uint8Array(await response.arrayBuffer()),
-      mediaType: response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream',
-    };
-  }));
 
   if (startup.result === 'read_only_migration_failed') {
     app.addHook('onRequest', async (request, reply) => {
@@ -357,15 +305,6 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       return reply.status(503).send({ error: 'read_only_migration_failed' });
     });
   }
-  app.register(multipart, {
-    limits: {
-      fileSize: DEFAULT_INSPECTION_LIMITS.maxUploadBytes,
-      files: 1,
-      fields: 0,
-      parts: 1,
-    },
-    throwFileSizeLimit: true,
-  });
   app.get('/api/health', async () => startup.result === 'writable'
     ? {
         status: 'ok',
@@ -386,30 +325,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
           message: 'A database migration failed. Reads remain available; all mutations are disabled.',
         },
       });
-  const legacyAssetApiEnabled = process.env.NODE_ENV === 'test'
-    || process.env.TAVERNNEXT_ENABLE_LEGACY_ASSET_API === 'true';
-  if (legacyAssetApiEnabled) {
-    registerImportRoutes(app, imports);
-    registerCharacterRoutes(app, database, repositories);
-    registerAvatarRoutes(
-      app,
-      database,
-      repositories,
-      config.dataDir,
-      options.avatarBeforeCommit,
-      options.avatarMaxBytes,
-      options.avatarLegacyAfterFirstChunk,
-    );
-    registerCharacterExportRoutes(app, repositories, config.dataDir);
-    registerPresetExportRoutes(app, repositories);
-    registerWorldbookRoutes(app, database, repositories);
-    registerWorldbookExportRoutes(app, repositories);
-    registerExtensionAssetRoutes(app, database, repositories);
-    registerRuntimeStateRoutes(app, database, repositories);
-    registerExtensionTrustRoutes(app, repositories, extensionTrust);
-    registerExtensionRuntimeRpcRoutes(app, database, repositories, generations, extensionTrust);
-    registerInteractiveActionRoutes(app, database, repositories, generations, extensionTrust);
-  }
+  registerSaveAccessGuard(app, repositories);
   registerPresetRoutes(app, database, repositories);
   registerPersonaRoutes(app, database, repositories);
   registerProviderRoutes(app, database, repositories, {
@@ -461,13 +377,9 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       await scenes.close();
     } finally {
       try {
-        imports.close();
+        database.close();
       } finally {
-        try {
-          database.close();
-        } finally {
-          startup.ownership?.release();
-        }
+        startup.ownership?.release();
       }
     }
   });

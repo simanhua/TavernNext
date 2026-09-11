@@ -7,7 +7,8 @@ let stack: E2eStack;
 async function updatePrivatePreset(page: Page, marker: string): Promise<void> {
   const panel = page.locator('details.scene-agent-configuration');
   if ((await panel.getAttribute('open')) === null) {
-    await panel.locator('summary').click({ force: true });
+    await page.getByRole('button', { name: /打开存档工具|Open Save tools/ }).click();
+    await page.getByRole('menuitem', { name: /存档智能体配置|Save Agent configuration/ }).click();
   }
   const editor = page.getByLabel('Executable settings JSON');
   const settings = JSON.parse(await editor.inputValue()) as Record<string, unknown>;
@@ -40,8 +41,8 @@ async function updatePrivatePreset(page: Page, marker: string): Promise<void> {
   await page.getByRole('button', { name: 'Save configuration' }).click();
   expect((await saved).ok()).toBe(true);
   await expect(editor).toHaveValue(new RegExp(marker));
-  await panel.locator('summary').click({ force: true });
-  await expect(panel).not.toHaveAttribute('open', '');
+  await panel.getByRole('button', { name: /关闭存档智能体配置|Close Save Agent configuration/ }).click();
+  await expect(panel).toBeHidden();
 }
 
 test.beforeAll(async () => { stack = await startE2eStack(); });

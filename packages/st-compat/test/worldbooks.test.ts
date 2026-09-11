@@ -1,29 +1,19 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import type { InspectionLimits, NormalizedWorldbook, NormalizedWorldbookEntry, WorldbookImportPreview } from '../src/index.js';
+import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
+
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+
 import { decode as decodePngText, encode as encodePngText } from 'png-chunk-text';
 import encodePngChunks from 'png-chunks-encode';
 import extractPngChunks from 'png-chunks-extract';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  DEFAULT_INSPECTION_LIMITS,
-  decodeEmbeddedCharacterBook,
-  decodeWorldbookArtifact,
-  exportCharacterBook,
-  exportWorldbook,
-  inspectWorldbook,
-  type InspectionLimits,
-  type NormalizedWorldbook,
-  type NormalizedWorldbookEntry,
-  type WorldbookImportPreview,
-} from '../src/index.js';
+import { DEFAULT_INSPECTION_LIMITS, decodeEmbeddedCharacterBook, decodeWorldbookArtifact, inspectWorldbook } from '../src/index.js';
 import { WorldbookCodecError } from '../src/worldbooks/native-codec.js';
 
 const fixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'worldbooks');
-const characterFixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'characters');
+
 const encoder = new TextEncoder();
 const naidataRawTextLimit = 2 * 1024 * 1024;
 
@@ -43,27 +33,6 @@ function requireBook(preview: WorldbookImportPreview): NormalizedWorldbook {
 
 function limited(overrides: Partial<InspectionLimits>): InspectionLimits {
   return { ...DEFAULT_INSPECTION_LIMITS, ...overrides };
-}
-
-function executableEntry(entry: NormalizedWorldbookEntry): Omit<NormalizedWorldbookEntry, 'id' | 'sourceOrdinal' | 'unknownFields'> {
-  const { id: ignoredId, sourceOrdinal: ignoredOrdinal, unknownFields: ignoredUnknown, ...value } = entry;
-  void ignoredId;
-  void ignoredOrdinal;
-  void ignoredUnknown;
-  return value;
-}
-
-function executableBook(book: NormalizedWorldbook) {
-  return {
-    name: book.name,
-    description: book.description,
-    enabled: book.enabled,
-    scanDepth: book.scanDepth,
-    tokenBudget: book.tokenBudget,
-    recursiveScanning: book.recursiveScanning,
-    extensions: book.extensions,
-    entries: book.entries.map(executableEntry),
-  };
 }
 
 function pngWithAdditionalMetadata(source: Uint8Array, keyword: string, text: string): Uint8Array {
@@ -197,8 +166,6 @@ describe('Worldbook all-field normalization', () => {
       code: 'worldbook_unknown_position',
       path: 'entries.alpha-source-key.position',
     }));
-    const exported = await exportWorldbook(preview);
-    expect((JSON.parse(Buffer.from(exported.bytes).toString('utf8')) as any).entries['alpha-uid'].position).toBe(99);
   });
 });
 
@@ -360,10 +327,6 @@ describe('Worldbook family codecs', () => {
     expect(preview.warnings).toContainEqual(expect.objectContaining({
       code: 'worldbook_source_uid_invalid', path: 'entries[3].id',
     }));
-
-    const exported = JSON.parse(Buffer.from((await exportWorldbook(preview)).bytes).toString('utf8')) as any;
-    expect(Object.keys(exported.entries)).not.toContain('0');
-    expect(Object.values(exported.entries).map((value: any) => value.uid)).toEqual([1, '1', 1, book.entries[3]?.sourceUid]);
   });
 });
 
@@ -545,65 +508,13 @@ describe('Worldbook validation and naidata safety', () => {
   });
 });
 
-describe('deterministic native export and round trip', () => {
-  it.each(['native.json', 'character-book.json', 'novel.json', 'agnai.json', 'risu.json', 'naidata.png'])(
-    'edits one field in %s and preserves executable form, raw extensions, and unknown values after native re-import',
-    async (file) => {
-      const preview = await inspectWorldbook(bytes(file), file);
-      const original = requireBook(preview);
-      const edited: WorldbookImportPreview = {
-        ...preview,
-        worldbook: {
-          ...original,
-          entries: original.entries.map((entry, index) => index === 0
-            ? { ...entry, content: `Edited once: ${file}` }
-            : entry),
-        },
-      };
-
-      const first = await exportWorldbook(edited);
-      const second = await exportWorldbook(edited);
-      expect(first).toMatchObject({ contentType: 'application/json; charset=utf-8', fileName: expect.stringMatching(/\.json$/) });
-      expect(first.bytes).toEqual(second.bytes);
-      const reimported = requireBook(await inspectWorldbook(first.bytes, first.fileName));
-      expect(reimported.entries[0]?.content).toBe(`Edited once: ${file}`);
-      expect(executableBook(reimported)).toEqual(executableBook(edited.worldbook!));
-      expect(reimported.unknownFields).toEqual(edited.worldbook!.unknownFields);
-      expect(reimported.entries.map((entry) => entry.unknownFields)).toEqual(edited.worldbook!.entries.map((entry) => entry.unknownFields));
-    },
-  );
-
-  it('exports entries in stable runtime order and uses source UIDs instead of array indexes', async () => {
+describe('native source identity normalization', () => {
+  it('preserves native source UIDs independently of array indexes', async () => {
     const preview = await inspectWorldbook(bytes('native.json'), 'native.json');
-    const serialized = Buffer.from((await exportWorldbook(preview)).bytes).toString('utf8');
-    const exported = JSON.parse(serialized) as any;
 
     expect(preview.worldbook?.entries.map((entry) => entry.sourceUid)).toEqual(['alpha-uid', 9]);
-    // Typed keys avoid ECMAScript's canonical-integer reordering while the exact UID stays in the entry.
-    expect(Object.keys(exported.entries)).toEqual(['9', 'alpha-uid']);
-    expect(exported.entries['alpha-uid']).toMatchObject({ uid: 'alpha-uid', order: 100 });
-    expect(exported.entries['9']).toMatchObject({ uid: 9, order: 90 });
   });
 
-  it('builds a Character Book envelope with the same unknown book and entry extensions', async () => {
-    const preview = await inspectWorldbook(bytes('character-book.json'), 'character-book.json');
-    const embedded = exportCharacterBook(requireBook(preview));
-
-    expect(embedded).toMatchObject({
-      name: 'Synthetic Character Book',
-      scan_depth: 9,
-      token_budget: 1234,
-      recursive_scanning: true,
-      extensions: { book_unknown: 'keep-character-book', nested: { value: 1 } },
-      character_book_unknown: { preserve: true },
-      entries: expect.arrayContaining([expect.objectContaining({
-        id: 42,
-        content: 'Synthetic Character Book content.',
-        entry_extra: 'keep-character-book-entry',
-        extensions: expect.objectContaining({ entry_unknown: { keep: 'character-book-extension' } }),
-      })]),
-    });
-  });
 });
 
 const oracleRoot = process.env.TAVERNNEXT_ST_ORACLE_ROOT;
@@ -707,7 +618,7 @@ describe.skipIf(
   || !existsSync(oracleCharacterBookTypes)
   || !existsSync(oracleEldoria),
 )('read-only SillyTavern 1.18.0 Worldbook oracle', () => {
-  it('checks the pinned version/hash and accepts complete native and Character Book exports', async () => {
+  it('verifies the pinned source revision and oracle hashes', async () => {
     expect((JSON.parse(readFileSync(oraclePackage, 'utf8')) as { version: string }).version).toBe('1.18.0');
     const revision = spawnSync('git', ['-C', oracleRoot!, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
     expect(revision.status).toBe(0);
@@ -725,49 +636,6 @@ describe.skipIf(
       characters: '6B430C2459AA77D3E1A55D7F2AFF664485F9323E2CBC71696DEC05E7F7BAE68E',
       types: '33526C8CDD192473C6165EE269CF9B0F6FAB7BC47A71DB575E4A0DCCC43E0717',
     });
-
-    const preview = await inspectWorldbook(bytes('all-fields.json'), 'all-fields.json');
-    const exported = await exportWorldbook(preview);
-    const directory = mkdtempSync(join(tmpdir(), 'tavernnext-worldbook-oracle-'));
-    try {
-      writeFileSync(join(directory, 'oracle.json'), exported.bytes);
-      const loaderPath = join(directory, 'oracle-loader.mjs');
-      writeFileSync(loaderPath, [
-        "const source = (value) => `data:text/javascript,${encodeURIComponent(value)}`;",
-        'export async function resolve(specifier, context, nextResolve) {',
-        "  if (specifier === 'express') return { url: source(`export default { Router() { return { post() {} }; } };`), shortCircuit: true };",
-        "  if (specifier === 'sanitize-filename') return { url: source(`export default value => value;`), shortCircuit: true };",
-        "  if (specifier === 'lodash') return { url: source(`export default { isObjectLike: value => value !== null && typeof value === 'object' };`), shortCircuit: true };",
-        "  if (specifier === 'write-file-atomic') return { url: source(`export const sync = () => {};`), shortCircuit: true };",
-        "  if (specifier === '../util.js' && context.parentURL?.endsWith('/src/endpoints/worldinfo.js')) return { url: source(`export const tryParse = value => { try { return JSON.parse(value); } catch { return null; } };`), shortCircuit: true };",
-        '  return nextResolve(specifier, context);',
-        '}',
-      ].join('\n'));
-      const card = JSON.parse(readFileSync(join(characterFixtureRoot, 'v3.json'), 'utf8')) as any;
-      card.data.character_book = exportCharacterBook(requireBook(preview));
-      const program = [
-        "import { pathToFileURL } from 'node:url';",
-        'const [{ readWorldInfoFile }, { TavernCardValidator }] = await Promise.all([',
-        '  import(pathToFileURL(process.argv[1]).href),',
-        '  import(pathToFileURL(process.argv[2]).href),',
-        ']);',
-        "let input = ''; for await (const chunk of process.stdin) input += chunk;",
-        'const book = readWorldInfoFile({ worlds: process.argv[3] }, "oracle", false);',
-        'const card = JSON.parse(input);',
-        'const entries = Object.values(book.entries);',
-        'process.stdout.write(JSON.stringify({ keys: Object.keys(book.entries), editable: entries.every(entry => book.entries[entry.uid] === entry), card: new TavernCardValidator(card).validate() }));',
-      ].join('\n');
-      const result = spawnSync(
-        process.execPath,
-        ['--experimental-loader', pathToFileURL(loaderPath).href, '--input-type=module', '--eval', program, oracleWorldInfo, oracleValidator, directory],
-        { input: JSON.stringify(card), encoding: 'utf8' },
-      );
-      expect(result.status, result.stderr).toBe(0);
-      expect(readFileSync(oracleWorldInfoRuntime, 'utf8')).toContain('if (!data.entries[entry.uid]) return;');
-      expect(JSON.parse(result.stdout)).toEqual({ keys: ['7'], editable: true, card: 3 });
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
   });
 
   it('executes the pinned Character, Novel, Agnai, and Risu converters and reads official Eldoria without mutation', async () => {

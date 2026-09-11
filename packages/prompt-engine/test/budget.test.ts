@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allocateGroupedPromptBudget, allocatePromptBudget } from '../src/index.js';
+import { allocateGroupedPromptBudget } from '../src/index.js';
 
 describe('deterministic token budget ledger', () => {
   const blocks = [
@@ -10,17 +10,12 @@ describe('deterministic token budget ledger', () => {
   ];
 
   it('keeps a newest-first contiguous history suffix and then optional blocks', async () => {
-    const calls: string[] = [];
-    const result = await allocatePromptBudget({
+    const result = await allocateGroupedPromptBudget({
       maxTokens: 3,
       blocks,
-      countTokens: async (block) => {
-        calls.push(block.source);
-        return block.tokens;
-      },
+      countSelection: (selected) => selected.reduce((sum, block) => sum + block.tokens, 0),
     });
 
-    expect(calls).toEqual(['system', 'history:old', 'history:new', 'example:0']);
     expect(result).toEqual({
       ok: true,
       includedBlockIndexes: [0, 2, 3],
@@ -36,13 +31,13 @@ describe('deterministic token budget ledger', () => {
   });
 
   it('tracks selected block identity when ledger sources are duplicated', async () => {
-    const result = await allocatePromptBudget({
+    const result = await allocateGroupedPromptBudget({
       maxTokens: 1,
       blocks: [
         { source: 'history:same', policy: 'history' as const, value: 'old' },
         { source: 'history:same', policy: 'history' as const, value: 'new' },
       ],
-      countTokens: async () => 1,
+      countSelection: (selected) => selected.length,
     });
 
     expect(result).toMatchObject({
@@ -56,32 +51,16 @@ describe('deterministic token budget ledger', () => {
     });
   });
 
-  it('supports ST Text strict variable-block headroom without changing Chat boundaries', async () => {
-    const history = [
-      { source: 'history:old', policy: 'history' as const, value: 'old' },
-      { source: 'history:new', policy: 'history' as const, value: 'new' },
-    ];
-    const inclusive = await allocatePromptBudget({
-      maxTokens: 2, blocks: history, countTokens: async () => 1,
-    });
-    const strict = await allocatePromptBudget({
-      maxTokens: 2, blocks: history, countTokens: async () => 1, fit: 'strict',
-    });
-
-    expect(inclusive).toMatchObject({ ok: true, includedBlockIndexes: [0, 1], totalTokens: 2 });
-    expect(strict).toMatchObject({ ok: true, includedBlockIndexes: [1], totalTokens: 1 });
-  });
-
   it('includes exact-boundary blocks and reports immutable overflow', async () => {
-    const exact = await allocatePromptBudget({
+    const exact = await allocateGroupedPromptBudget({
       maxTokens: 4,
       blocks: blocks.slice(0, 3),
-      countTokens: async (block) => block.tokens,
+      countSelection: (selected) => selected.reduce((sum, block) => sum + block.tokens, 0),
     });
-    const overflow = await allocatePromptBudget({
+    const overflow = await allocateGroupedPromptBudget({
       maxTokens: 0,
       blocks: blocks.slice(0, 1),
-      countTokens: async (block) => block.tokens,
+      countSelection: (selected) => selected.reduce((sum, block) => sum + block.tokens, 0),
     });
 
     expect(exact.ok && exact.includedSources).toEqual(['system', 'history:old', 'history:new']);
@@ -92,15 +71,15 @@ describe('deterministic token budget ledger', () => {
   });
 
   it('rejects negative budgets and tokenizer failures deterministically', async () => {
-    const negative = await allocatePromptBudget({
+    const negative = await allocateGroupedPromptBudget({
       maxTokens: -1,
       blocks: [],
-      countTokens: async () => 0,
+      countSelection: async () => 0,
     });
-    const failed = await allocatePromptBudget({
+    const failed = await allocateGroupedPromptBudget({
       maxTokens: 1,
       blocks: blocks.slice(0, 1),
-      countTokens: async () => { throw new Error('offline'); },
+      countSelection: async () => { throw new Error('offline'); },
     });
 
     expect(negative).toMatchObject({ ok: false, code: 'invalid_budget' });

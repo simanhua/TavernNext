@@ -1,11 +1,6 @@
+import type { NormalizedWorldbook, WorldbookImportPreview } from '../src/index.js';
 import { describe, expect, it } from 'vitest';
-import {
-  exportCharacterBook,
-  exportWorldbook,
-  inspectWorldbook,
-  type NormalizedWorldbook,
-  type WorldbookImportPreview,
-} from '../src/index.js';
+import { inspectWorldbook } from '../src/index.js';
 
 const encoder = new TextEncoder();
 
@@ -32,79 +27,6 @@ function characterEntry(overrides: Record<string, unknown> = {}) {
 }
 
 describe('reviewer UID and prototype reproductions', () => {
-  it('exports __proto__ and constructor as own native entry keys without prototype mutation', async () => {
-    const source = encoder.encode('{"entries":{"__proto__":{"uid":"__proto__","key":[],"content":"proto"},"constructor":{"uid":"constructor","key":[],"content":"ctor"}}}');
-    const preview = await inspectWorldbook(source, 'prototype.json');
-    const document = JSON.parse(Buffer.from(exportWorldbook(preview).bytes).toString('utf8')) as {
-      entries: Record<string, { uid: string; content: string }>;
-    };
-
-    expect(Object.keys(document.entries)).toEqual(['__proto__', 'constructor']);
-    expect(Object.hasOwn(document.entries, '__proto__')).toBe(true);
-    expect(document.entries.__proto__).toEqual({
-      uid: '__proto__',
-      key: [],
-      keysecondary: [],
-      comment: '',
-      displayName: '',
-      content: 'proto',
-      constant: false,
-      vectorized: false,
-      selective: true,
-      selectiveLogic: 0,
-      addMemo: false,
-      order: 100,
-      priority: null,
-      position: 0,
-      disable: false,
-      ignoreBudget: false,
-      excludeRecursion: false,
-      preventRecursion: false,
-      matchPersonaDescription: false,
-      matchCharacterDescription: false,
-      matchCharacterPersonality: false,
-      matchCharacterDepthPrompt: false,
-      matchScenario: false,
-      matchCreatorNotes: false,
-      delayUntilRecursion: 0,
-      probability: 100,
-      useProbability: true,
-      depth: 4,
-      outletName: '',
-      group: '',
-      groupOverride: false,
-      groupWeight: 100,
-      scanDepth: null,
-      caseSensitive: null,
-      matchWholeWords: null,
-      useGroupScoring: null,
-      automationId: '',
-      role: 0,
-      sticky: null,
-      cooldown: null,
-      delay: null,
-      characterFilter: { isExclude: false, names: [], tags: [] },
-      personaFilter: { isExclude: false, names: [], tags: [] },
-      triggers: [],
-      displayIndex: null,
-      useRegex: true,
-      extensions: {},
-    });
-  });
-
-  it('keeps the canonical native object key for a unique numeric UID', async () => {
-    const preview = await inspectWorldbook(encoded({
-      entries: { original: { uid: 7, key: ['seven'], content: 'seven' } },
-    }), 'numeric-uid.json');
-    const document = JSON.parse(Buffer.from(exportWorldbook(preview).bytes).toString('utf8')) as {
-      entries: Record<string, { uid: number }>;
-    };
-
-    expect(Object.keys(document.entries)).toEqual(['7']);
-    expect(document.entries['7']).toMatchObject({ uid: 7 });
-    expect(document.entries[String(document.entries['7']!.uid)]).toBe(document.entries['7']);
-  });
-
   it('uses stable source ordinals for duplicate and marker-colliding UIDs across independent imports', async () => {
     const source = {
       extensions: {},
@@ -119,18 +41,10 @@ describe('reviewer UID and prototype reproductions', () => {
       ],
     };
     const first = await inspectWorldbook(encoded(source), 'duplicates.json');
-    const second = await inspectWorldbook(encoded(source), 'duplicates.json');
+
     const firstBook = requireBook(first);
 
     expect(firstBook.entries.map((entry) => (entry as unknown as { sourceOrdinal?: number }).sourceOrdinal)).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    expect(exportWorldbook(first).bytes).toEqual(exportWorldbook(second).bytes);
-    const exported = JSON.parse(Buffer.from(exportWorldbook(first).bytes).toString('utf8')) as { entries: Record<string, { uid: string | number }> };
-    expect(Object.keys(exported.entries)).toEqual([
-      '1', 'same', 'same~1~1', 'same~1', '1~1', '__proto__', 'constructor',
-    ]);
-    expect(Object.values(exported.entries).map((entry) => entry.uid)).toEqual([
-      1, 'same', 'same', 'same~1', '1', '__proto__', 'constructor',
-    ]);
   });
 
   it('preserves empty and whitespace-only string UIDs deterministically', async () => {
@@ -142,10 +56,8 @@ describe('reviewer UID and prototype reproductions', () => {
       ],
     };
     const first = await inspectWorldbook(encoded(source), 'string-uids.json');
-    const second = await inspectWorldbook(encoded(source), 'string-uids.json');
 
     expect(requireBook(first).entries.map((entry) => entry.sourceUid)).toEqual(['', '  ']);
-    expect(exportWorldbook(first).bytes).toEqual(exportWorldbook(second).bytes);
   });
 });
 
@@ -178,7 +90,7 @@ describe('reviewer filename and converter-semantics reproductions', () => {
     const named = await inspectWorldbook(encoded({ name: 'Explicit Name', entries: {} }), 'ignored.json');
 
     expect(requireBook(unnamed).name).toBe('Eldoria');
-    expect(exportWorldbook(unnamed).fileName).toBe('Eldoria.json');
+
     expect(requireBook(named).name).toBe('Explicit Name');
   });
 
@@ -219,13 +131,6 @@ describe('reviewer filename and converter-semantics reproductions', () => {
       expect.objectContaining({ path: 'entries[0].use_regex' }),
       expect.objectContaining({ path: 'entries[0].case_sensitive' }),
     ]));
-    expect((exportCharacterBook(requireBook(preview)).entries as Array<Record<string, unknown>>)[0]).toMatchObject({
-      name: 'ignored display name',
-      priority: 99,
-      use_regex: false,
-      case_sensitive: false,
-      extensions: { case_sensitive: true, delay_until_recursion: false },
-    });
   });
 
   it('uses the pinned Character converter position ternary for every top-level position value', async () => {
@@ -254,7 +159,6 @@ describe('reviewer filename and converter-semantics reproductions', () => {
     expect(preview.warnings).toContainEqual(expect.objectContaining({
       code: 'worldbook_foreign_field_preserved', path: 'entries[0].extensions.add_memo',
     }));
-    expect((exportCharacterBook(book).entries as Array<Record<string, any>>)[0]!.extensions.add_memo).toBe(true);
   });
 
   it('preserves boolean and numeric delay-until-recursion values in native and Character books', async () => {
@@ -307,24 +211,10 @@ describe('reviewer filename and converter-semantics reproductions', () => {
     }
   });
 
-  it('sidecars every ignored Character field that collides with canonical native output', async () => {
-    const source = {
-      extensions: {},
-      entries: [characterEntry({
-        id: 'canonical-id', uid: 'ignored-uid', key: ['ignored-key'], order: 777, disable: true,
-      })],
-    };
-    const preview = await inspectWorldbook(encoded(source), 'character-collisions.json');
-    const native = exportWorldbook(preview);
-    const reimported = await inspectWorldbook(native.bytes, 'character-collisions-native.json');
-    const character = (exportCharacterBook(requireBook(reimported)).entries as Array<Record<string, unknown>>)[0]!;
-
-    expect(character).toMatchObject({ uid: 'ignored-uid', key: ['ignored-key'], order: 777, disable: true });
-  });
 });
 
 describe('reviewer nested filter and logical-bound reproductions', () => {
-  it('deeply overlays known filter edits while retaining nested future fields and raw isolation', async () => {
+  it('retains filter future fields without sharing raw payload references', async () => {
     const source = {
       entries: {
         filter: {
@@ -345,11 +235,6 @@ describe('reviewer nested filter and logical-bound reproductions', () => {
     entry.characterFilter.names = ['Edited'];
     (entry.characterFilter.unknownFields!.future as { nested: { value: number } }).nested.value = 2;
     expect(((preview.rawPayload!.entries as Record<string, any>).filter.characterFilter.future.nested.value)).toBe(1);
-
-    const reimported = await inspectWorldbook(exportWorldbook(preview).bytes, 'filters-export.json');
-    expect((requireBook(reimported).entries[0]!.characterFilter as unknown as { names: string[]; unknownFields: unknown })).toMatchObject({
-      names: ['Edited'], unknownFields: { future: { nested: { value: 2 } } },
-    });
   });
 
   it('blocks 10k entries before normalized entry allocation', async () => {

@@ -234,7 +234,3 @@ export async function inspectPreset(bytes: Uint8Array, fileName: string): Promis
 export function presetWarnings(decoded: Omit<PresetImportPreview, 'warnings' | 'blockingErrors'>): ImportDiagnostic[] {
   return stableWarnings(decoded.candidates, decoded.unknownFields);
 }
-
-export function presetRawDocument(value: unknown): Record<string, unknown> | undefined {
-  return record(value);
-}

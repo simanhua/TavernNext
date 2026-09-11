@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  projectRegexViews,
   REGEX_PLACEMENT,
-  runOwnedRegexProjection,
+  runOwnedPromptRegexProjectionInWorker,
   runOwnedRegexProjectionInWorker,
   regexWorkerLimitsForProjection,
   runRegexScripts,
@@ -28,17 +27,16 @@ describe('SillyTavern Regex compatibility engine', () => {
     expect(result.trace.map((entry) => entry.applied)).toEqual([true, true]);
   });
 
-  it('separates display and prompt-only execution', () => {
+  it('excludes display-only rules from common and prompt execution', () => {
     const rules = [rule({ markdownOnly: true }), rule({ id: 'prompt', promptOnly: true, replaceString: '{$1}' })];
-    expect(runRegexScripts('<one>', rules, { placement: REGEX_PLACEMENT.AI_OUTPUT, isMarkdown: true }).value).toBe('[one]');
+    expect(runRegexScripts('<one>', rules, { placement: REGEX_PLACEMENT.AI_OUTPUT }).value).toBe('<one>');
     expect(runRegexScripts('<one>', rules, { placement: REGEX_PLACEMENT.AI_OUTPUT, isPrompt: true }).value).toBe('{one}');
   });
 
-  it('honors edit and depth gates', () => {
-    const item = rule({ runOnEdit: false, minDepth: 2, maxDepth: 4 });
-    expect(runRegexScripts('<one>', [item], { placement: REGEX_PLACEMENT.AI_OUTPUT, isEdit: true, depth: 3 }).value).toBe('<one>');
-    expect(runRegexScripts('<one>', [{ ...item, runOnEdit: true }], { placement: REGEX_PLACEMENT.AI_OUTPUT, isEdit: true, depth: 3 }).value).toBe('[one]');
-    expect(runRegexScripts('<one>', [{ ...item, runOnEdit: true }], { placement: REGEX_PLACEMENT.AI_OUTPUT, depth: 5 }).value).toBe('<one>');
+  it('honors depth gates', () => {
+    const item = rule({ minDepth: 2, maxDepth: 4 });
+    expect(runRegexScripts('<one>', [item], { placement: REGEX_PLACEMENT.AI_OUTPUT, depth: 3 }).value).toBe('[one]');
+    expect(runRegexScripts('<one>', [item], { placement: REGEX_PLACEMENT.AI_OUTPUT, depth: 5 }).value).toBe('<one>');
   });
 
   it('supports escaped macro substitution in find expressions', () => {
@@ -48,11 +46,14 @@ describe('SillyTavern Regex compatibility engine', () => {
     expect(result.value).toBe('friend');
   });
 
-  it('projects primary Preset rules before Character rules and traces their owners', () => {
-    const result = runOwnedRegexProjection('<state:  blue  >', {
+  it('projects primary Preset rules before Character rules and traces their owners', async () => {
+    const result = await runOwnedRegexProjectionInWorker('<state:  blue  >', {
       preset: [rule({ id: 'preset', findRegex: '/<state:\\s*(?<value>.*?)\\s*>/g', replaceString: '[$<value>]', trimStrings: [' '] })],
       character: [rule({ id: 'character', findRegex: '/\\[(.*?)\\]/g', replaceString: '{$1}' })],
-    }, { placement: REGEX_PLACEMENT.AI_OUTPUT });
+    }, { placement: REGEX_PLACEMENT.AI_OUTPUT }, (request) => ({
+      result: Promise.resolve(runRegexScripts(request.raw, [request.script], request.context)),
+      terminate: () => undefined,
+    }), { perRuleMs: 100, aggregateMs: 1_000 });
 
     expect(result.value).toBe('{blue}');
     expect(result.trace.map(({ owner, scriptId }) => `${owner}:${scriptId}`)).toEqual([
@@ -61,18 +62,22 @@ describe('SillyTavern Regex compatibility engine', () => {
     ]);
   });
 
-  it('keeps raw content canonical while separating prompt and display projections', () => {
-    const views = projectRegexViews('<secret> <panel>', {
+  it('keeps raw content canonical and excludes display-only rules from prompt projection', async () => {
+    const raw = '<secret> <panel>';
+    const result = await runOwnedPromptRegexProjectionInWorker(raw, {
       preset: [
         rule({ id: 'prompt', findRegex: '/<secret>/g', replaceString: '', promptOnly: true }),
         rule({ id: 'display', findRegex: '/<panel>/g', replaceString: '[status]', markdownOnly: true }),
       ],
       character: [],
-    }, { placement: REGEX_PLACEMENT.AI_OUTPUT });
+    }, { placement: REGEX_PLACEMENT.AI_OUTPUT }, (request) => ({
+      result: Promise.resolve(runRegexScripts(request.raw, [request.script], request.context)),
+      terminate: () => undefined,
+    }));
 
-    expect(views.raw).toBe('<secret> <panel>');
-    expect(views.prompt.value).toBe(' <panel>');
-    expect(views.display.value).toBe('<secret> [status]');
+    expect(raw).toBe('<secret> <panel>');
+    expect(result.value).toBe(' <panel>');
+    expect(result.trace.filter((entry) => entry.scriptId === 'display').every((entry) => entry.reason === 'mode')).toBe(true);
   });
 
   it('terminates timed-out rules, fails open, and continues with a fresh worker', async () => {

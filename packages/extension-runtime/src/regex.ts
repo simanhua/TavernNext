@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const REGEX_PLACEMENT = Object.freeze({
-  MD_DISPLAY: 0, USER_INPUT: 1, AI_OUTPUT: 2, SLASH_COMMAND: 3, WORLD_INFO: 5, REASONING: 6,
+  USER_INPUT: 1, AI_OUTPUT: 2, WORLD_INFO: 5,
 } as const);
 export type RegexPlacement = typeof REGEX_PLACEMENT[keyof typeof REGEX_PLACEMENT];
 
@@ -20,16 +20,14 @@ export interface RegexMacroContext {
 }
 export interface RegexRunContext extends RegexMacroContext {
   placement: RegexPlacement;
-  isMarkdown?: boolean;
   isPrompt?: boolean;
-  isEdit?: boolean;
   depth?: number;
 }
 export interface RegexTraceEntry {
   scriptId: string;
   scriptName: string;
   applied: boolean;
-  reason?: 'disabled' | 'mode' | 'edit' | 'depth' | 'placement' | 'invalid' | 'empty'
+  reason?: 'disabled' | 'mode' | 'depth' | 'placement' | 'invalid' | 'empty'
     | 'timeout' | 'aggregate_timeout' | 'error';
   before: string;
   after: string;
@@ -37,11 +35,6 @@ export interface RegexTraceEntry {
 export interface RegexRunResult { value: string; trace: RegexTraceEntry[] }
 export interface OwnedRegexTraceEntry extends RegexTraceEntry { owner: 'preset' | 'character' }
 export interface OwnedRegexRunResult { value: string; trace: OwnedRegexTraceEntry[] }
-export interface RegexViews {
-  raw: string;
-  prompt: OwnedRegexRunResult;
-  display: OwnedRegexRunResult;
-}
 
 const regexCache = new Map<string, RegExp>();
 
@@ -90,9 +83,9 @@ function substitute(value: string, context: RegexMacroContext, escape: boolean):
 }
 
 function matchesMode(script: TavernRegex, context: RegexRunContext): boolean {
-  return (script.markdownOnly && context.isMarkdown === true)
-    || (script.promptOnly && context.isPrompt === true)
-    || (!script.markdownOnly && !script.promptOnly && context.isMarkdown !== true && context.isPrompt !== true);
+  return context.isPrompt === true
+    ? script.promptOnly
+    : !script.markdownOnly && !script.promptOnly;
 }
 
 function depthAllowed(script: TavernRegex, depth: number | undefined): boolean {
@@ -110,7 +103,6 @@ export function regexSkipReason(
   if (script.disabled) return 'disabled';
   if (value === '' || script.findRegex === '') return 'empty';
   if (!matchesMode(script, context)) return 'mode';
-  if (context.isEdit === true && !script.runOnEdit) return 'edit';
   if (!depthAllowed(script, context.depth)) return 'depth';
   if (!script.placement.includes(context.placement)) return 'placement';
   return undefined;
@@ -159,37 +151,3 @@ export function runRegexScripts(raw: string, scripts: readonly TavernRegex[], co
   }
   return { value, trace };
 }
-
-export function runOwnedRegexProjection(
-  raw: string,
-  scripts: { preset: readonly TavernRegex[]; character: readonly TavernRegex[] },
-  context: RegexRunContext,
-): OwnedRegexRunResult {
-  let value = raw;
-  const trace: OwnedRegexTraceEntry[] = [];
-  for (const owner of ['preset', 'character'] as const) {
-    const projected = runRegexScripts(value, scripts[owner], context);
-    value = projected.value;
-    trace.push(...projected.trace.map((entry) => ({ ...entry, owner })));
-  }
-  return { value, trace };
-}
-
-export function projectRegexViews(
-  raw: string,
-  scripts: { preset: readonly TavernRegex[]; character: readonly TavernRegex[] },
-  context: Omit<RegexRunContext, 'isMarkdown' | 'isPrompt'>,
-): RegexViews {
-  const common = runOwnedRegexProjection(raw, scripts, { ...context, isMarkdown: false, isPrompt: false });
-  const projectMode = (mode: { isMarkdown: boolean; isPrompt: boolean }): OwnedRegexRunResult => {
-    const modeProjection = runOwnedRegexProjection(common.value, scripts, { ...context, ...mode });
-    return { value: modeProjection.value, trace: [...common.trace, ...modeProjection.trace] };
-  };
-  return {
-    raw,
-    prompt: projectMode({ isMarkdown: false, isPrompt: true }),
-    display: projectMode({ isMarkdown: true, isPrompt: false }),
-  };
-}
-
-export function clearRegexCache(): void { regexCache.clear(); }

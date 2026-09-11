@@ -802,7 +802,7 @@ export class SceneDirectorExecution {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let removeAbort: (() => void) | undefined;
       try {
-        const { configuration, conversation, runtime } = this.prepare();
+        const { runtime } = this.prepare();
         if (signal.aborted) throw new ProviderError('aborted');
         const responseLimit = this.plan.responseLimit;
         const temperature = this.plan.temperature;

@@ -58,7 +58,6 @@ describe('Agent-first global generation configuration API', () => {
     expect(saved.statusCode).toBe(200);
     expect(saved.json()).toMatchObject({
       revision: 1, providerId: provider.id, chatPresetId: chat.id,
-      textPresetId: null, contextPresetId: null, instructPresetId: null, systemPresetId: null,
     });
 
     const companion = await app.inject({
@@ -83,7 +82,7 @@ describe('Agent-first global generation configuration API', () => {
     expect(incapable.json()).toEqual({ error: 'model_not_agent_capable' });
   });
 
-  it('allows legacy companion fields to be cleared but never repopulated', async () => {
+  it('rejects retired companion fields while leaving historical storage intact', async () => {
     const { app, repositories } = await context();
     const legacyText = repositories.presets.create({
       id: '018f0000-0000-7000-8000-000000000121', name: 'Legacy companion', kind: 'text', settings: {},
@@ -104,16 +103,22 @@ describe('Agent-first global generation configuration API', () => {
       systemPresetId: legacySystem.id,
     }).ok).toBe(true);
 
-    const cleared = await app.inject({
-      method: 'PATCH', url: '/api/settings/generation',
-      payload: {
-        revision: 1,
-        patch: { textPresetId: null, contextPresetId: null, instructPresetId: null, systemPresetId: null },
-      },
-    });
-    expect(cleared.statusCode).toBe(200);
-    expect(cleared.json()).toMatchObject({
-      textPresetId: null, contextPresetId: null, instructPresetId: null, systemPresetId: null,
-    });
+    const legacySelection = {
+      textPresetId: legacyText.id, contextPresetId: legacyContext.id,
+      instructPresetId: legacyInstruct.id, systemPresetId: legacySystem.id,
+    };
+    for (const field of Object.keys(legacySelection)) {
+      const rejected = await app.inject({
+        method: 'PATCH', url: '/api/settings/generation',
+        payload: { revision: 1, patch: { [field]: null } },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json()).toEqual({ error: 'invalid_request' });
+    }
+    expect(repositories.globalGenerationConfig.get()).toMatchObject({ revision: 1, ...legacySelection });
+    const visible = await app.inject({ method: 'GET', url: '/api/settings/generation' });
+    expect(visible.statusCode).toBe(200);
+    for (const field of Object.keys(legacySelection)) expect(visible.json()).not.toHaveProperty(field);
+
   });
 });

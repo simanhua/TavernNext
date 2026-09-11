@@ -13,11 +13,3 @@ export class ProviderError extends Error {
     this.retryAfterMs = options.retryAfterMs;
   }
 }
-
-export function abortedError(): ProviderError {
-  return new ProviderError('aborted');
-}
-
-export function isProviderError(error: unknown): error is ProviderError {
-  return error instanceof ProviderError;
-}

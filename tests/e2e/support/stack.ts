@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFile, rm, mkdtemp } from 'node:fs/promises';
+import { rm, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, extname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const repositoryRoot = resolve(process.cwd());
 interface MockReply {
@@ -31,19 +31,10 @@ interface RunningServer {
   logs: string[];
 }
 
-export interface ExportedArtifact {
-  fileName: string;
-  mimeType: string;
-  bytes: Uint8Array;
-}
-
 export interface E2eStack {
   readonly baseUrl: string;
   readonly provider: MockProvider;
-  readonly dataDir: string;
   readonly serverLogs: readonly string[];
-  restartServer(): Promise<void>;
-  restartWithFreshData(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -62,13 +53,13 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return body === '' ? undefined : JSON.parse(body);
 }
 
-function sendSse(response: ServerResponse, reply: MockReply, textMode: boolean): void {
+function sendSse(response: ServerResponse, reply: MockReply): void {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
   });
-  if (!textMode && reply.toolCalls !== undefined) {
+  if (reply.toolCalls !== undefined) {
     response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {
       role: 'assistant',
       tool_calls: reply.toolCalls.map((call, index) => ({
@@ -81,12 +72,24 @@ function sendSse(response: ServerResponse, reply: MockReply, textMode: boolean):
     return;
   }
   for (const chunk of reply.chunks ?? []) {
-    const choice = textMode ? { text: chunk } : { delta: { content: chunk } };
+    const choice = { delta: { content: chunk } };
     response.write(`data: ${JSON.stringify({ choices: [choice] })}\n\n`);
   }
   if (reply.hold === true) return;
   response.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
   response.end('data: [DONE]\n\n');
+}
+
+function isMemoryExtractionRequest(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false;
+  const messages = (body as { messages?: unknown }).messages;
+  return Array.isArray(messages) && messages.some((message: unknown) => {
+    if (typeof message !== 'object' || message === null) return false;
+    const { role, content } = message as { role?: unknown; content?: unknown };
+    return (role === 'system' || role === 'developer')
+      && typeof content === 'string'
+      && content.startsWith('You extract durable roleplay memory from one completed TavernNext turn.');
+  });
 }
 
 async function startMockProvider(): Promise<MockProvider> {
@@ -102,13 +105,22 @@ async function startMockProvider(): Promise<MockProvider> {
         response.end(JSON.stringify({ data: [{ id: 'mock-model', owned_by: 'local' }] }));
         return;
       }
-      if (path !== '/v1/chat/completions' && path !== '/v1/completions') {
+      if (path !== '/v1/chat/completions') {
         response.writeHead(404).end();
+        return;
+      }
+      // Save Memory runs in the background and must not consume queued gameplay turns.
+      // Its contract requires an episode, so an empty memories array would trigger failed-job retries.
+      if (isMemoryExtractionRequest(body)) {
+        sendSse(response, { chunks: [JSON.stringify({ memories: [{
+          kind: 'episode', summary: 'A roleplay turn completed.', detail: '',
+          entities: [], salience: 0, confidence: 1,
+        }] })] });
         return;
       }
       const queued = replies.shift() ?? { chunks: [`Local reply ${requests.length}`] };
       const reply = typeof queued === 'function' ? queued(requests.at(-1)!) : queued;
-      sendSse(response, reply, path === '/v1/completions');
+      sendSse(response, reply);
     } catch (error) {
       response.writeHead(500, { 'content-type': 'text/plain' });
       response.end(error instanceof Error ? error.message : 'mock provider failure');
@@ -212,36 +224,22 @@ export async function startE2eStack(options: E2eStackOptions = {}): Promise<E2eS
     throw new Error('TAVERNNEXT_E2E_API_PORT must name an unprivileged TCP port.');
   }
   const provider = await startMockProvider();
-  let currentDataDir = await mkdtemp(join(tmpdir(), 'tavernnext-e2e-'));
-  directories.push(currentDataDir);
+  const dataDir = await mkdtemp(join(tmpdir(), 'tavernnext-e2e-'));
+  directories.push(dataDir);
   let running: RunningServer;
   try {
-    running = await launchServer(currentDataDir, apiPort);
+    running = await launchServer(dataDir, apiPort);
   } catch (error) {
     await provider.close();
     await Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true })));
     throw error;
   }
-  const allLogs: string[] = [...running.logs];
   let closed = false;
-
-  const replaceServer = async (fresh: boolean) => {
-    await stopServer(running);
-    allLogs.push(...running.logs);
-    if (fresh) {
-      currentDataDir = await mkdtemp(join(tmpdir(), 'tavernnext-e2e-fresh-'));
-      directories.push(currentDataDir);
-    }
-    running = await launchServer(currentDataDir, apiPort);
-  };
 
   return {
     baseUrl: `http://127.0.0.1:${apiPort}`,
     provider,
-    get dataDir() { return currentDataDir; },
-    get serverLogs() { return [...allLogs, ...running.logs]; },
-    restartServer: () => replaceServer(false),
-    restartWithFreshData: () => replaceServer(true),
+    get serverLogs() { return [...running.logs]; },
     close: async () => {
       if (closed) return;
       closed = true;
@@ -249,111 +247,5 @@ export async function startE2eStack(options: E2eStackOptions = {}): Promise<E2eS
       await provider.close();
       await Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true })));
     },
-  };
-}
-
-export function fixturePath(relativePath: string): string {
-  return join(repositoryRoot, 'tests', 'fixtures', ...relativePath.split('/'));
-}
-
-function contentType(fileName: string): string {
-  switch (extname(fileName).toLowerCase()) {
-    case '.png': return 'image/png';
-    case '.jsonl': return 'application/x-ndjson';
-    case '.yaml':
-    case '.yml': return 'application/yaml';
-    default: return 'application/json';
-  }
-}
-
-async function checkedResponse(response: Response): Promise<Response> {
-  if (response.ok) return response;
-  throw new Error(`${response.status} ${response.url}: ${await response.text()}`);
-}
-
-export async function apiJson<T = unknown>(baseUrl: string, path: string, init: {
-  method?: string;
-  body?: unknown;
-} = {}): Promise<T> {
-  const response = await checkedResponse(await fetch(new URL(path, baseUrl), {
-    method: init.method,
-    ...(init.body === undefined ? {} : {
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(init.body),
-    }),
-  }));
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
-}
-
-function dispositionFileName(value: string | null): string {
-  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value ?? '')?.[1];
-  if (encoded !== undefined) return decodeURIComponent(encoded);
-  return /filename="([^"]+)"/i.exec(value ?? '')?.[1] ?? 'artifact';
-}
-
-export async function exportArtifact(baseUrl: string, path: string): Promise<ExportedArtifact> {
-  const response = await checkedResponse(await fetch(new URL(path, baseUrl)));
-  return {
-    fileName: dispositionFileName(response.headers.get('content-disposition')),
-    mimeType: response.headers.get('content-type')?.split(';')[0] ?? 'application/octet-stream',
-    bytes: new Uint8Array(await response.arrayBuffer()),
-  };
-}
-
-export async function importArtifact(
-  baseUrl: string,
-  source: string | ExportedArtifact,
-): Promise<string> {
-  const artifact = typeof source === 'string'
-    ? {
-        fileName: basename(source),
-        mimeType: contentType(source),
-        bytes: new Uint8Array(await readFile(fixturePath(source))),
-      }
-    : source;
-  const form = new FormData();
-  form.append('file', new Blob([artifact.bytes], { type: artifact.mimeType }), artifact.fileName);
-  const inspected = await checkedResponse(await fetch(new URL('/api/imports/inspect', baseUrl), { method: 'POST', body: form }));
-  const preview = await inspected.json() as { inspectionToken?: string; detected: { kind: string } };
-  if (preview.inspectionToken === undefined) throw new Error(`No inspection token for ${artifact.fileName}.`);
-  const receipt = await apiJson<{ entityId?: string }>(baseUrl, '/api/imports/commit', {
-    method: 'POST',
-    body: { inspectionToken: preview.inspectionToken },
-  });
-  if (receipt.entityId === undefined) throw new Error(`Import did not create an entity for ${artifact.fileName}.`);
-  return receipt.entityId;
-}
-
-export function normalizeCharacter(value: any): unknown {
-  const {
-    id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
-    avatarUrl: _avatarUrl, worldbookId: _worldbookId, ...semantic
-  } = value;
-  return semantic;
-}
-
-export function normalizePreset(value: any): unknown {
-  const { id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt, ...semantic } = value;
-  return semantic;
-}
-
-export function normalizeWorldbook(value: any): unknown {
-  const {
-    id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt, entries, ...semantic
-  } = value;
-  return {
-    ...semantic,
-    entries: entries.map((entry: any) => {
-      const {
-        id: _id,
-        revision: _revision,
-        createdAt: _createdAt,
-        updatedAt: _updatedAt,
-        worldbookId: _worldbookId,
-        compatibilitySummary: _compatibilitySummary,
-        ...stable
-      } = entry;
-      return stable;
-    }),
   };
 }

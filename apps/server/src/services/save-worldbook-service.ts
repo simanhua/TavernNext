@@ -79,14 +79,3 @@ export function createSaveWorldbook(
   });
   return { ownership, worldbook, entries };
 }
-
-export function loadSaveWorldbook(
-  repositories: Repositories,
-  conversationId: string,
-): LoadedSaveWorldbook | undefined {
-  const ownership = repositories.saveWorldbooks.getByConversationId(conversationId);
-  if (ownership === undefined) return undefined;
-  const worldbook = repositories.worldbooks.get(ownership.worldbookId);
-  if (worldbook === undefined) throw new Error('save_worldbook_missing');
-  return { ownership, worldbook, entries: repositories.worldbookEntries.listByWorldbookId(worldbook.id) };
-}

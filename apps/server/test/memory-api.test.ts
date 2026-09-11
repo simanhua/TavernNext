@@ -1,3 +1,4 @@
+import { createTestSceneSave } from './scene-save-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,7 +30,7 @@ async function context() {
   const persona = repositories.personas.create({
     id: randomUUID(), name: 'Traveler', description: '', isDefault: true,
   });
-  const conversation = repositories.conversations.create({
+  const conversation = createTestSceneSave(repositories, {
     id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Memory Save',
   });
   repositories.saveMemoryConfigurations.create({ id: randomUUID(), conversationId: conversation.id, enabled: true });

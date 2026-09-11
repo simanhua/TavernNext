@@ -20,6 +20,7 @@ import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-int
 const directories: string[] = [];
 const apps: Array<ReturnType<typeof createApp>> = [];
 const characterId = '018f0000-0000-7000-8000-000000001611';
+const personaId = '018f0000-0000-7000-8000-000000001613';
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -44,25 +45,24 @@ async function seedDatabase(directory: string) {
   const config = {
     host: '127.0.0.1', port: 0, dataDir: directory, databasePath: join(directory, 'tavernnext.sqlite'),
   };
-  const app = createApp({ config, snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
-  await app.ready();
-  const created = await app.inject({
-    method: 'POST',
-    url: '/api/characters',
-    payload: {
-      id: characterId,
-      name: 'Recovery witness',
-      description: '',
-      personality: '',
-      scenario: '',
-      firstMessage: '',
-      alternateGreetings: [],
-      tags: [],
-    },
+  const database = createDatabase(config.databasePath);
+  migrateDatabase(database);
+  const repositories = createRepositories(database, TEST_REPOSITORY_OPTIONS);
+  repositories.characters.create({
+    id: characterId, name: 'Recovery witness', description: '', personality: '',
+    scenario: '', firstMessage: '', alternateGreetings: [], tags: [],
   });
-  expect(created.statusCode).toBe(201);
-  await app.close();
+  repositories.personas.create({ id: personaId, name: 'Recovery witness', description: '', isDefault: true });
+  database.close();
   return config;
+}
+
+function storedCharacters(databasePath: string) {
+  const database = createDatabase(databasePath);
+  try {
+    return database.sqlite.prepare('SELECT payload FROM characters').all()
+      .map((row) => JSON.parse(String(row.payload)) as { id: string });
+  } finally { database.close(); }
 }
 
 async function backupDirectories(directory: string): Promise<string[]> {
@@ -148,7 +148,7 @@ describe('migration backup and recovery', () => {
 
     expect(app.startupMigrationResult).toBe('writable');
     expect((await app.inject({ method: 'GET', url: '/api/conversations' })).json()).toEqual([]);
-    expect((await app.inject({ method: 'GET', url: '/api/characters' })).json()).toHaveLength(1);
+    expect(storedCharacters(config.databasePath)).toHaveLength(1);
     expect((await app.inject({ method: 'GET', url: '/api/personas' })).json()).toHaveLength(1);
   });
 
@@ -264,7 +264,7 @@ describe('migration backup and recovery', () => {
 
     expect(app.startupMigrationResult).toBe('writable');
     expect((await app.inject({ method: 'GET', url: '/api/conversations' })).json()).toEqual([]);
-    expect((await app.inject({ method: 'GET', url: '/api/characters' })).json()).toHaveLength(1);
+    expect(storedCharacters(config.databasePath)).toHaveLength(1);
     expect((await app.inject({ method: 'GET', url: '/api/providers' })).json()).toHaveLength(1);
     expect((await app.inject({ method: 'GET', url: '/api/presets' })).json()).toHaveLength(1);
     const health = (await app.inject({ method: 'GET', url: '/api/health' })).json();
@@ -477,9 +477,9 @@ describe('migration backup and recovery', () => {
       warning: { code: 'migration_failed' },
     });
     expect(health.json().backup.path).toBe((await backupDirectories(directory))[0]);
-    const readable = await app.inject({ method: 'GET', url: '/api/characters' });
+    const readable = await app.inject({ method: 'GET', url: '/api/personas' });
     expect(readable.statusCode).toBe(200);
-    expect(readable.json()).toEqual([expect.objectContaining({ id: characterId, name: 'Recovery witness' })]);
+    expect(readable.json()).toEqual([expect.objectContaining({ id: personaId, name: 'Recovery witness' })]);
 
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
       const rejected = await app.inject({
@@ -504,12 +504,11 @@ describe('migration backup and recovery', () => {
     });
     expect(providerWrite.statusCode).toBe(503);
     expect((await app.inject({ method: 'GET', url: '/api/providers' })).json()).toEqual([]);
-    expect((await app.inject({ method: 'GET', url: '/api/characters' })).json())
-      .toEqual([expect.objectContaining({ id: characterId })]);
+    expect(storedCharacters(config.databasePath)).toEqual([expect.objectContaining({ id: characterId })]);
 
     expect(await backupDirectories(directory)).toHaveLength(1);
-    expect(await readdir(join(directory, 'tmp', 'imports'))).toEqual([]);
-    expect(await readdir(join(directory, 'assets', 'imports'))).toEqual([]);
+    expect(existsSync(join(directory, 'tmp', 'imports'))).toBe(false);
+    expect(existsSync(join(directory, 'assets', 'imports'))).toBe(false);
     expect(readFileSync(config.databasePath).includes(Buffer.from(submittedSecret))).toBe(false);
     const secretsPath = join(directory, SECRET_STORE_FILE);
     if (existsSync(secretsPath)) expect(readFileSync(secretsPath).includes(Buffer.from(submittedSecret))).toBe(false);
@@ -538,8 +537,7 @@ describe('migration backup and recovery', () => {
       status: 'warning',
       mode: 'read_only_migration_failed',
     });
-    expect((await app.inject({ method: 'GET', url: '/api/characters' })).json())
-      .toEqual([expect.objectContaining({ id: characterId })]);
+    expect(storedCharacters(config.databasePath)).toEqual([expect.objectContaining({ id: characterId })]);
     const [backup] = await backupDirectories(directory);
     const metadata = JSON.parse(await readFile(join(backup!, BACKUP_METADATA_FILE), 'utf8')) as BackupMetadata;
     expect(metadata.schemaVersion).toBeNull();
@@ -624,13 +622,14 @@ describe('migration backup and recovery', () => {
     expect((await app.inject({ method: 'GET', url: '/api/health' })).json()).toMatchObject({
       backup: { kind: 'pre_migration', path: expect.any(String) },
     });
-    expect((await app.inject({ method: 'GET', url: '/api/runtime-states/global/global' })).json())
-      .toMatchObject({ value: { global: true } });
-    expect((await app.inject({ method: 'GET', url: `/api/runtime-states/character/${character.id}` })).json())
-      .toMatchObject({ value: { character: true } });
     await app.close();
     apps.splice(apps.indexOf(app), 1);
     const migrated = createDatabase(config.databasePath);
+    const retainedState = (scope: string) => JSON.parse(String(migrated.sqlite.prepare(
+      'SELECT payload FROM extension_states WHERE scope = ?',
+    ).get(scope)?.payload));
+    expect(retainedState('global')).toMatchObject({ value: { global: true } });
+    expect(retainedState('character')).toMatchObject({ value: { character: true } });
     expect(migrated.sqlite.prepare("SELECT COUNT(*) AS count FROM extension_states WHERE scope = 'conversation'").get())
       .toEqual({ count: 0 });
     expect(migrated.sqlite.prepare('PRAGMA table_info(extension_states)').all().map((column) => column.name))

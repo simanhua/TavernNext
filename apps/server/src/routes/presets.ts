@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { PresetKindSchema } from '@tavernnext/domain';
-import { executablePresetFields, textSettingAliases, validatePresetFamily } from '@tavernnext/st-compat';
+import { executablePresetFields, validatePresetFamily } from '@tavernnext/st-compat';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { TavernDatabase } from '../db/client.js';
@@ -17,7 +16,7 @@ const DeleteSettingKeysSchema = z.array(z.string().min(1)).min(1).max(128)
 const CreateSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
-  kind: PresetKindSchema,
+  kind: z.literal('chat'),
   settings: SettingsSchema,
 }).strict();
 const PatchSchema = z.object({
@@ -79,36 +78,24 @@ function preserveMarkers(
 function mergeSettings(
   current: Record<string, unknown>,
   edited: Record<string, unknown>,
-  kind: z.infer<typeof PresetKindSchema>,
   deleted: ReadonlySet<string> = new Set(),
 ): Record<string, unknown> {
   const merged = structuredClone(current);
   for (const key of deleted) delete merged[key];
   for (const [key, value] of Object.entries(edited)) merged[key] = structuredClone(value);
-  if (kind === 'chat' && Object.hasOwn(edited, 'prompts')) {
+  if (Object.hasOwn(edited, 'prompts')) {
     merged.prompts = preserveMarkers(current.prompts, edited.prompts, ['identifier']);
   }
-  if (kind === 'chat' && Object.hasOwn(edited, 'prompt_order')) {
+  if (Object.hasOwn(edited, 'prompt_order')) {
     merged.prompt_order = preserveMarkers(current.prompt_order, edited.prompt_order, ['character_id'], (prior, next) => {
       if (Object.hasOwn(next, 'order')) next.order = preserveMarkers(prior.order, next.order, ['identifier']);
     });
   }
-  if (kind === 'text' && Object.hasOwn(edited, 'order')) {
-    merged.order = preserveMarkers(current.order, edited.order, ['id']);
-  }
   return merged;
 }
 
-function validatedSettings(kind: z.infer<typeof PresetKindSchema>, settings: Record<string, unknown>): Record<string, unknown> {
-  return executablePresetFields(kind, validatePresetFamily(kind, settings)).settings;
-}
-
-function canonicalSettingKey(kind: z.infer<typeof PresetKindSchema>, key: string): string {
-  if (kind !== 'text') return key;
-  for (const [canonical, aliases] of Object.entries(textSettingAliases)) {
-    if ((aliases as readonly string[]).includes(key)) return canonical;
-  }
-  return key;
+function validatedSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  return executablePresetFields('chat', validatePresetFamily('chat', settings)).settings;
 }
 
 function revisionFrom(value: unknown): number | undefined {
@@ -119,17 +106,17 @@ function revisionFrom(value: unknown): number | undefined {
 
 export function registerPresetRoutes(app: FastifyInstance, database: TavernDatabase, repositories: Repositories): void {
   const detail = (preset: Parameters<typeof presetDetail>[0]) => ({
-    ...presetDetail(preset, repositories.extensionAssets.listByOwner('preset', preset.id)),
+    ...presetDetail(preset),
     official: isOfficialPresetId(preset.id),
   });
   app.get('/api/presets', async (_request, reply) => {
-    const rows = repositories.presets.list(MAX_MANAGER_ROWS + 1);
+    const rows = repositories.presets.list().filter((preset) => preset.kind === 'chat');
     if (rows.length > MAX_MANAGER_ROWS) return reply.status(422).send({ error: 'manager_list_limit' });
     return rows.map((preset) => ({ ...presetSummary(preset), official: isOfficialPresetId(preset.id) }));
   });
   app.get<{ Params: { id: string } }>('/api/presets/:id', async (request, reply) => {
     const value = repositories.presets.get(request.params.id);
-    if (value === undefined) return reply.status(404).send({ error: 'not_found' });
+    if (value === undefined || value.kind !== 'chat') return reply.status(404).send({ error: 'not_found' });
     try {
       return detail(value);
     } catch {
@@ -140,7 +127,7 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
     const parsed = CreateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     try {
-      const settings = validatedSettings(parsed.data.kind, parsed.data.settings);
+      const settings = validatedSettings(parsed.data.settings);
       const value = repositories.presets.create({ ...parsed.data, settings });
       return reply.status(201).send(detail(value));
     } catch {
@@ -151,7 +138,7 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
     const parsed = PatchSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
     const current = repositories.presets.get(request.params.id);
-    if (current === undefined) return reply.status(404).send({ error: 'not_found' });
+    if (current === undefined || current.kind !== 'chat') return reply.status(404).send({ error: 'not_found' });
     if (isOfficialPresetId(current.id)) return reply.status(409).send({ error: 'official_preset_read_only' });
     if (current.revision !== parsed.data.revision) return reply.status(409).send({ error: 'conflict' });
     try {
@@ -163,21 +150,19 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
         const deleted = new Set<string>();
         const edited = parsed.data.patch.settings ?? {};
         const deleteKeys = parsed.data.patch.deleteSettingKeys ?? [];
-        const canonicalDeletes = new Set(deleteKeys.map((key) => canonicalSettingKey(current.kind, key)));
-        if (Object.keys(edited).some((key) => canonicalDeletes.has(canonicalSettingKey(current.kind, key)))) {
+        const canonicalDeletes = new Set(deleteKeys);
+        if (Object.keys(edited).some((key) => canonicalDeletes.has(key))) {
           return reply.status(400).send({ error: 'invalid_request' });
         }
         for (const [key, value] of Object.entries(edited)) candidate[key] = value;
         for (const key of deleteKeys) {
           if (!Object.hasOwn(safeCurrent, key)) return reply.status(400).send({ error: 'invalid_request' });
           delete candidate[key];
-          if (current.kind === 'text' && Object.hasOwn(textSettingAliases, key)) {
-            for (const alias of textSettingAliases[key as keyof typeof textSettingAliases]) deleted.add(alias);
-          } else deleted.add(key);
+          deleted.add(key);
         }
-        const safeEdited = validatedSettings(current.kind, candidate);
+        const safeEdited = validatedSettings(candidate);
         if (deleted.size > 0 || !isDeepStrictEqual(safeEdited, safeCurrent)) {
-          const merged = mergeSettings(current.settings, safeEdited, current.kind, deleted);
+          const merged = mergeSettings(current.settings, safeEdited, deleted);
           if (!isDeepStrictEqual(merged, current.settings)) patch.settings = merged;
         }
       }
@@ -197,6 +182,7 @@ export function registerPresetRoutes(app: FastifyInstance, database: TavernDatab
         : undefined;
       const revision = revisionFrom(request.query.revision ?? bodyRevision);
       if (revision === undefined) return reply.status(400).send({ error: 'invalid_revision' });
+      if (repositories.presets.get(request.params.id)?.kind !== 'chat') return reply.status(404).send({ error: 'not_found' });
       if (isOfficialPresetId(request.params.id)) {
         return reply.status(409).send({ error: 'official_preset_read_only' });
       }

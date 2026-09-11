@@ -141,7 +141,3 @@ export const TOKENIZER_MODEL_MANIFEST: Readonly<Partial<Record<TokenizerId, Toke
     fallbackTokenizerId: TokenizerId.LLAMA3,
   },
 };
-
-export function getTokenizerModelManifestEntry(id: TokenizerId): TokenizerModelManifestEntry | undefined {
-  return TOKENIZER_MODEL_MANIFEST[id];
-}

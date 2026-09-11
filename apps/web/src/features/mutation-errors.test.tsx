@@ -8,8 +8,6 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { CharacterQuickCreate } from './characters/CharacterQuickCreate.js';
-import { PersonaQuickCreate } from './personas/PersonaQuickCreate.js';
 import { ConnectionPage } from './settings/ConnectionPage.js';
 
 const server = setupServer(
@@ -24,8 +22,6 @@ const server = setupServer(
     contextPresetId: null, instructPresetId: null, systemPresetId: null,
   })),
   http.post('/api/providers', () => HttpResponse.error()),
-  http.post('/api/characters', () => HttpResponse.error()),
-  http.post('/api/personas', () => HttpResponse.error()),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -49,19 +45,4 @@ describe('mutation error feedback', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Unable to save connection');
   });
 
-  it('reports Character quick-create network failure', async () => {
-    const user = userEvent.setup();
-    renderWithQuery(<CharacterQuickCreate />);
-    await user.type(screen.getByLabelText('Name'), 'Aster');
-    await user.click(screen.getByRole('button', { name: 'Create Character' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Unable to create Character');
-  });
-
-  it('reports Persona quick-create network failure', async () => {
-    const user = userEvent.setup();
-    renderWithQuery(<PersonaQuickCreate />);
-    await user.type(screen.getByLabelText('Name'), 'Traveler');
-    await user.click(screen.getByRole('button', { name: 'Create Persona' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Unable to create Persona');
-  });
 });

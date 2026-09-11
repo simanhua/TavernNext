@@ -3,13 +3,13 @@
 ## Package boundaries
 
 - `apps/web` is the React/Vite browser application. It owns navigation, forms, Scene workspaces, Save Agent configuration, and browser-side event-stream consumption. It talks only to `/api`.
-- `apps/server` is the local Fastify application. It owns persistence, imports, exports, provider credentials, Agent Run lifecycle, tools, backups, assets, and HTTP response redaction.
+- `apps/server` is the local Fastify application. It owns persistence, official Scene resources, provider credentials, Agent Run lifecycle, tools, backups, assets, and HTTP response redaction.
 - `packages/domain` defines shared schemas and entities. It has no UI, database, or provider behavior.
-- `packages/st-compat` detects, inspects, normalizes, preserves, and exports SillyTavern-compatible artifacts. It is pure compatibility code and does not start SillyTavern.
+- `packages/st-compat` decodes, normalizes, and preserves the source artifacts required by Scene loading and historical migrations. It is pure compatibility code and does not start SillyTavern.
 - `packages/tokenizer-engine` selects tokenizer IDs, loads bounded local/cache models, and performs token counting.
-- `packages/prompt-engine` compiles Chat and Text prompts and evaluates Worldbooks. It has no network or database ownership.
+- `packages/prompt-engine` compiles Chat prompts and evaluates Worldbooks. It has no network or database ownership.
 - `packages/provider-openai-compatible` owns safe model discovery plus the Pi provider/model adapter used by the Agent Runtime.
-- `packages/extension-runtime` consumes normalized attached assets and owns pure regex execution, shared Worker timeout orchestration, and trusted TavernHelper script manifest/tree projection (stable ownership, buttons, and pinned remote-cache URLs). It depends inward on `packages/domain`; SillyTavern artifact extraction/export stays in `packages/st-compat`, while browser and Node Worker adapters are exposed as separate package entry points. The web app owns the same-origin iframe and compatibility globals.
+- `packages/extension-runtime` owns pure server-side prompt regex execution and Node Worker timeout orchestration over retained attached-resource data. It depends inward on `packages/domain`; source artifact decoding stays in `packages/st-compat`. Browser script hosts, display regex workers, trust/RPC bridges, and interactive message HTML have been retired.
 - `tests/fixtures` contains deterministic compatibility and golden inputs. `tests/e2e` owns the restartable local stack and real-browser release scenarios.
 - `scripts/verify-st-oracle.mjs` and `scripts/smoke-local.mjs` are release gates, not runtime dependencies.
 
@@ -41,9 +41,8 @@ The complete release command is:
 $env:SILLYTAVERN_ORACLE_DIR='D:\CodeX\SillyTavern'
 $env:TAVERNNEXT_REGEX_CARD_PATH='D:\path\to\exact-example-card.png'
 $env:TAVERNNEXT_REGEX_PRESET_PATH='D:\path\to\exact-target-preset.json'
-$env:TAVERNNEXT_APPROVED_REMOTE_CACHE_MANIFEST='D:\path\to\approved-cache.json'
 npm run verify
 npm run smoke:local
 ```
 
-The two regex artifact variables and approved-cache manifest are mandatory when the SillyTavern oracle is enabled. The artifacts must identify the reviewed 12-rule example card and 9-rule target Preset. The manifest is versioned JSON with exact artifact hashes plus a non-empty `entries` array of `{ "url", "sha256", "path" }`; relative entry paths resolve beside the manifest. The gate hashes every cached entry before and after the oracle run, binds the manifest to the exact Character and Preset bytes, records the pinned SillyTavern revision, performs no download, and does not modify any input.
+The two regex artifact variables are required when the SillyTavern oracle is enabled. They identify the reviewed 12-rule example card and 9-rule target Preset used to verify prompt-eligible regex behavior. The gate records the pinned SillyTavern revision, performs no download, and rejects any change to its working tree. Retired script bridges and remote-code caches are not release surfaces.

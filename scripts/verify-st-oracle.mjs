@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { verifyApprovedRemoteCache } from './approved-remote-cache.mjs';
 
 const root = resolve(process.cwd());
 const fixtureRoot = join(root, 'tests', 'fixtures');
@@ -43,7 +42,7 @@ const required = {
     'reasoning/synthetic-reasoning.json',
   ],
   worldbooks: ['native.json', 'character-book.json', 'novel.json', 'agnai.json', 'risu.json', 'naidata.png'],
-  prompts: ['chat-golden.json', 'text-golden.json'],
+  prompts: ['chat-golden.json'],
   tokenizers: ['parity-corpus.json'],
 };
 
@@ -61,30 +60,6 @@ counts.tokenizerCases = parity.length;
 console.log('TavernNext compatibility fixture inventory');
 for (const [family, count] of Object.entries(counts)) console.log(`  ${family}: ${count}`);
 
-const compatibilityDocument = readFileSync(join(root, 'docs', 'compatibility.md'), 'utf8');
-const capabilitySource = readFileSync(join(root, 'packages', 'extension-runtime', 'src', 'trusted-scripts.ts'), 'utf8');
-const capabilityBlock = capabilitySource.match(/TAVERN_HELPER_BRIDGED_METHODS = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/)?.[1];
-if (capabilityBlock === undefined) fail('unable to read Tavern Helper capability inventory');
-const bridgedMethods = [...capabilityBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]);
-const documentedBlock = compatibilityDocument.match(
-  /<!-- tavern-helper-methods:start -->([\s\S]*?)<!-- tavern-helper-methods:end -->/,
-)?.[1];
-if (documentedBlock === undefined) fail('docs/compatibility.md is missing the machine-readable Tavern Helper inventory');
-const documentedMethods = [...documentedBlock.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-const exportedSet = new Set(bridgedMethods);
-const documentedSet = new Set(documentedMethods);
-if (bridgedMethods.length !== exportedSet.size) fail('TAVERN_HELPER_BRIDGED_METHODS exports a duplicate method');
-for (const method of exportedSet) {
-  if (!documentedSet.has(method)) fail(`docs/compatibility.md does not inventory ${method}`);
-}
-for (const method of documentedSet) {
-  if (!exportedSet.has(method)) fail(`docs/compatibility.md inventories stale or unsupported method ${method}`);
-}
-if (documentedMethods.length !== documentedSet.size) {
-  fail('docs/compatibility.md inventories a Tavern Helper method more than once');
-}
-console.log(`  documentedTavernHelperMethods: ${bridgedMethods.length}`);
-
 const oracleInput = process.env.SILLYTAVERN_ORACLE_DIR;
 if (oracleInput === undefined || oracleInput.trim() === '') {
   console.log('SillyTavern oracle: skipped (set SILLYTAVERN_ORACLE_DIR to enable read-only validation)');
@@ -95,18 +70,10 @@ const oracleRoot = resolve(oracleInput);
 for (const variable of [
   'TAVERNNEXT_REGEX_CARD_PATH',
   'TAVERNNEXT_REGEX_PRESET_PATH',
-  'TAVERNNEXT_APPROVED_REMOTE_CACHE_MANIFEST',
 ]) {
   const path = process.env[variable];
   if (path === undefined || path.trim() === '' || !existsSync(resolve(path))) fail(`${variable} must name an existing reviewed oracle input`);
 }
-const cardPath = resolve(process.env.TAVERNNEXT_REGEX_CARD_PATH);
-const presetPath = resolve(process.env.TAVERNNEXT_REGEX_PRESET_PATH);
-const approvedCache = verifyApprovedRemoteCache(process.env.TAVERNNEXT_APPROVED_REMOTE_CACHE_MANIFEST, {
-  characterPath: cardPath,
-  presetPath,
-});
-console.log(`Approved remote cache: ${approvedCache.entries.length} hashed entries for the exact Character and Preset`);
 const oraclePackagePath = join(oracleRoot, 'package.json');
 if (!existsSync(oraclePackagePath)) fail(`oracle package.json not found at ${oracleRoot}`);
 const oraclePackage = JSON.parse(readFileSync(oraclePackagePath, 'utf8'));
@@ -131,7 +98,6 @@ const oracleTests = [
   'packages/tokenizer-engine/test/parity.test.ts',
   'packages/prompt-engine/test/oracle.test.ts',
   'packages/prompt-engine/test/worldbook/oracle.test.ts',
-  'tests/oracle/st-export-acceptance.test.ts',
   'tests/oracle/regex-oracle.test.ts',
 ];
 const vitest = join(root, 'node_modules', 'vitest', 'vitest.mjs');
@@ -148,6 +114,4 @@ if (verification.status !== 0) fail(`oracle tests exited with ${verification.sta
 
 const afterStatus = git(['status', '--porcelain=v1', '--untracked-files=all']);
 if (afterStatus !== beforeStatus) fail('oracle checkout changed during read-only validation');
-const cacheAfter = verifyApprovedRemoteCache(approvedCache.manifestPath, { characterPath: cardPath, presetPath });
-if (JSON.stringify(cacheAfter) !== JSON.stringify(approvedCache)) fail('approved remote cache changed during validation');
-console.log('SillyTavern oracle: export validators and compatibility probes passed without modifying the checkout');
+console.log('SillyTavern oracle: data and prompt compatibility probes passed without modifying the checkout');

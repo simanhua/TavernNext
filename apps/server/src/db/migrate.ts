@@ -12,7 +12,6 @@ import type { TavernDatabase } from './client.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 import { assertRuntimeStateValue, parseScriptStateScopeId } from '../runtime-state-validation.js';
 
-const SAVE_AGENT_CONFIGURATION_SCHEMA_VERSION = 19;
 const AGENT_RUN_SCHEMA_VERSION = 20;
 const ROLEPLAY_DOCUMENT_SCHEMA_VERSION = AGENT_RUN_SCHEMA_VERSION + 1;
 export const AGENT_FIRST_RESET_SCHEMA_VERSION = ROLEPLAY_DOCUMENT_SCHEMA_VERSION + 1;

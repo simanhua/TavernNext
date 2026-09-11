@@ -118,14 +118,6 @@ export function buildOfficialScenePackage(sceneId: string): OfficialScenePackage
   return definition === undefined ? undefined : clonedPackage(definition);
 }
 
-export function destinedPoemManifest(): SceneManifest {
-  return structuredClone(cachedPackage(byId.get(DESTINED_POEM_SCENE_ID)!).manifest);
-}
-
-export function buildDestinedPoemPackage(): OfficialScenePackage {
-  return clonedPackage(byId.get(DESTINED_POEM_SCENE_ID)!);
-}
-
 export function officialCatalog(): SceneCatalog {
   return SceneCatalogSchema.parse({
     version: 1,

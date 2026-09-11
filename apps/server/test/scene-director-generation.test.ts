@@ -1,3 +1,5 @@
+import { createTestSceneSave } from './scene-save-fixture.js';
+import { createSceneService } from '../src/scenes/scene-service.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
-import { createRepositories, type Repositories } from '../src/db/repositories.js';
+import { createRepositories } from '../src/db/repositories.js';
 import { createGenerationService } from '../src/services/generation-service.js';
 import type { SaveAgentRuntimeEvent } from '../src/services/save-agent-runtime.js';
 import {
@@ -31,7 +33,6 @@ const ids = {
   provider: '018f0000-0000-7000-8000-000000000203',
   conversation: '018f0000-0000-7000-8000-000000000204',
   preset: '018f0000-0000-7000-8000-000000000205',
-  configuration: '018f0000-0000-7000-8000-000000000206',
 };
 
 const directories: string[] = [];
@@ -313,6 +314,7 @@ async function context(runtime: () => PiAgentModelRuntime) {
   });
   apps.push(app);
   await app.ready();
+  const seeded = database.transaction(() => {
   const character = repositories.characters.create({
     id: ids.character, name: 'Aster', description: 'A careful archivist.', personality: '', scenario: '',
     firstMessage: '', alternateGreetings: [], tags: [],
@@ -335,17 +337,17 @@ async function context(runtime: () => PiAgentModelRuntime) {
       ] }],
     },
   });
-  const conversation = repositories.conversations.create({
+  const conversation = createTestSceneSave(repositories, {
     id: ids.conversation, characterId: character.id, personaId: persona.id, title: 'Archive visit',
-  });
-  const configuration = repositories.saveAgentConfigurations.create({
-    id: ids.configuration, conversationId: conversation.id, sourcePresetId: preset.id,
-    sourcePresetRevision: preset.revision, name: preset.name, settings: preset.settings,
-  });
+  }, { presetId: preset.id });
+  const configuration = repositories.saveAgentConfigurations.getByConversationId(conversation.id)!;
+  const sceneService = createSceneService({ database, repositories, dataDir: directory });
   expect(repositories.globalGenerationConfig.update(0, {
     providerId: provider.id, chatPresetId: preset.id,
   }).ok).toBe(true);
-  return { app, database, repositories, character, conversation, configuration, preset };
+    return { character, conversation, configuration, preset, sceneService };
+  });
+  return { app, database, repositories, ...seeded };
 }
 
 function parse(payload: string) {
@@ -685,9 +687,8 @@ describe('per-Save Pi Scene Director', () => {
     const contexts: Context[] = [];
     const runtime = oneToolRuntime(contexts, 'world_query', { query: 'TIERED_RULE_6', limit: 4 }, '分级规则查询完成。');
     const seeded = await context(() => runtime);
-    const book = seeded.repositories.worldbooks.create({
-      id: randomUUID(), name: 'Tiered rules', description: '', enabled: true, isGlobal: true,
-    });
+    const saveWorldbook = seeded.repositories.saveWorldbooks.getByConversationId(seeded.conversation.id)!;
+    const book = seeded.repositories.worldbooks.get(saveWorldbook.worldbookId)!;
     for (let index = 0; index < 10; index += 1) {
       seeded.repositories.worldbookEntries.create({
         id: randomUUID(), worldbookId: book.id, sourceUid: `tier-${index}`, sourceOrdinal: index,
@@ -802,6 +803,7 @@ describe('per-Save Pi Scene Director', () => {
     const entered = deferred<void>();
     runtime = cancellableRuntime(entered);
     const cancelService = createGenerationService({
+      sceneService: seeded.sceneService,
       database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => runtime,
     });
@@ -820,6 +822,7 @@ describe('per-Save Pi Scene Director', () => {
 
     const release = deferred<void>();
     const timeoutService = createGenerationService({
+      sceneService: seeded.sceneService,
       database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => hangingRuntime(release.promise), sceneDirectorLimits: { timeoutMs: 20 },
     });
@@ -838,6 +841,7 @@ describe('per-Save Pi Scene Director', () => {
     const preAbortContexts: Context[] = [];
     runtime = completedRuntime(['Must not run'], preAbortContexts);
     const preAbortService = createGenerationService({
+      sceneService: seeded.sceneService,
       database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => runtime,
     });
@@ -854,6 +858,7 @@ describe('per-Save Pi Scene Director', () => {
 
     runtime = completedRuntime(['Must roll back']);
     const auditFailureService = createGenerationService({
+      sceneService: seeded.sceneService,
       database: seeded.database, repositories: seeded.repositories,
       piAgentRuntimeFactory: () => runtime,
     });
@@ -884,6 +889,7 @@ describe('per-Save Pi Scene Director', () => {
       'SELECT COUNT(*) AS count FROM consumed_generation_snapshots',
     ).get() as { count: number }).count;
     const overBudgetService = createGenerationService({
+      sceneService: seeded.sceneService,
       database: seeded.database,
       repositories: seeded.repositories,
       piAgentRuntimeFactory: () => completedRuntime(['Must not run'], overBudgetContexts),

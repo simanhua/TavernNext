@@ -4,7 +4,6 @@
   "type": "module",
   "exports": {
     ".": "./dist/src/index.js",
-    "./browser": "./dist/src/browser.js",
     "./node": "./dist/src/node.js"
   },
   "types": "./dist/src/index.d.ts",

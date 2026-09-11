@@ -1,5 +1,7 @@
 # Preserve schema-v9 Conversations as hidden compatibility records
 
+Executable legacy functionality superseded by [ADR 0014](0014-retire-legacy-compatibility-product.md). This document records the historical decision.
+
 The compatibility migration in ADR 0004 and ADR 0007 intentionally cleared Conversation-owned runtime graphs because they could not safely become Scene Saves. That remains the default migration behavior, and every newly created roleplay runtime still belongs to exactly one installed Scene.
 
 TavernNext nevertheless permits an explicit, one-time recovery utility to copy internally consistent TavernNext schema-v9 Conversations, Messages, Message Variants, and their Chat Preset snapshot from a pinned pre-migration database into the current database. These scene-less records are **Legacy Conversations**, not Saves. They are excluded from the Scene catalog and normal product navigation, cannot be created through the product UI, and are reachable only through the hidden `/legacy-chat` compatibility route. The recovery utility is dry-run by default, validates referenced library entities, applies all pending records transactionally, and verifies the restored graph.

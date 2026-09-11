@@ -45,6 +45,7 @@ describe('Official Preset API', () => {
     const listed = await app.inject({ method: 'GET', url: '/api/presets' });
     expect(listed.statusCode).toBe(200);
     expect(listed.json().filter((preset: { official: boolean }) => preset.official)).toHaveLength(8);
+    expect(listed.json().every((preset: { kind: string }) => preset.kind === 'chat')).toBe(true);
     const id = officialPresetDefinitions()[0]!.entry.id;
     const patched = await app.inject({
       method: 'PATCH', url: `/api/presets/${id}`,

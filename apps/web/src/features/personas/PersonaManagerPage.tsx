@@ -19,7 +19,7 @@ type PersonaForm = z.infer<typeof PersonaFormSchema>;
 const emptyPersona: PersonaForm = { name: '', description: '', isDefault: false };
 
 export function PersonaManagerPage() {
-  const { t, language } = useI18n();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const personas = useQuery({ queryKey: ['personas'], queryFn: api.listPersonas });
   const [selected, setSelected] = useState<PersonaView>();
@@ -71,19 +71,6 @@ export function PersonaManagerPage() {
       setPending(false);
     }
   };
-  const uploadAvatar = async (file: File | undefined) => {
-    if (file === undefined || selected === undefined) return;
-    setPending(true);
-    try {
-      const saved = await api.uploadPersonaAvatar(selected.id, selected.revision, file);
-      setSelected(saved);
-      await refresh();
-    } catch (cause) {
-      setError(errorCode(cause));
-    } finally {
-      setPending(false);
-    }
-  };
   const remove = async () => {
     if (selected === undefined) return;
     setPending(true);
@@ -118,7 +105,6 @@ export function PersonaManagerPage() {
           <form onSubmit={form.handleSubmit((values) => void persist(values))}>
             <h2>{creating ? t('New Persona') : selected?.name}</h2>
             <CompatibilitySummary value={selected?.compatibilitySummary} />
-            {selected?.avatarUrl === undefined ? null : <img className="avatar-preview" src={selected.avatarUrl} alt={language === 'en' ? `${selected.name} avatar` : `${selected.name} ${t('Persona avatar')}`} />}
             <label>{t('Name')}<input {...form.register('name')} /></label>
             <label>{t('Description')}<textarea {...form.register('description')} /></label>
             <label className="checkbox-label"><input type="checkbox" {...form.register('isDefault')} />{t('Default Persona')}</label>
@@ -133,12 +119,7 @@ export function PersonaManagerPage() {
             {error === undefined ? null : <p role="alert">{t('Unable to save Persona: {{error}}', { error })}</p>}
             <div className="editor-actions">
               <button type="submit" disabled={pending}>{t(creating ? 'Create Persona' : 'Save Persona')}</button>
-              {selected === undefined ? null : (
-                <>
-                  <label>{t('Avatar file')}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event.target.files?.[0])} /></label>
-                  <button type="button" onClick={() => setDeleteOpen(true)}>{t('Delete Persona')}</button>
-                </>
-              )}
+              {selected === undefined ? null : <button type="button" onClick={() => setDeleteOpen(true)}>{t('Delete Persona')}</button>}
             </div>
           </form>
         )}

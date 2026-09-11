@@ -6,6 +6,7 @@ import { createApp } from '../src/app.js';
 import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
+import { createTestSceneSave } from './scene-save-fixture.js';
 import { TEST_REPOSITORY_OPTIONS, TEST_SNAPSHOT_INTEGRITY_KEY } from './test-integrity-key.js';
 
 const ids = {
@@ -81,6 +82,12 @@ async function context() {
   };
   repositories.worldbookEntries.create({ id: ids.entry, ...entry, order: 10 });
   repositories.worldbookEntries.create({ id: ids.entryTwo, ...entry, sourceUid: 'second', sourceOrdinal: 1, order: 20 });
+  const conversation = createTestSceneSave(repositories, {
+    id: ids.conversation, characterId: ids.character, personaId: ids.persona,
+    title: 'Scene Save', worldbookIds: [],
+  }, { presetId: ids.preset });
+  const saveWorldbook = repositories.saveWorldbooks.getByConversationId(conversation.id)!;
+  const saveEntries = repositories.worldbookEntries.listByWorldbookId(saveWorldbook.worldbookId);
   const app = createApp({
     database,
     snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY,
@@ -88,34 +95,22 @@ async function context() {
   });
   apps.push(app);
   await app.ready();
-  return { app, repositories };
+  return { app, repositories, conversation, saveWorldbook, saveEntries };
 }
 
 describe('sanitized manager APIs', () => {
   it('returns the effective Save Preset and deduplicated Worldbooks in runtime precedence order', async () => {
-    const { app, repositories } = await context();
+    const { app, repositories, conversation, saveWorldbook, saveEntries } = await context();
+    const worldbookId = saveWorldbook.worldbookId;
+    const entryId = saveEntries[0]!.id;
     const globalWorldbookId = '018f0000-0000-7000-8000-000000000960';
     repositories.worldbooks.create({
       id: globalWorldbookId, name: 'Global Rules', description: '', enabled: true,
       scanDepth: null, tokenBudget: null, recursiveScanning: false, isGlobal: true, extensions: {},
     });
-    repositories.conversations.create({
-      id: ids.conversation, characterId: ids.character, personaId: ids.persona,
-      title: 'Scene Save', worldbookIds: [ids.worldbook, globalWorldbookId],
-    });
-    repositories.saveAgentConfigurations.create({
-      id: '018f0000-0000-7000-8000-000000000961', conversationId: ids.conversation,
-      sourcePresetId: ids.preset, sourcePresetRevision: 0, name: 'Save narrator', settings: {
-        temperature: 0.7,
-        prompts: [
-          { identifier: 'scene-tone', name: 'Scene tone', role: 'system', content: 'Be vivid.', enabled: true },
-          { identifier: 'chatHistory', marker: true, enabled: true },
-        ],
-        prompt_order: [{ character_id: 100000, order: [
-          { identifier: 'scene-tone', enabled: true }, { identifier: 'chatHistory', enabled: true },
-        ] }],
-      },
-    });
+    expect(repositories.conversations.update(conversation.id, conversation.revision, {
+      worldbookIds: [worldbookId, globalWorldbookId],
+    }).ok).toBe(true);
     repositories.worldbookRuntimeStates.create({
       id: '018f0000-0000-7000-8000-000000000962',
       conversationId: ids.conversation,
@@ -129,10 +124,10 @@ describe('sanitized manager APIs', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      configuration: { name: 'Save narrator', settings: { temperature: 0.7 } },
+      configuration: { name: 'Role Chat', settings: { temperature: 0.7 } },
       worldbooks: [
         { source: 'global', value: { id: globalWorldbookId, name: 'Global Rules' } },
-        { source: 'character', value: { id: ids.worldbook, name: 'Archive Lore' } },
+        { source: 'character', saveOwned: true, value: { id: worldbookId, name: 'Archive Lore' } },
       ],
     });
     expect(response.json().worldbooks).toHaveLength(2);
@@ -141,20 +136,20 @@ describe('sanitized manager APIs', () => {
       enabled: false,
       effectiveEnabled: true,
       activationSource: 'save',
-      saveOverrideEnabled: true,
+      saveOverrideEnabled: false,
     });
 
     const prompt = await app.inject({
       method: 'PATCH',
-      url: `/api/conversations/${ids.conversation}/runtime-references/preset-prompts/scene-tone`,
+      url: `/api/conversations/${ids.conversation}/runtime-references/preset-prompts/main`,
       payload: { revision: 0, enabled: false },
     });
     expect(prompt.statusCode).toBe(200);
     const toggledPrompt = prompt.json();
     expect(toggledPrompt.revision).toBe(1);
-    expect(toggledPrompt.settings.prompts.find((item: { identifier: string }) => item.identifier === 'scene-tone'))
+    expect(toggledPrompt.settings.prompts.find((item: { identifier: string }) => item.identifier === 'main'))
       .toMatchObject({ enabled: false });
-    expect(toggledPrompt.settings.prompt_order[0].order.find((item: { identifier: string }) => item.identifier === 'scene-tone'))
+    expect(toggledPrompt.settings.prompt_order[0].order.find((item: { identifier: string }) => item.identifier === 'main'))
       .toMatchObject({ enabled: false });
     const required = await app.inject({
       method: 'PATCH',
@@ -166,125 +161,70 @@ describe('sanitized manager APIs', () => {
 
     const book = await app.inject({
       method: 'PATCH',
-      url: `/api/conversations/${ids.conversation}/runtime-references/worldbooks/${ids.worldbook}`,
+      url: `/api/conversations/${ids.conversation}/runtime-references/worldbooks/${worldbookId}`,
       payload: { revision: 0, enabled: false },
     });
     expect(book.statusCode).toBe(200);
-    expect(book.json()).toMatchObject({ id: ids.worldbook, revision: 1, enabled: false });
+    expect(book.json()).toMatchObject({ id: worldbookId, revision: 1, enabled: false });
     const entry = await app.inject({
       method: 'PATCH',
-      url: `/api/conversations/${ids.conversation}/runtime-references/worldbooks/${ids.worldbook}/entries/${ids.entry}`,
+      url: `/api/conversations/${ids.conversation}/runtime-references/worldbooks/${worldbookId}/entries/${entryId}`,
       payload: { revision: 0, enabled: true },
     });
     expect(entry.statusCode).toBe(200);
-    expect(entry.json()).toMatchObject({ id: ids.entry, revision: 1, enabled: true });
+    expect(entry.json()).toMatchObject({ id: entryId, revision: 1, enabled: true });
   });
 
-  it('returns bounded safe DTOs without raw compatibility, secret, path, or preset marker values', async () => {
-    const { app } = await context();
+  it('returns safe Persona, Chat Preset, and Save Worldbook DTOs without private compatibility data', async () => {
+    const { app, saveWorldbook, saveEntries } = await context();
     const responses = await Promise.all([
-      app.inject({ method: 'GET', url: '/api/characters' }),
-      app.inject({ method: 'GET', url: `/api/characters/${ids.character}` }),
       app.inject({ method: 'GET', url: '/api/personas' }),
       app.inject({ method: 'GET', url: `/api/personas/${ids.persona}` }),
       app.inject({ method: 'GET', url: '/api/presets' }),
       app.inject({ method: 'GET', url: `/api/presets/${ids.preset}` }),
-      app.inject({ method: 'GET', url: '/api/worldbooks' }),
-      app.inject({ method: 'GET', url: `/api/worldbooks/${ids.worldbook}` }),
+      app.inject({ method: 'GET', url: `/api/conversations/${ids.conversation}/runtime-references` }),
     ]);
     expect(responses.every((response) => response.statusCode === 200)).toBe(true);
     const serialized = responses.map((response) => response.body).join('\n');
     for (const forbidden of [
-      'rawPayload', 'unknownFields', 'avatar-secret.png', 'RAW-CHARACTER-SENTINEL', 'CHARACTER-SECRET',
-      'RAW-PERSONA-SENTINEL', 'RAW-PRESET-SENTINEL', 'PRESET-SECRET', 'PRESET-VENDOR-SECRET', 'INTERNAL-MARKER',
-      '__tavernnextPresetSource', 'RAW-WORLDBOOK-SENTINEL', 'WORLDBOOK-SECRET', 'WORLDBOOK-EXTENSION-PRIVATE', 'RAW-ENTRY-SENTINEL', 'ENTRY-SECRET',
+      'rawPayload', 'unknownFields', 'RAW-PERSONA-SENTINEL', 'RAW-PRESET-SENTINEL',
+      'PRESET-SECRET', 'PRESET-VENDOR-SECRET', 'INTERNAL-MARKER', '__tavernnextPresetSource',
+      'RAW-WORLDBOOK-SENTINEL', 'WORLDBOOK-SECRET', 'WORLDBOOK-EXTENSION-PRIVATE', 'RAW-ENTRY-SENTINEL', 'ENTRY-SECRET',
     ]) expect(serialized).not.toContain(forbidden);
     expect(responses[1]!.json()).toMatchObject({
-      name: 'Aster', avatarUrl: `/api/characters/${ids.character}/avatar`,
-      compatibilitySummary: { sourceFormat: 'st-character-v3', warnings: ['future_character'], unknownFieldCount: 1 },
+      name: 'Traveler', compatibilitySummary: { sourceFormat: 'native-persona', warnings: ['future_persona'] },
     });
-    expect(responses[5]!.json()).toMatchObject({
-      name: 'Role Chat', kind: 'chat', settings: { temperature: 0.7 },
-      compatibilitySummary: { sourceFormat: 'preset:chat', warnings: ['provider_field_preserved_not_executable'] },
-    });
-    expect(responses[7]!.json()).toMatchObject({
-      name: 'Archive Lore', scanDepth: 4, tokenBudget: 512, recursiveScanning: true, entries: [
-        { id: ids.entry, sourceUid: 42, sourceOrdinal: 0, compatibilitySummary: { warnings: ['future_entry'] } },
-        { id: ids.entryTwo, sourceUid: 'second', sourceOrdinal: 1 },
+    expect(responses[3]!.json()).toMatchObject({ name: 'Role Chat', kind: 'chat', settings: { temperature: 0.7 } });
+    const book = responses[4]!.json().worldbooks[0].value;
+    expect(book).toMatchObject({
+      id: saveWorldbook.worldbookId, name: 'Archive Lore', scanDepth: 4, tokenBudget: 512, recursiveScanning: true,
+      entries: [
+        { id: saveEntries[0]!.id, sourceUid: 42, sourceOrdinal: 0 },
+        { id: saveEntries[1]!.id, sourceUid: 'second', sourceOrdinal: 1 },
       ],
     });
-    expect(responses[7]!.json()).not.toHaveProperty('extensions');
-  });
-
-  it('preserves a legitimate nullable Text setting and rejects a colliding deletion request', async () => {
-    const { app, repositories } = await context();
-    const textPresetId = '018f0000-0000-7000-8000-000000000958';
-    repositories.presets.create({
-      id: textPresetId,
-      name: 'Legacy Text',
-      kind: 'text',
-      settings: { temp: 0.6, json_schema: { type: 'object' } },
-    });
-
-    const legitimateNull = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 0, patch: { settings: { json_schema: null } } },
-    });
-    expect(legitimateNull.statusCode).toBe(200);
-    expect(legitimateNull.json().settings).toHaveProperty('json_schema', null);
-    expect(repositories.presets.get(textPresetId)?.settings).toHaveProperty('json_schema', null);
-
-    const unchangedNull = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 1, patch: { settings: { json_schema: null } } },
-    });
-    expect(unchangedNull.statusCode).toBe(400);
-    expect(repositories.presets.get(textPresetId)?.revision).toBe(1);
-
-    const aliasCollision = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 1, patch: { settings: { temp: 0.8 }, deleteSettingKeys: ['temperature'] } },
-    });
-    expect(aliasCollision.statusCode).toBe(400);
-    expect(repositories.presets.get(textPresetId)?.revision).toBe(1);
-
-    const collidingDelete = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 1, patch: { settings: { json_schema: null }, deleteSettingKeys: ['json_schema'] } },
-    });
-    expect(collidingDelete.statusCode).toBe(400);
-    expect(repositories.presets.get(textPresetId)?.revision).toBe(1);
+    expect(book).not.toHaveProperty('extensions');
   });
 
   it('accepts explicit revisioned patches, rejects private or mistyped fields, and preserves state on conflicts', async () => {
     const { app, repositories } = await context();
-    const invalidCharacter = await app.inject({
-      method: 'PATCH', url: `/api/characters/${ids.character}`,
+    const invalidPersona = await app.inject({
+      method: 'PATCH', url: `/api/personas/${ids.persona}`,
       payload: { revision: 0, patch: { description: 'Allowed', compatibility: { rawPayload: 'forged' } } },
     });
-    expect(invalidCharacter.statusCode).toBe(400);
-    expect(repositories.characters.get(ids.character)?.description).toBe('Archivist');
-
+    expect(invalidPersona.statusCode).toBe(400);
+    expect(repositories.personas.get(ids.persona)?.description).toBe('Curious');
     const updated = await app.inject({
-      method: 'PATCH', url: `/api/characters/${ids.character}`,
-      payload: { revision: 0, patch: { description: 'Edited', alternateGreetings: ['One', 'Two'] } },
+      method: 'PATCH', url: `/api/personas/${ids.persona}`,
+      payload: { revision: 0, patch: { description: 'Edited' } },
     });
     expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({ revision: 1, description: 'Edited', alternateGreetings: ['One', 'Two'] });
     const stale = await app.inject({
-      method: 'PATCH', url: `/api/characters/${ids.character}`,
+      method: 'PATCH', url: `/api/personas/${ids.persona}`,
       payload: { revision: 0, patch: { description: 'Stale overwrite' } },
     });
     expect(stale.statusCode).toBe(409);
-    expect(repositories.characters.get(ids.character)?.description).toBe('Edited');
-
-    const unlinked = await app.inject({
-      method: 'PATCH', url: `/api/characters/${ids.character}`,
-      payload: { revision: 1, patch: { worldbookId: null } },
-    });
-    expect(unlinked.statusCode).toBe(200);
-    expect(unlinked.json()).not.toHaveProperty('worldbookId');
-    expect(repositories.characters.get(ids.character)?.worldbookId).toBeUndefined();
+    expect(repositories.personas.get(ids.persona)?.description).toBe('Edited');
 
     const invalidPreset = await app.inject({
       method: 'PATCH', url: `/api/presets/${ids.preset}`,
@@ -320,45 +260,13 @@ describe('sanitized manager APIs', () => {
     expect(unchangedName.statusCode).toBe(400);
     expect(repositories.presets.get(ids.preset)?.revision).toBe(1);
 
-    const textPresetId = '018f0000-0000-7000-8000-000000000958';
-    repositories.presets.create({
-      id: textPresetId,
-      name: 'Legacy Text',
-      kind: 'text',
-      settings: { temp: 0.6, json_schema: { type: 'object' } },
-    });
-    const legitimateNull = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 0, patch: { settings: { json_schema: null } } },
-    });
-    expect(legitimateNull.statusCode).toBe(200);
-    expect(legitimateNull.json().settings).toHaveProperty('json_schema', null);
-    expect(repositories.presets.get(textPresetId)?.settings).toHaveProperty('json_schema', null);
-    const clearedAlias = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 1, patch: { deleteSettingKeys: ['temperature'] } },
-    });
-    expect(clearedAlias.statusCode).toBe(200);
-    expect(clearedAlias.json().settings).not.toHaveProperty('temperature');
-    expect(repositories.presets.get(textPresetId)?.settings).not.toHaveProperty('temp');
-
-    const collidingDelete = await app.inject({
-      method: 'PATCH', url: `/api/presets/${textPresetId}`,
-      payload: { revision: 2, patch: { settings: { json_schema: null }, deleteSettingKeys: ['json_schema'] } },
-    });
-    expect(collidingDelete.statusCode).toBe(400);
-    expect(repositories.presets.get(textPresetId)?.revision).toBe(2);
-
-    const invalidEntry = await app.inject({
-      method: 'PATCH', url: `/api/worldbooks/${ids.worldbook}/entries/${ids.entry}`,
-      payload: { revision: 0, patch: { content: 'Allowed', sourceUid: 'forged', sourceOrdinal: 99 } },
-    });
-    expect(invalidEntry.statusCode).toBe(400);
-    expect(repositories.worldbookEntries.get(ids.entry)?.content).toBe('The archive remembers.');
   });
 
-  it('keeps Persona default transitions and Worldbook reorder operations atomic', async () => {
-    const { app, repositories } = await context();
+  it('keeps Persona default transitions and Save Worldbook reorder operations atomic', async () => {
+    const { app, repositories, saveWorldbook, saveEntries } = await context();
+    const worldbookId = saveWorldbook.worldbookId;
+    const entryId = saveEntries[0]!.id;
+    const entryTwoId = saveEntries[1]!.id;
     const selected = await app.inject({
       method: 'PATCH', url: `/api/personas/${ids.personaTwo}`,
       payload: { revision: 0, patch: { isDefault: true } },
@@ -367,68 +275,47 @@ describe('sanitized manager APIs', () => {
     expect(repositories.personas.list().filter((persona) => persona.isDefault).map((persona) => persona.id)).toEqual([ids.personaTwo]);
 
     const staleReorder = await app.inject({
-      method: 'PUT', url: `/api/worldbooks/${ids.worldbook}/entries/order`,
-      payload: { entries: [{ id: ids.entry, revision: 0, order: 20 }, { id: ids.entryTwo, revision: 99, order: 10 }] },
+      method: 'PUT', url: `/api/conversations/${ids.conversation}/save-worldbook/${worldbookId}/entries/order`,
+      payload: { entries: [{ id: entryId, revision: 0, order: 20 }, { id: entryTwoId, revision: 99, order: 10 }] },
     });
     expect(staleReorder.statusCode).toBe(409);
-    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook).map((entry) => [entry.id, entry.order])).toEqual([
-      [ids.entry, 10], [ids.entryTwo, 20],
+    expect(repositories.worldbookEntries.listByWorldbookId(worldbookId).map((entry) => [entry.id, entry.order])).toEqual([
+      [entryId, 10], [entryTwoId, 20],
     ]);
 
     const reordered = await app.inject({
-      method: 'PUT', url: `/api/worldbooks/${ids.worldbook}/entries/order`,
-      payload: { entries: [{ id: ids.entry, revision: 0, order: 20 }, { id: ids.entryTwo, revision: 0, order: 10 }] },
+      method: 'PUT', url: `/api/conversations/${ids.conversation}/save-worldbook/${worldbookId}/entries/order`,
+      payload: { entries: [{ id: entryId, revision: 0, order: 20 }, { id: entryTwoId, revision: 0, order: 10 }] },
     });
     expect(reordered.statusCode).toBe(200);
-    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook).map((entry) => [entry.id, entry.order])).toEqual([
-      [ids.entry, 20], [ids.entryTwo, 10],
+    expect(repositories.worldbookEntries.listByWorldbookId(worldbookId).map((entry) => [entry.id, entry.order])).toEqual([
+      [entryId, 20], [entryTwoId, 10],
     ]);
   });
 
-  it('deletes owned entries atomically while preserving revision and external-reference conflicts', async () => {
-    const { app, repositories } = await context();
-
-    const externallyLinked = await app.inject({
-      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=0`,
+  it('rejects cross-scope and stale Save Worldbook entry edits and deletes only the owned entry', async () => {
+    const { app, repositories, saveWorldbook, saveEntries } = await context();
+    const worldbookId = saveWorldbook.worldbookId;
+    const entry = saveEntries[0]!;
+    const route = `/api/conversations/${ids.conversation}/save-worldbook/${worldbookId}/entries/${entry.id}`;
+    const invalid = await app.inject({
+      method: 'PATCH', url: route,
+      payload: { revision: 0, patch: { content: 'Allowed', sourceUid: 'forged', sourceOrdinal: 99 } },
     });
-    expect(externallyLinked.statusCode).toBe(409);
-    expect(externallyLinked.json()).toEqual({ error: 'constraint_conflict' });
-    expect(repositories.worldbooks.get(ids.worldbook)).toBeDefined();
-    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook)).toHaveLength(2);
-
-    const character = repositories.characters.get(ids.character)!;
-    const unlinked = repositories.characters.update(character.id, character.revision, { worldbookId: undefined });
-    expect(unlinked.ok).toBe(true);
-
-    repositories.conversations.create({
-      id: ids.conversation,
-      characterId: ids.character,
-      personaId: ids.persona,
-      title: 'Linked conversation',
-      worldbookIds: [ids.worldbook],
+    expect(invalid.statusCode).toBe(400);
+    expect(repositories.worldbookEntries.get(entry.id)?.content).toBe('The archive remembers.');
+    const foreign = await app.inject({
+      method: 'DELETE', url: `/api/conversations/${ids.conversation}/save-worldbook/${ids.worldbook}/entries/${ids.entry}?revision=0`,
     });
-    const conversationLinked = await app.inject({
-      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=0`,
-    });
-    expect(conversationLinked.statusCode).toBe(409);
-    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook)).toHaveLength(2);
-    expect(repositories.conversations.delete(ids.conversation, 0).ok).toBe(true);
-
-    const stale = await app.inject({
-      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=99`,
-    });
+    expect(foreign.statusCode).toBe(404);
+    expect(repositories.worldbookEntries.get(ids.entry)).toBeDefined();
+    const stale = await app.inject({ method: 'DELETE', url: `${route}?revision=99` });
     expect(stale.statusCode).toBe(409);
-    expect(stale.json()).toEqual({ error: 'conflict' });
-    expect(repositories.worldbooks.get(ids.worldbook)).toBeDefined();
-    expect(repositories.worldbookEntries.listByWorldbookId(ids.worldbook)).toHaveLength(2);
-
-    const response = await app.inject({
-      method: 'DELETE', url: `/api/worldbooks/${ids.worldbook}?revision=0`,
-    });
-
-    expect(response.statusCode).toBe(204);
-    expect(repositories.worldbooks.get(ids.worldbook)).toBeUndefined();
-    expect(repositories.worldbookEntries.get(ids.entry)).toBeUndefined();
-    expect(repositories.worldbookEntries.get(ids.entryTwo)).toBeUndefined();
+    expect(repositories.worldbookEntries.get(entry.id)).toBeDefined();
+    const deleted = await app.inject({ method: 'DELETE', url: `${route}?revision=0` });
+    expect(deleted.statusCode).toBe(204);
+    expect(repositories.worldbookEntries.get(entry.id)).toBeUndefined();
+    expect(repositories.worldbookEntries.get(ids.entry)).toBeDefined();
+    expect(repositories.worldbookEntries.listByWorldbookId(worldbookId)).toHaveLength(1);
   });
 });
