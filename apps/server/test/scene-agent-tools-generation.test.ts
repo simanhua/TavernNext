@@ -17,7 +17,7 @@ import { createDatabase } from '../src/db/client.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { createRepositories } from '../src/db/repositories.js';
 import {
-  buildDestinedPoemPackage,
+  buildOfficialScenePackage,
   DESTINED_POEM_SCENE_ID,
   isBundledOfficialScene,
 } from '../src/scenes/official-package.js';
@@ -540,12 +540,12 @@ describe('bundled Scene Agent tools', () => {
     expect(reloaded.json().messages.at(-1).variants[0].document).toEqual(viewVariant.document);
 
     const official = repositories.installedScenes.get(DESTINED_POEM_SCENE_ID)!;
-    const firstPackage = buildDestinedPoemPackage();
+    const firstPackage = buildOfficialScenePackage(DESTINED_POEM_SCENE_ID)!;
     const originalFirstByte = firstPackage.bytes[0];
     firstPackage.manifest.name = 'poisoned';
     firstPackage.manifest.agentTools.splice(0);
     firstPackage.bytes[0] = originalFirstByte === 0 ? 1 : 0;
-    const secondPackage = buildDestinedPoemPackage();
+    const secondPackage = buildOfficialScenePackage(DESTINED_POEM_SCENE_ID)!;
     expect(secondPackage.manifest.name).toBe('命定之诗与黄昏之歌');
     expect(secondPackage.manifest.agentTools).toHaveLength(6);
     expect(secondPackage.bytes[0]).toBe(originalFirstByte);

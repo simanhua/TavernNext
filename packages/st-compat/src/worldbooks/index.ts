@@ -2,7 +2,6 @@ import type { ImportPreview, InspectionLimits } from '../artifact.js';
 import { DEFAULT_INSPECTION_LIMITS } from '../artifact.js';
 import { inspectArtifact, type InspectionOptions } from '../detect-format.js';
 import { diagnostic } from '../warnings.js';
-import { encodeNativeWorldbook, type WorldbookExportArtifact } from './export.js';
 import { normalizeWorldbookPayload } from './foreign-codecs.js';
 import { decodeJsonWorldbook, MAX_WORLDBOOK_PREVIEW_BYTES, WorldbookCodecError } from './native-codec.js';
 import { MAX_WORLDBOOK_FIELD_WARNINGS, type NormalizedWorldbook, type WorldbookSourceFormat } from './normalize.js';
@@ -192,15 +191,6 @@ export async function inspectWorldbook(
   return preview;
 }
 
-export function exportWorldbook(
-  value: WorldbookImportPreview | NormalizedWorldbook,
-): WorldbookExportArtifact {
-  const worldbook = 'worldbook' in value ? value.worldbook : value;
-  if (worldbook === null) throw new Error('Cannot export a Worldbook preview with blocking errors.');
-  return encodeNativeWorldbook(worldbook);
-}
-
-export * from './export.js';
 export * from './normalize.js';
 export * from './native-codec.js';
 export * from './schemas.js';

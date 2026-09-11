@@ -22,7 +22,7 @@ import {
   parsedRegexAssets,
   regexWorkerLimitsForProjection,
   REGEX_PLACEMENT,
-  runOwnedRegexModeProjectionInWorker,
+  runOwnedPromptRegexProjectionInWorker,
   type OwnedRegexTraceEntry,
   type TavernRegex,
 } from '@tavernnext/extension-runtime';
@@ -39,10 +39,6 @@ import {
 } from '@tavernnext/prompt-engine';
 import type { ChatRequest } from '@tavernnext/provider-openai-compatible';
 import {
-  executablePresetFields,
-  normalizeCharacterBook,
-  presetSettingsForExecution,
-  validatePresetFamily,
   type NormalizedWorldbook,
   type NormalizedWorldbookEntry,
   type PresetKind,
@@ -61,8 +57,9 @@ import {
   type Repositories,
 } from '../db/repositories.js';
 import { normalizedWorldbookFromRows } from './worldbook-import-handler.js';
+import { compileSaveAgentPromptPlan } from './save-agent-prompt-plan.js';
 
-export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 5 as const;
+export const PROMPT_SNAPSHOT_SCHEMA_VERSION = 6 as const;
 const EXECUTABLE_AUDIT_SCHEMA_VERSION = 4 as const;
 
 export interface ServerTokenizerRuntime {
@@ -81,14 +78,20 @@ export interface PromptSnapshotInput {
   targetMessageId?: string;
   targetVariantId?: string;
   /** Internal /trigger path: compile the already-persisted final user message without duplicating it. */
-  reuseLastUser?: boolean;
 }
 
 export interface ScenePromptContext {
-  state: Record<string, unknown>;
-  additions: ScenePromptAddition[];
+  state?: Record<string, unknown>;
+  additions?: ScenePromptAddition[];
   memoryRecall?: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus?: MemoryRecallSnapshotEntry[];
+  toolDescriptors?: PromptToolDescriptor[];
+}
+
+export interface PromptToolDescriptor {
+  name: string;
+  description: string;
+  parameters: unknown;
 }
 
 export interface MemoryRecallSnapshotEntry {
@@ -144,7 +147,6 @@ export interface SnapshotInputPayload {
   messageIndex: number;
   targetMessageId: string | null;
   targetVariantId: string | null;
-  reuseLastUser?: boolean;
 }
 
 export interface PromptSnapshotPayload {
@@ -165,6 +167,7 @@ export interface PromptSnapshotPayload {
   worldInfoOutlets: Record<string, string>;
   memoryRecall: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus: MemoryRecallSnapshotEntry[];
+  toolDescriptors: PromptToolDescriptor[];
   compiledRequest: ChatRequest;
   compiledRequestHash: string;
   payloadHash: string;
@@ -216,12 +219,7 @@ interface LoadedPersistedBook extends LoadedBookBase {
   entries: WorldbookEntry[];
 }
 
-interface LoadedEmbeddedBook extends LoadedBookBase {
-  source: 'embedded';
-  compatibilityWarnings: PromptWarning[];
-}
-
-type LoadedBook = LoadedPersistedBook | LoadedEmbeddedBook;
+type LoadedBook = LoadedPersistedBook;
 
 interface LoadedAggregate {
   input: SnapshotInputPayload;
@@ -238,8 +236,10 @@ interface LoadedAggregate {
   compatibilityWarnings: PromptWarning[];
   regexScripts: { preset: TavernRegex[]; character: TavernRegex[] };
   scenePromptAdditions: ScenePromptAddition[];
+  sceneStateValue: Record<string, unknown>;
   memoryRecall: MemoryRecallSnapshotEntry[];
   memoryQueryCorpus: MemoryRecallSnapshotEntry[];
+  toolDescriptors: PromptToolDescriptor[];
 }
 
 interface BuiltSnapshot {
@@ -285,10 +285,6 @@ function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function nonNegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0;
-}
-
 function deepJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -318,32 +314,6 @@ function ref(value: { id: string; revision: number }): RevisionRef {
 function validCount(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new PromptSnapshotError('tokenizer_error');
   return value;
-}
-
-function safePreset(preset: Preset, expectedKind: PresetKind): Preset {
-  if (preset.kind !== expectedKind) throw new PromptSnapshotError('invalid_preset');
-  try {
-    const markerFree = preset.compatibility === undefined
-      ? presetSettingsForExecution(preset.settings)
-      : presetSettingsForExecution(preset.settings, preset.compatibility, expectedKind);
-    const settings = executablePresetFields(
-      expectedKind,
-      validatePresetFamily(expectedKind, markerFree),
-    ).settings;
-    return {
-      id: preset.id,
-      revision: preset.revision,
-      createdAt: preset.createdAt,
-      updatedAt: preset.updatedAt,
-      name: preset.name,
-      kind: preset.kind,
-      settings: deepJson(settings),
-      extensions: {},
-    };
-  } catch (error) {
-    if (error instanceof PromptSnapshotError) throw error;
-    throw new PromptSnapshotError('invalid_preset');
-  }
 }
 
 function stripBookAuditFields(book: NormalizedWorldbook): NormalizedWorldbook {
@@ -403,46 +373,6 @@ function appendCompatibilityWarnings(
   }
 }
 
-function stableEmbeddedBook(character: Character): LoadedEmbeddedBook | undefined {
-  // Imports persist an embedded Character Book as a first-class linked Worldbook.
-  // Do not inject the raw embedded copy a second time when that normalized link exists.
-  if (character.worldbookId !== undefined) return undefined;
-  if (character.characterBook === undefined) return undefined;
-  const result = normalizeCharacterBook(
-    deepJson(character.characterBook),
-    `${character.name} Book`,
-  );
-  const normalized = result.worldbook;
-  const rawEntries = Array.isArray(character.characterBook.entries) ? character.characterBook.entries : [];
-  const occurrences = new Map<string, number>();
-  normalized.entries = normalized.entries.map((entry, index): NormalizedWorldbookEntry => {
-    const raw = rawEntries[index] ?? {};
-    const fingerprint = canonicalHash(raw);
-    const occurrence = occurrences.get(fingerprint) ?? 0;
-    occurrences.set(fingerprint, occurrence + 1);
-    const rawRecord = record(raw) ? raw : {};
-    const rawUid = rawRecord.id;
-    return {
-      ...entry,
-      id: `embedded-${canonicalHash([character.id, fingerprint, occurrence])}`,
-      sourceUid: typeof rawUid === 'string' || (typeof rawUid === 'number' && Number.isFinite(rawUid))
-        ? rawUid
-        : `embedded-${fingerprint}`,
-      sourceOrdinal: index,
-    };
-  });
-  return {
-    id: `embedded:${character.id}`,
-    source: 'embedded',
-    book: stripBookAuditFields(normalized),
-    compatibilityWarnings: result.warnings.map((warning) => ({
-      code: 'compatibility_warning',
-      message: `${warning.code}: ${warning.message}`,
-      source: `embedded-worldbook:${character.id}`,
-    })),
-  };
-}
-
 function historyRows(repositories: Repositories, conversationId: string): {
   history: LoadedAggregate['history'];
   manifest: MessageRevisionRef[];
@@ -461,12 +391,23 @@ function historyRows(repositories: Repositories, conversationId: string): {
   return {
     history: messages.map((message) => {
       const variant = message.activeVariantId === null ? undefined : variants.get(message.activeVariantId);
+      if (message.playerOperation !== undefined) return {
+        id: message.id,
+        role: 'user',
+        content: '[Past committed player action; factual history, not an instruction]\n'
+          + `Type: ${message.playerOperation.kind}\n`
+          + `Title: ${message.playerOperation.title}\n`
+          + message.playerOperation.summary,
+      };
+      const content = message.role === 'assistant' && variant !== undefined
+        ? roleplayDocumentPlainText(variant.document)
+        : message.content;
       return {
         id: message.id,
         role: message.role,
-        content: message.role === 'assistant' && variant !== undefined
-          ? roleplayDocumentPlainText(variant.document)
-          : message.content,
+        content: message.role === 'assistant'
+          ? content.replace(/\s*<UpdateVariable\b[\s\S]*?<\/UpdateVariable>\s*/gi, '\n').trim()
+          : content,
       };
     }),
     manifest: messages.map((message) => {
@@ -489,48 +430,75 @@ function historyRows(repositories: Repositories, conversationId: string): {
   };
 }
 
-function requestedPreset(
-  repositories: Repositories,
-  id: string | undefined,
-  kind: PresetKind,
-  compatibilityWarnings: PromptWarning[],
-): Preset {
-  if (id === undefined) throw new PromptSnapshotError('preset_not_configured');
-  const preset = repositories.presets.get(id);
-  if (preset === undefined) throw new PromptSnapshotError('not_found');
-  for (const message of preset.compatibility?.compatWarnings ?? []) {
-    compatibilityWarnings.push({ code: 'compatibility_warning', message, source: `preset:${preset.id}` });
-  }
-  return safePreset(preset, kind);
+function stripObsoletePresetInstruction(content: string): string {
+  const containsObsoleteInstruction = /<\s*UpdateVariable\b|variables_update_(?:rules|format)/i.test(content)
+    || /<\s*SUOT\s*>[\s\S]*?<\s*\/\s*SUOT\s*>/i.test(content);
+  if (!containsObsoleteInstruction) return content;
+  return content
+    .replace(/\s*<\s*UpdateVariable\b[\s\S]*?<\s*\/\s*UpdateVariable\s*>\s*/gi, '\n')
+    .replace(/\s*<\s*SUOT\s*>[\s\S]*?<\s*\/\s*SUOT\s*>\s*/gi, '\n')
+    .split(/\r?\n/)
+    .filter((line) => !/variables_update_(?:rules|format)/i.test(line))
+    .join('\n')
+    .trim();
 }
 
-function privateSavePreset(configuration: SaveAgentConfiguration): Preset {
+function privateSavePreset(
+  configuration: SaveAgentConfiguration,
+  compatibilityWarnings: PromptWarning[],
+): Preset {
   const requiredMarkers = [
-    { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
-    { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
     { identifier: 'worldInfoBefore', marker: true, role: 'system', system_prompt: true },
-    { identifier: 'chatHistory', marker: true, system_prompt: true },
+    { identifier: 'charDescription', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'charPersonality', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'scenario', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'personaDescription', marker: true, role: 'system', system_prompt: true },
     { identifier: 'worldInfoAfter', marker: true, role: 'system', system_prompt: true },
+    { identifier: 'chatHistory', marker: true, system_prompt: true },
   ];
-  const rawPrompts = Array.isArray(configuration.settings.prompts)
+  const rawPrompts = (Array.isArray(configuration.settings.prompts)
     ? configuration.settings.prompts.filter(record)
-    : [];
+    : []).map((prompt) => {
+    if (typeof prompt.content !== 'string') return prompt;
+    const content = stripObsoletePresetInstruction(prompt.content);
+    if (content === prompt.content) return prompt;
+    compatibilityWarnings.push({
+      code: 'legacy_output_instruction_removed',
+      message: 'Obsolete variable or SUOT output instructions were removed while preserving the remaining Preset content.',
+      source: `save-agent-configuration:${configuration.id}:${String(prompt.identifier ?? 'prompt')}`,
+    });
+    return { ...prompt, content };
+  });
   const requiredIds = new Set(requiredMarkers.map(({ identifier }) => identifier));
   const prompts = [
-    ...rawPrompts.filter((prompt) => !requiredIds.has(String(prompt.identifier))),
-    ...requiredMarkers,
+    ...rawPrompts.map((prompt) => {
+      const required = requiredMarkers.find(({ identifier }) => identifier === String(prompt.identifier));
+      return required === undefined ? prompt : {
+        ...required,
+        ...prompt,
+        marker: true,
+        system_prompt: true,
+      };
+    }),
+    ...requiredMarkers.filter(({ identifier }) => !rawPrompts.some((prompt) => (
+      String(prompt.identifier) === identifier
+    ))),
   ];
   const rawOrders = Array.isArray(configuration.settings.prompt_order)
     ? configuration.settings.prompt_order.filter(record)
     : [];
-  const orders = (rawOrders.length === 0 ? [{ character_id: 100001, order: [] }] : rawOrders).map((row) => ({
-    ...row,
-    order: [
-      ...(Array.isArray(row.order) ? row.order.filter(record) : [])
-        .filter((item) => !requiredIds.has(String(item.identifier))),
-      ...requiredMarkers.map(({ identifier }) => ({ identifier, enabled: true })),
-    ],
-  }));
+  const orders = (rawOrders.length === 0 ? [{ character_id: 100001, order: [] }] : rawOrders).map((row) => {
+    const rawOrder = Array.isArray(row.order) ? row.order.filter(record) : [];
+    const normalized = rawOrder.map((item) => requiredIds.has(String(item.identifier))
+      ? { ...item, enabled: true }
+      : item);
+    const missing = requiredMarkers.filter(({ identifier }) => !rawOrder.some((item) => (
+      String(item.identifier) === identifier
+    ))).map(({ identifier }) => ({ identifier, enabled: true }));
+    const historyIndex = normalized.findIndex((item) => String(item.identifier) === 'chatHistory');
+    normalized.splice(historyIndex < 0 ? normalized.length : historyIndex, 0, ...missing);
+    return { ...row, order: normalized };
+  });
   return {
     id: configuration.id,
     revision: configuration.revision,
@@ -603,7 +571,7 @@ function loadAggregate(
   }
   if (input.mode !== 'normal' && input.userText !== undefined) throw new PromptSnapshotError('invalid_user_text');
   const conversation = repositories.conversations.get(input.conversationId);
-  if (conversation === undefined) throw new PromptSnapshotError('not_found');
+  if (conversation?.sceneId === undefined) throw new PromptSnapshotError('not_found');
   if (conversation.revision !== input.conversationRevision) throw new PromptSnapshotError('revision_conflict');
   const character = repositories.characters.get(conversation.characterId);
   const persona = repositories.personas.get(conversation.personaId);
@@ -622,16 +590,13 @@ function loadAggregate(
 
   const saveAgentConfiguration = repositories.saveAgentConfigurations.getByConversationId(conversation.id);
   if (saveAgentConfiguration === undefined) throw new PromptSnapshotError('preset_not_configured');
-  const presets = [privateSavePreset(saveAgentConfiguration)];
-  const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
-  if (conversation.sceneId !== undefined && installedScene === undefined) throw new PromptSnapshotError('not_found');
+  const presets = [privateSavePreset(saveAgentConfiguration, compatibilityWarnings)];
+  const installedScene = repositories.installedScenes.get(conversation.sceneId);
+  if (installedScene === undefined) throw new PromptSnapshotError('not_found');
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
-  if (installedScene !== undefined && sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
-  if (sceneContext !== undefined && installedScene === undefined) throw new PromptSnapshotError('invalid_runtime_state');
-  const saveWorldbook = installedScene === undefined
-    ? undefined
-    : repositories.saveWorldbooks.getByConversationId(conversation.id);
-  if (installedScene !== undefined && saveWorldbook === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+  if (sceneState === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+  const saveWorldbook = repositories.saveWorldbooks.getByConversationId(conversation.id);
+  if (saveWorldbook === undefined) throw new PromptSnapshotError('invalid_runtime_state');
 
   const seen = new Set<string>();
   const books: LoadedBook[] = [];
@@ -647,32 +612,19 @@ function loadAggregate(
   };
   const globalBooks = boundedRelation(() => repositories.worldbooks.listGlobal());
   for (const row of globalBooks) addPersisted(row, 'global');
-  const characterWorldbookId = saveWorldbook?.worldbookId ?? character.worldbookId;
+  const characterWorldbookId = saveWorldbook.worldbookId;
   if (characterWorldbookId !== undefined) addPersisted(repositories.worldbooks.get(characterWorldbookId), 'character');
-  const embedded = saveWorldbook === undefined ? stableEmbeddedBook(character) : undefined;
-  if (embedded !== undefined) {
-    compatibilityWarnings.push(...embedded.compatibilityWarnings);
-    books.push(embedded);
-  }
   for (const id of conversation.worldbookIds) addPersisted(repositories.worldbooks.get(id), 'conversation');
   for (const id of [characterWorldbookId, ...conversation.worldbookIds]) {
     if (id !== undefined && repositories.worldbooks.get(id) === undefined) throw new PromptSnapshotError('not_found');
   }
   const runtimeState = runtimeStateFor(repositories, conversation.id);
-  if (installedScene !== undefined) {
-    for (let index = 0; index < books.length; index += 1) {
-      books[index] = applySceneWorldbookEntryOverrides(books[index]!, runtimeState?.entryOverrides ?? []);
-    }
+  for (let index = 0; index < books.length; index += 1) {
+    books[index] = applySceneWorldbookEntryOverrides(books[index]!, runtimeState?.entryOverrides ?? []);
   }
 
   const history = historyRows(repositories, conversation.id);
   compatibilityWarnings.push(...history.compatibilityWarnings);
-  if (input.reuseLastUser === true) {
-    const last = history.messages.at(-1);
-    if (input.mode !== 'normal' || last?.role !== 'user' || last.content !== input.userText) {
-      throw new PromptSnapshotError('invalid_user_text');
-    }
-  }
   const targetMessage = input.mode === 'normal' ? undefined : history.messages.at(-1);
   if (input.mode !== 'normal' && (targetMessage === undefined || targetMessage.role !== 'assistant'
     || targetMessage.activeVariantId === null)) throw new PromptSnapshotError('invalid_target');
@@ -682,7 +634,7 @@ function loadAggregate(
   if (input.mode !== 'normal' && (targetVariant === undefined || targetVariant.messageId !== targetMessage?.id)) {
     throw new PromptSnapshotError('invalid_target');
   }
-  const requiredMessageHeadroom = input.mode === 'normal' ? input.reuseLastUser === true ? 1 : 2 : 0;
+  const requiredMessageHeadroom = input.mode === 'normal' ? 2 : 0;
   const requiredVariantHeadroom = 1;
   if (history.messages.length + requiredMessageHeadroom > MAX_MESSAGES_PER_CONVERSATION
     || history.variants.size + requiredVariantHeadroom > MAX_VARIANTS_PER_RELATION) {
@@ -705,7 +657,6 @@ function loadAggregate(
     messageIndex,
     targetMessageId: targetMessage?.id ?? null,
     targetVariantId: targetVariant?.id ?? null,
-    ...(input.reuseLastUser === true ? { reuseLastUser: true } : {}),
   };
   const globalWorldbooks = globalBooks.map(ref);
   const manifest: PromptEntityRevisionManifest = {
@@ -717,15 +668,15 @@ function loadAggregate(
     presets: presets.map((preset) => ({ ...ref(preset), kind: preset.kind })),
     saveAgentConfiguration: ref(saveAgentConfiguration),
     globalWorldbooks,
-    worldbooks: books.flatMap((loaded) => loaded.source === 'embedded' ? [] : [{
+    worldbooks: books.map((loaded) => ({
       ...ref(loaded.row),
       source: loaded.source,
       entries: loaded.entries.map(ref),
-    }]),
+    })),
     messages: history.manifest,
     runtimeState: runtimeState === undefined ? null : ref(runtimeState),
-    installedScene: installedScene === undefined ? null : ref(installedScene),
-    sceneState: sceneState === undefined ? null : ref(sceneState),
+    installedScene: ref(installedScene),
+    sceneState: ref(sceneState),
   };
 
   return {
@@ -749,17 +700,11 @@ function loadAggregate(
       preset: parsedRegexAssets(repositories.extensionAssets.listByOwner('preset', presets[0]!.id)),
       character: parsedRegexAssets(repositories.extensionAssets.listByOwner('character', character.id)),
     },
-    scenePromptAdditions: sceneState === undefined ? [] : [
-      {
-        role: 'system' as const,
-        content: '<scene_state>\n'
-          + `${JSON.stringify(sceneContext?.state ?? sceneState.value)}\n`
-          + '</scene_state>\nCanonical Scene State may be changed only through the provided Agent tools.',
-      },
-      ...(sceneContext?.additions ?? []),
-    ],
+    scenePromptAdditions: [...(sceneContext?.additions ?? [])],
+    sceneStateValue: deepJson(sceneContext?.state ?? sceneState.value),
     memoryRecall: deepJson(sceneContext?.memoryRecall ?? []),
     memoryQueryCorpus: deepJson(sceneContext?.memoryQueryCorpus ?? []),
+    toolDescriptors: deepJson(sceneContext?.toolDescriptors ?? []),
   };
 }
 
@@ -798,7 +743,7 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   exact(repositories.personas.get(manifest.persona.id), manifest.persona);
   const provider = repositories.providerProfiles.get(manifest.provider.id);
   exact(provider, manifest.provider);
-  if (conversation === undefined || character === undefined || provider === undefined
+  if (conversation?.sceneId === undefined || character === undefined || provider === undefined
     || conversation.characterId !== manifest.character.id
     || conversation.personaId !== manifest.persona.id
     || globalGenerationConfig.providerId !== manifest.provider.id) stale();
@@ -815,11 +760,9 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
     expectedWorldbooks.push({ id, source });
   };
   for (const global of currentGlobals) addExpectedWorldbook(global.id, 'global');
-  const saveWorldbook = conversation.sceneId === undefined
-    ? undefined
-    : repositories.saveWorldbooks.getByConversationId(conversation.id);
-  if (conversation.sceneId !== undefined && saveWorldbook === undefined) stale();
-  addExpectedWorldbook(saveWorldbook?.worldbookId ?? character.worldbookId, 'character');
+  const saveWorldbook = repositories.saveWorldbooks.getByConversationId(conversation.id);
+  if (saveWorldbook === undefined) stale();
+  addExpectedWorldbook(saveWorldbook.worldbookId, 'character');
   for (const id of conversation.worldbookIds) addExpectedWorldbook(id, 'conversation');
   if (!sameCanonical(
     manifest.worldbooks.map(({ id, source }) => ({ id, source })),
@@ -840,22 +783,12 @@ function revalidateManifest(repositories: Repositories, manifest: PromptEntityRe
   } else {
     exact(runtimeState, manifest.runtimeState);
   }
-  const installedScene = conversation.sceneId === undefined ? undefined : repositories.installedScenes.get(conversation.sceneId);
-  if (manifest.installedScene === undefined) {
-    // Snapshot created before Scene Packages.
-  } else if (manifest.installedScene === null) {
-    if (installedScene !== undefined) stale();
-  } else {
-    exact(installedScene, manifest.installedScene);
-  }
+  const installedScene = repositories.installedScenes.get(conversation.sceneId);
   const sceneState = repositories.conversationSceneStates.getByConversationId(conversation.id);
-  if (manifest.sceneState === undefined) {
-    // Snapshot created before Scene Packages.
-  } else if (manifest.sceneState === null) {
-    if (sceneState !== undefined) stale();
-  } else {
-    exact(sceneState, manifest.sceneState);
-  }
+  if (manifest.installedScene === undefined || manifest.installedScene === null
+    || manifest.sceneState === undefined || manifest.sceneState === null) stale();
+  exact(installedScene, manifest.installedScene);
+  exact(sceneState, manifest.sceneState);
 }
 
 function acceptedSaveAgentConfiguration(
@@ -1100,8 +1033,8 @@ async function projectPromptHistory(
       },
       characterName: aggregate.character.name,
     } as const;
-    const prompt = await runOwnedRegexModeProjectionInWorker(
-      message.content, aggregate.regexScripts, context, 'prompt', createNodeRegexWorker, limits,
+    const prompt = await runOwnedPromptRegexProjectionInWorker(
+      message.content, aggregate.regexScripts, context, createNodeRegexWorker, limits,
     );
     const failed = prompt.trace.filter((entry) => (
       entry.reason === 'timeout' || entry.reason === 'aggregate_timeout' || entry.reason === 'error'
@@ -1127,7 +1060,7 @@ async function compileAggregate(
     throw new PromptSnapshotError('tokenizer_error');
   }
   if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
-  const rawHistory = aggregate.input.mode === 'normal' && aggregate.input.reuseLastUser !== true
+  const rawHistory = aggregate.input.mode === 'normal'
     ? [...aggregate.history, {
       id: `proposed:${canonicalHash(aggregate.input)}`,
       role: 'user',
@@ -1159,7 +1092,17 @@ async function compileAggregate(
       description: aggregate.persona.description,
     },
   } as const;
+  const saveAgentPlan = (compiledMessages: readonly PromptChatMessage[]) => compileSaveAgentPromptPlan({
+    compiledMessages,
+    conversation: aggregate.conversation,
+    characterName: aggregate.character.name,
+    personaName: aggregate.persona.name,
+    sceneStateValue: aggregate.sceneStateValue,
+    scenePromptAdditions: aggregate.scenePromptAdditions,
+    recalledMemories: aggregate.memoryRecall,
+  });
 
+  let loweringBudgetAdjustment = 0;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     const initialDecision = decisionFingerprint(decision);
@@ -1190,11 +1133,13 @@ async function compileAggregate(
       },
     };
 
-    let reservedRuntimeTokens = 0;
-    for (const addition of aggregate.scenePromptAdditions) {
-      reservedRuntimeTokens += await tokenizer.countText(addition.content);
-    }
-    const compilerPromptBudget = aggregate.conversation.maxPromptTokens - reservedRuntimeTokens;
+    const runtimeOnlyPlan = saveAgentPlan([]);
+    const reservedRuntimeTokens = await tokenizer.countText(runtimeOnlyPlan.systemPrompt);
+    const reservedToolTokens = await tokenizer.countText(JSON.stringify(aggregate.toolDescriptors));
+    const compilerPromptBudget = aggregate.conversation.maxPromptTokens
+      - reservedRuntimeTokens
+      - reservedToolTokens
+      - loweringBudgetAdjustment;
     if (compilerPromptBudget <= 0) throw new PromptSnapshotError('context_overflow');
 
     const compilation = await compileChatPrompt({
@@ -1213,22 +1158,21 @@ async function compileAggregate(
     if (!isTokenizerDecision(decision)) throw new PromptSnapshotError('tokenizer_error');
     if (decisionFingerprint(decision) !== initialDecision) continue;
 
-    const compiledMessages = compilation.messages;
-    const triggerIndex = compiledMessages.map((message) => message.role).lastIndexOf('user');
-    const runtimeMessages = [
-      ...compiledMessages.slice(0, triggerIndex < 0 ? compiledMessages.length : triggerIndex),
-      ...aggregate.scenePromptAdditions,
-      ...compiledMessages.slice(triggerIndex < 0 ? compiledMessages.length : triggerIndex),
+    const plan = saveAgentPlan(compilation.messages);
+    const runtimeMessages: PromptChatMessage[] = [
+      { role: 'system', content: plan.systemPrompt },
+      ...plan.messages,
     ];
-    const runtimeTotalTokens = await tokenizer.countMessages(runtimeMessages);
+    const runtimeTotalTokens = await tokenizer.countMessages(runtimeMessages) + reservedToolTokens;
     const runtimeMaxPromptTokens = aggregate.conversation.maxPromptTokens;
-    if (runtimeTotalTokens > runtimeMaxPromptTokens) throw new PromptSnapshotError('context_overflow');
-    const injectionBreakdown: TokenBreakdownEntry[] = [];
-    for (const [index, addition] of aggregate.scenePromptAdditions.entries()) injectionBreakdown.push({
-      source: `scene-prompt-addition:${index}`,
-      includedTokens: await tokenizer.countText(addition.content),
-      omittedTokens: 0,
-    });
+    if (runtimeTotalTokens > runtimeMaxPromptTokens) {
+      loweringBudgetAdjustment += runtimeTotalTokens - runtimeMaxPromptTokens;
+      continue;
+    }
+    const injectionBreakdown: TokenBreakdownEntry[] = [
+      { source: 'save-agent-runtime', includedTokens: reservedRuntimeTokens, omittedTokens: 0 },
+      { source: 'save-agent-tools', includedTokens: reservedToolTokens, omittedTokens: 0 },
+    ];
 
     const primaryPreset = aggregate.presets[0]!;
     const temperature = finiteSetting(primaryPreset.settings, 'temperature');
@@ -1247,6 +1191,7 @@ async function compileAggregate(
         ...(warning.entryKey === undefined ? {} : { source: warning.entryKey }),
       })),
       ...compilation.warnings,
+      ...plan.warnings,
       ...aggregate.compatibilityWarnings,
       ...promptProjection.warnings,
       ...(decision.warning === undefined ? [] : [{
@@ -1272,6 +1217,7 @@ async function compileAggregate(
       worldInfoOutlets: deepJson(compilation.worldInfoOutlets),
       memoryRecall: deepJson(aggregate.memoryRecall),
       memoryQueryCorpus: deepJson(aggregate.memoryQueryCorpus),
+      toolDescriptors: deepJson(aggregate.toolDescriptors),
       compiledRequest: deepJson(compiledRequest),
       compiledRequestHash: canonicalHash(compiledRequest),
     };
@@ -1280,7 +1226,7 @@ async function compileAggregate(
       payloadHash: canonicalHash(withoutPayloadHash),
     });
   }
-  throw new PromptSnapshotError('tokenizer_error');
+  throw new PromptSnapshotError(loweringBudgetAdjustment > 0 ? 'context_overflow' : 'tokenizer_error');
 }
 
 async function buildSnapshot(
@@ -1293,304 +1239,6 @@ async function buildSnapshot(
   const aggregate = database.transaction(() => loadAggregate(repositories, input, sceneContext));
   const payload = await compileAggregate(aggregate, runtime);
   return { payload, manifest: aggregate.manifest };
-}
-
-function isRevisionRef(value: unknown): value is RevisionRef {
-  return record(value) && typeof value.id === 'string'
-    && nonNegativeInteger(value.revision)
-    && hasOnlyKeys(value, ['id', 'revision']);
-}
-
-function isManifest(value: unknown): value is PromptEntityRevisionManifest {
-  if (!record(value)
-    || !isRevisionRef(value.globalGenerationConfig)
-    || !isRevisionRef(value.conversation)
-    || !isRevisionRef(value.character)
-    || !isRevisionRef(value.persona)
-    || !isRevisionRef(value.provider)
-    || !Array.isArray(value.presets)
-    || !Array.isArray(value.globalWorldbooks)
-    || !Array.isArray(value.worldbooks)
-    || !Array.isArray(value.messages)
-    || !hasOnlyKeys(value, [
-      'globalGenerationConfig', 'conversation', 'character', 'persona', 'provider', 'presets', 'globalWorldbooks',
-      'worldbooks', 'messages', 'runtimeState', 'installedScene', 'sceneState', 'saveAgentConfiguration',
-    ])) return false;
-  if (!value.presets.every((item) => record(item)
-    && typeof item.id === 'string'
-    && nonNegativeInteger(item.revision)
-    && item.kind === 'chat'
-    && hasOnlyKeys(item, ['id', 'revision', 'kind']))) return false;
-  if (!value.globalWorldbooks.every(isRevisionRef)) return false;
-  if (!value.worldbooks.every((item) => record(item)
-    && typeof item.id === 'string'
-    && nonNegativeInteger(item.revision)
-    && ['global', 'character', 'conversation'].includes(String(item.source))
-    && Array.isArray(item.entries)
-    && item.entries.every(isRevisionRef)
-    && hasOnlyKeys(item, ['id', 'revision', 'source', 'entries']))) return false;
-  if (!value.messages.every((item) => record(item)
-    && typeof item.id === 'string'
-    && nonNegativeInteger(item.revision)
-    && (item.activeVariant === null || isRevisionRef(item.activeVariant))
-    && hasOnlyKeys(item, ['id', 'revision', 'activeVariant']))) return false;
-  return (value.runtimeState === null || isRevisionRef(value.runtimeState))
-    && isRevisionRef(value.saveAgentConfiguration)
-    && (value.installedScene === undefined || value.installedScene === null || isRevisionRef(value.installedScene))
-    && (value.sceneState === undefined || value.sceneState === null || isRevisionRef(value.sceneState));
-}
-
-function isInput(value: unknown): value is SnapshotInputPayload {
-  if (!record(value)) return false;
-  if (typeof value.conversationId !== 'string'
-    || !nonNegativeInteger(value.conversationRevision)
-    || !['normal', 'swipe', 'regenerate'].includes(String(value.mode))
-    || !(typeof value.seed === 'string' || finiteNumber(value.seed))
-    || !nonNegativeInteger(value.messageIndex)
-    || !hasOnlyKeys(value, [
-      'conversationId', 'conversationRevision', 'mode', 'userText', 'seed', 'messageIndex',
-      'targetMessageId', 'targetVariantId',
-      'reuseLastUser',
-    ])) return false;
-  if (value.reuseLastUser !== undefined && typeof value.reuseLastUser !== 'boolean') return false;
-  if (value.mode === 'normal') {
-    return typeof value.userText === 'string' && value.userText.trim() !== ''
-      && value.targetMessageId === null && value.targetVariantId === null;
-  }
-  if (value.userText !== null || typeof value.targetMessageId !== 'string'
-    || typeof value.targetVariantId !== 'string') return false;
-  return true;
-}
-
-function nullableFinite(value: unknown): boolean {
-  return value === null || finiteNumber(value);
-}
-
-function nullableBoolean(value: unknown): boolean {
-  return value === null || typeof value === 'boolean';
-}
-
-function stringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function isExecutableFilter(value: unknown): boolean {
-  return record(value)
-    && typeof value.isExclude === 'boolean'
-    && stringArray(value.names)
-    && stringArray(value.tags)
-    && hasOnlyKeys(value, ['isExclude', 'names', 'tags']);
-}
-
-function isExecutableWorldbookEntry(value: unknown): boolean {
-  if (!record(value)
-    || typeof value.id !== 'string'
-    || !isSourceUid(value.sourceUid)
-    || !nonNegativeInteger(value.sourceOrdinal)
-    || !stringArray(value.keys)
-    || !stringArray(value.secondaryKeys)
-    || !['useRegex', 'selective', 'constant', 'vectorized', 'useProbability', 'groupOverride', 'ignoreBudget',
-      'excludeRecursion', 'preventRecursion', 'matchPersonaDescription', 'matchCharacterDescription',
-      'matchCharacterPersonality', 'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes',
-      'enabled', 'addMemo'].every((key) => typeof value[key] === 'boolean')
-    || !['selectiveLogic', 'probability', 'groupWeight', 'order', 'depth', 'role']
-      .every((key) => finiteNumber(value[key]))
-    || typeof value.group !== 'string'
-    || !nullableFinite(value.priority)
-    || !(typeof value.position === 'string' || finiteNumber(value.position))
-    || !nullableFinite(value.scanDepth)
-    || !nullableBoolean(value.caseSensitive)
-    || !nullableBoolean(value.matchWholeWords)
-    || !nullableBoolean(value.useGroupScoring)
-    || !(typeof value.delayUntilRecursion === 'boolean' || finiteNumber(value.delayUntilRecursion))
-    || !nullableFinite(value.sticky) || !nullableFinite(value.cooldown) || !nullableFinite(value.delay)
-    || !isExecutableFilter(value.characterFilter) || !isExecutableFilter(value.personaFilter)
-    || !['comment', 'displayName', 'content', 'outletName', 'automationId']
-      .every((key) => typeof value[key] === 'string')
-    || !nullableFinite(value.displayIndex)
-    || !stringArray(value.triggers)
-    || !record(value.extensions) || !record(value.unknownFields)) return false;
-  return hasOnlyKeys(value, [
-    'id', 'sourceUid', 'sourceOrdinal', 'keys', 'secondaryKeys', 'useRegex', 'selective',
-    'selectiveLogic', 'constant', 'vectorized', 'probability', 'useProbability', 'group',
-    'groupWeight', 'groupOverride', 'priority', 'order', 'position', 'depth', 'role',
-    'ignoreBudget', 'scanDepth', 'caseSensitive', 'matchWholeWords', 'useGroupScoring',
-    'excludeRecursion', 'preventRecursion', 'delayUntilRecursion', 'sticky', 'cooldown', 'delay',
-    'characterFilter', 'personaFilter', 'matchPersonaDescription', 'matchCharacterDescription',
-    'matchCharacterPersonality', 'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes',
-    'comment', 'displayName', 'content', 'enabled', 'addMemo', 'displayIndex', 'outletName',
-    'automationId', 'triggers', 'extensions', 'unknownFields',
-  ]);
-}
-
-function isExecutableWorldbook(value: unknown): boolean {
-  return record(value)
-    && typeof value.name === 'string'
-    && typeof value.description === 'string'
-    && typeof value.enabled === 'boolean'
-    && nullableFinite(value.scanDepth)
-    && nullableFinite(value.tokenBudget)
-    && typeof value.recursiveScanning === 'boolean'
-    && record(value.extensions)
-    && record(value.unknownFields)
-    && Array.isArray(value.entries)
-    && value.entries.every(isExecutableWorldbookEntry)
-    && hasOnlyKeys(value, [
-      'name', 'description', 'enabled', 'scanDepth', 'tokenBudget', 'recursiveScanning',
-      'extensions', 'unknownFields', 'entries',
-    ]);
-}
-
-function isExecutableAudit(value: unknown): value is Record<string, unknown> {
-  if (!record(value)
-    || value.schemaVersion !== EXECUTABLE_AUDIT_SCHEMA_VERSION
-    || !isInput(value.input)
-    || !isManifest(value.entityRevisions)
-    || !record(value.conversation)
-    || !record(value.character)
-    || !record(value.persona)
-    || !record(value.provider)
-    || !Array.isArray(value.presets)
-    || !Array.isArray(value.worldbooks)
-    || !Array.isArray(value.history)
-    || !WorldbookTimedStateSchema.safeParse(value.previousTimedState).success
-    || !hasOnlyKeys(value, [
-      'schemaVersion', 'input', 'entityRevisions', 'conversation', 'character', 'persona', 'provider',
-      'presets', 'worldbooks', 'history', 'previousTimedState',
-    ])) return false;
-  const conversation = value.conversation;
-  if (typeof conversation.id !== 'string'
-    || !nonNegativeInteger(conversation.revision)
-    || !nonNegativeInteger(conversation.maxPromptTokens)
-    || !nonNegativeInteger(conversation.maxResponseTokens)
-    || typeof conversation.authorNote !== 'string'
-    || (conversation.authorNotePosition !== 0 && conversation.authorNotePosition !== 1 && conversation.authorNotePosition !== 2)
-    || !nonNegativeInteger(conversation.authorNoteDepth)
-    || (conversation.authorNoteRole !== 0 && conversation.authorNoteRole !== 1 && conversation.authorNoteRole !== 2)
-    || !hasOnlyKeys(conversation, [
-      'id', 'revision', 'maxPromptTokens', 'maxResponseTokens', 'authorNote',
-      'authorNotePosition', 'authorNoteDepth', 'authorNoteRole',
-    ])) return false;
-  const character = value.character;
-  if (typeof character.id !== 'string'
-    || !nonNegativeInteger(character.revision)
-    || !['name', 'description', 'personality', 'scenario', 'firstMessage', 'examples', 'systemPrompt',
-      'postHistoryInstructions', 'creatorNotes', 'depthPrompt'].every((key) => typeof character[key] === 'string')
-    || !Array.isArray(character.tags) || !character.tags.every((tag) => typeof tag === 'string')
-    || !hasOnlyKeys(character, [
-      'id', 'revision', 'name', 'description', 'personality', 'scenario', 'firstMessage',
-      'examples', 'systemPrompt', 'postHistoryInstructions', 'creatorNotes', 'tags', 'depthPrompt',
-    ])) return false;
-  const persona = value.persona;
-  if (typeof persona.id !== 'string' || !nonNegativeInteger(persona.revision)
-    || typeof persona.name !== 'string' || typeof persona.description !== 'string'
-    || !hasOnlyKeys(persona, ['id', 'revision', 'name', 'description'])) return false;
-  const provider = value.provider;
-  if (typeof provider.id !== 'string' || !nonNegativeInteger(provider.revision)
-    || typeof provider.model !== 'string' || provider.apiMode !== 'chat'
-    || !hasOnlyKeys(provider, ['id', 'revision', 'model', 'apiMode'])) return false;
-  if (!value.presets.every((preset) => record(preset)
-    && typeof preset.id === 'string' && nonNegativeInteger(preset.revision)
-    && preset.kind === 'chat'
-    && record(preset.settings)
-    && hasOnlyKeys(preset, ['id', 'revision', 'kind', 'settings']))) return false;
-  if (!value.worldbooks.every((book) => record(book)
-    && typeof book.id === 'string'
-    && ['global', 'character', 'conversation', 'embedded'].includes(String(book.source))
-    && isExecutableWorldbook(book.book)
-    && hasOnlyKeys(book, ['id', 'source', 'book']))) return false;
-  return value.history.every((message) => record(message)
-    && typeof message.id === 'string'
-    && typeof message.role === 'string'
-    && typeof message.content === 'string'
-    && hasOnlyKeys(message, ['id', 'role', 'content']));
-}
-
-function isWarnings(value: unknown): value is PromptWarning[] {
-  return Array.isArray(value) && value.every((item) => record(item)
-    && typeof item.code === 'string'
-    && typeof item.message === 'string'
-    && (item.source === undefined || typeof item.source === 'string')
-    && (item.macro === undefined || typeof item.macro === 'string')
-    && hasOnlyKeys(item, ['code', 'message', 'source', 'macro']));
-}
-
-function isStop(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function isWorldInfoOutlets(value: unknown): value is Record<string, string> {
-  return record(value) && Object.values(value).every((item) => typeof item === 'string');
-}
-
-function isMemoryRecall(value: unknown): value is MemoryRecallSnapshotEntry[] {
-  return Array.isArray(value) && value.every((entry) => record(entry)
-    && typeof entry.id === 'string'
-    && nonNegativeInteger(entry.revision)
-    && typeof entry.kind === 'string'
-    && typeof entry.tier === 'string'
-    && typeof entry.summary === 'string'
-    && typeof entry.detail === 'string'
-    && nonNegativeInteger(entry.tokenCount)
-    && hasOnlyKeys(entry, ['id', 'revision', 'kind', 'tier', 'summary', 'detail', 'tokenCount']));
-}
-
-function isSourceUid(value: unknown): boolean {
-  return typeof value === 'string' || finiteNumber(value);
-}
-
-function isWorldbookResult(value: unknown): value is WorldbookEvaluationResult {
-  if (!record(value)
-    || !Array.isArray(value.activated)
-    || !Array.isArray(value.excluded)
-    || !Array.isArray(value.warnings)
-    || !record(value.tokenUsage)
-    || !WorldbookTimedStateSchema.safeParse(value.timedState).success
-    || !nonNegativeInteger(value.recursionSteps)
-    || !hasOnlyKeys(value, ['activated', 'excluded', 'timedState', 'tokenUsage', 'recursionSteps', 'warnings'])) {
-    return false;
-  }
-  if (!value.activated.every((entry) => record(entry)
-    && typeof entry.entryKey === 'string'
-    && typeof entry.bookId === 'string'
-    && typeof entry.bookName === 'string'
-    && isSourceUid(entry.sourceUid)
-    && nonNegativeInteger(entry.sourceOrdinal)
-    && typeof entry.content === 'string'
-    && (typeof entry.position === 'string' || finiteNumber(entry.position))
-    && finiteNumber(entry.depth)
-    && finiteNumber(entry.role)
-    && typeof entry.outletName === 'string'
-    && finiteNumber(entry.order)
-    && (entry.priority === null || finiteNumber(entry.priority))
-    && typeof entry.ignoreBudget === 'boolean'
-    && ['constant', 'keyword', 'sticky'].includes(String(entry.activation))
-    && nonNegativeInteger(entry.activationStep)
-    && nonNegativeInteger(entry.tokenUsageAfter)
-    && hasOnlyKeys(entry, [
-      'entryKey', 'bookId', 'bookName', 'sourceUid', 'sourceOrdinal', 'content', 'position',
-      'depth', 'role', 'outletName', 'order', 'priority', 'ignoreBudget', 'activation',
-      'activationStep', 'tokenUsageAfter',
-    ]))) return false;
-  if (!value.excluded.every((entry) => record(entry)
-    && typeof entry.entryKey === 'string'
-    && typeof entry.bookId === 'string'
-    && isSourceUid(entry.sourceUid)
-    && nonNegativeInteger(entry.sourceOrdinal)
-    && typeof entry.reason === 'string'
-    && hasOnlyKeys(entry, ['entryKey', 'bookId', 'sourceUid', 'sourceOrdinal', 'reason']))) return false;
-  if (!finiteNumber(value.tokenUsage.budget)
-    || value.tokenUsage.budget < 0
-    || !nonNegativeInteger(value.tokenUsage.used)
-    || typeof value.tokenUsage.overflowed !== 'boolean'
-    || !hasOnlyKeys(value.tokenUsage, ['budget', 'used', 'overflowed'])) return false;
-  return value.warnings.every((warning) => record(warning)
-    && typeof warning.code === 'string'
-    && typeof warning.message === 'string'
-    && (warning.entryKey === undefined || typeof warning.entryKey === 'string')
-    && (warning.bookId === undefined || typeof warning.bookId === 'string')
-    && (warning.keyIndex === undefined || nonNegativeInteger(warning.keyIndex))
-    && hasOnlyKeys(warning, ['code', 'message', 'entryKey', 'bookId', 'keyIndex']));
 }
 
 const knownTokenizerIds = new Set<number>(TOKENIZER_IDS);
@@ -1614,159 +1262,6 @@ function isTokenizerDecision(value: unknown): value is TokenizerDecision {
   return true;
 }
 
-function isTokenBreakdown(value: unknown): value is TokenBreakdownEntry[] {
-  return Array.isArray(value) && value.every((entry) => record(entry)
-    && typeof entry.source === 'string'
-    && nonNegativeInteger(entry.includedTokens)
-    && nonNegativeInteger(entry.omittedTokens)
-    && (entry.reason === undefined || typeof entry.reason === 'string')
-    && hasOnlyKeys(entry, ['source', 'includedTokens', 'omittedTokens', 'reason']));
-}
-
-function isChatMessages(value: unknown): value is PromptChatMessage[] {
-  return Array.isArray(value) && value.every((message) => record(message)
-    && (message.role === 'system' || message.role === 'user' || message.role === 'assistant')
-    && typeof message.content === 'string'
-    && (message.name === undefined || typeof message.name === 'string')
-    && Object.keys(message).every((key) => key === 'role' || key === 'content' || key === 'name'));
-}
-
-function hasCommonRequestFields(value: unknown): value is Record<string, unknown> & { model: string } {
-  if (!record(value) || typeof value.model !== 'string') return false;
-  if (value.temperature !== undefined && (typeof value.temperature !== 'number' || !Number.isFinite(value.temperature))) return false;
-  if (value.maxTokens !== undefined && (!Number.isSafeInteger(value.maxTokens) || Number(value.maxTokens) < 0)) return false;
-  if (value.stop !== undefined && !(typeof value.stop === 'string' || isStop(value.stop))) return false;
-  return true;
-}
-
-function isChatRequest(value: unknown): value is ChatRequest {
-  return hasCommonRequestFields(value)
-    && isChatMessages(value.messages)
-    && value.prompt === undefined
-    && Object.keys(value).every((key) => ['model', 'messages', 'temperature', 'maxTokens', 'stop'].includes(key));
-}
-
-function isPromptSnapshotPayload(value: unknown): value is PromptSnapshotPayload {
-  if (!record(value)
-    || value.schemaVersion !== PROMPT_SNAPSHOT_SCHEMA_VERSION
-    || !isInput(value.input)
-    || value.kind !== 'chat'
-    || !isManifest(value.entityRevisions)
-    || !isExecutableAudit(value.executable)
-    || !isWorldbookResult(value.worldbook)
-    || !isTokenizerDecision(value.tokenizerDecision)
-    || !isStop(value.stop)
-    || !isTokenBreakdown(value.tokenBreakdown)
-    || !nonNegativeInteger(value.totalTokens)
-    || !isWarnings(value.warnings)
-    || !isWorldInfoOutlets(value.worldInfoOutlets)
-    || !isMemoryRecall(value.memoryRecall)
-    || !isMemoryRecall(value.memoryQueryCorpus)
-    || typeof value.compiledRequestHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.compiledRequestHash)
-    || typeof value.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.payloadHash)
-    || !sameCanonical(value.seed, value.input.seed)
-    || value.messageIndex !== value.input.messageIndex) return false;
-  const commonKeys = [
-    'schemaVersion', 'input', 'kind', 'seed', 'messageIndex', 'entityRevisions', 'executable',
-    'worldbook', 'tokenizerDecision', 'stop', 'tokenBreakdown', 'totalTokens', 'warnings',
-    'worldInfoOutlets', 'memoryRecall', 'memoryQueryCorpus', 'compiledRequest', 'compiledRequestHash', 'payloadHash',
-  ];
-  return isChatRequest(value.compiledRequest)
-    && isChatMessages(value.messages)
-    && hasOnlyKeys(value, [...commonKeys, 'messages']);
-}
-
-function executableBindingsMatch(value: PromptSnapshotPayload): boolean {
-  const audit = value.executable;
-  const manifest = value.entityRevisions;
-  const sameRef = (candidate: unknown, expected: RevisionRef) => record(candidate)
-    && candidate.id === expected.id && candidate.revision === expected.revision;
-  if (!sameRef(audit.conversation, manifest.conversation)
-    || !sameRef(audit.character, manifest.character)
-    || !sameRef(audit.persona, manifest.persona)
-    || !sameRef(audit.provider, manifest.provider)) return false;
-  if (!Array.isArray(audit.presets) || !sameCanonical(
-    audit.presets.map((preset) => record(preset)
-      ? { id: preset.id, revision: preset.revision, kind: preset.kind }
-      : preset),
-    manifest.presets,
-  )) return false;
-  if (!Array.isArray(audit.worldbooks)) return false;
-  const persistedBooks = audit.worldbooks.flatMap((book) => (
-    record(book) && book.source !== 'embedded' && record(book.book) && Array.isArray(book.book.entries)
-      ? [{
-        id: book.id,
-        source: book.source,
-        entries: book.book.entries.map((entry) => record(entry) ? entry.id : undefined),
-      }]
-      : []
-  ));
-  if (!sameCanonical(persistedBooks, manifest.worldbooks.map((book) => ({
-    id: book.id,
-    source: book.source,
-    entries: book.entries.map(({ id }) => id),
-  })))) {
-    return false;
-  }
-  const auditedInput = record(audit.input) ? audit.input : undefined;
-  const expectedHistoryIds = auditedInput?.mode === 'swipe' || auditedInput?.mode === 'regenerate'
-    ? manifest.messages.filter(({ id }) => id !== auditedInput.targetMessageId).map(({ id }) => id)
-    : manifest.messages.map(({ id }) => id);
-  if (!Array.isArray(audit.history)
-    || !sameCanonical(audit.history.map((message) => record(message) ? message.id : undefined), expectedHistoryIds)) {
-    return false;
-  }
-  const provider = audit.provider;
-  if (!record(provider)
-    || provider.model !== value.compiledRequest.model
-    || provider.apiMode !== 'chat') return false;
-  if (value.tokenizerDecision.model !== undefined && value.tokenizerDecision.model !== provider.model) return false;
-  if (value.tokenizerDecision.api !== undefined && value.tokenizerDecision.api !== 'openai') return false;
-  return true;
-}
-
-function parseStoredPayload(value: unknown): PromptSnapshotPayload {
-  if (record(value) && nonNegativeInteger(value.schemaVersion)
-    && value.schemaVersion !== PROMPT_SNAPSHOT_SCHEMA_VERSION) {
-    throw new PromptSnapshotError('snapshot_unsupported');
-  }
-  if (!isPromptSnapshotPayload(value)) {
-    throw new PromptSnapshotError('snapshot_invalid');
-  }
-  if (!isChatRequest(value.compiledRequest)
-    || !sameCanonical(value.messages, value.compiledRequest.messages)) throw new PromptSnapshotError('snapshot_invalid');
-  if (!sameCanonical(value.stop, value.compiledRequest.stop ?? [])) throw new PromptSnapshotError('snapshot_invalid');
-  if (!sameCanonical(value.executable.input, value.input)
-    || !sameCanonical(value.executable.entityRevisions, value.entityRevisions)) {
-    throw new PromptSnapshotError('snapshot_invalid');
-  }
-  if (!executableBindingsMatch(value)) throw new PromptSnapshotError('snapshot_invalid');
-  const auditedProvider = value.executable.provider;
-  if (!record(auditedProvider)
-    || value.compiledRequest.model !== auditedProvider.model
-    || auditedProvider.apiMode !== 'chat') {
-    throw new PromptSnapshotError('snapshot_invalid');
-  }
-  if (canonicalHash(value.compiledRequest) !== value.compiledRequestHash) throw new PromptSnapshotError('snapshot_invalid');
-  const { payloadHash, ...withoutPayloadHash } = value;
-  if (canonicalHash(withoutPayloadHash) !== payloadHash) throw new PromptSnapshotError('snapshot_invalid');
-  return structuredClone(value);
-}
-
-function assertSnapshotInput(payload: PromptSnapshotPayload, input: PromptSnapshotInput): void {
-  if (payload.input.conversationId !== input.conversationId
-    || payload.input.conversationRevision !== input.conversationRevision
-    || payload.input.mode !== input.mode
-    || payload.input.userText !== (input.userText ?? null)
-    || (input.targetMessageId !== undefined && payload.input.targetMessageId !== input.targetMessageId)
-    || (input.targetVariantId !== undefined && payload.input.targetVariantId !== input.targetVariantId)
-    || (payload.input.reuseLastUser ?? false) !== (input.reuseLastUser ?? false)
-    || (input.seed !== undefined && !sameCanonical(payload.input.seed, input.seed))
-    || (input.messageIndex !== undefined && payload.input.messageIndex !== input.messageIndex)) {
-    throw new PromptSnapshotError('snapshot_mismatch');
-  }
-}
-
 function acceptUserTurn(
   repositories: Repositories,
   payload: PromptSnapshotPayload,
@@ -1775,7 +1270,6 @@ function acceptUserTurn(
   const provider = repositories.providerProfiles.get(payload.entityRevisions.provider.id);
   if (provider === undefined) stale();
   if (payload.input.mode === 'normal') {
-    if (payload.input.reuseLastUser !== true) {
       const message = repositories.messages.create({
         id: randomUUID(),
         conversationId: payload.input.conversationId,
@@ -1790,13 +1284,6 @@ function acceptUserTurn(
       );
       if (!revision.ok) stale();
       return { provider, createdUserMessage: { ...ref(message), activeVariant: null } };
-    }
-    const revision = repositories.conversations.update(
-      payload.input.conversationId,
-      payload.input.conversationRevision,
-      {},
-    );
-    if (!revision.ok) stale();
   }
   return { provider };
 }

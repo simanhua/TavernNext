@@ -16,7 +16,6 @@ let personas = [
   { id: scholarId, revision: 0, createdAt: now, updatedAt: now, name: 'Scholar', description: 'Careful reader', isDefault: false },
 ];
 let conflictOnce = false;
-let avatarCalls = 0;
 let lastPatch: Record<string, unknown> | undefined;
 
 const server = setupServer(
@@ -54,10 +53,6 @@ const server = setupServer(
     if (deleted?.isDefault && personas[0] !== undefined) personas[0] = { ...personas[0], isDefault: true };
     return new HttpResponse(null, { status: 204 });
   }),
-  http.put('/api/personas/:id/avatar', async () => {
-    avatarCalls += 1;
-    return HttpResponse.json({ ...personas[0], avatarUrl: `/api/personas/${travelerId}/avatar?v=1` });
-  }),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -68,13 +63,12 @@ afterEach(() => {
     { id: scholarId, revision: 0, createdAt: now, updatedAt: now, name: 'Scholar', description: 'Careful reader', isDefault: false },
   ];
   conflictOnce = false;
-  avatarCalls = 0;
   lastPatch = undefined;
 });
 afterAll(() => server.close());
 
 describe('PersonaManagerPage', () => {
-  it('creates, edits, switches the single default, uploads an avatar, and promotes after delete', async () => {
+  it('creates, edits, switches the single default, and promotes after delete', async () => {
     const user = userEvent.setup();
     renderWithApp(<PersonaManagerPage />);
 
@@ -93,9 +87,8 @@ describe('PersonaManagerPage', () => {
     expect(personas.filter((persona) => persona.isDefault).map((persona) => persona.name)).toEqual(['Navigator']);
 
     await user.click(screen.getByRole('button', { name: 'Edit persona Traveler' }));
-    await user.upload(screen.getByLabelText('Avatar file'), new File(['png'], 'traveler.png', { type: 'image/png' }));
-    await waitFor(() => expect(avatarCalls).toBe(1));
-    expect((screen.getByRole('img', { name: 'Traveler avatar' }) as HTMLImageElement).src).toContain(`/api/personas/${travelerId}/avatar`);
+    expect(screen.queryByLabelText('Avatar file')).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Traveler avatar' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Delete Persona' }));
     await user.click(screen.getByRole('button', { name: 'Confirm delete Persona' }));
     await waitFor(() => expect(personas.some((persona) => persona.id === travelerId)).toBe(false));

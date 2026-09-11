@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import JSON5 from 'json5';
+import { decodeInspectedCharacter } from '@tavernnext/st-compat';
 
 const sourceVersion = '1.8.2';
 const dataBaseUrl = `https://testingcf.jsdelivr.net/gh/The-poem-of-destiny/FrontEnd-for-destined-journey@${sourceVersion}/public/assets/data`;
@@ -16,18 +17,10 @@ const dataFiles = [
 ];
 
 function decodeCharacterCard(buffer) {
-  let offset = 8;
-  while (offset < buffer.length) {
-    const length = buffer.readUInt32BE(offset);
-    const type = buffer.toString('ascii', offset + 4, offset + 8);
-    const data = buffer.subarray(offset + 8, offset + 8 + length);
-    const separator = data.indexOf(0);
-    if (type === 'tEXt' && separator >= 0 && data.subarray(0, separator).toString('utf8') === 'ccv3') {
-      return JSON.parse(Buffer.from(data.subarray(separator + 1).toString('utf8'), 'base64').toString('utf8'));
-    }
-    offset += length + 12;
-  }
-  throw new Error('destined_poem_ccv3_chunk_missing');
+  const decoded = decodeInspectedCharacter(new Uint8Array(buffer), characterPath.pathname);
+  const card = decoded.rawPayloads.ccv3;
+  if (card === undefined) throw new Error('destined_poem_ccv3_chunk_missing');
+  return card;
 }
 
 async function fetchDataFile(name) {

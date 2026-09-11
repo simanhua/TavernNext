@@ -132,16 +132,16 @@ afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
 afterAll(() => server.close());
 
 describe('SceneReferenceViewer', () => {
-  it('switches this Save copy to any imported Chat Preset and exposes unsupported Preset families as unavailable', async () => {
+  it('switches this Save copy between Chat templates and omits retired Preset families', async () => {
     const user = userEvent.setup();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderWithApp(<Host />);
 
     await screen.findByText('Private narrator');
     const chatOption = screen.getByRole('option', { name: 'Imported narrator · chat' });
-    const textOption = screen.getByRole('option', { name: 'Imported text completion · text' });
+    const textOption = screen.queryByRole('option', { name: 'Imported text completion · text' });
     expect(chatOption.hasAttribute('disabled')).toBe(false);
-    expect(textOption.hasAttribute('disabled')).toBe(true);
+    expect(textOption).toBeNull();
 
     await user.selectOptions(screen.getByLabelText('Preset for this Save'), chatPresetId);
     await user.click(screen.getByRole('button', { name: 'Switch Save Preset' }));

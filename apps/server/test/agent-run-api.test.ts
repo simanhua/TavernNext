@@ -1,3 +1,4 @@
+import { createTestSceneSave } from './scene-save-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,7 +32,7 @@ describe('Agent Run development API', () => {
     const persona = repositories.personas.create({
       id: randomUUID(), name: 'Persona', description: '', isDefault: true,
     });
-    const conversation = repositories.conversations.create({
+    const conversation = createTestSceneSave(repositories, {
       id: randomUUID(), characterId: character.id, personaId: persona.id, title: 'Audit Save',
     });
     const revision = { id: randomUUID(), revision: 0 };

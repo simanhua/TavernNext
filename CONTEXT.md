@@ -5,20 +5,12 @@ TavernNext is a local-first runtime for official, installable roleplay Scenes. A
 ## Language
 
 **Attached Extension Resource**:
-A normalized regex definition or Tavern Helper script tree owned by one Character or the globally selected primary Preset.
+Source data retained with a Character or Preset. Supported regex definitions are prompt resources; script payloads are inert metadata.
 _Avoid_: Plugin, extension library, global script
 
-**Compatibility Runtime**:
-The bounded presentation environment that projects Markdown regexes, runs explicitly trusted scripts, and supplies accepted non-prompt compatibility APIs. It never changes an Agent Run prompt or Scene View block.
-_Avoid_: SillyTavern clone, plugin host, sandbox
-
 **Runtime State**:
-Persisted compatibility data scoped independently to global, Character, Preset, Conversation, message variant, or script ownership.
+Historical scoped compatibility data retained as inactive history. Active gameplay state belongs to a Save's Scene State.
 _Avoid_: Variables blob, chat metadata
-
-**Trust Grant**:
-The user's approval of one exact executable bundle digest, including enabled code, order, approved remote hashes, and executable SPreset configuration.
-_Avoid_: Install, permission toggle, permanent approval
 
 **Global Generation Configuration**:
 The single revisioned selection of the global Provider/model and the default Chat Preset template copied into new Saves.
@@ -45,7 +37,7 @@ One isolated Conversation, player-profile snapshot, setup snapshot, messages, va
 _Avoid_: Global chat, Character state
 
 **Legacy Conversation**:
-A scene-less TavernNext schema-v9 Conversation restored only by an explicit one-time recovery and reachable only through the hidden compatibility route. It is not a Save and cannot be created through the product UI.
+A scene-less historical Conversation retained as inactive history. It is not an active Scene Save.
 _Avoid_: Save, imported SillyTavern chat, Scene
 
 **Save Agent Configuration**:
@@ -63,6 +55,10 @@ _Avoid_: Persisted Pi session, coding agent, background agent
 **Agent Run**:
 One user-triggered, bounded execution of a Save Agent against immutable input revisions. It may perform multiple model/tool turns and commits completed narrative, state, views, and audit outcome atomically.
 _Avoid_: Generation request, autonomous task, Pi session
+
+**Save Agent Prompt Plan**:
+The immutable, provider-neutral prompt transcript and tool directory compiled for one Agent Run. Its initial system and conversation messages are the same transcript audited in the Generation Snapshot and executed by the Save Agent; later model turns only append Agent tool calls and results.
+_Avoid_: Prompt preview, Preset text, reconstructed runtime prompt
 
 **Turn Workspace**:
 The in-memory staged projection of one Scene State revision used by tools during an Agent Run. Successful operations are visible to later tools in the same run but reach persistent Scene State only at the final atomic commit.

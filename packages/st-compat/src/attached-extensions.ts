@@ -254,37 +254,3 @@ export function attachedVariableValue(extensions: unknown): Record<string, unkno
     ...(record(helper?.variables) ?? {}),
   };
 }
-
-export function overlayAttachedVariables(
-  extensions: unknown,
-  value: Record<string, unknown>,
-): Record<string, unknown> {
-  const normalized = normalizeAttachedExtensions(extensions).extensions;
-  const helper = record(normalized.tavern_helper);
-  if (helper !== undefined || !Object.hasOwn(normalized, 'variables')) {
-    normalized.tavern_helper = { ...(helper ?? {}), variables: structuredClone(value) };
-  } else {
-    normalized.variables = structuredClone(value);
-  }
-  return normalized;
-}
-
-export function overlayAttachedExtensionAssets(
-  extensions: unknown,
-  assets: readonly AssetSource[],
-  options: { replaceKinds?: boolean } = {},
-): Record<string, unknown> {
-  const normalized = normalizeAttachedExtensions(extensions).extensions;
-  const regex = assets.filter((asset) => asset.kind === 'regex').sort((a, b) => a.ordinal - b.ordinal);
-  const scripts = assets.filter((asset) => asset.kind === 'tavern_helper').sort((a, b) => a.ordinal - b.ordinal);
-  if (regex.length > 0 || (options.replaceKinds === true && Object.hasOwn(normalized, 'regex_scripts'))) {
-    normalized.regex_scripts = regex.map((asset) => structuredClone(asset.payload));
-  }
-  if (scripts.length > 0 || (options.replaceKinds === true && Object.hasOwn(normalized, 'tavern_helper'))) {
-    normalized.tavern_helper = {
-      ...(record(normalized.tavern_helper) ?? {}),
-      scripts: scripts.map((asset) => structuredClone(asset.payload)),
-    };
-  }
-  return normalized;
-}

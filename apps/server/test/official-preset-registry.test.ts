@@ -42,7 +42,7 @@ describe('Official Preset catalog', () => {
       '仓鼠之神V4.8.2',
       '夏瑾 天琴座 Beta 3.6',
     ]));
-    expect(official.every((preset) => isOfficialPresetId(preset.id))).toBe(true);
+    expect(official.every((preset) => isOfficialPresetId(preset.id) && preset.kind === 'chat')).toBe(true);
     expect(repositories.presets.get('44800b9a-ac22-447d-a6a5-89d31fe1c5e5')?.settings.prompts)
       .toHaveLength(68);
     expect(repositories.extensionAssets.listByOwner('preset', '71ad75b3-aa78-4c6b-a8f6-179c08114000').length)

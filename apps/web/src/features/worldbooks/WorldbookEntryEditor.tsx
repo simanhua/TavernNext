@@ -2,7 +2,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useEffect, useState } from 'react';
 import { useFieldArray, useForm, type Control, type UseFormRegister } from 'react-hook-form';
 import { z } from 'zod';
-import { ApiError, api, errorCode, type WorldbookEntryInput, type WorldbookEntryPatch, type WorldbookEntryView } from '../../api/client.js';
+import { ApiError, errorCode, type WorldbookEntryInput, type WorldbookEntryPatch, type WorldbookEntryView } from '../../api/client.js';
 import { CompatibilitySummary } from '../shared/CompatibilitySummary.js';
 import { ConflictBanner } from '../shared/ConflictBanner.js';
 import { hasPatchFields, minimalPatch } from '../shared/minimalPatch.js';
@@ -142,13 +142,12 @@ export interface WorldbookEntryEditorOperations {
   update(entryId: string, revision: number, patch: WorldbookEntryPatch): Promise<WorldbookEntryView>;
 }
 
-export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, loadLatest, operations }: {
-  worldbookId: string;
+export function WorldbookEntryEditor({ entry, onSaved, onCancel, loadLatest, operations }: {
   entry?: WorldbookEntryView;
   onSaved: (entry: WorldbookEntryView) => void;
   onCancel: () => void;
   loadLatest: (entryId: string) => Promise<WorldbookEntryView | undefined>;
-  operations?: WorldbookEntryEditorOperations;
+  operations: WorldbookEntryEditorOperations;
 }) {
   const { t } = useI18n();
   const [pending, setPending] = useState(false);
@@ -173,9 +172,8 @@ export function WorldbookEntryEditor({ worldbookId, entry, onSaved, onCancel, lo
       const patch = baseline === undefined ? undefined : minimalPatch(payload(valuesFrom(baseline)), next, entryPatchFields);
       if (patch !== undefined && !hasPatchFields(patch)) return;
       const saved = baseline === undefined
-        ? await (operations?.create(next) ?? api.createWorldbookEntry(worldbookId, next))
-        : await (operations?.update(baseline.id, revision!, patch!)
-          ?? api.updateWorldbookEntry(worldbookId, baseline.id, revision!, patch!));
+        ? await operations.create(next)
+        : await operations.update(baseline.id, revision!, patch!);
       setConflict(undefined);
       setBaseline(saved);
       form.reset(valuesFrom(saved));

@@ -275,7 +275,7 @@ describe('SQLite repositories', () => {
   });
 
   it('preserves character compatibility metadata through a create and get cycle', async () => {
-    const { database, repositories } = await createTestRepositories();
+    const { repositories } = await createTestRepositories();
     const character = repositories.characters.create({
       id: '018f0000-0000-7000-8000-000000000010',
       name: 'Aster',
@@ -633,17 +633,17 @@ describe('SQLite repositories', () => {
     const conversation = { id: ids.conversation, revision: 0, createdAt, updatedAt: createdAt, characterId: ids.character, personaId: ids.persona, title: 'Legacy chat', worldbookIds: [ids.worldbook] };
     const message = { id: ids.message, revision: 0, createdAt, updatedAt: createdAt, conversationId: ids.conversation, role: 'assistant', content: '', activeVariantId: ids.variant };
     const variant = { id: ids.variant, revision: 0, createdAt, updatedAt: createdAt, messageId: ids.message, content: 'Legacy response', status: 'completed' };
-    const insert = (table: string, payload: { id: string; revision: number; createdAt: string; updatedAt: string }, columns: string[], values: (string | null)[]) => {
+    const insert = (table: string, columns: string[], values: (string | null)[]) => {
       database.sqlite.prepare(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`).run(...values);
     };
-    insert('characters', character, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [character.id, '2', createdAt, createdAt, JSON.stringify(character), character.name]);
-    insert('characters', malformedCharacter, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [malformedCharacter.id, '0', createdAt, createdAt, JSON.stringify(malformedCharacter), malformedCharacter.name]);
-    insert('personas', persona, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [persona.id, '0', createdAt, createdAt, JSON.stringify(persona), persona.name]);
-    insert('worldbooks', worldbook, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [worldbook.id, '0', createdAt, createdAt, JSON.stringify(worldbook), worldbook.name]);
-    insert('worldbook_entries', entry, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'worldbook_id'], [entry.id, '0', createdAt, createdAt, JSON.stringify(entry), entry.worldbookId]);
-    insert('conversations', conversation, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'character_id', 'persona_id', 'preset_id', 'title'], [conversation.id, '0', createdAt, createdAt, JSON.stringify(conversation), conversation.characterId, conversation.personaId, null, conversation.title]);
-    insert('messages', message, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'conversation_id', 'role'], [message.id, '0', createdAt, createdAt, JSON.stringify(message), message.conversationId, message.role]);
-    insert('message_variants', variant, ['id', 'revision', 'created_at', 'updated_at', 'payload', 'message_id', 'status'], [variant.id, '0', createdAt, createdAt, JSON.stringify(variant), variant.messageId, variant.status]);
+    insert('characters', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [character.id, '2', createdAt, createdAt, JSON.stringify(character), character.name]);
+    insert('characters', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [malformedCharacter.id, '0', createdAt, createdAt, JSON.stringify(malformedCharacter), malformedCharacter.name]);
+    insert('personas', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [persona.id, '0', createdAt, createdAt, JSON.stringify(persona), persona.name]);
+    insert('worldbooks', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'name'], [worldbook.id, '0', createdAt, createdAt, JSON.stringify(worldbook), worldbook.name]);
+    insert('worldbook_entries', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'worldbook_id'], [entry.id, '0', createdAt, createdAt, JSON.stringify(entry), entry.worldbookId]);
+    insert('conversations', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'character_id', 'persona_id', 'preset_id', 'title'], [conversation.id, '0', createdAt, createdAt, JSON.stringify(conversation), conversation.characterId, conversation.personaId, null, conversation.title]);
+    insert('messages', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'conversation_id', 'role'], [message.id, '0', createdAt, createdAt, JSON.stringify(message), message.conversationId, message.role]);
+    insert('message_variants', ['id', 'revision', 'created_at', 'updated_at', 'payload', 'message_id', 'status'], [variant.id, '0', createdAt, createdAt, JSON.stringify(variant), variant.messageId, variant.status]);
 
     migrateDatabase(database);
     const firstMalformedRow = database.sqlite.prepare('SELECT revision, payload FROM characters WHERE id = ?')

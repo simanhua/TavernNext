@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { createRepositories } from '../src/db/repositories.js';
+import { createTestSceneSave } from './scene-save-fixture.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,9 +22,6 @@ const conversationId = '018f0000-0000-7000-8000-000000000601';
 function createRuntimeStub(overrides: Partial<SaveAgentRuntime>): SaveAgentRuntime {
   return {
     async start() {
-      return { ok: false, reason: 'not_found' };
-    },
-    async triggerLastUser() {
       return { ok: false, reason: 'not_found' };
     },
     async regenerateActionOptions() {
@@ -93,6 +93,13 @@ describe('Save Agent Runtime seam', () => {
     directories.push(directory);
     const database = createDatabase(join(directory, 'tavernnext.sqlite'));
     migrateDatabase(database);
+    const repositories = createRepositories(database, { snapshotIntegrityKey: TEST_SNAPSHOT_INTEGRITY_KEY });
+    const character = repositories.characters.create({
+      id: randomUUID(), name: 'Aster', description: '', personality: '', scenario: '',
+      firstMessage: '', alternateGreetings: [], tags: [],
+    });
+    const persona = repositories.personas.create({ id: randomUUID(), name: 'Traveler', description: '', isDefault: true });
+    createTestSceneSave(repositories, { id: conversationId, characterId: character.id, personaId: persona.id, title: 'Runtime Save' });
     let starts = 0;
     const runtime = createRuntimeStub({
       async start() {

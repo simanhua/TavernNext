@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 import {
   ExtensionAssetSchema,
   ExtensionStateSchema,
-  PresetKindSchema,
   PresetSchema,
   type ExtensionAsset,
   type ExtensionState,
@@ -25,7 +24,7 @@ const CatalogSchema = z.object({
   entries: z.array(z.object({
     id: z.string().uuid(),
     name: z.string().min(1),
-    kind: PresetKindSchema,
+    kind: z.literal('chat'),
     file: z.string().regex(/^\d{2}-[a-f0-9]{12}\.json$/),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict()).min(1).max(512),
@@ -117,10 +116,6 @@ export function officialPresetDefinitions(): OfficialPresetDefinition[] {
   return loadDefinitions();
 }
 
-export function officialPresetIds(): string[] {
-  return officialPresetCatalog().entries.map((entry) => entry.id);
-}
-
 export function isOfficialPresetId(id: string): boolean {
   return officialPresetCatalog().entries.some((entry) => entry.id === id);
 }
@@ -202,17 +197,7 @@ export function deduplicateOfficialPresets(
     if (!result.ok) throw new Error(`official_preset_artifact_${result.reason}`);
   }
 
-  for (const audit of repositories.extensionAuditEvents.list()) {
-    if (audit.ownerKind !== 'preset') continue;
-    const officialId = targetByDuplicate.get(audit.ownerId);
-    if (officialId === undefined) continue;
-    const result = repositories.extensionAuditEvents.update(audit.id, audit.revision, { ownerId: officialId });
-    if (!result.ok) throw new Error(`official_preset_audit_${result.reason}`);
-  }
-
   for (const { duplicateId } of duplicates) {
-    repositories.extensionTrustGrants.deleteByOwner('preset', duplicateId);
-    repositories.extensionRemoteResources.deleteByOwner('preset', duplicateId);
     repositories.extensionAssets.deleteByOwner('preset', duplicateId);
     repositories.extensionStates.deleteByScope('preset', duplicateId);
     repositories.extensionStates.deleteScriptStatesByOwner('preset', duplicateId);

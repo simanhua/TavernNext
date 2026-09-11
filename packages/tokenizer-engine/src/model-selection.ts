@@ -87,8 +87,6 @@ export function openAiChatTokenizerId(modelName: string | undefined): TokenizerI
   return undefined;
 }
 
-export const modelTokenizerId = openAiChatTokenizerId;
-
 export function textGenerationTokenizerId(modelName: string | undefined): TokenizerId {
   const model = String(modelName ?? '').toLowerCase();
   if (model.includes('llama3') || model.includes('llama-3')) return TokenizerId.LLAMA3;

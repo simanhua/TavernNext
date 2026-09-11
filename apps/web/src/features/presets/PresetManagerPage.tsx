@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, errorCode, type PresetView } from '../../api/client.js';
-import { ImportDialog } from '../imports/ImportDialog.js';
 import { PresetEditor } from './PresetEditor.js';
 import { useI18n } from '../../app/i18n.js';
 import { ActivePresetConfiguration } from '../settings/GlobalGenerationConfiguration.js';
@@ -17,7 +16,6 @@ export function PresetManagerPage() {
   const [selected, setSelected] = useState<PresetView>();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string>();
-  const [importOpen, setImportOpen] = useState(false);
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['presets'] });
   const openPreset = async (id: string) => {
     setError(undefined);
@@ -33,7 +31,7 @@ export function PresetManagerPage() {
       <aside className="manager-sidebar">
         <h1>{t('Presets')}</h1>
         <div className="manager-list">
-          {(presets.data ?? []).map((preset) => (
+          {(presets.data ?? []).filter((preset) => preset.kind === 'chat').map((preset) => (
             <div key={preset.id} className="preset-row">
               <button type="button" aria-label={t('Edit preset {{name}}', { name: preset.name })} onClick={() => void openPreset(preset.id)}>{preset.name}</button>
               <span className="kind-badge">{language === 'en' ? titleCase(preset.kind) : t(preset.kind)}</span>
@@ -42,7 +40,6 @@ export function PresetManagerPage() {
           ))}
         </div>
         <button type="button" onClick={() => { setSelected(undefined); setCreating(true); }}>{t('New Preset')}</button>
-        <button type="button" onClick={() => setImportOpen(true)}>{t('Import Preset')}</button>
       </aside>
       <section className="manager-editor">
         <ActivePresetConfiguration />
@@ -57,7 +54,6 @@ export function PresetManagerPage() {
           />
         )}
       </section>
-      <ImportDialog open={importOpen} expectedKind="preset" title={t('Import Preset')} onOpenChange={setImportOpen} onCommitted={async (receipt) => { await refresh(); if (receipt.entityId !== undefined) await openPreset(receipt.entityId); }} />
     </main>
   );
 }

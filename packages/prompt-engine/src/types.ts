@@ -1,6 +1,6 @@
 import type { Character, GenerationMode, Persona, Preset } from '@tavernnext/domain';
 
-export type PromptGenerationType = GenerationMode | 'continue';
+export type PromptGenerationType = GenerationMode;
 
 export type PromptRole = 'system' | 'user' | 'assistant';
 
@@ -105,19 +105,6 @@ export interface CompileChatPromptInput extends CompilationInputBase {
   worldInfoPlacements?: WorldInfoCompilerPlacements;
 }
 
-export interface CompileTextPromptInput extends CompilationInputBase {
-  textPreset: Preset;
-  contextPreset: Preset;
-  instructPreset?: Preset;
-  systemPreset?: Preset;
-  worldInfoBefore?: string;
-  worldInfoAfter?: string;
-  worldInfoPlacements?: WorldInfoCompilerPlacements;
-  anchorBefore?: string;
-  anchorAfter?: string;
-  generationType?: PromptGenerationType;
-}
-
 interface CompilationResultBase {
   stop: string[];
   tokenBreakdown: TokenBreakdownEntry[];
@@ -131,12 +118,6 @@ export interface ChatPromptCompilation extends CompilationResultBase {
   worldInfoOutlets: Record<string, string>;
 }
 
-export interface TextPromptCompilation extends CompilationResultBase {
-  kind: 'text';
-  text: string;
-  worldInfoOutlets: Record<string, string>;
-}
-
 export type PromptCompilationErrorCode =
   | 'invalid_budget'
   | 'invalid_preset'
@@ -146,13 +127,11 @@ export type PromptCompilationErrorCode =
   | 'unsupported_worldbook_placement'
   | 'context_overflow';
 
-export interface PromptCompilationFailure<TTarget extends 'chat' | 'text' = 'chat' | 'text'> extends CompilationResultBase {
+export interface PromptCompilationFailure extends CompilationResultBase {
   kind: 'error';
-  target: TTarget;
+  target: 'chat';
   code: PromptCompilationErrorCode;
   message: string;
 }
 
-export type PromptCompilationResult = ChatPromptCompilation | TextPromptCompilation | PromptCompilationFailure;
-export type ChatPromptCompilationResult = ChatPromptCompilation | PromptCompilationFailure<'chat'>;
-export type TextPromptCompilationResult = TextPromptCompilation | PromptCompilationFailure<'text'>;
+export type ChatPromptCompilationResult = ChatPromptCompilation | PromptCompilationFailure;

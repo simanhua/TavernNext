@@ -1,6 +1,6 @@
 # TavernNext
 
-TavernNext is a local-first, Agent-driven roleplay runtime for official Scene Packages. Each Save owns a private writing Preset and runs one bounded Scene Director through tool-capable Chat models; SillyTavern-compatible Characters, Presets, Worldbooks, and tokenizers remain reusable library/import data.
+TavernNext is a local-first, Agent-driven roleplay runtime for official Scene Packages. Each Save owns a private writing Preset and runs one bounded Scene Director through tool-capable Chat models; Scene loading retains compatible Character, Chat Preset, Worldbook, and tokenizer data without the retired generic chat and asset-library interfaces.
 
 ## Run locally
 

@@ -276,10 +276,10 @@ export function createSaveMemoryService(
   database?: TavernDatabase,
 ): SaveMemoryService {
   const configurationFor = (conversationId: string) => {
-    const existing = repositories.saveMemoryConfigurations.getByConversationId(conversationId);
-    if (existing !== undefined) return existing;
     const conversation = repositories.conversations.get(conversationId);
     if (conversation?.sceneId === undefined) return undefined;
+    const existing = repositories.saveMemoryConfigurations.getByConversationId(conversationId);
+    if (existing !== undefined) return existing;
     return repositories.saveMemoryConfigurations.create({
       id: randomUUID(), conversationId, enabled: true,
     });

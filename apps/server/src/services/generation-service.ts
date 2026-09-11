@@ -40,6 +40,7 @@ import {
 import {
   SceneDirectorExecution,
   SceneDirectorRunError,
+  createSceneDirectorToolset,
   type SceneDirectorLimits,
   type SceneDirectorTerminal,
   type SceneDirectorEvent,
@@ -53,6 +54,7 @@ import {
   type SaveMemoryService,
 } from './save-memory-service.js';
 import { generatePostNarrativeActionOptions } from './action-options-runtime.js';
+import { TurnWorkspace } from './turn-workspace.js';
 
 interface ActiveGeneration {
   generationId: string;
@@ -135,7 +137,7 @@ export function createGenerationService(options: {
   repositories: Repositories;
   promptSnapshotService?: PromptSnapshotService;
   tokenizerRuntime?: ServerTokenizerRuntime;
-  sceneService?: SceneService;
+  sceneService: SceneService;
   piAgentRuntimeFactory?: PiAgentRuntimeFactory;
   sceneDirectorLimits?: Partial<SceneDirectorLimits>;
   saveMemoryService?: SaveMemoryService;
@@ -256,7 +258,7 @@ export function createGenerationService(options: {
         const next = await providerIterator.next();
         if (next.done) break;
         const event = next.value;
-        if (event.type === 'agent_raw_delta') {
+        if (event.type === 'agent_narrative_delta') {
           if (event.text !== '') {
             content += event.text;
             hasDelta = true;
@@ -554,6 +556,7 @@ export function createGenerationService(options: {
 
   const service: SaveAgentRuntime = {
     async start(input: SaveAgentRunInput, signal?: AbortSignal): Promise<StartSaveAgentRunResult> {
+      if (repositories.conversations.get(input.conversationId)?.sceneId === undefined) return { ok: false, reason: 'not_found' };
       if (input.mode === 'normal' && (typeof input.userText !== 'string' || input.userText.trim() === '')) {
         return { ok: false, reason: 'invalid_user_text' };
       }
@@ -616,12 +619,14 @@ export function createGenerationService(options: {
         let scenePromptContext: Parameters<PromptSnapshotService['createAndAccept']>[2];
         let sceneAgentToolFactory: SceneAgentToolFactory | undefined;
         let sceneViewRuntimeFactory: SceneViewRuntimeFactory | undefined;
-        if (sceneService !== undefined) {
+        {
           const conversation = repositories.conversations.get(input.conversationId);
           const scene = conversation?.sceneId === undefined ? undefined : sceneService.get(conversation.sceneId);
           const state = scene === undefined ? undefined : sceneService.state(input.conversationId);
-          const host = scene === undefined ? undefined : sceneService.module(scene);
-          if (conversation !== undefined && scene !== undefined && state !== undefined) {
+          if (conversation === undefined || scene === undefined) throw new PromptSnapshotError('not_found');
+          if (state === undefined) throw new PromptSnapshotError('invalid_runtime_state');
+          const host = sceneService.module(scene);
+          {
             let baseValue = state.value;
             let parentTransitionId = state.headTransitionId;
             if (input.mode === 'swipe' || input.mode === 'regenerate') {
@@ -668,6 +673,32 @@ export function createGenerationService(options: {
             sceneViewRuntimeFactory = createSceneViewRuntimeFactory({ scene, host, conversation });
           }
         }
+        const planningWorkspace = new TurnWorkspace({
+          generationId,
+          payload: {
+            seed: input.seed ?? `${input.conversationId}:${input.conversationRevision}`,
+            executable: { worldbooks: [] },
+          },
+          ...(memoryConfiguration?.enabled !== true ? {} : { memoryQuery: async () => [] }),
+          ...(sceneTransition === undefined ? {} : {
+            state: {
+              revision: sceneTransition.stateRevision,
+              value: sceneTransition.baseValue,
+              manifest: sceneTransition.manifest,
+            },
+          }),
+        });
+        const plannedToolset = createSceneDirectorToolset({
+          workspace: planningWorkspace,
+          ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
+          ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
+        });
+        scenePromptContext = {
+          ...scenePromptContext,
+          memoryRecall,
+          memoryQueryCorpus,
+          toolDescriptors: plannedToolset.toolDescriptors,
+        };
         let sceneDirector: SceneDirectorExecution | undefined;
         const beforeAccept = async (candidate: AcceptedPromptSnapshot) => {
           if (!candidate.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
@@ -689,17 +720,12 @@ export function createGenerationService(options: {
             playerInput,
             runtimeFactory: options.piAgentRuntimeFactory,
             ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
-            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
-            ...(candidate.payload.memoryRecall.length === 0 ? {} : { recalledMemories: candidate.payload.memoryRecall }),
             ...(memoryConfiguration?.enabled !== true ? {} : {
               memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
                 candidate.payload.memoryQueryCorpus,
                 query,
                 limit,
               ),
-            }),
-            ...(scenePromptContext?.additions === undefined ? {} : {
-              scenePromptAdditions: scenePromptContext.additions,
             }),
             ...(sceneTransition === undefined ? {} : {
               workspaceState: {
@@ -726,8 +752,6 @@ export function createGenerationService(options: {
         if (accepted.deferredSnapshotCommit === true) {
           active.releaseDeferredSnapshot = () => promptSnapshots.releaseDeferredSnapshot(generationId);
         }
-        // Retain defensive validation for injected PromptSnapshotService implementations that
-        // predate the pre-accept hook, while production acceptance always invokes the hook.
         if (!accepted.provider.toolCalls) throw new PromptSnapshotError('model_not_agent_capable');
         const prepared = preparedRequest(
           generationId,
@@ -736,52 +760,8 @@ export function createGenerationService(options: {
           playerInput,
           sceneTransition,
         );
-        if (accepted.payload.kind === 'chat'
-          && options.piAgentRuntimeFactory !== undefined && sceneDirector === undefined) {
-          const configurationRef = accepted.payload.entityRevisions.saveAgentConfiguration;
-          const configuration = accepted.saveAgentConfiguration;
-          if (configuration.id !== configurationRef.id || configuration.revision !== configurationRef.revision) {
-            throw new PromptSnapshotError('snapshot_unsupported');
-          }
-          const execution = new SceneDirectorExecution({
-            repositories,
-            generationId,
-            snapshotId: accepted.snapshotId,
-            payload: accepted.payload,
-            provider: accepted.provider,
-            configuration,
-            playerInput,
-            runtimeFactory: options.piAgentRuntimeFactory,
-            ...(options.sceneDirectorLimits === undefined ? {} : { limits: options.sceneDirectorLimits }),
-            ...(sceneTransition === undefined ? {} : { effectiveSceneState: sceneTransition.stagedValue }),
-            ...(accepted.payload.memoryRecall.length === 0 ? {} : { recalledMemories: accepted.payload.memoryRecall }),
-            ...(memoryConfiguration?.enabled !== true ? {} : {
-              memoryQuery: async (query: string, limit?: number) => queryFrozenMemory(
-                accepted.payload.memoryQueryCorpus,
-                query,
-                limit,
-              ),
-            }),
-            ...(scenePromptContext?.additions === undefined ? {} : {
-              scenePromptAdditions: scenePromptContext.additions,
-            }),
-            ...(sceneTransition === undefined ? {} : {
-              workspaceState: {
-                revision: sceneTransition.stateRevision,
-                value: sceneTransition.baseValue,
-                manifest: sceneTransition.manifest,
-                initialOperations: sceneTransition.beforeOperations,
-                initialFailures: sceneTransition.beforeFailures,
-              },
-            }),
-            ...(sceneAgentToolFactory === undefined ? {} : { sceneAgentToolFactory }),
-            ...(sceneViewRuntimeFactory === undefined ? {} : { sceneViewRuntimeFactory }),
-          });
-          await execution.validatePromptBudget(runtimeTokenizer);
-          sceneDirector = execution;
-        }
         if (sceneDirector === undefined) throw new PromptSnapshotError('snapshot_unsupported');
-        if (sceneDirector !== undefined) prepared.sceneDirector = sceneDirector;
+        prepared.sceneDirector = sceneDirector;
         if (accepted.deferredSnapshotCommit === true) {
           prepared.deferredSnapshotCommit = true;
         }
@@ -804,17 +784,6 @@ export function createGenerationService(options: {
         throw error;
       }
     },
-    async triggerLastUser(conversationId, signal) {
-      if (activeByConversation.has(conversationId)) return { ok: false, reason: 'generation_active' };
-      const conversation = repositories.conversations.get(conversationId);
-      if (conversation === undefined) return { ok: false, reason: 'not_found' };
-      const last = repositories.messages.listByConversationId(conversationId).at(-1);
-      if (last?.role !== 'user' || last.content.trim() === '') return { ok: false, reason: 'invalid_user_text' };
-      return service.start({
-        conversationId, conversationRevision: conversation.revision,
-        mode: 'normal', userText: last.content, reuseLastUser: true,
-      }, signal);
-    },
     async regenerateActionOptions(input, signal) {
       if (activeByConversation.has(input.conversationId)) return { ok: false, reason: 'generation_active' };
       const operationId = randomUUID();
@@ -823,7 +792,7 @@ export function createGenerationService(options: {
         const conversation = repositories.conversations.get(input.conversationId);
         const message = repositories.messages.get(input.messageId);
         const variant = repositories.messageVariants.get(input.variantId);
-        if (conversation === undefined || message === undefined || variant === undefined) {
+        if (conversation?.sceneId === undefined || message === undefined || variant === undefined) {
           return { ok: false, reason: 'not_found' };
         }
         const messages = repositories.messages.listByConversationId(conversation.id);
@@ -841,9 +810,8 @@ export function createGenerationService(options: {
         }
         const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
         const priorPlayer = [...messages.slice(0, messageIndex)].reverse().find((candidate) => candidate.role === 'user');
-        const sceneState = conversation.sceneId === undefined
-          ? {}
-          : sceneService?.state(conversation.id)?.value ?? {};
+        const sceneState = sceneService.state(conversation.id)?.value;
+        if (sceneState === undefined) return { ok: false, reason: 'not_found' };
         const generated = await generatePostNarrativeActionOptions({
           runtime: options.piAgentRuntimeFactory(provider),
           narrative: roleplayDocumentPlainText(variant.document),

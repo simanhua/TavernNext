@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { buildDestinedPoemPackage, officialCatalog } from '../apps/server/src/scenes/official-package.js';
+import { buildOfficialScenePackage, DESTINED_POEM_SCENE_ID, officialCatalog } from '../apps/server/src/scenes/official-package.js';
 
 const requiredTokens = [
   '--vp-c-bg', '--vp-c-bg-alt', '--vp-c-bg-elv', '--vp-c-bg-soft',
@@ -15,7 +15,7 @@ const requiredTokens = [
 describe('host and Scene theme token contract', () => {
   it('keeps every allowlisted VitePress token in both trusted built-in stylesheets', () => {
     const hostCss = readFileSync(resolve('apps/web/src/styles.css'), 'utf8');
-    const scenePackage = buildDestinedPoemPackage();
+    const scenePackage = buildOfficialScenePackage(DESTINED_POEM_SCENE_ID)!;
     const sceneCss = strFromU8(unzipSync(scenePackage.bytes)['frontend/styles.css']!);
     for (const token of requiredTokens) {
       expect(hostCss, `host ${token}`).toContain(`${token}:`);

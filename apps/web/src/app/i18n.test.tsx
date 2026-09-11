@@ -9,7 +9,7 @@ function LanguageHarness() {
   const { language, setLanguage, t } = useI18n();
   return (
     <div>
-      <span>{t('Connection Settings')}</span>
+      <span>{t('Connection')}</span>
       <select aria-label="language" value={language} onChange={(event) => setLanguage(event.target.value as 'en' | 'zh-CN')}>
         <option value="en">English</option>
         <option value="zh-CN">Chinese</option>
@@ -29,7 +29,7 @@ describe('I18nProvider', () => {
     const user = userEvent.setup();
     render(<I18nProvider><LanguageHarness /></I18nProvider>);
 
-    expect(screen.getByText('Connection Settings')).not.toBeNull();
+    expect(screen.getByText('Connection')).not.toBeNull();
     await user.selectOptions(screen.getByRole('combobox', { name: 'language' }), 'zh-CN');
 
     expect(screen.getByText('连接设置')).not.toBeNull();

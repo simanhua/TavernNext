@@ -28,7 +28,6 @@ export function ActiveProviderConfiguration({ providers }: { providers: Provider
     mutationFn: () => api.saveGlobalGenerationConfig(configuration.data!.revision, { providerId }),
     onSuccess: (saved) => {
       queryClient.setQueryData(['global-generation-config'], saved);
-      void queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
       setProviderId(saved.providerId);
     },
   });
@@ -89,16 +88,9 @@ export function ActivePresetConfiguration() {
   }, [configuration.data]);
 
   const save = useMutation({
-    mutationFn: () => api.saveGlobalGenerationConfig(configuration.data!.revision, {
-      ...selection,
-      textPresetId: null,
-      contextPresetId: null,
-      instructPresetId: null,
-      systemPresetId: null,
-    }),
+    mutationFn: () => api.saveGlobalGenerationConfig(configuration.data!.revision, selection),
     onSuccess: (saved) => {
       queryClient.setQueryData(['global-generation-config'], saved);
-      void queryClient.invalidateQueries({ queryKey: ['active-resource-context'] });
       setSelection({ chatPresetId: saved.chatPresetId });
     },
   });

@@ -90,12 +90,6 @@ const server = setupServer(
     deleteCalls += 1;
     return new HttpResponse(null, { status: 204 });
   }),
-  http.get('/api/presets/:id/export', () => new HttpResponse('{}', {
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'content-disposition': 'attachment; filename="preset.json"; filename*=UTF-8\'\'Role%20Chat.json',
-    },
-  })),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -144,7 +138,7 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('PresetManagerPage', () => {
-  it('selects one default Chat template and clears legacy runtime companions', async () => {
+  it('selects one default Chat template', async () => {
     let submitted: unknown;
     server.use(http.patch('/api/settings/generation', async ({ request }) => {
       submitted = await request.json();
@@ -173,29 +167,38 @@ describe('PresetManagerPage', () => {
       revision: 0,
       patch: {
         chatPresetId: ids[0]!.id,
-        textPresetId: null,
-        contextPresetId: null,
-        instructPresetId: null,
-        systemPresetId: null,
       },
     }));
     expect(await screen.findByText('Default Chat template saved.')).not.toBeNull();
   });
 
-  it('shows the safe Preset resource inventory and SPreset feature summary', async () => {
+  it('offers only Chat templates without retired import, export, or extension controls', async () => {
     const user = userEvent.setup();
     renderWithApp(<PresetManagerPage />);
     await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
 
-    expect(screen.getByRole('heading', { name: 'Attached Extension Resources' })).not.toBeNull();
-    expect(screen.getByText('9 regexes')).not.toBeNull();
-    expect(screen.getByText('3 scripts')).not.toBeNull();
-    expect(screen.getByText('1 variable container')).not.toBeNull();
-    expect(screen.getByText('SPreset compatibility data')).not.toBeNull();
-    expect(screen.getByText('ChatSquash: Enabled')).not.toBeNull();
-    expect(screen.getByText('RegexBinding: Enabled')).not.toBeNull();
-    expect(screen.getByText('MacroNest: Disabled')).not.toBeNull();
-    expect(screen.queryByText(/squashed_post_script|globalThis|function\s*\(/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Import Preset' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Export Preset' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Attached Extension Resources' })).toBeNull();
+    expect(screen.queryByText('SPreset compatibility data')).toBeNull();
+    for (const kind of ['Text', 'Context', 'Instruct', 'System', 'Reasoning']) {
+      expect(screen.queryByRole('button', { name: `Edit preset ${kind} preset` })).toBeNull();
+    }
+  });
+
+  it('creates only Chat templates', async () => {
+    let submitted: Record<string, unknown> | undefined;
+    server.use(http.post('/api/presets', async ({ request }) => {
+      submitted = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ ...chatDetail, ...submitted });
+    }));
+    const user = userEvent.setup();
+    renderWithApp(<PresetManagerPage />);
+    await user.click(screen.getByRole('button', { name: 'New Preset' }));
+    expect(screen.queryByLabelText('Kind')).toBeNull();
+    await user.type(screen.getByLabelText('Name'), 'My Chat template');
+    await user.click(screen.getByRole('button', { name: 'Create Preset' }));
+    await waitFor(() => expect(submitted).toMatchObject({ name: 'My Chat template', kind: 'chat', settings: { prompts: [], prompt_order: [] } }));
   });
 
   it('renders independently expandable Prompt, order-group, and advanced-settings cards', async () => {
@@ -229,20 +232,16 @@ describe('PresetManagerPage', () => {
     expect(screen.getByLabelText('Executable settings JSON')).not.toBeNull();
   });
 
-  it('lists every family, edits typed Chat prompts, and preserves stable prompt order without exposing private values', async () => {
+  it('edits Chat prompts and preserves stable prompt order without exposing private values', async () => {
     const user = userEvent.setup();
     renderWithApp(<PresetManagerPage />);
-    for (const kind of ['Chat', 'Text', 'Context', 'Instruct', 'System', 'Reasoning']) {
-      expect(await screen.findByText(kind, { selector: '.kind-badge' })).not.toBeNull();
-    }
+    expect(await screen.findByText('Chat', { selector: '.kind-badge' })).not.toBeNull();
     await user.click(screen.getByRole('button', { name: 'Edit preset Chat preset' }));
 
     expect(screen.getByLabelText('Temperature')).not.toBeNull();
     expect(screen.getByLabelText('Prompt 1 identifier')).not.toBeNull();
     expect(screen.getByLabelText('Prompt 1 content')).not.toBeNull();
     expect(screen.getByLabelText('Prompt 1 role')).not.toBeNull();
-    expect(screen.getByText('preset:chat')).not.toBeNull();
-    expect(screen.getByText('7 preserved fields')).not.toBeNull();
     expect(screen.queryByText('must-not-render')).toBeNull();
     expect(screen.queryByText('must-not-render-secret')).toBeNull();
 
@@ -365,25 +364,6 @@ describe('PresetManagerPage', () => {
     expect(chatDetail.settings).not.toHaveProperty('send_if_empty');
   });
 
-  it('preserves a legitimate Text json_schema null instead of treating it as deletion', async () => {
-    const user = userEvent.setup();
-    chatDetail = {
-      ...chatDetail,
-      name: 'Text preset',
-      kind: 'text' as typeof chatDetail.kind,
-      settings: { json_schema: { type: 'object' } } as unknown as typeof chatDetail.settings,
-    };
-    renderWithApp(<PresetManagerPage />);
-    await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
-    fireEvent.change(screen.getByLabelText('Executable settings JSON'), { target: { value: '{"json_schema":null}' } });
-    await user.click(screen.getByRole('button', { name: 'Save Preset' }));
-
-    await waitFor(() => expect(patchCalls).toBe(1));
-    expect(patchBodies[0]!.patch.settings).toEqual({ json_schema: null });
-    expect(patchBodies[0]!.patch).not.toHaveProperty('deleteSettingKeys');
-    expect(chatDetail.settings).toHaveProperty('json_schema', null);
-  });
-
   it('preserves an already-empty prompt order without issuing a patch', async () => {
     const user = userEvent.setup();
     chatDetail.settings.prompt_order = [];
@@ -478,16 +458,10 @@ describe('PresetManagerPage', () => {
     expect(patchCalls).toBe(0);
   });
 
-  it('exports by the server filename and deletes with the current revision', async () => {
+  it('deletes a Chat template with the current revision', async () => {
     const user = userEvent.setup();
-    let downloadedName = '';
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preset') });
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click(this: HTMLAnchorElement) { downloadedName = this.download; });
     renderWithApp(<PresetManagerPage />);
     await user.click(await screen.findByRole('button', { name: 'Edit preset Chat preset' }));
-    await user.click(screen.getByRole('button', { name: 'Export Preset' }));
-    await waitFor(() => expect(downloadedName).toBe('Role Chat.json'));
     await user.click(screen.getByRole('button', { name: 'Delete Preset' }));
     await user.click(screen.getByRole('button', { name: 'Confirm delete Preset' }));
     await waitFor(() => expect(deleteCalls).toBe(1));

@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import {
   allocateGroupedPromptBudget,
   compileChatPrompt,
-  compileTextPrompt,
   type PromptTokenizer,
 } from '../src/index.js';
 import { character, persona, preset } from './fixtures.js';
@@ -83,60 +82,6 @@ describe('Task 6 tokenizer integration', () => {
       ],
     });
     expect(overflow).toMatchObject({ kind: 'error', target: 'chat', code: 'context_overflow' });
-  });
-
-  it('budgets Text blocks by the exact final BPE count instead of summing standalone counts', async () => {
-    const decision = selectTokenizer({ requestedId: TokenizerId.GPT2 });
-    const tokenizer: PromptTokenizer = {
-      countText: (text) => countText(text, decision),
-      countMessages: (messages) => countMessages(messages, decision),
-    };
-
-    expect(await countText('hello ', decision)).toBe(2);
-    expect(await countText('world', decision)).toBe(1);
-    expect(await countText('hello world', decision)).toBe(2);
-
-    const result = await compileTextPrompt({
-      character: character(), persona: persona(), tokenizer, maxPromptTokens: 2, stop: [],
-      textPreset: preset('text', {}),
-      contextPreset: preset('context', { story_string: 'hello ' }),
-      instructPreset: preset('instruct', {
-        input_sequence: '', output_sequence: 'world', system_sequence: '', wrap: false,
-      }),
-      history: [],
-    });
-
-    expect(result.kind).toBe('text');
-    if (result.kind !== 'text') throw new Error(result.message);
-    expect(result.text).toBe('hello world');
-    expect(result.totalTokens).toBe(2);
-    expect(result.tokenBreakdown.reduce((sum, entry) => sum + entry.includedTokens, 0)).toBe(2);
-  });
-
-  it('itemizes a valid Text prompt when appending a block reduces the final BPE count', async () => {
-    const decision = selectTokenizer({ requestedId: TokenizerId.GPT2 });
-    const tokenizer: PromptTokenizer = {
-      countText: (text) => countText(text, decision),
-      countMessages: (messages) => countMessages(messages, decision),
-    };
-
-    expect(await countText('cg', decision)).toBe(2);
-    expect(await countText('cgi', decision)).toBe(1);
-    const result = await compileTextPrompt({
-      character: character(), persona: persona(), tokenizer, maxPromptTokens: 1, stop: [],
-      textPreset: preset('text', {}), contextPreset: preset('context', { story_string: 'cg' }),
-      instructPreset: preset('instruct', {
-        input_sequence: '', output_sequence: 'i', system_sequence: '', wrap: false,
-      }),
-      history: [],
-    });
-
-    expect(result.kind).toBe('text');
-    if (result.kind !== 'text') throw new Error(result.message);
-    expect(result.text).toBe('cgi');
-    expect(result.totalTokens).toBe(1);
-    expect(result.tokenBreakdown.every((entry) => entry.includedTokens >= 0)).toBe(true);
-    expect(result.tokenBreakdown.reduce((sum, entry) => sum + entry.includedTokens, 0)).toBe(1);
   });
 
   it('rescues an over-budget immutable GPT2 prefix with a merging history block', async () => {

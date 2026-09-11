@@ -1,3 +1,4 @@
+import { createTestSceneSave } from './scene-save-fixture.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,20 +114,11 @@ describe('chat UI API bindings', () => {
       providerId: ids.provider,
       chatPresetId: ids.preset,
     })).toMatchObject({ ok: true });
-    const conversation = repositories.conversations.create({
+    const conversation = createTestSceneSave(repositories, {
       id: ids.conversation,
       characterId: ids.character,
       personaId: ids.persona,
       title: 'Chat',
-    });
-    const privatePreset = repositories.presets.get(ids.preset)!;
-    repositories.saveAgentConfigurations.create({
-      id: '018f0000-0000-7000-8000-000000000109',
-      conversationId: conversation.id,
-      sourcePresetId: privatePreset.id,
-      sourcePresetRevision: privatePreset.revision,
-      name: privatePreset.name,
-      settings: privatePreset.settings,
     });
     const userMessage = repositories.messages.create({
       id: ids.userMessage, conversationId: ids.conversation, role: 'user', content: 'Original', activeVariantId: null,

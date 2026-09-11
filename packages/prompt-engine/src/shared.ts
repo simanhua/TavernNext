@@ -19,15 +19,15 @@ export function appendWarnings(target: PromptWarning[], additions: readonly Prom
   }
 }
 
-export function compilationFailure<TTarget extends 'chat' | 'text'>(input: {
-  target: TTarget;
+export function compilationFailure(input: {
+  target: 'chat';
   code: PromptCompilationFailure['code'];
   message: string;
   warnings?: PromptWarning[];
   tokenBreakdown?: TokenBreakdownEntry[];
   totalTokens?: number;
   stop?: string[];
-}): PromptCompilationFailure<TTarget> {
+}): PromptCompilationFailure {
   return {
     kind: 'error',
     target: input.target,

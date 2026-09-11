@@ -140,8 +140,8 @@ function PresetReference({ value, presets, selectedPresetId, query, pending, onP
             onChange={(event) => onPresetSelected(event.target.value)}
           >
             <option value="">{t('Select a Preset')}</option>
-            {presets.map((preset) => (
-              <option value={preset.id} key={preset.id} disabled={preset.kind !== 'chat'}>
+            {chatPresets.map((preset) => (
+              <option value={preset.id} key={preset.id}>
                 {preset.name} · {t(preset.kind)}{preset.official ? ` · ${t('Official')}` : ''}
               </option>
             ))}

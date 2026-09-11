@@ -1,16 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import {
   decodeInspectedPreset,
-  diagnostic,
   normalizeAttachedExtensions,
   attachedVariableValue,
   persistPresetSourceAssociations,
-  presetWarnings,
-  summarizeSPreset,
   type PresetSourceAssociationEnvelope,
   type PresetImportPreview,
 } from '@tavernnext/st-compat';
-import type { ImportHandler } from './import-service.js';
 import { assertExtensionAssetLimit } from '../extension-assets.js';
 import type { Preset } from '@tavernnext/domain';
 import type { Repositories } from '../db/repositories.js';
@@ -74,51 +70,4 @@ export function persistPresetBytes(
     });
   }
   return value;
-}
-
-/** Typed commits always decode the digest-checked staged bytes rather than trusting client-visible preview data. */
-export function createPresetImportHandler(): ImportHandler {
-  return {
-    id: 'tavernnext-sillytavern-preset',
-    matches: (preview) => preview.detected.kind === 'preset',
-    async inspect(context) {
-      try {
-        const decoded = decode(context.artifact.bytes, context.artifact.fileName);
-        const warnings = presetWarnings(decoded);
-        const attached = normalizeAttachedExtensions(decoded.extensions);
-        return {
-          normalizedPreview: {
-            name: decoded.name,
-            kind: decoded.kind,
-            candidates: decoded.candidates,
-            settings: decoded.settings,
-            extensions: attached.extensions,
-            attachedExtensions: attached.overview,
-            spreset: summarizeSPreset(attached.extensions),
-            unknownFields: decoded.unknownFields,
-          },
-          warnings,
-          blockingErrors: [],
-        };
-      } catch (error) {
-        return {
-          normalizedPreview: null,
-          warnings: [],
-          blockingErrors: [diagnostic(
-            'preset_decode_failed',
-            error instanceof Error ? error.message : 'Preset could not be decoded safely.',
-          )],
-        };
-      }
-    },
-    commit(context) {
-      const value = persistPresetBytes(
-        context.repositories,
-        context.artifact.bytes,
-        context.artifact.fileName,
-        context.preview.warnings.map((warning) => warning.code),
-      );
-      return { entityId: value.id };
-    },
-  };
 }

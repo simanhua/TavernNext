@@ -234,7 +234,7 @@ interface WorldEntry {
   content: string;
 }
 
-function worldEntries(payload: PromptSnapshotPayload): WorldEntry[] {
+function worldEntries(payload: Pick<PromptSnapshotPayload, 'executable'>): WorldEntry[] {
   const rows = Array.isArray(payload.executable.worldbooks) ? payload.executable.worldbooks : [];
   return rows.flatMap((rawBook, bookIndex) => {
     const row = record(rawBook);
@@ -303,7 +303,7 @@ export class TurnWorkspace {
 
   constructor(input: {
     generationId: string;
-    payload: PromptSnapshotPayload;
+    payload: Pick<PromptSnapshotPayload, 'seed' | 'executable'>;
     memoryQuery?: TurnMemoryQuery;
     state?: {
       revision: number;

@@ -19,7 +19,6 @@ export interface SaveAgentRunInput {
   readonly userText?: string;
   readonly seed?: string | number;
   readonly messageIndex?: number;
-  readonly reuseLastUser?: boolean;
 }
 
 export type StartSaveAgentRunFailure = 'generation_active' | 'scene_branch_has_descendants' | PromptSnapshotErrorCode;
@@ -33,7 +32,6 @@ export type StartSaveAgentRunResult =
 
 export interface SaveAgentRuntime {
   start(input: SaveAgentRunInput, signal?: AbortSignal): Promise<StartSaveAgentRunResult>;
-  triggerLastUser(conversationId: string, signal?: AbortSignal): Promise<StartSaveAgentRunResult>;
   regenerateActionOptions(input: {
     conversationId: string;
     messageId: string;

@@ -1,22 +1,17 @@
-import { existsSync, readFileSync } from 'node:fs';
+import type { CharacterImportPreview, InspectionLimits } from '../src/index.js';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+
 import { zipSync } from 'fflate';
-import { decode as decodePngText, encode as encodePngText } from 'png-chunk-text';
+import { encode as encodePngText } from 'png-chunk-text';
 import encodePngChunks from 'png-chunks-encode';
 import extractPngChunks from 'png-chunks-extract';
 import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_INSPECTION_LIMITS,
-  exportCharacter,
-  inspectCharacter,
-  type CharacterImportPreview,
-  type InspectionLimits,
-} from '../src/index.js';
+import { DEFAULT_INSPECTION_LIMITS, inspectCharacter } from '../src/index.js';
 
 const fixtureRoot = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'characters');
 const encoder = new TextEncoder();
-const pngSignature = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
 const basePng = Uint8Array.from(Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
@@ -327,152 +322,5 @@ describe('bounded Character archives', () => {
     const preview = await inspectCharacter(archive(), 'bounded.charx', options);
     expect(preview.character).toBeNull();
     expect(preview.blockingErrors).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
-  });
-});
-
-describe('deterministic Character export', () => {
-  it.each([
-    { fixture: 'v2.json', format: 'json-v2' as const, spec: 'chara_card_v2', unknown: 'v2-top' },
-    { fixture: 'v3.json', format: 'json-v3' as const, spec: 'chara_card_v3', unknown: 'v3-top' },
-  ])('edits only description across $format export/re-import without losing passthrough data', async ({ fixture, format, spec, unknown }) => {
-    const preview = await inspectCharacter(bytes(fixture), fixture);
-    const edited = { ...preview, character: { ...requireCharacter(preview), description: `Edited ${format} description` } };
-
-    const first = await exportCharacter(edited, format);
-    const second = await exportCharacter(edited, format);
-    expect(first).toMatchObject({ contentType: 'application/json; charset=utf-8', fileName: expect.stringMatching(/\.json$/) });
-    expect(first.bytes).toEqual(second.bytes);
-    const document = JSON.parse(Buffer.from(first.bytes).toString('utf8')) as Record<string, unknown>;
-    expect(document).toMatchObject({ spec, top_unknown: { keep: unknown } });
-
-    const reimported = await inspectCharacter(first.bytes, first.fileName);
-    const character = requireCharacter(reimported);
-    expect(character.description).toBe(`Edited ${format} description`);
-    expect(character.extensions).toEqual(requireCharacter(preview).extensions);
-    expect(reimported.unknownFields).toEqual(preview.unknownFields);
-    expect(first.auxiliaryAssets).toEqual(preview.auxiliaryAssets);
-  });
-
-  it('rewrites only Character metadata in the source PNG and preserves unrelated image chunks', async () => {
-    const source = metadataPng([['chara', json('v2.json')], ['ccv3', json('v3.json')]], true);
-    const preview = await inspectCharacter(source, 'dual.png');
-    const edited = { ...preview, character: { ...requireCharacter(preview), description: 'Edited PNG description' } };
-
-    const exported = await exportCharacter(edited, 'png');
-    const repeated = await exportCharacter(edited, 'png');
-    expect(exported).toMatchObject({ contentType: 'image/png', fileName: 'V3 Aster.png' });
-    expect(exported.bytes).toEqual(repeated.bytes);
-    const note = extractPngChunks(exported.bytes)
-      .filter((chunk) => chunk.name === 'tEXt')
-      .map((chunk) => decodePngText(chunk))
-      .find(({ keyword }) => keyword === 'fixture-note');
-    expect(note).toEqual({ keyword: 'fixture-note', text: 'unrelated chunk bytes' });
-
-    const reimported = await inspectCharacter(exported.bytes, exported.fileName);
-    expect(requireCharacter(reimported).description).toBe('Edited PNG description');
-    expect(reimported.rawPayloads.chara).toMatchObject({
-      top_unknown: { keep: 'v2-top' },
-      data: { data_unknown: { keep: 'v2' }, description: 'Edited PNG description' },
-    });
-    expect(reimported.rawPayloads.ccv3).toMatchObject({
-      top_unknown: { keep: 'v3-top' },
-      data: { data_unknown: { keep: 'v3' }, description: 'Edited PNG description' },
-    });
-    expect(requireCharacter(reimported).extensions).toEqual(requireCharacter(preview).extensions);
-  });
-
-  it('converts a current non-PNG avatar, then falls back to the supplied bundled default card', async () => {
-    const preview = await inspectCharacter(bytes('v3.json'), 'v3.json');
-    const character = requireCharacter(preview);
-    const withAvatar = { ...preview, character, avatar: { path: 'avatar.gif', bytes: syntheticGif } };
-
-    const converted = await exportCharacter(withAvatar, 'png', { defaultPng: basePng });
-    expect(converted.bytes.subarray(0, 8)).toEqual(pngSignature);
-    const fallback = await exportCharacter({ ...preview, character, avatar: undefined }, 'png', { defaultPng: basePng });
-    expect(fallback.bytes.subarray(0, 8)).toEqual(pngSignature);
-    expect(fallback.bytes).not.toEqual(converted.bytes);
-  });
-
-  it.each([
-    { label: 'V1 JSON', fileName: 'v1.json', source: () => bytes('v1.json') },
-    { label: 'YAML', fileName: 'character.yaml', source: () => bytes('character.yaml') },
-    {
-      label: 'CharX',
-      fileName: 'round-trip.charx',
-      source: () => zipSync({
-        'card.json': bytes('v3.json'),
-        'assets/avatar.gif': syntheticGif,
-        'unknown/sidecar.bin': Uint8Array.from([1, 4, 9]),
-      }),
-    },
-    {
-      label: 'BYAF',
-      fileName: 'round-trip.byaf',
-      source: () => zipSync({
-        'manifest.json': bytes('byaf-manifest.json'),
-        'people/aster.json': bytes('byaf-character.json'),
-        'people/images/avatar.gif': syntheticGif,
-        'scenes/intro.json': bytes('byaf-scenario.json'),
-        'scenes/alternate.json': bytes('byaf-alternate.json'),
-        'unknown/sidecar.bin': Uint8Array.from([2, 7, 1, 8]),
-      }),
-    },
-  ])('round-trips an edited $label import through V3 while carrying every unknown field and asset', async ({ fileName, source }) => {
-    const preview = await inspectCharacter(source(), fileName);
-    const edited = { ...preview, character: { ...requireCharacter(preview), description: `Edited ${fileName}` } };
-
-    const exported = await exportCharacter(edited, 'json-v3');
-    expect(exported.auxiliaryAssets).toEqual(preview.auxiliaryAssets);
-    const reimported = await inspectCharacter(exported.bytes, exported.fileName);
-    expect(requireCharacter(reimported).description).toBe(`Edited ${fileName}`);
-    expect(reimported.unknownFields).toEqual(preview.unknownFields);
-    expect(requireCharacter(reimported).extensions).toEqual(requireCharacter(preview).extensions);
-  });
-});
-
-const oracleRoot = process.env.TAVERNNEXT_ST_ORACLE_ROOT;
-const validatorPath = oracleRoot === undefined ? '' : join(oracleRoot, 'src', 'validator', 'TavernCardValidator.js');
-
-function validateWithOracle(payloads: readonly unknown[]): unknown[] {
-  const program = [
-    "import { pathToFileURL } from 'node:url';",
-    'const { TavernCardValidator } = await import(pathToFileURL(process.argv[1]).href);',
-    "let input = '';",
-    'for await (const chunk of process.stdin) input += chunk;',
-    'process.stdout.write(JSON.stringify(JSON.parse(input).map((card) => new TavernCardValidator(card).validate())));',
-  ].join('\n');
-  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', program, validatorPath], {
-    input: JSON.stringify(payloads),
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) throw new Error(`SillyTavern oracle failed: ${result.stderr}`);
-  return JSON.parse(result.stdout) as unknown[];
-}
-
-describe.skipIf(oracleRoot === undefined || !existsSync(validatorPath))('SillyTavern 1.18.0 oracle export validation', () => {
-  it('accepts deterministic JSON V2/V3 and both metadata payloads in PNG exports', async () => {
-    const preview = await inspectCharacter(bytes('v3.json'), 'v3.json');
-    const exportedV2 = await exportCharacter(preview, 'json-v2');
-    const exportedV3 = await exportCharacter(preview, 'json-v3');
-    expect(validateWithOracle([
-      JSON.parse(Buffer.from(exportedV2.bytes).toString('utf8')),
-      JSON.parse(Buffer.from(exportedV3.bytes).toString('utf8')),
-    ])).toEqual([2, 3]);
-
-    const png = await exportCharacter(preview, 'png', { defaultPng: basePng });
-    const payloads = extractPngChunks(png.bytes)
-      .filter((chunk) => chunk.name === 'tEXt')
-      .map((chunk) => decodePngText(chunk))
-      .filter(({ keyword }) => keyword === 'chara' || keyword === 'ccv3')
-      .map(({ text }) => JSON.parse(Buffer.from(text, 'base64').toString('utf8')) as unknown);
-    expect(validateWithOracle(payloads)).toEqual([2, 3]);
-
-    const legacyYaml = await inspectCharacter(bytes('legacy-st.yaml'), 'legacy-st.yaml');
-    const legacyV2 = await exportCharacter(legacyYaml, 'json-v2');
-    const legacyV3 = await exportCharacter(legacyYaml, 'json-v3');
-    expect(validateWithOracle([
-      JSON.parse(Buffer.from(legacyV2.bytes).toString('utf8')),
-      JSON.parse(Buffer.from(legacyV3.bytes).toString('utf8')),
-    ])).toEqual([2, 3]);
   });
 });

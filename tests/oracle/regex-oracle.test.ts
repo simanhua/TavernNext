@@ -29,7 +29,7 @@ const corpus = [
 describe.runIf(oracleRoot !== undefined && cardPath !== undefined && presetPath !== undefined)(
   'read-only SillyTavern 1.18.0 regex parity oracle',
   () => {
-    it('matches all 12 example-card and 9 target-Preset rules across the compatibility corpus', () => {
+    it('matches prompt-eligible rules from the 12-rule card and 9-rule Preset corpus', () => {
       const oracle = loadSillyTavernRegexOracle(oracleRoot!);
       expect(oracle.provenance).toMatchObject({
         packageName: 'sillytavern', version: '1.18.0',
@@ -48,11 +48,11 @@ describe.runIf(oracleRoot !== undefined && cardPath !== undefined && presetPath 
       for (const [owner, values] of [['character', cardRules], ['preset', presetRules]] as const) {
         values.forEach((rawRule, index) => {
           const rule = TavernRegexSchema.parse(rawRule);
+          if (rule.markdownOnly && !rule.promptOnly) return;
           for (const input of corpus) {
             const context = {
               placement: rule.placement[0] ?? 2,
-              isMarkdown: rule.markdownOnly,
-              isPrompt: !rule.markdownOnly && rule.promptOnly,
+              isPrompt: rule.promptOnly,
               values: { user: 'Traveler', char: 'Aster' },
             };
             expect(runRegexScripts(input, [rule], context).value, `${owner} rule ${index}: ${rule.scriptName}`)

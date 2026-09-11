@@ -9,7 +9,7 @@ import {
   saveAgentConfigurationFields,
 } from '../services/save-agent-configuration-service.js';
 import { worldbookDetail, worldbookEntryDetail } from './manager-dtos.js';
-import { BookPatchSchema, EntryEditableSchema, EntryPatchSchema, ReorderSchema, explicitPatchFields, rawPatch } from './worldbooks.js';
+import { BookPatchSchema, EntryEditableSchema, EntryPatchSchema, ReorderSchema, explicitPatchFields, rawPatch } from './save-worldbook-inputs.js';
 
 const PatchSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -90,7 +90,6 @@ function runtimeWorldbook(
   const saveWorldbook = repositories.saveWorldbooks.getByConversationId(conversation.id);
   return worldbook.isGlobal
     || saveWorldbook?.worldbookId === worldbook.id
-    || (saveWorldbook === undefined && character.worldbookId === worldbook.id)
     || conversation.worldbookIds.includes(worldbook.id)
     ? worldbook
     : undefined;
@@ -179,8 +178,9 @@ export function registerSaveAgentConfigurationRoutes(
       };
 
       for (const worldbook of repositories.worldbooks.listGlobal()) add(worldbook.id, 'global');
-      const characterWorldbookId = saveWorldbook?.worldbookId ?? character.worldbookId;
-      if (characterWorldbookId !== undefined && !add(characterWorldbookId, 'character', saveWorldbook !== undefined)) {
+      if (saveWorldbook === undefined) return reply.status(404).send({ error: 'not_found' });
+      const characterWorldbookId = saveWorldbook.worldbookId;
+      if (characterWorldbookId !== undefined && !add(characterWorldbookId, 'character', true)) {
         return reply.status(404).send({ error: 'not_found' });
       }
       for (const id of conversation.worldbookIds) {

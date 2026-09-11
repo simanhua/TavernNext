@@ -1,18 +1,13 @@
 import type {
-  Character,
   CompatibilityMetadata,
-  ExtensionAsset,
   Persona,
   Preset,
   Worldbook,
   WorldbookEntry,
 } from '@tavernnext/domain';
 import {
-  attachedExtensionOverview,
   executablePresetFields,
-  normalizeAttachedExtensions,
   presetSettingsForExecution,
-  summarizeSPreset,
   validatePresetFamily,
 } from '@tavernnext/st-compat';
 
@@ -42,56 +37,12 @@ function mutableFields(value: { id: string; revision: number; createdAt: string;
   return { id: value.id, revision: value.revision, createdAt: value.createdAt, updatedAt: value.updatedAt };
 }
 
-export function characterSummary(character: Character) {
-  return {
-    ...mutableFields(character),
-    name: character.name,
-    ...(character.avatarPath === undefined ? {} : { avatarUrl: `/api/characters/${character.id}/avatar` }),
-    ...(compatibilitySummary(character.compatibility) === undefined
-      ? {}
-      : { compatibilitySummary: compatibilitySummary(character.compatibility) }),
-  };
-}
-
-export function characterDetail(character: Character, extensionAssets: readonly ExtensionAsset[] = []) {
-  const normalizedExtensions = normalizeAttachedExtensions(character.extensions);
-  const persistedOverview = extensionAssets.length === 0
-    ? normalizedExtensions.overview
-    : attachedExtensionOverview(extensionAssets, normalizedExtensions.extensions);
-  const attachedExtensions = {
-    ...persistedOverview,
-    diagnostics: [...new Set([
-      ...normalizedExtensions.overview.diagnostics,
-      ...persistedOverview.diagnostics,
-    ])],
-  };
-  return {
-    ...characterSummary(character),
-    description: character.description,
-    personality: character.personality,
-    scenario: character.scenario,
-    firstMessage: character.firstMessage,
-    examples: character.examples,
-    systemPrompt: character.systemPrompt,
-    postHistoryInstructions: character.postHistoryInstructions,
-    creatorNotes: character.creatorNotes,
-    creator: character.creator,
-    characterVersion: character.characterVersion,
-    depthPrompt: character.depthPrompt,
-    alternateGreetings: [...character.alternateGreetings],
-    tags: [...character.tags],
-    attachedExtensions,
-    ...(character.worldbookId === undefined ? {} : { worldbookId: character.worldbookId }),
-  };
-}
-
 export function personaDetail(persona: Persona) {
   return {
     ...mutableFields(persona),
     name: persona.name,
     description: persona.description,
     isDefault: persona.isDefault,
-    ...(persona.avatarPath === undefined ? {} : { avatarUrl: `/api/personas/${persona.id}/avatar` }),
     ...(compatibilitySummary(persona.compatibility) === undefined
       ? {}
       : { compatibilitySummary: compatibilitySummary(persona.compatibility) }),
@@ -109,22 +60,12 @@ export function safePresetSettings(preset: Preset): Record<string, unknown> {
   return executablePresetFields(preset.kind, validatePresetFamily(preset.kind, markerFree)).settings;
 }
 
-export function presetDetail(preset: Preset, extensionAssets: readonly ExtensionAsset[] = []) {
-  const normalized = normalizeAttachedExtensions(preset.extensions);
-  const persistedOverview = extensionAssets.length === 0
-    ? normalized.overview
-    : attachedExtensionOverview(extensionAssets, normalized.extensions);
-  const attachedExtensions = {
-    ...persistedOverview,
-    diagnostics: [...new Set([...normalized.overview.diagnostics, ...persistedOverview.diagnostics])],
-  };
+export function presetDetail(preset: Preset) {
   return {
     ...mutableFields(preset),
     name: preset.name,
     kind: preset.kind,
     settings: safePresetSettings(preset),
-    attachedExtensions,
-    spreset: summarizeSPreset(normalized.extensions),
     ...(compatibilitySummary(preset.compatibility) === undefined
       ? {}
       : { compatibilitySummary: compatibilitySummary(preset.compatibility) }),

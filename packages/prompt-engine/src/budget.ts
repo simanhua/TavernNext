@@ -30,11 +30,6 @@ export interface PromptBudgetFailure {
 
 export type PromptBudgetResult = PromptBudgetSuccess | PromptBudgetFailure;
 
-interface CountedBlock<TBlock extends PromptBudgetBlock> {
-  block: TBlock;
-  tokens: number;
-}
-
 function validBudget(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
@@ -57,7 +52,6 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
   maxTokens: number;
   blocks: readonly TBlock[];
   countSelection: (blocks: readonly TBlock[]) => number | Promise<number>;
-  fit?: 'inclusive' | 'strict';
 }): Promise<PromptBudgetResult> {
   if (!validBudget(input.maxTokens)) {
     return {
@@ -137,11 +131,7 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
           blocksFor(indexes),
           `candidate:history=${historyCount},optional=${optionalCount}`,
         );
-        const hasVariableContent = historyCount > 0 || optionalCount > 0;
-        const fits = hasVariableContent && input.fit === 'strict'
-          ? tokens < input.maxTokens
-          : tokens <= input.maxTokens;
-        if (!fits) continue;
+        if (tokens > input.maxTokens) continue;
         selected = indexes;
         totalTokens = tokens;
         break candidateSearch;
@@ -212,112 +202,4 @@ export async function allocateGroupedPromptBudget<TBlock extends PromptBudgetBlo
       tokenBreakdown: failureBreakdown(),
     };
   }
-}
-
-export async function allocatePromptBudget<TBlock extends PromptBudgetBlock>(input: {
-  maxTokens: number;
-  blocks: readonly TBlock[];
-  countTokens: (block: TBlock) => number | Promise<number>;
-  fit?: 'inclusive' | 'strict';
-}): Promise<PromptBudgetResult> {
-  if (!validBudget(input.maxTokens)) {
-    return {
-      ok: false,
-      code: 'invalid_budget',
-      message: 'Prompt token budget must be a non-negative safe integer.',
-      totalTokens: 0,
-      tokenBreakdown: [],
-    };
-  }
-
-  const counted: Array<CountedBlock<TBlock>> = [];
-  try {
-    for (const block of input.blocks) {
-      const tokens = await input.countTokens(block);
-      if (!Number.isSafeInteger(tokens) || tokens < 0) {
-        throw new TypeError(`Tokenizer returned an invalid count for ${block.source}`);
-      }
-      counted.push({ block, tokens });
-    }
-  } catch (error) {
-    return {
-      ok: false,
-      code: 'tokenizer_error',
-      message: error instanceof Error ? error.message : 'Tokenizer failed while counting a prompt block.',
-      totalTokens: 0,
-      tokenBreakdown: counted.map(({ block, tokens }) => ({
-        source: block.source,
-        includedTokens: 0,
-        omittedTokens: tokens,
-        reason: block.omitReason ?? 'context_overflow',
-      })),
-    };
-  }
-
-  const eligible = counted.filter(({ block }) => block.omitReason === undefined);
-  const immutableTokens = eligible
-    .filter(({ block }) => block.policy === 'immutable')
-    .reduce((sum, item) => sum + item.tokens, 0);
-  if (immutableTokens > input.maxTokens) {
-    return {
-      ok: false,
-      code: 'context_overflow',
-      message: 'Immutable prompt content exceeds the available context budget.',
-      totalTokens: 0,
-      tokenBreakdown: counted.map(({ block, tokens }) => ({
-        source: block.source,
-        includedTokens: 0,
-        omittedTokens: tokens,
-        reason: block.omitReason ?? 'context_overflow',
-      })),
-    };
-  }
-
-  const included = new Set<TBlock>();
-  const fits = (tokens: number) => input.fit === 'strict'
-    ? tokens < input.maxTokens
-    : tokens <= input.maxTokens;
-  let totalTokens = 0;
-  for (const item of eligible) {
-    if (item.block.policy !== 'immutable') continue;
-    included.add(item.block);
-    totalTokens += item.tokens;
-  }
-
-  let historyBlocked = false;
-  const histories = eligible.filter(({ block }) => block.policy === 'history');
-  for (let index = histories.length - 1; index >= 0; index -= 1) {
-    const item = histories[index]!;
-    if (!historyBlocked && fits(totalTokens + item.tokens)) {
-      included.add(item.block);
-      totalTokens += item.tokens;
-    } else {
-      historyBlocked = true;
-    }
-  }
-
-  let optionalBlocked = false;
-  for (const item of eligible.filter(({ block }) => block.policy === 'optional')) {
-    if (!optionalBlocked && fits(totalTokens + item.tokens)) {
-      included.add(item.block);
-      totalTokens += item.tokens;
-    } else {
-      optionalBlocked = true;
-    }
-  }
-
-  return {
-    ok: true,
-    includedBlockIndexes: counted.flatMap(({ block }, index) => included.has(block) ? [index] : []),
-    includedSources: counted.filter(({ block }) => included.has(block)).map(({ block }) => block.source),
-    totalTokens,
-    tokenBreakdown: counted.map(({ block, tokens }) => included.has(block)
-      ? { source: block.source, includedTokens: tokens, omittedTokens: 0 }
-      : {
-          source: block.source,
-          includedTokens: 0,
-          omittedTokens: tokens,
-          reason: block.omitReason ?? (block.policy === 'history' ? 'history_budget' : 'optional_budget'),
-        }),
-  };
 }
