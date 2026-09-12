@@ -6,6 +6,9 @@ import {
 import { CompatibilityMetadataSchema } from './compatibility.js';
 import { WorldbookEntryOverrideSchema, WorldbookTimedStateSchema } from './generation.js';
 import { ScenePatchOperationSchema, SceneStateDiagnosticSchema } from './scene-state.js';
+import { PlayerOperationSchema } from './player-operation.js';
+
+export { PlayerOperationSchema };
 
 export const DomainIdSchema = z.string().uuid();
 export const TimestampSchema = z.string().datetime({ offset: true });
@@ -403,11 +406,6 @@ export const SceneStateTransitionSchema = MutableEntitySchema.extend({
 });
 
 export const MessageRoleSchema = z.enum(['system', 'user', 'assistant']);
-export const PlayerOperationSchema = z.object({
-  kind: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
-  title: z.string().min(1).max(80),
-  summary: z.string().min(1).max(500),
-}).strict();
 export const MessageSchema = MutableEntitySchema.extend({
   conversationId: DomainIdSchema,
   role: MessageRoleSchema,

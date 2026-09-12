@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { WorldbookEntryOverrideSchema } from './generation.js';
+import { PlayerOperationSchema } from './player-operation.js';
 
 const ScenePointerSchema = z.string().startsWith('/');
 
@@ -78,10 +79,14 @@ export const SceneAfterGenerationResultSchema = z.object({
 export const SceneActionResultSchema = z.object({
   accepted: z.boolean().optional(),
   statePatch: z.array(ScenePatchOperationSchema).optional(),
+  operation: PlayerOperationSchema.optional(),
   result: z.unknown().optional(),
 }).strict().superRefine((value, context) => {
   if (value.accepted === false && value.statePatch !== undefined) {
     context.addIssue({ code: 'custom', message: 'rejected_scene_action_must_not_patch_state', path: ['statePatch'] });
+  }
+  if (value.operation !== undefined && value.accepted !== true) {
+    context.addIssue({ code: 'custom', message: 'scene_operation_requires_acceptance', path: ['operation'] });
   }
 });
 

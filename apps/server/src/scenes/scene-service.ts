@@ -628,7 +628,7 @@ export function createSceneService(options: {
         action, state: current.value, setup: conversation.setup,
         playerProfile: conversation.playerProfile, manifest: scene.manifest,
       }));
-      const committedOperation = output.accepted === true ? operation : undefined;
+      const committedOperation = output.accepted === true ? output.operation ?? operation : undefined;
       if (output.statePatch === undefined && committedOperation === undefined) {
         return { state: current, result: output.result ?? null };
       }

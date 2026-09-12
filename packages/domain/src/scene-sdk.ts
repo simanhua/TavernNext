@@ -187,6 +187,7 @@ export interface SceneSdkV2 {
     }>;
   };
   scene: {
+    /** The accepted server operation takes precedence over the optional frontend summary. */
     action(action: unknown, options?: { operation?: PlayerOperation }): Promise<{
       state: ConversationSceneState;
       result: unknown;
